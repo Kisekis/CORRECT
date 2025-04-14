@@ -1,0 +1,200 @@
+{
+    "calleeMethods": [
+        [
+            "libfreerdp/codec/interleaved.c",
+            "interleaved_decompress",
+            "BOOL interleaved_decompress(BITMAP_INTERLEAVED_CONTEXT* interleaved, /* <=== interleaved_decompress */ \n                            const BYTE* pSrcData, UINT32 SrcSize,\n                            UINT32 nSrcWidth, UINT32 nSrcHeight,\n                            UINT32 bpp,\n                            BYTE* pDstData, UINT32 DstFormat,\n                            UINT32 nDstStep, UINT32 nXDst, UINT32 nYDst,\n                            UINT32 nDstWidth, UINT32 nDstHeight,\n                            const gdiPalette* palette)\n{\n\tUINT32 scanline;\n\tUINT32 SrcFormat;\n\tUINT32 BufferSize;\n\n\tif (!interleaved || !pSrcData || !pDstData)\n\t\treturn FALSE;\n\n\tswitch (bpp)\n\t{\n\t\tcase 24:\n\t\t\tscanline = nSrcWidth * 3;\n\t\t\tSrcFormat = PIXEL_FORMAT_BGR24;\n\t\t\tbreak;\n\n\t\tcase 16:\n\t\t\tscanline = nSrcWidth * 2;\n\t\t\tSrcFormat = PIXEL_FORMAT_RGB16;\n\t\t\tbreak;\n\n\t\tcase 15:\n\t\t\tscanline = nSrcWidth * 2;\n\t\t\tSrcFormat = PIXEL_FORMAT_RGB15;\n\t\t\tbreak;\n\n\t\tcase 8:\n\t\t\tscanline = nSrcWidth;\n\t\t\tSrcFormat = PIXEL_FORMAT_RGB8;\n\t\t\tbreak;\n\n\t\tdefault:\n\t\t\tWLog_ERR(TAG, \"Invalid color depth %\"PRIu32\"\", bpp);\n\t\t\treturn FALSE;\n\t}\n\n\tBufferSize = scanline * nSrcHeight;\n\n\tif (BufferSize > interleaved->TempSize)\n\t{\n\t\tinterleaved->TempBuffer = _aligned_realloc(\n\t\t                              interleaved->TempBuffer,\n\t\t                              BufferSize, 16);\n\t\tinterleaved->TempSize = BufferSize;\n\t}\n\n\tif (!interleaved->TempBuffer)\n\t\treturn FALSE;\n\n\tswitch (bpp)\n\t{\n\t\tcase 24:\n\t\t\tif (!RleDecompress24to24(pSrcData, SrcSize, interleaved->TempBuffer,\n\t\t\t                         scanline, nSrcWidth, nSrcHeight))\n\t\t\t\treturn FALSE;\n\n\t\t\tbreak;\n\n\t\tcase 16:\n\t\tcase 15:\n\t\t\tif (!RleDecompress16to16(pSrcData, SrcSize, interleaved->TempBuffer,\n\t\t\t                         scanline, nSrcWidth, nSrcHeight))\n\t\t\t\treturn FALSE;\n\n\t\t\tbreak;\n\n\t\tcase 8:\n\t\t\tif (!RleDecompress8to8(pSrcData, SrcSize, interleaved->TempBuffer,\n\t\t\t                       scanline, nSrcWidth, nSrcHeight))\n\t\t\t\treturn FALSE;\n\n\t\t\tbreak;\n\n\t\tdefault:\n\t\t\treturn FALSE;\n\t}\n\n\treturn freerdp_image_copy(pDstData, DstFormat, nDstStep, nXDst, nYDst,\n\t                          nDstWidth, nDstHeight, interleaved->TempBuffer,\n\t                          SrcFormat, scanline, 0, 0, palette, FREERDP_FLIP_VERTICAL);\n}",
+            1
+        ],
+        [
+            "winpr/include/winpr/crt.h",
+            "_aligned_realloc",
+            "WINPR_API void* _aligned_realloc(void* memblock, size_t size, size_t alignment); /* <=== _aligned_realloc */ ",
+            2
+        ],
+        [
+            "libfreerdp/codec/planar.c",
+            "planar_decompress",
+            "BOOL planar_decompress(BITMAP_PLANAR_CONTEXT* planar, /* <=== planar_decompress */ \n                       const BYTE* pSrcData, UINT32 SrcSize,\n                       UINT32 nSrcWidth, UINT32 nSrcHeight,\n                       BYTE* pDstData, UINT32 DstFormat,\n                       UINT32 nDstStep, UINT32 nXDst, UINT32 nYDst,\n                       UINT32 nDstWidth, UINT32 nDstHeight, BOOL vFlip)\n{\n\tBOOL cs;\n\tBOOL rle;\n\tUINT32 cll;\n\tBOOL alpha;\n\tBOOL useAlpha = FALSE;\n\tINT32 status;\n\tconst BYTE* srcp;\n\tUINT32 subSize;\n\tUINT32 subWidth;\n\tUINT32 subHeight;\n\tUINT32 planeSize;\n\tINT32 rleSizes[4] = { 0, 0, 0, 0 };\n\tUINT32 rawSizes[4];\n\tUINT32 rawWidths[4];\n\tUINT32 rawHeights[4];\n\tBYTE FormatHeader;\n\tconst BYTE* planes[4];\n\tconst UINT32 w = MIN(nSrcWidth, nDstWidth);\n\tconst UINT32 h = MIN(nSrcHeight, nDstHeight);\n\tconst primitives_t* prims = primitives_get();\n\n\tif (nDstStep <= 0)\n\t\tnDstStep = nDstWidth * GetBytesPerPixel(DstFormat);\n\n\tsrcp = pSrcData;\n\n\tif (!pDstData)\n\t{\n\t\tWLog_ERR(TAG, \"Invalid argument pDstData=NULL\");\n\t\treturn FALSE;\n\t}\n\n\tFormatHeader = *srcp++;\n\tcll = (FormatHeader & PLANAR_FORMAT_HEADER_CLL_MASK);\n\tcs = (FormatHeader & PLANAR_FORMAT_HEADER_CS) ? TRUE : FALSE;\n\trle = (FormatHeader & PLANAR_FORMAT_HEADER_RLE) ? TRUE : FALSE;\n\talpha = (FormatHeader & PLANAR_FORMAT_HEADER_NA) ? FALSE : TRUE;\n\n\tif (alpha)\n\t\tuseAlpha = ColorHasAlpha(DstFormat);\n\n\t//WLog_INFO(TAG, \"CLL: %\"PRIu32\" CS: %\"PRIu8\" RLE: %\"PRIu8\" ALPHA: %\"PRIu8\"\", cll, cs, rle, alpha);\n\n\tif (!cll && cs)\n\t\treturn FALSE; /* Chroma subsampling requires YCoCg */\n\n\tsubWidth = (nSrcWidth / 2) + (nSrcWidth % 2);\n\tsubHeight = (nSrcHeight / 2) + (nSrcHeight % 2);\n\tplaneSize = nSrcWidth * nSrcHeight;\n\tsubSize = subWidth * subHeight;\n\n\tif (!cs)\n\t{\n\t\trawSizes[0] = planeSize; /* LumaOrRedPlane */\n\t\trawWidths[0] = nSrcWidth;\n\t\trawHeights[0] = nSrcHeight;\n\t\trawSizes[1] = planeSize; /* OrangeChromaOrGreenPlane */\n\t\trawWidths[1] = nSrcWidth;\n\t\trawHeights[1] = nSrcHeight;\n\t\trawSizes[2] = planeSize; /* GreenChromaOrBluePlane */\n\t\trawWidths[2] = nSrcWidth;\n\t\trawHeights[2] = nSrcHeight;\n\t\trawSizes[3] = planeSize; /* AlphaPlane */\n\t\trawWidths[3] = nSrcWidth;\n\t\trawHeights[3] = nSrcHeight;\n\t}\n\telse /* Chroma Subsampling */\n\t{\n\t\trawSizes[0] = planeSize; /* LumaOrRedPlane */\n\t\trawWidths[0] = nSrcWidth;\n\t\trawHeights[0] = nSrcHeight;\n\t\trawSizes[1] = subSize; /* OrangeChromaOrGreenPlane */\n\t\trawWidths[1] = subWidth;\n\t\trawHeights[1] = subHeight;\n\t\trawSizes[2] = subSize; /* GreenChromaOrBluePlane */\n\t\trawWidths[2] = subWidth;\n\t\trawHeights[2] = subHeight;\n\t\trawSizes[3] = planeSize; /* AlphaPlane */\n\t\trawWidths[3] = nSrcWidth;\n\t\trawHeights[3] = nSrcHeight;\n\t}\n\n\tif (!rle) /* RAW */\n\t{\n\t\tif (alpha)\n\t\t{\n\t\t\tif ((SrcSize - (srcp - pSrcData)) < (planeSize * 4))\n\t\t\t\treturn FALSE;\n\n\t\t\tplanes[3] = srcp; /* AlphaPlane */\n\t\t\tplanes[0] = planes[3] + rawSizes[3]; /* LumaOrRedPlane */\n\t\t\tplanes[1] = planes[0] + rawSizes[0]; /* OrangeChromaOrGreenPlane */\n\t\t\tplanes[2] = planes[1] + rawSizes[1]; /* GreenChromaOrBluePlane */\n\n\t\t\tif ((planes[2] + rawSizes[2]) > &pSrcData[SrcSize])\n\t\t\t\treturn FALSE;\n\t\t}\n\t\telse\n\t\t{\n\t\t\tif ((SrcSize - (srcp - pSrcData)) < (planeSize * 3))\n\t\t\t\treturn FALSE;\n\n\t\t\tplanes[0] = srcp; /* LumaOrRedPlane */\n\t\t\tplanes[1] = planes[0] + rawSizes[0]; /* OrangeChromaOrGreenPlane */\n\t\t\tplanes[2] = planes[1] + rawSizes[1]; /* GreenChromaOrBluePlane */\n\n\t\t\tif ((planes[2] + rawSizes[2]) > &pSrcData[SrcSize])\n\t\t\t\treturn FALSE;\n\t\t}\n\t}\n\telse /* RLE */\n\t{\n\t\tif (alpha)\n\t\t{\n\t\t\tplanes[3] = srcp;\n\t\t\trleSizes[3] = planar_skip_plane_rle(planes[3], SrcSize - (planes[3] - pSrcData),\n\t\t\t                                    rawWidths[3], rawHeights[3]); /* AlphaPlane */\n\n\t\t\tif (rleSizes[3] < 0)\n\t\t\t\treturn FALSE;\n\n\t\t\tplanes[0] = planes[3] + rleSizes[3];\n\t\t}\n\t\telse\n\t\t\tplanes[0] = srcp;\n\n\t\trleSizes[0] = planar_skip_plane_rle(planes[0], SrcSize - (planes[0] - pSrcData),\n\t\t                                    rawWidths[0], rawHeights[0]); /* RedPlane */\n\n\t\tif (rleSizes[0] < 0)\n\t\t\treturn FALSE;\n\n\t\tplanes[1] = planes[0] + rleSizes[0];\n\t\trleSizes[1] = planar_skip_plane_rle(planes[1], SrcSize - (planes[1] - pSrcData),\n\t\t                                    rawWidths[1], rawHeights[1]); /* GreenPlane */\n\n\t\tif (rleSizes[1] < 1)\n\t\t\treturn FALSE;\n\n\t\tplanes[2] = planes[1] + rleSizes[1];\n\t\trleSizes[2] = planar_skip_plane_rle(planes[2], SrcSize - (planes[2] - pSrcData),\n\t\t                                    rawWidths[2], rawHeights[2]); /* BluePlane */\n\n\t\tif (rleSizes[2] < 1)\n\t\t\treturn FALSE;\n\t}\n\n\tif (!cll) /* RGB */\n\t{\n\t\tUINT32 TempFormat;\n\t\tBYTE* pTempData = pDstData;\n\t\tUINT32 nTempStep = nDstStep;\n\n\t\tif (useAlpha)\n\t\t\tTempFormat = PIXEL_FORMAT_BGRA32;\n\t\telse\n\t\t\tTempFormat = PIXEL_FORMAT_BGRX32;\n\n\t\tif ((TempFormat != DstFormat) || (nSrcWidth != nDstWidth)\n\t\t    || (nSrcHeight != nDstHeight))\n\t\t{\n\t\t\tpTempData = planar->pTempData;\n\t\t\tnTempStep = planar->nTempStep;\n\t\t}\n\n\t\tif (!rle) /* RAW */\n\t\t{\n\t\t\tif (!planar_decompress_planes_raw(planes, pTempData, TempFormat, nTempStep,\n\t\t\t                                  nXDst, nYDst, nSrcWidth, nSrcHeight, vFlip))\n\t\t\t\treturn FALSE;\n\n\t\t\tif (alpha)\n\t\t\t\tsrcp += rawSizes[0] + rawSizes[1] + rawSizes[2] + rawSizes[3];\n\t\t\telse /* NoAlpha */\n\t\t\t\tsrcp += rawSizes[0] + rawSizes[1] + rawSizes[2];\n\n\t\t\tif ((SrcSize - (srcp - pSrcData)) == 1)\n\t\t\t\tsrcp++; /* pad */\n\t\t}\n\t\telse /* RLE */\n\t\t{\n\t\t\tstatus = planar_decompress_plane_rle(planes[0], rleSizes[0],\n\t\t\t                                     pTempData, nTempStep, nXDst, nYDst, nSrcWidth, nSrcHeight, 2,\n\t\t\t                                     vFlip); /* RedPlane */\n\n\t\t\tif (status < 0)\n\t\t\t\treturn FALSE;\n\n\t\t\tstatus = planar_decompress_plane_rle(planes[1], rleSizes[1],\n\t\t\t                                     pTempData, nTempStep, nXDst, nYDst, nSrcWidth, nSrcHeight, 1,\n\t\t\t                                     vFlip); /* GreenPlane */\n\n\t\t\tif (status < 0)\n\t\t\t\treturn FALSE;\n\n\t\t\tstatus = planar_decompress_plane_rle(planes[2], rleSizes[2],\n\t\t\t                                     pTempData, nTempStep, nXDst, nYDst, nSrcWidth, nSrcHeight, 0,\n\t\t\t                                     vFlip); /* BluePlane */\n\n\t\t\tif (status < 0)\n\t\t\t\treturn FALSE;\n\n\t\t\tsrcp += rleSizes[0] + rleSizes[1] + rleSizes[2];\n\n\t\t\tif (useAlpha)\n\t\t\t{\n\t\t\t\tstatus = planar_decompress_plane_rle(planes[3], rleSizes[3],\n\t\t\t\t                                     pTempData, nTempStep, nXDst, nYDst, nSrcWidth, nSrcHeight, 3,\n\t\t\t\t                                     vFlip); /* AlphaPlane */\n\n\t\t\t\tif (status < 0)\n\t\t\t\t\treturn FALSE;\n\t\t\t}\n\n\t\t\tif (alpha)\n\t\t\t\tsrcp += rleSizes[3];\n\t\t}\n\n\t\tif (pTempData != pDstData)\n\t\t{\n\t\t\tif (!freerdp_image_copy(pDstData, DstFormat, nDstStep, nXDst, nYDst, w,\n\t\t\t                        h, pTempData,\n\t\t\t                        TempFormat, nTempStep, nXDst, nYDst, NULL, FREERDP_FLIP_NONE))\n\t\t\t\treturn FALSE;\n\t\t}\n\t}\n\telse /* YCoCg */\n\t{\n\t\tUINT32 TempFormat;\n\t\tBYTE* pTempData = planar->pTempData;\n\t\tUINT32 nTempStep = planar->nTempStep;\n\n\t\tif (useAlpha)\n\t\t\tTempFormat = PIXEL_FORMAT_BGRA32;\n\t\telse\n\t\t\tTempFormat = PIXEL_FORMAT_BGRX32;\n\n\t\tif (!pTempData)\n\t\t\treturn FALSE;\n\n\t\tif (cs)\n\t\t{\n\t\t\tWLog_ERR(TAG, \"Chroma subsampling unimplemented\");\n\t\t\treturn FALSE;\n\t\t}\n\n\t\tif (!rle) /* RAW */\n\t\t{\n\t\t\tif (!planar_decompress_planes_raw(planes, pTempData, TempFormat, nTempStep,\n\t\t\t                                  nXDst, nYDst, nSrcWidth, nSrcHeight, vFlip))\n\t\t\t\treturn FALSE;\n\n\t\t\tif (alpha)\n\t\t\t\tsrcp += rawSizes[0] + rawSizes[1] + rawSizes[2] + rawSizes[3];\n\t\t\telse /* NoAlpha */\n\t\t\t\tsrcp += rawSizes[0] + rawSizes[1] + rawSizes[2];\n\n\t\t\tif ((SrcSize - (srcp - pSrcData)) == 1)\n\t\t\t\tsrcp++; /* pad */\n\t\t}\n\t\telse /* RLE */\n\t\t{\n\t\t\tif (useAlpha)\n\t\t\t{\n\t\t\t\tstatus = planar_decompress_plane_rle(planes[3], rleSizes[3],\n\t\t\t\t                                     pTempData, nTempStep, nXDst, nYDst, nSrcWidth, nSrcHeight, 3,\n\t\t\t\t                                     vFlip); /* AlphaPlane */\n\n\t\t\t\tif (status < 0)\n\t\t\t\t\treturn FALSE;\n\t\t\t}\n\n\t\t\tif (alpha)\n\t\t\t\tsrcp += rleSizes[3];\n\n\t\t\tstatus = planar_decompress_plane_rle(planes[0], rleSizes[0],\n\t\t\t                                     pTempData, nTempStep, nXDst, nYDst, nSrcWidth, nSrcHeight, 2,\n\t\t\t                                     vFlip); /* LumaPlane */\n\n\t\t\tif (status < 0)\n\t\t\t\treturn FALSE;\n\n\t\t\tstatus = planar_decompress_plane_rle(planes[1], rleSizes[1],\n\t\t\t                                     pTempData, nTempStep, nXDst, nYDst, nSrcWidth, nSrcHeight, 1,\n\t\t\t                                     vFlip); /* OrangeChromaPlane */\n\n\t\t\tif (status < 0)\n\t\t\t\treturn FALSE;\n\n\t\t\tstatus = planar_decompress_plane_rle(planes[2], rleSizes[2],\n\t\t\t                                     pTempData, nTempStep, nXDst, nYDst, nSrcWidth, nSrcHeight, 0,\n\t\t\t                                     vFlip); /* GreenChromaPlane */\n\n\t\t\tif (status < 0)\n\t\t\t\treturn FALSE;\n\n\t\t\tsrcp += rleSizes[0] + rleSizes[1] + rleSizes[2];\n\t\t}\n\n\t\tif (prims->YCoCgToRGB_8u_AC4R(pTempData, nTempStep, pDstData, DstFormat,\n\t\t                              nDstStep,\n\t\t                              w, h, cll, useAlpha) != PRIMITIVES_SUCCESS)\n\t\t\treturn FALSE;\n\t}\n\n\treturn (SrcSize == (srcp - pSrcData)) ? TRUE : FALSE;\n}",
+            1
+        ],
+        [
+            "winpr/include/winpr/crt.h",
+            "_aligned_malloc",
+            "WINPR_API void* _aligned_malloc(size_t size, size_t alignment); /* <=== _aligned_malloc */ ",
+            1
+        ],
+        [
+            "libfreerdp/codec/color.c",
+            "freerdp_image_copy",
+            "BOOL freerdp_image_copy(BYTE* pDstData, DWORD DstFormat, /* <=== freerdp_image_copy */ \n                        UINT32 nDstStep, UINT32 nXDst, UINT32 nYDst,\n                        UINT32 nWidth, UINT32 nHeight,\n                        const BYTE* pSrcData, DWORD SrcFormat,\n                        UINT32 nSrcStep, UINT32 nXSrc, UINT32 nYSrc,\n                        const gdiPalette* palette, UINT32 flags)\n{\n\tconst UINT32 dstByte = GetBytesPerPixel(DstFormat);\n\tconst UINT32 srcByte = GetBytesPerPixel(SrcFormat);\n\tconst UINT32 copyDstWidth = nWidth * dstByte;\n\tconst UINT32 xSrcOffset = nXSrc * srcByte;\n\tconst UINT32 xDstOffset = nXDst * dstByte;\n\tconst BOOL vSrcVFlip = flags & FREERDP_FLIP_VERTICAL;\n\tUINT32 srcVOffset = 0;\n\tINT32 srcVMultiplier = 1;\n\tUINT32 dstVOffset = 0;\n\tINT32 dstVMultiplier = 1;\n\n\tif (!pDstData || !pSrcData)\n\t\treturn FALSE;\n\n\tif (nDstStep == 0)\n\t\tnDstStep = nWidth * GetBytesPerPixel(DstFormat);\n\n\tif (nSrcStep == 0)\n\t\tnSrcStep = nWidth * GetBytesPerPixel(SrcFormat);\n\n\tif (vSrcVFlip)\n\t{\n\t\tsrcVOffset = (nHeight - 1) * nSrcStep;\n\t\tsrcVMultiplier = -1;\n\t}\n\n\tif (AreColorFormatsEqualNoAlpha(SrcFormat, DstFormat))\n\t{\n\t\tINT32 y;\n\n\t\tif (overlapping(pDstData, nXDst, nYDst, nDstStep, dstByte,\n\t\t                pSrcData, nXSrc, nYSrc, nSrcStep, srcByte,\n\t\t                nWidth, nHeight))\n\t\t{\n\t\t\t/* Copy down */\n\t\t\tif (nYDst < nYSrc)\n\t\t\t{\n\t\t\t\tfor (y = 0; y < nHeight; y++)\n\t\t\t\t{\n\t\t\t\t\tconst BYTE* srcLine = &pSrcData[(y + nYSrc) *\n\t\t\t\t\t                                            nSrcStep * srcVMultiplier +\n\t\t\t\t\t                                            srcVOffset];\n\t\t\t\t\tBYTE* dstLine = &pDstData[(y + nYDst) *\n\t\t\t\t\t                                      nDstStep * dstVMultiplier +\n\t\t\t\t\t                                      dstVOffset];\n\t\t\t\t\tmemcpy(&dstLine[xDstOffset],\n\t\t\t\t\t       &srcLine[xSrcOffset], copyDstWidth);\n\t\t\t\t}\n\t\t\t}\n\t\t\t/* Copy up */\n\t\t\telse if (nYDst > nYSrc)\n\t\t\t{\n\t\t\t\tfor (y = nHeight - 1; y >= 0; y--)\n\t\t\t\t{\n\t\t\t\t\tconst BYTE* srcLine = &pSrcData[(y + nYSrc) *\n\t\t\t\t\t                                            nSrcStep * srcVMultiplier +\n\t\t\t\t\t                                            srcVOffset];\n\t\t\t\t\tBYTE* dstLine = &pDstData[(y + nYDst) *\n\t\t\t\t\t                                      nDstStep * dstVMultiplier +\n\t\t\t\t\t                                      dstVOffset];\n\t\t\t\t\tmemcpy(&dstLine[xDstOffset],\n\t\t\t\t\t       &srcLine[xSrcOffset], copyDstWidth);\n\t\t\t\t}\n\t\t\t}\n\t\t\t/* Copy left */\n\t\t\telse if (nXSrc > nXDst)\n\t\t\t{\n\t\t\t\tfor (y = 0; y < nHeight; y++)\n\t\t\t\t{\n\t\t\t\t\tconst BYTE* srcLine = &pSrcData[(y + nYSrc) *\n\t\t\t\t\t                                            nSrcStep * srcVMultiplier +\n\t\t\t\t\t                                            srcVOffset];\n\t\t\t\t\tBYTE* dstLine = &pDstData[(y + nYDst) *\n\t\t\t\t\t                                      nDstStep * dstVMultiplier +\n\t\t\t\t\t                                      dstVOffset];\n\t\t\t\t\tmemmove(&dstLine[xDstOffset],\n\t\t\t\t\t        &srcLine[xSrcOffset], copyDstWidth);\n\t\t\t\t}\n\t\t\t}\n\t\t\t/* Copy right */\n\t\t\telse if (nXSrc < nXDst)\n\t\t\t{\n\t\t\t\tfor (y = nHeight - 1; y >= 0; y--)\n\t\t\t\t{\n\t\t\t\t\tconst BYTE* srcLine = &pSrcData[(y + nYSrc) *\n\t\t\t\t\t                                            nSrcStep * srcVMultiplier +\n\t\t\t\t\t                                            srcVOffset];\n\t\t\t\t\tBYTE* dstLine = &pDstData[(y + nYDst) *\n\t\t\t\t\t                                      nDstStep * dstVMultiplier +\n\t\t\t\t\t                                      dstVOffset];\n\t\t\t\t\tmemmove(&dstLine[xDstOffset],\n\t\t\t\t\t        &srcLine[xSrcOffset], copyDstWidth);\n\t\t\t\t}\n\t\t\t}\n\t\t\t/* Source and destination are equal... */\n\t\t\telse\n\t\t\t{\n\t\t\t}\n\t\t}\n\t\telse\n\t\t{\n\t\t\tfor (y = 0; y < nHeight; y++)\n\t\t\t{\n\t\t\t\tconst BYTE* srcLine = &pSrcData[(y + nYSrc) *\n\t\t\t\t                                            nSrcStep * srcVMultiplier +\n\t\t\t\t                                            srcVOffset];\n\t\t\t\tBYTE* dstLine = &pDstData[(y + nYDst) *\n\t\t\t\t                                      nDstStep * dstVMultiplier +\n\t\t\t\t                                      dstVOffset];\n\t\t\t\tmemcpy(&dstLine[xDstOffset],\n\t\t\t\t       &srcLine[xSrcOffset], copyDstWidth);\n\t\t\t}\n\t\t}\n\t}\n\telse\n\t{\n\t\tUINT32 x, y;\n\n\t\tfor (y = 0; y < nHeight; y++)\n\t\t{\n\t\t\tconst BYTE* srcLine = &pSrcData[(y + nYSrc) *\n\t\t\t                                            nSrcStep * srcVMultiplier +\n\t\t\t                                            srcVOffset];\n\t\t\tBYTE* dstLine = &pDstData[(y + nYDst) *\n\t\t\t                                      nDstStep * dstVMultiplier + dstVOffset];\n\n\t\t\tfor (x = 0; x < nWidth; x++)\n\t\t\t{\n\t\t\t\tUINT32 dstColor;\n\t\t\t\tUINT32 color = ReadColor(&srcLine[(x + nXSrc) * srcByte],\n\t\t\t\t                         SrcFormat);\n\t\t\t\tdstColor = FreeRDPConvertColor(color, SrcFormat, DstFormat, palette);\n\t\t\t\tWriteColor(&dstLine[(x + nXDst) * dstByte], DstFormat, dstColor);\n\t\t\t}\n\t\t}\n\t}\n\n\treturn TRUE;\n}",
+            1
+        ],
+        [
+            "libfreerdp/codec/planar.c",
+            "TAG",
+            "#define TAG FREERDP_TAG(\"codec\") /* <=== libfreerdp/codec/planar.c:34:34:TAG:0 */ ",
+            2
+        ],
+        [
+            "libfreerdp/gdi/gdi.c",
+            "gdi_get_pixel_format",
+            "UINT32 gdi_get_pixel_format(UINT32 bitsPerPixel) /* <=== gdi_get_pixel_format */ \n{\n\tUINT32 format;\n\n\tswitch (bitsPerPixel)\n\t{\n\t\tcase 32:\n\t\t\tformat = PIXEL_FORMAT_BGRA32;\n\t\t\tbreak;\n\n\t\tcase 24:\n\t\t\tformat = PIXEL_FORMAT_BGR24;\n\t\t\tbreak;\n\n\t\tcase 16:\n\t\t\tformat = PIXEL_FORMAT_RGB16;\n\t\t\tbreak;\n\n\t\tcase 15:\n\t\t\tformat = PIXEL_FORMAT_RGB15;\n\t\t\tbreak;\n\n\t\tcase 8:\n\t\t\tformat = PIXEL_FORMAT_RGB8;\n\t\t\tbreak;\n\n\t\tdefault:\n\t\t\tWLog_ERR(TAG, \"Unsupported color depth %\"PRIu32, bitsPerPixel);\n\t\t\tformat = 0;\n\t\t\tbreak;\n\t}\n\n\treturn format;\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"brush.h\"",
+        "#include <freerdp/gdi/shape.h>",
+        "#include \"drawing.h\"",
+        "#include \"graphics.h\"",
+        "#include \"clipping.h\"",
+        "#include <freerdp/gdi/region.h>",
+        "#include <freerdp/gdi/dc.h>",
+        "#include \"config.h\"",
+        "#include <freerdp/gdi/bitmap.h>",
+        "#include <freerdp/log.h>",
+        "#include <winpr/crt.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct rdp_gdi rdpGdi;",
+            "rdpGdi"
+        ],
+        [
+            "typedef struct rdp_bitmap rdpBitmap;",
+            "rdpBitmap"
+        ],
+        [
+            "typedef struct rdp_context rdpContext;",
+            "rdpContext"
+        ]
+    ],
+    "visitedLines_after": {
+        "libfreerdp/gdi/graphics.c": [
+            137,
+            138,
+            143,
+            144,
+            145,
+            146,
+            147,
+            148,
+            149,
+            150,
+            151,
+            153,
+            154,
+            155,
+            157,
+            158,
+            160,
+            161,
+            162,
+            164,
+            165,
+            166,
+            167,
+            168,
+            169,
+            170,
+            171,
+            175,
+            176,
+            177,
+            178,
+            179,
+            184,
+            185,
+            186,
+            188,
+            189,
+            192,
+            194,
+            195,
+            198,
+            199,
+            200,
+            201,
+            204
+        ]
+    },
+    "visitedLines_before": {
+        "libfreerdp/gdi/graphics.c": [
+            137,
+            138,
+            143,
+            144,
+            145,
+            146,
+            147,
+            149,
+            150,
+            152,
+            154,
+            156,
+            157,
+            158,
+            159,
+            160,
+            161,
+            162,
+            163,
+            167,
+            168,
+            169,
+            170,
+            171,
+            176,
+            177,
+            178,
+            180,
+            181,
+            184,
+            186,
+            187,
+            190,
+            191,
+            192,
+            193,
+            196
+        ]
+    },
+    "visitedParams": {
+        "libfreerdp/gdi/graphics.c": [
+            [
+                "UINT32 DstHeight",
+                "gdi_Bitmap_Decompress"
+            ],
+            [
+                "UINT32 DstWidth",
+                "gdi_Bitmap_Decompress"
+            ],
+            [
+                "rdpBitmap* bitmap",
+                "gdi_Bitmap_Decompress"
+            ],
+            [
+                "rdpContext* context",
+                "gdi_Bitmap_Decompress"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libfreerdp/gdi/graphics.c",
+            "gdi_Bitmap_Decompress",
+            "static BOOL gdi_Bitmap_Decompress(rdpContext* context, rdpBitmap* bitmap, /* <=== gdi_Bitmap_Decompress */ \n                                  const BYTE* pSrcData, UINT32 DstWidth, UINT32 DstHeight,\n                                  UINT32 bpp, UINT32 length, BOOL compressed,\n                                  UINT32 codecId)\n{\n\tUINT32 SrcSize = length;\n\trdpGdi* gdi = context->gdi;\n\tUINT32 size = DstWidth * DstHeight;\n\tbitmap->compressed = FALSE;\n\tbitmap->format = gdi->dstFormat;\n\n\tif ((GetBytesPerPixel(bitmap->format) == 0) ||\n\t    (DstWidth == 0) || (DstHeight == 0) || (DstWidth > UINT32_MAX / DstHeight) ||\n\t    (size > (UINT32_MAX / GetBytesPerPixel(bitmap->format))))\n\t\treturn FALSE;\n\n\tsize *= GetBytesPerPixel(bitmap->format);\n\tbitmap->length = size;\n\tbitmap->data = (BYTE*) _aligned_malloc(bitmap->length, 16);\n\n\tif (!bitmap->data)\n\t\treturn FALSE;\n\n\tif (compressed)\n\t{\n\t\tif (bpp < 32)\n\t\t{\n\t\t\tif (!interleaved_decompress(context->codecs->interleaved,\n\t\t\t                            pSrcData, SrcSize,\n\t\t\t                            DstWidth, DstHeight,\n\t\t\t                            bpp,\n\t\t\t                            bitmap->data, bitmap->format,\n\t\t\t                            0, 0, 0, DstWidth, DstHeight,\n\t\t\t                            &gdi->palette))\n\t\t\t\treturn FALSE;\n\t\t}\n\t\telse\n\t\t{\n\t\t\tif (!planar_decompress(context->codecs->planar, pSrcData, SrcSize,\n\t\t\t                       DstWidth, DstHeight,\n\t\t\t                       bitmap->data, bitmap->format, 0, 0, 0,\n\t\t\t                       DstWidth, DstHeight, TRUE))\n\t\t\t\treturn FALSE;\n\t\t}\n\t}\n\telse\n\t{\n\t\tconst UINT32 SrcFormat = gdi_get_pixel_format(bpp);\n\t\tconst size_t sbpp = GetBytesPerPixel(SrcFormat);\n\t\tconst size_t dbpp = GetBytesPerPixel(bitmap->format);\n\n\t\tif ((sbpp == 0) || (dbpp == 0))\n\t\t\treturn FALSE;\n\t\telse\n\t\t{\n\t\t\tconst size_t dstSize = SrcSize * dbpp / sbpp;\n\n\t\t\tif (dstSize  < bitmap->length)\n\t\t\t\treturn FALSE;\n\t\t}\n\n\t\tif (!freerdp_image_copy(bitmap->data, bitmap->format, 0, 0, 0,\n\t\t                        DstWidth, DstHeight, pSrcData, SrcFormat,\n\t\t                        0, 0, 0, &gdi->palette, FREERDP_FLIP_VERTICAL))\n\t\t\treturn FALSE;\n\t}\n\n\treturn TRUE;\n}",
+            137
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libfreerdp/gdi/graphics.c",
+            "gdi_Bitmap_Decompress",
+            "static BOOL gdi_Bitmap_Decompress(rdpContext* context, rdpBitmap* bitmap, /* <=== gdi_Bitmap_Decompress */ \n                                  const BYTE* pSrcData, UINT32 DstWidth, UINT32 DstHeight,\n                                  UINT32 bpp, UINT32 length, BOOL compressed,\n                                  UINT32 codecId)\n{\n\tUINT32 SrcSize = length;\n\trdpGdi* gdi = context->gdi;\n\tbitmap->compressed = FALSE;\n\tbitmap->format = gdi->dstFormat;\n\tbitmap->length = DstWidth * DstHeight * GetBytesPerPixel(bitmap->format);\n\tbitmap->data = (BYTE*) _aligned_malloc(bitmap->length, 16);\n\n\tif (!bitmap->data)\n\t\treturn FALSE;\n\n\tif (compressed)\n\t{\n\t\tif (bpp < 32)\n\t\t{\n\t\t\tif (!interleaved_decompress(context->codecs->interleaved,\n\t\t\t                            pSrcData, SrcSize,\n\t\t\t                            DstWidth, DstHeight,\n\t\t\t                            bpp,\n\t\t\t                            bitmap->data, bitmap->format,\n\t\t\t                            0, 0, 0, DstWidth, DstHeight,\n\t\t\t                            &gdi->palette))\n\t\t\t\treturn FALSE;\n\t\t}\n\t\telse\n\t\t{\n\t\t\tif (!planar_decompress(context->codecs->planar, pSrcData, SrcSize,\n\t\t\t                       DstWidth, DstHeight,\n\t\t\t                       bitmap->data, bitmap->format, 0, 0, 0,\n\t\t\t                       DstWidth, DstHeight, TRUE))\n\t\t\t\treturn FALSE;\n\t\t}\n\t}\n\telse\n\t{\n\t\tconst UINT32 SrcFormat = gdi_get_pixel_format(bpp);\n\t\tconst size_t sbpp = GetBytesPerPixel(SrcFormat);\n\t\tconst size_t dbpp = GetBytesPerPixel(bitmap->format);\n\n\t\tif ((sbpp == 0) || (dbpp == 0))\n\t\t\treturn FALSE;\n\t\telse\n\t\t{\n\t\t\tconst size_t dstSize = SrcSize * dbpp / sbpp;\n\n\t\t\tif (dstSize  < bitmap->length)\n\t\t\t\treturn FALSE;\n\t\t}\n\n\t\tif (!freerdp_image_copy(bitmap->data, bitmap->format, 0, 0, 0,\n\t\t                        DstWidth, DstHeight, pSrcData, SrcFormat,\n\t\t                        0, 0, 0, &gdi->palette, FREERDP_FLIP_VERTICAL))\n\t\t\treturn FALSE;\n\t}\n\n\treturn TRUE;\n}",
+            137
+        ]
+    ]
+}

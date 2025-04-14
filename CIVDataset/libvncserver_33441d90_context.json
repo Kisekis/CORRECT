@@ -1,0 +1,155 @@
+{
+    "calleeMethods": [
+        [
+            "libvncclient/tls_openssl.c",
+            "wait_for_data",
+            "static int wait_for_data(SSL *ssl, int ret, int timeout) /* <=== wait_for_data */ \n{\n  int err;\n  int retval = 1;\n\n  err = SSL_get_error(ssl, ret);\n\t\n  switch(err)\n  {\n    case SSL_ERROR_WANT_READ:\n    case SSL_ERROR_WANT_WRITE:\n      ret = sock_read_ready(ssl, timeout*1000);\n\t\t\t\n      if (ret == -1) {\n        retval = 2;\n      }\n\t\t\t\t\n      break;\n    default:\n      retval = 3;\n      long verify_res = SSL_get_verify_result(ssl);\n      if (verify_res != X509_V_OK)\n        rfbClientLog(\"Could not verify server certificate: %s.\\n\",\n                     X509_verify_cert_error_string(verify_res));\n      break;\n   }\n\t\n  ERR_clear_error();\n\t\t\t\t\n  return retval;\n}",
+            1
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "sock_read_ready",
+            "static int sock_read_ready(SSL *ssl, uint32_t ms) /* <=== sock_read_ready */ \n{\n\tint r = 0;\n\tfd_set fds;\n\tstruct timeval tv;\n\n\tFD_ZERO(&fds);\n\n\tFD_SET(SSL_get_fd(ssl), &fds);\n\n\ttv.tv_sec = ms / 1000;\n\ttv.tv_usec = (ms % 1000) * 1000;\n\t\n\tr = select (SSL_get_fd(ssl) + 1, &fds, NULL, NULL, &tv); \n\n\treturn r;\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <openssl/rand.h>",
+        "#include <openssl/x509.h>",
+        "#include <rfb/rfbclient.h>",
+        "#include <openssl/ssl.h>",
+        "#include <pthread.h>",
+        "#include \"tls.h\"",
+        "#include <BaseTsd.h>",
+        "#include <errno.h>",
+        "#include <openssl/err.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef union _rfbCredential\n{\n  /** X509 (VeNCrypt) */\n  struct\n  {\n    char *x509CACertFile;\n    char *x509CACrlFile;\n    char *x509ClientCertFile;\n    char *x509ClientKeyFile;\n    uint8_t x509CrlVerifyMode; /* Only required for OpenSSL - see meanings below */\n  } x509Credential;\n  /** Plain (VeNCrypt), MSLogon (UltraVNC) */\n  struct\n  {\n    char *username;\n    char *password;\n  } userCredential;\n} rfbCredential;",
+            "rfbCredential"
+        ],
+        [
+            "typedef int8_t rfbBool;",
+            "rfbBool"
+        ],
+        [
+            "typedef struct _rfbClient {\n\tuint8_t* frameBuffer;\n\tint width, height;\n\n\tint endianTest;\n\n\tAppData appData;\n\n\tconst char* programName;\n\tchar* serverHost;\n\tint serverPort; /**< if -1, then use file recorded by vncrec */\n\trfbBool listenSpecified;\n\tint listenPort, flashPort;\n\n\tstruct {\n\t\tint x, y, w, h;\n\t} updateRect;\n\n\t/** Note that the CoRRE encoding uses this buffer and assumes it is big enough\n\t   to hold 255 * 255 * 32 bits -> 260100 bytes.  640*480 = 307200 bytes.\n\t   Hextile also assumes it is big enough to hold 16 * 16 * 32 bits.\n\t   Tight encoding assumes BUFFER_SIZE is at least 16384 bytes. */\n\n#define RFB_BUFFER_SIZE (640*480)\n\tchar buffer[RFB_BUFFER_SIZE];\n\n\t/* rfbproto.c */\n\n\trfbSocket sock;\n\trfbBool canUseCoRRE;\n\trfbBool canUseHextile;\n\tchar *desktopName;\n\trfbPixelFormat format;\n\trfbServerInitMsg si;\n\n\t/* sockets.c */\n#define RFB_BUF_SIZE 8192\n\tchar buf[RFB_BUF_SIZE];\n\tchar *bufoutptr;\n\tunsigned int buffered;\n\n\t/* The zlib encoding requires expansion/decompression/deflation of the\n\t   compressed data in the \"buffer\" above into another, result buffer.\n\t   However, the size of the result buffer can be determined precisely\n\t   based on the bitsPerPixel, height and width of the rectangle.  We\n\t   allocate this buffer one time to be the full size of the buffer. */\n\n\t/* Ultra Encoding uses this buffer too */\n\t\n\tint ultra_buffer_size;\n\tchar *ultra_buffer;\n\n\tint raw_buffer_size;\n\tchar *raw_buffer;\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n\tz_stream decompStream;\n\trfbBool decompStreamInited;\n#endif\n\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n\t/*\n\t * Variables for the ``tight'' encoding implementation.\n\t */\n\n\t/** Separate buffer for compressed data. */\n#define ZLIB_BUFFER_SIZE 30000\n\tchar zlib_buffer[ZLIB_BUFFER_SIZE];\n\n\t/* Four independent compression streams for zlib library. */\n\tz_stream zlibStream[4];\n\trfbBool zlibStreamActive[4];\n\n\t/* Filter stuff. Should be initialized by filter initialization code. */\n\trfbBool cutZeros;\n\tint rectWidth, rectColors;\n\tchar tightPalette[256*4];\n\tuint8_t tightPrevRow[2048*3*sizeof(uint16_t)];\n\n#ifdef LIBVNCSERVER_HAVE_LIBJPEG\n\t/** JPEG decoder state (obsolete-- do not use). */\n\trfbBool jpegError;\n\n\tstruct jpeg_source_mgr* jpegSrcManager;\n\tvoid* jpegBufferPtr;\n\tsize_t jpegBufferLen;\n\n#endif\n#endif\n\n\n\t/* cursor.c */\n\t/** Holds cursor shape data when received from server. */\n\tuint8_t *rcSource, *rcMask;\n\n\t/** private data pointer */\n\trfbClientData* clientData;\n\n\trfbVNCRec* vncRec;\n\n\t/* Keyboard State support (is 'Caps Lock' set on the remote display???) */\n\tint KeyboardLedStateEnabled;\n\tint CurrentKeyboardLedState;\n\n\tint canHandleNewFBSize;\n\n\t/* hooks */\n\tHandleTextChatProc         HandleTextChat;\n\tHandleKeyboardLedStateProc HandleKeyboardLedState;\n\tHandleCursorPosProc HandleCursorPos;\n\tSoftCursorLockAreaProc SoftCursorLockArea;\n\tSoftCursorUnlockScreenProc SoftCursorUnlockScreen;\n\tGotFrameBufferUpdateProc GotFrameBufferUpdate;\n\t/** the pointer returned by GetPassword will be freed after use! */\n\tGetPasswordProc GetPassword;\n\tMallocFrameBufferProc MallocFrameBuffer;\n\tGotXCutTextProc GotXCutText;\n\tBellProc Bell;\n\n\tGotCursorShapeProc GotCursorShape;\n\tGotCopyRectProc GotCopyRect;\n\n\t/** Which messages are supported by the server\n\t * This is a *guess* for most servers.\n\t * (If we can even detect the type of server)\n\t *\n\t * If the server supports the \"rfbEncodingSupportedMessages\"\n\t * then this will be updated when the encoding is received to\n\t * accurately reflect the servers capabilities.\n\t */\n\trfbSupportedMessages supportedMessages;\n\n\t/** negotiated protocol version */\n\tint major, minor;\n\n\t/** The selected security types */\n\tuint32_t authScheme, subAuthScheme;\n\n\t/** The TLS session for Anonymous TLS and VeNCrypt */\n\tvoid* tlsSession;\n\n\t/** To support security types that requires user input (except VNC password\n\t * authentication), for example VeNCrypt and MSLogon, this callback function\n\t * must be set before the authentication. Otherwise, it implicates that the\n\t * caller application does not support it and related security types should\n\t * be bypassed.\n\t */\n\tGetCredentialProc GetCredential;\n\n\t/** The 0-terminated security types supported by the client.\n\t * Set by function SetClientAuthSchemes() */\n\tuint32_t *clientAuthSchemes;\n\n\t/** When the server is a repeater, this specifies the final destination */\n\tchar *destHost;\n\tint destPort;\n\n        /** the QoS IP DSCP for this client */\n        int QoS_DSCP;\n\n        /** hook to handle xvp server messages */\n\tHandleXvpMsgProc           HandleXvpMsg;\n\n\t/* listen.c */\n        rfbSocket listenSock;\n\n\tFinishedFrameBufferUpdateProc FinishedFrameBufferUpdate;\n\n\tchar *listenAddress;\n        /* IPv6 listen socket, address and port*/\n        rfbSocket listen6Sock;\n        char* listen6Address;\n        int listen6Port;\n\n        /* Output Window ID. When set, client application enables libvncclient to perform direct rendering in its window */\n        unsigned long outputWindow;\n\n\t/** Hooks for optional protection WriteToTLS() by mutex */\n\tLockWriteToTLSProc LockWriteToTLS;\n\tUnlockWriteToTLSProc UnlockWriteToTLS;\n\n        /** Hooks for custom rendering\n         *\n         * VNC rendering boils down to 3 activities:\n         * - GotCopyRect: copy an area of the framebuffer\n         * - GotFillRect: fill an area of the framebuffer with a solid color\n         * - GotBitmap: copy the bitmap in the buffer into the framebuffer\n         * The client application should either set all three of these or none!\n         */\n        GotFillRectProc GotFillRect;\n        GotBitmapProc GotBitmap;\n        /** Hook for custom JPEG decoding and rendering */\n        GotJpegProc GotJpeg;\n\n#ifdef LIBVNCSERVER_HAVE_SASL\n        sasl_conn_t *saslconn;\n        const char *saslDecoded;\n        unsigned int saslDecodedLength;\n        unsigned int saslDecodedOffset;\n        sasl_secret_t *saslSecret;\n\n        /* Callback to allow the client to choose a preferred mechanism. The string returned will\n           be freed once no longer required. */\n        GetSASLMechanismProc GetSASLMechanism;\n        GetUserProc GetUser;\n\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n#ifdef LIBVNCSERVER_HAVE_LIBJPEG\n\t/** JPEG decoder state. */\n\tvoid *tjhnd;\n\n#endif\n#endif\n} rfbClient;",
+            "rfbClient"
+        ]
+    ],
+    "visitedLines_after": {
+        "libvncclient/tls_openssl.c": [
+            264,
+            265,
+            271,
+            273,
+            282,
+            284,
+            285,
+            287,
+            290,
+            298,
+            300,
+            305,
+            308,
+            310,
+            316,
+            331,
+            332,
+            333,
+            334,
+            336,
+            338,
+            341,
+            344,
+            346,
+            351,
+            353,
+            354,
+            358,
+            360,
+            362,
+            364,
+            365,
+            370,
+            372,
+            373,
+            376,
+            379,
+            380,
+            382
+        ]
+    },
+    "visitedLines_before": {
+        "libvncclient/tls_openssl.c": [
+            264,
+            265,
+            271,
+            273,
+            282,
+            284,
+            286,
+            289,
+            297,
+            299,
+            304,
+            307,
+            309,
+            315,
+            330,
+            331,
+            332,
+            333,
+            335,
+            337,
+            340,
+            343,
+            345,
+            350,
+            352,
+            353,
+            357,
+            359,
+            361,
+            363,
+            364,
+            369,
+            371,
+            372,
+            375,
+            378,
+            379,
+            381
+        ]
+    },
+    "visitedParams": {
+        "libvncclient/tls_openssl.c": [
+            [
+                "rfbBool anonTLS",
+                "open_ssl_connection"
+            ],
+            [
+                "rfbCredential *cred",
+                "open_ssl_connection"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libvncclient/tls_openssl.c",
+            "open_ssl_connection",
+            "static SSL * /* <=== open_ssl_connection */ \nopen_ssl_connection (rfbClient *client, int sockfd, rfbBool anonTLS, rfbCredential *cred)\n{\n  SSL_CTX *ssl_ctx = NULL;\n  SSL *ssl = NULL;\n  int n, finished = 0;\n  X509_VERIFY_PARAM *param;\n  uint8_t verify_crls;\n\n  if (!(ssl_ctx = SSL_CTX_new(SSLv23_client_method())))\n  {\n    rfbClientLog(\"Could not create new SSL context.\\n\");\n    return NULL;\n  }\n\n  param = X509_VERIFY_PARAM_new();\n\n  /* Setup verification if not anonymous */\n  if (!anonTLS)\n  {\n    verify_crls = cred->x509Credential.x509CrlVerifyMode;\n    if (cred->x509Credential.x509CACertFile)\n    {\n      if (!SSL_CTX_load_verify_locations(ssl_ctx, cred->x509Credential.x509CACertFile, NULL))\n      {\n        rfbClientLog(\"Failed to load CA certificate from %s.\\n\",\n                     cred->x509Credential.x509CACertFile);\n        goto error_free_ctx;\n      }\n    } else {\n      rfbClientLog(\"Using default paths for certificate verification.\\n\");\n      SSL_CTX_set_default_verify_paths (ssl_ctx);\n    }\n\n    if (cred->x509Credential.x509CACrlFile)\n    {\n      if (!load_crls_from_file(cred->x509Credential.x509CACrlFile, ssl_ctx))\n      {\n        rfbClientLog(\"CRLs could not be loaded.\\n\");\n        goto error_free_ctx;\n      }\n      if (verify_crls == rfbX509CrlVerifyNone) verify_crls = rfbX509CrlVerifyAll;\n    }\n\n    if (cred->x509Credential.x509ClientCertFile && cred->x509Credential.x509ClientKeyFile)\n    {\n      if (SSL_CTX_use_certificate_chain_file(ssl_ctx, cred->x509Credential.x509ClientCertFile) != 1)\n      {\n        rfbClientLog(\"Client certificate could not be loaded.\\n\");\n        goto error_free_ctx;\n      }\n\n      if (SSL_CTX_use_PrivateKey_file(ssl_ctx, cred->x509Credential.x509ClientKeyFile,\n                                      SSL_FILETYPE_PEM) != 1)\n      {\n        rfbClientLog(\"Client private key could not be loaded.\\n\");\n        goto error_free_ctx;\n      }\n\n      if (SSL_CTX_check_private_key(ssl_ctx) == 0) {\n        rfbClientLog(\"Client certificate and private key do not match.\\n\");\n        goto error_free_ctx;\n      }\n    }\n\n    SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);\n\n    if (verify_crls == rfbX509CrlVerifyClient) \n      X509_VERIFY_PARAM_set_flags(param, X509_V_FLAG_CRL_CHECK);\n    else if (verify_crls == rfbX509CrlVerifyAll)\n      X509_VERIFY_PARAM_set_flags(param, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);\n\n    if(!X509_VERIFY_PARAM_set1_host(param, client->serverHost, strlen(client->serverHost)))\n    {\n      rfbClientLog(\"Could not set server name for verification.\\n\");\n      goto error_free_ctx;\n    }\n    SSL_CTX_set1_param(ssl_ctx, param);\n  }\n\n  if (!(ssl = SSL_new (ssl_ctx)))\n  {\n    rfbClientLog(\"Could not create a new SSL session.\\n\");\n    goto error_free_ctx;\n  }\n\n  /* TODO: finetune this list, take into account anonTLS bool */\n  SSL_set_cipher_list(ssl, \"ALL\");\n\n  SSL_set_fd (ssl, sockfd);\n  SSL_CTX_set_app_data (ssl_ctx, client);\n\n  do\n  {\n    n = SSL_connect(ssl);\n\t\t\n    if (n != 1) \n    {\n      if (wait_for_data(ssl, n, 1) != 1) \n      {\n        finished = 1;\n        SSL_shutdown(ssl);\n\n        goto error_free_ssl;\n      }\n    }\n  } while( n != 1 && finished != 1 );\n\n  X509_VERIFY_PARAM_free(param);\n  return ssl;\n\nerror_free_ssl:\n  SSL_free(ssl);\n\nerror_free_ctx:\n  X509_VERIFY_PARAM_free(param);\n  SSL_CTX_free(ssl_ctx);\n\n  return NULL;\n}",
+            264
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libvncclient/tls_openssl.c",
+            "open_ssl_connection",
+            "static SSL * /* <=== open_ssl_connection */ \nopen_ssl_connection (rfbClient *client, int sockfd, rfbBool anonTLS, rfbCredential *cred)\n{\n  SSL_CTX *ssl_ctx = NULL;\n  SSL *ssl = NULL;\n  int n, finished = 0;\n  X509_VERIFY_PARAM *param;\n  uint8_t verify_crls = cred->x509Credential.x509CrlVerifyMode;\n\n  if (!(ssl_ctx = SSL_CTX_new(SSLv23_client_method())))\n  {\n    rfbClientLog(\"Could not create new SSL context.\\n\");\n    return NULL;\n  }\n\n  param = X509_VERIFY_PARAM_new();\n\n  /* Setup verification if not anonymous */\n  if (!anonTLS)\n  {\n    if (cred->x509Credential.x509CACertFile)\n    {\n      if (!SSL_CTX_load_verify_locations(ssl_ctx, cred->x509Credential.x509CACertFile, NULL))\n      {\n        rfbClientLog(\"Failed to load CA certificate from %s.\\n\",\n                     cred->x509Credential.x509CACertFile);\n        goto error_free_ctx;\n      }\n    } else {\n      rfbClientLog(\"Using default paths for certificate verification.\\n\");\n      SSL_CTX_set_default_verify_paths (ssl_ctx);\n    }\n\n    if (cred->x509Credential.x509CACrlFile)\n    {\n      if (!load_crls_from_file(cred->x509Credential.x509CACrlFile, ssl_ctx))\n      {\n        rfbClientLog(\"CRLs could not be loaded.\\n\");\n        goto error_free_ctx;\n      }\n      if (verify_crls == rfbX509CrlVerifyNone) verify_crls = rfbX509CrlVerifyAll;\n    }\n\n    if (cred->x509Credential.x509ClientCertFile && cred->x509Credential.x509ClientKeyFile)\n    {\n      if (SSL_CTX_use_certificate_chain_file(ssl_ctx, cred->x509Credential.x509ClientCertFile) != 1)\n      {\n        rfbClientLog(\"Client certificate could not be loaded.\\n\");\n        goto error_free_ctx;\n      }\n\n      if (SSL_CTX_use_PrivateKey_file(ssl_ctx, cred->x509Credential.x509ClientKeyFile,\n                                      SSL_FILETYPE_PEM) != 1)\n      {\n        rfbClientLog(\"Client private key could not be loaded.\\n\");\n        goto error_free_ctx;\n      }\n\n      if (SSL_CTX_check_private_key(ssl_ctx) == 0) {\n        rfbClientLog(\"Client certificate and private key do not match.\\n\");\n        goto error_free_ctx;\n      }\n    }\n\n    SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);\n\n    if (verify_crls == rfbX509CrlVerifyClient) \n      X509_VERIFY_PARAM_set_flags(param, X509_V_FLAG_CRL_CHECK);\n    else if (verify_crls == rfbX509CrlVerifyAll)\n      X509_VERIFY_PARAM_set_flags(param, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);\n\n    if(!X509_VERIFY_PARAM_set1_host(param, client->serverHost, strlen(client->serverHost)))\n    {\n      rfbClientLog(\"Could not set server name for verification.\\n\");\n      goto error_free_ctx;\n    }\n    SSL_CTX_set1_param(ssl_ctx, param);\n  }\n\n  if (!(ssl = SSL_new (ssl_ctx)))\n  {\n    rfbClientLog(\"Could not create a new SSL session.\\n\");\n    goto error_free_ctx;\n  }\n\n  /* TODO: finetune this list, take into account anonTLS bool */\n  SSL_set_cipher_list(ssl, \"ALL\");\n\n  SSL_set_fd (ssl, sockfd);\n  SSL_CTX_set_app_data (ssl_ctx, client);\n\n  do\n  {\n    n = SSL_connect(ssl);\n\t\t\n    if (n != 1) \n    {\n      if (wait_for_data(ssl, n, 1) != 1) \n      {\n        finished = 1;\n        SSL_shutdown(ssl);\n\n        goto error_free_ssl;\n      }\n    }\n  } while( n != 1 && finished != 1 );\n\n  X509_VERIFY_PARAM_free(param);\n  return ssl;\n\nerror_free_ssl:\n  SSL_free(ssl);\n\nerror_free_ctx:\n  X509_VERIFY_PARAM_free(param);\n  SSL_CTX_free(ssl_ctx);\n\n  return NULL;\n}",
+            264
+        ]
+    ]
+}

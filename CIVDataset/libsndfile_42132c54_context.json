@@ -1,0 +1,743 @@
+{
+    "calleeMethods": [
+        [
+            "src/common.c",
+            "header_put_be_int",
+            "static inline void /* <=== header_put_be_int */ \nheader_put_be_int (SF_PRIVATE *psf, int x)\n{\tpsf->header.ptr [psf->header.indx++] = (x >> 24) ;\n\tpsf->header.ptr [psf->header.indx++] = (x >> 16) ;\n\tpsf->header.ptr [psf->header.indx++] = (x >> 8) ;\n\tpsf->header.ptr [psf->header.indx++] = x ;\n} /* header_put_be_int */",
+            2
+        ],
+        [
+            "src/common.c",
+            "header_gets",
+            "static int /* <=== header_gets */ \nheader_gets (SF_PRIVATE *psf, char *ptr, int bufsize)\n{\tint\t\tk ;\n\n\tif (psf->header.indx + bufsize >= psf->header.len && psf_bump_header_allocation (psf, bufsize))\n\t\treturn 0 ;\n\n\tfor (k = 0 ; k < bufsize - 1 ; k++)\n\t{\tif (psf->header.indx < psf->header.end)\n\t\t{\tptr [k] = psf->header.ptr [psf->header.indx] ;\n\t\t\tpsf->header.indx ++ ;\n\t\t\t}\n\t\telse\n\t\t{\tpsf->header.end += psf_fread (psf->header.ptr + psf->header.end, 1, 1, psf) ;\n\t\t\tptr [k] = psf->header.ptr [psf->header.indx] ;\n\t\t\tpsf->header.indx = psf->header.end ;\n\t\t\t} ;\n\n\t\tif (ptr [k] == '\\n')\n\t\t\tbreak ;\n\t\t} ;\n\n\tptr [k] = 0 ;\n\n\treturn k ;\n} /* header_gets */",
+            2
+        ],
+        [
+            "src/common.c",
+            "psf_binheader_readf",
+            "int /* <=== psf_binheader_readf */ \npsf_binheader_readf (SF_PRIVATE *psf, char const *format, ...)\n{\tva_list\t\t\targptr ;\n\tsf_count_t\t\t*countptr, countdata ;\n\tunsigned char\t*ucptr, sixteen_bytes [16] ;\n\tunsigned int \t*intptr, intdata ;\n\tunsigned short\t*shortptr ;\n\tchar\t\t\t*charptr ;\n\tfloat\t\t\t*floatptr ;\n\tdouble\t\t\t*doubleptr ;\n\tchar\t\t\tc ;\n\tint\t\t\t\tbyte_count = 0, count = 0 ;\n\n\tif (! format)\n\t\treturn psf_ftell (psf) ;\n\n\tva_start (argptr, format) ;\n\n\twhile ((c = *format++))\n\t{\n\t\tif (psf->header.indx + 16 >= psf->header.len && psf_bump_header_allocation (psf, 16))\n\t\t\treturn count ;\n\n\t\tswitch (c)\n\t\t{\tcase 'e' : /* All conversions are now from LE to host. */\n\t\t\t\t\tpsf->rwf_endian = SF_ENDIAN_LITTLE ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'E' : /* All conversions are now from BE to host. */\n\t\t\t\t\tpsf->rwf_endian = SF_ENDIAN_BIG ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'm' : /* 4 byte marker value eg 'RIFF' */\n\t\t\t\t\tintptr = va_arg (argptr, unsigned int*) ;\n\t\t\t\t\t*intptr = 0 ;\n\t\t\t\t\tucptr = (unsigned char*) intptr ;\n\t\t\t\t\tbyte_count += header_read (psf, ucptr, sizeof (int)) ;\n\t\t\t\t\t*intptr = GET_MARKER (ucptr) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'h' :\n\t\t\t\t\tintptr = va_arg (argptr, unsigned int*) ;\n\t\t\t\t\t*intptr = 0 ;\n\t\t\t\t\tucptr = (unsigned char*) intptr ;\n\t\t\t\t\tbyte_count += header_read (psf, sixteen_bytes, sizeof (sixteen_bytes)) ;\n\t\t\t\t\t{\tint k ;\n\t\t\t\t\t\tintdata = 0 ;\n\t\t\t\t\t\tfor (k = 0 ; k < 16 ; k++)\n\t\t\t\t\t\t\tintdata ^= sixteen_bytes [k] << k ;\n\t\t\t\t\t\t}\n\t\t\t\t\t*intptr = intdata ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '1' :\n\t\t\t\t\tcharptr = va_arg (argptr, char*) ;\n\t\t\t\t\t*charptr = 0 ;\n\t\t\t\t\tbyte_count += header_read (psf, charptr, sizeof (char)) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '2' : /* 2 byte value with the current endian-ness */\n\t\t\t\t\tshortptr = va_arg (argptr, unsigned short*) ;\n\t\t\t\t\t*shortptr = 0 ;\n\t\t\t\t\tucptr = (unsigned char*) shortptr ;\n\t\t\t\t\tbyte_count += header_read (psf, ucptr, sizeof (short)) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\t*shortptr = GET_BE_SHORT (ucptr) ;\n\t\t\t\t\telse\n\t\t\t\t\t\t*shortptr = GET_LE_SHORT (ucptr) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '3' : /* 3 byte value with the current endian-ness */\n\t\t\t\t\tintptr = va_arg (argptr, unsigned int*) ;\n\t\t\t\t\t*intptr = 0 ;\n\t\t\t\t\tbyte_count += header_read (psf, sixteen_bytes, 3) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\t*intptr = GET_BE_3BYTE (sixteen_bytes) ;\n\t\t\t\t\telse\n\t\t\t\t\t\t*intptr = GET_LE_3BYTE (sixteen_bytes) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '4' : /* 4 byte value with the current endian-ness */\n\t\t\t\t\tintptr = va_arg (argptr, unsigned int*) ;\n\t\t\t\t\t*intptr = 0 ;\n\t\t\t\t\tucptr = (unsigned char*) intptr ;\n\t\t\t\t\tbyte_count += header_read (psf, ucptr, sizeof (int)) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\t*intptr = psf_get_be32 (ucptr, 0) ;\n\t\t\t\t\telse\n\t\t\t\t\t\t*intptr = psf_get_le32 (ucptr, 0) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '8' : /* 8 byte value with the current endian-ness */\n\t\t\t\t\tcountptr = va_arg (argptr, sf_count_t *) ;\n\t\t\t\t\t*countptr = 0 ;\n\t\t\t\t\tbyte_count += header_read (psf, sixteen_bytes, 8) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\tcountdata = psf_get_be64 (sixteen_bytes, 0) ;\n\t\t\t\t\telse\n\t\t\t\t\t\tcountdata = psf_get_le64 (sixteen_bytes, 0) ;\n\t\t\t\t\t*countptr = countdata ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'f' : /* Float conversion */\n\t\t\t\t\tfloatptr = va_arg (argptr, float *) ;\n\t\t\t\t\t*floatptr = 0.0 ;\n\t\t\t\t\tbyte_count += header_read (psf, floatptr, sizeof (float)) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\t*floatptr = float32_be_read ((unsigned char*) floatptr) ;\n\t\t\t\t\telse\n\t\t\t\t\t\t*floatptr = float32_le_read ((unsigned char*) floatptr) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'd' : /* double conversion */\n\t\t\t\t\tdoubleptr = va_arg (argptr, double *) ;\n\t\t\t\t\t*doubleptr = 0.0 ;\n\t\t\t\t\tbyte_count += header_read (psf, doubleptr, sizeof (double)) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\t*doubleptr = double64_be_read ((unsigned char*) doubleptr) ;\n\t\t\t\t\telse\n\t\t\t\t\t\t*doubleptr = double64_le_read ((unsigned char*) doubleptr) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 's' :\n\t\t\t\t\tpsf_log_printf (psf, \"Format conversion 's' not implemented yet.\\n\") ;\n\t\t\t\t\t/*\n\t\t\t\t\tstrptr = va_arg (argptr, char *) ;\n\t\t\t\t\tsize   = strlen (strptr) + 1 ;\n\t\t\t\t\tsize  += (size & 1) ;\n\t\t\t\t\tlongdata = H2LE_32 (size) ;\n\t\t\t\t\tget_int (psf, longdata) ;\n\t\t\t\t\tmemcpy (&(psf->header.ptr [psf->header.indx]), strptr, size) ;\n\t\t\t\t\tpsf->header.indx += size ;\n\t\t\t\t\t*/\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'b' : /* Raw bytes */\n\t\t\t\t\tcharptr = va_arg (argptr, char*) ;\n\t\t\t\t\tcount = va_arg (argptr, size_t) ;\n\t\t\t\t\tmemset (charptr, 0, count) ;\n\t\t\t\t\tbyte_count += header_read (psf, charptr, count) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'G' :\n\t\t\t\t\tcharptr = va_arg (argptr, char*) ;\n\t\t\t\t\tcount = va_arg (argptr, size_t) ;\n\t\t\t\t\tmemset (charptr, 0, count) ;\n\n\t\t\t\t\tif (psf->header.indx + count >= psf->header.len && psf_bump_header_allocation (psf, count))\n\t\t\t\t\t\treturn 0 ;\n\n\t\t\t\t\tbyte_count += header_gets (psf, charptr, count) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'z' :\n\t\t\t\t\tpsf_log_printf (psf, \"Format conversion 'z' not implemented yet.\\n\") ;\n\t\t\t\t\t/*\n\t\t\t\t\tsize    = va_arg (argptr, size_t) ;\n\t\t\t\t\twhile (size)\n\t\t\t\t\t{\tpsf->header.ptr [psf->header.indx] = 0 ;\n\t\t\t\t\t\tpsf->header.indx ++ ;\n\t\t\t\t\t\tsize -- ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\t*/\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'p' :\t/* Seek to position from start. */\n\t\t\t\t\tcount = va_arg (argptr, size_t) ;\n\t\t\t\t\theader_seek (psf, count, SEEK_SET) ;\n\t\t\t\t\tbyte_count = count ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'j' :\t/* Seek to position from current position. */\n\t\t\t\t\tcount = va_arg (argptr, size_t) ;\n\t\t\t\t\theader_seek (psf, count, SEEK_CUR) ;\n\t\t\t\t\tbyte_count += count ;\n\t\t\t\t\tbreak ;\n\n\t\t\tdefault :\n\t\t\t\tpsf_log_printf (psf, \"*** Invalid format specifier `%c'\\n\", c) ;\n\t\t\t\tpsf->error = SFE_INTERNAL ;\n\t\t\t\tbreak ;\n\t\t\t} ;\n\t\t} ;\n\n\tva_end (argptr) ;\n\n\treturn byte_count ;\n} /* psf_binheader_readf */",
+            1
+        ],
+        [
+            "src/wavlike.c",
+            "wavlike_write_guid",
+            "void /* <=== wavlike_write_guid */ \nwavlike_write_guid (SF_PRIVATE *psf, const EXT_SUBFORMAT * subformat)\n{\n\tpsf_binheader_writef (psf, \"422b\", BHW4 (subformat->esf_field1),\n\t\t\t\t\tBHW2 (subformat->esf_field2), BHW2 (subformat->esf_field3),\n\t\t\t\t\tBHWv (subformat->esf_field4), BHWz (8)) ;\n} /* wavlike_write_guid */",
+            2
+        ],
+        [
+            "src/file_io.c",
+            "psf_fseek",
+            "sf_count_t /* <=== psf_fseek */ \npsf_fseek (SF_PRIVATE *psf, sf_count_t offset, int whence)\n{\tsf_count_t\tabsolute_position ;\n\n\tif (psf->virtual_io)\n\t\treturn psf->vio.seek (offset, whence, psf->vio_user_data) ;\n\n\t/* When decoding from pipes sometimes see seeks to the pipeoffset, which appears to mean do nothing. */\n\tif (psf->is_pipe)\n\t{\tif (whence != SEEK_SET || offset != psf->pipeoffset)\n\t\t\tpsf_log_printf (psf, \"psf_fseek : pipe seek to value other than pipeoffset\\n\") ;\n\t\treturn offset ;\n\t\t}\n\n\tswitch (whence)\n\t{\tcase SEEK_SET :\n\t\t\t\toffset += psf->fileoffset ;\n\t\t\t\tbreak ;\n\n\t\tcase SEEK_END :\n\t\t\t\tbreak ;\n\n\t\tcase SEEK_CUR :\n\t\t\t\tbreak ;\n\n\t\tdefault :\n\t\t\t\t/* We really should not be here. */\n\t\t\t\tpsf_log_printf (psf, \"psf_fseek : whence is %d *****.\\n\", whence) ;\n\t\t\t\treturn 0 ;\n\t\t} ;\n\n\tabsolute_position = lseek (psf->file.filedes, offset, whence) ;\n\n\tif (absolute_position < 0)\n\t\tpsf_log_syserr (psf, errno) ;\n\n\treturn absolute_position - psf->fileoffset ;\n} /* psf_fseek */",
+            3
+        ],
+        [
+            "src/common.c",
+            "header_put_be_3byte",
+            "static inline void /* <=== header_put_be_3byte */ \nheader_put_be_3byte (SF_PRIVATE *psf, int x)\n{\tpsf->header.ptr [psf->header.indx++] = (x >> 16) ;\n\tpsf->header.ptr [psf->header.indx++] = (x >> 8) ;\n\tpsf->header.ptr [psf->header.indx++] = x ;\n} /* header_put_be_3byte */",
+            2
+        ],
+        [
+            "src/common.h",
+            "double64_be_read",
+            "double\tdouble64_be_read\t(const unsigned char *cptr) ; /* <=== double64_be_read */ ",
+            2
+        ],
+        [
+            "src/common.h",
+            "float32_le_read",
+            "float\tfloat32_le_read\t\t(const unsigned char *cptr) ; /* <=== float32_le_read */ ",
+            2
+        ],
+        [
+            "src/common.h",
+            "double64_le_write",
+            "void\tdouble64_le_write\t(double in, unsigned char *out) ; /* <=== double64_le_write */ ",
+            2
+        ],
+        [
+            "src/wavlike.c",
+            "wavlike_srate2blocksize",
+            "int /* <=== wavlike_srate2blocksize */ \nwavlike_srate2blocksize (int srate_chan_product)\n{\tif (srate_chan_product < 12000)\n\t\treturn 256 ;\n\tif (srate_chan_product < 23000)\n\t\treturn 512 ;\n\tif (srate_chan_product < 44000)\n\t\treturn 1024 ;\n\treturn 2048 ;\n} /* srate2blocksize */",
+            2
+        ],
+        [
+            "src/wavlike.h",
+            "wavlike_msadpcm_write_adapt_coeffs",
+            "void\twavlike_msadpcm_write_adapt_coeffs (SF_PRIVATE *psf) ; /* <=== wavlike_msadpcm_write_adapt_coeffs */ ",
+            2
+        ],
+        [
+            "src/common.h",
+            "BHW8",
+            "#define BHW8(x) ((uint64_t) (x)) /* <=== src/common.h:138:138:BHW8:1 */ ",
+            1
+        ],
+        [
+            "src/common.c",
+            "GET_BE_SHORT",
+            "#define\tGET_BE_SHORT(ptr)\t(((ptr) [0] << 8) | ((ptr) [1])) /* <=== src/common.c:822:822:GET_BE_SHORT:1 */ ",
+            2
+        ],
+        [
+            "src/common.h",
+            "float32_be_read",
+            "float\tfloat32_be_read\t\t(const unsigned char *cptr) ; /* <=== float32_be_read */ ",
+            2
+        ],
+        [
+            "src/wavlike.h",
+            "WAVLIKE_GSM610_SAMPLES",
+            "#define\t\tWAVLIKE_GSM610_SAMPLES\t\t320 /* <=== src/wavlike.h:319:319:WAVLIKE_GSM610_SAMPLES:0 */ ",
+            2
+        ],
+        [
+            "src/common.c",
+            "psf_binheader_writef",
+            "int /* <=== psf_binheader_writef */ \npsf_binheader_writef (SF_PRIVATE *psf, const char *format, ...)\n{\tva_list\targptr ;\n\tsf_count_t \t\tcountdata ;\n\tunsigned long \tlongdata ;\n\tunsigned int \tdata ;\n\tfloat\t\t\tfloatdata ;\n\tdouble\t\t\tdoubledata ;\n\tvoid\t\t\t*bindata ;\n\tsize_t\t\t\tsize ;\n\tchar\t\t\tc, *strptr ;\n\tint\t\t\t\tcount = 0, trunc_8to4 ;\n\n\ttrunc_8to4 = SF_FALSE ;\n\n\tva_start (argptr, format) ;\n\n\twhile ((c = *format++))\n\t{\n\t\tif (psf->header.indx + 16 >= psf->header.len && psf_bump_header_allocation (psf, 16))\n\t\t\treturn count ;\n\n\t\tswitch (c)\n\t\t{\tcase ' ' : /* Do nothing. Just used to space out format string. */\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'e' : /* All conversions are now from LE to host. */\n\t\t\t\t\tpsf->rwf_endian = SF_ENDIAN_LITTLE ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'E' : /* All conversions are now from BE to host. */\n\t\t\t\t\tpsf->rwf_endian = SF_ENDIAN_BIG ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 't' : /* All 8 byte values now get written as 4 bytes. */\n\t\t\t\t\ttrunc_8to4 = SF_TRUE ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'T' : /* All 8 byte values now get written as 8 bytes. */\n\t\t\t\t\ttrunc_8to4 = SF_FALSE ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'm' :\n\t\t\t\t\tdata = va_arg (argptr, unsigned int) ;\n\t\t\t\t\theader_put_marker (psf, data) ;\n\t\t\t\t\tcount += 4 ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '1' :\n\t\t\t\t\tdata = va_arg (argptr, unsigned int) ;\n\t\t\t\t\theader_put_byte (psf, data) ;\n\t\t\t\t\tcount += 1 ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '2' :\n\t\t\t\t\tdata = va_arg (argptr, unsigned int) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t{\theader_put_be_short (psf, data) ;\n\t\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\theader_put_le_short (psf, data) ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tcount += 2 ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '3' : /* tribyte */\n\t\t\t\t\tdata = va_arg (argptr, unsigned int) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t{\theader_put_be_3byte (psf, data) ;\n\t\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\theader_put_le_3byte (psf, data) ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tcount += 3 ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '4' :\n\t\t\t\t\tdata = va_arg (argptr, unsigned int) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t{\theader_put_be_int (psf, data) ;\n\t\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\theader_put_le_int (psf, data) ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tcount += 4 ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase '8' :\n\t\t\t\t\tcountdata = va_arg (argptr, sf_count_t) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG && trunc_8to4 == SF_FALSE)\n\t\t\t\t\t{\theader_put_be_8byte (psf, countdata) ;\n\t\t\t\t\t\tcount += 8 ;\n\t\t\t\t\t\t}\n\t\t\t\t\telse if (psf->rwf_endian == SF_ENDIAN_LITTLE && trunc_8to4 == SF_FALSE)\n\t\t\t\t\t{\theader_put_le_8byte (psf, countdata) ;\n\t\t\t\t\t\tcount += 8 ;\n\t\t\t\t\t\t}\n\t\t\t\t\telse if (psf->rwf_endian == SF_ENDIAN_BIG && trunc_8to4 == SF_TRUE)\n\t\t\t\t\t{\tlongdata = countdata & 0xFFFFFFFF ;\n\t\t\t\t\t\theader_put_be_int (psf, longdata) ;\n\t\t\t\t\t\tcount += 4 ;\n\t\t\t\t\t\t}\n\t\t\t\t\telse if (psf->rwf_endian == SF_ENDIAN_LITTLE && trunc_8to4 == SF_TRUE)\n\t\t\t\t\t{\tlongdata = countdata & 0xFFFFFFFF ;\n\t\t\t\t\t\theader_put_le_int (psf, longdata) ;\n\t\t\t\t\t\tcount += 4 ;\n\t\t\t\t\t\t}\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'f' :\n\t\t\t\t\t/* Floats are passed as doubles. Is this always true? */\n\t\t\t\t\tfloatdata = (float) va_arg (argptr, double) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\tfloat32_be_write (floatdata, psf->header.ptr + psf->header.indx) ;\n\t\t\t\t\telse\n\t\t\t\t\t\tfloat32_le_write (floatdata, psf->header.ptr + psf->header.indx) ;\n\t\t\t\t\tpsf->header.indx += 4 ;\n\t\t\t\t\tcount += 4 ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'd' :\n\t\t\t\t\tdoubledata = va_arg (argptr, double) ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\tdouble64_be_write (doubledata, psf->header.ptr + psf->header.indx) ;\n\t\t\t\t\telse\n\t\t\t\t\t\tdouble64_le_write (doubledata, psf->header.ptr + psf->header.indx) ;\n\t\t\t\t\tpsf->header.indx += 8 ;\n\t\t\t\t\tcount += 8 ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 's' :\n\t\t\t\t\t/* Write a C string (guaranteed to have a zero terminator). */\n\t\t\t\t\tstrptr = va_arg (argptr, char *) ;\n\t\t\t\t\tsize = strlen (strptr) + 1 ;\n\n\t\t\t\t\tif (psf->header.indx + 4 + (sf_count_t) size + (sf_count_t) (size & 1) > psf->header.len && psf_bump_header_allocation (psf, 4 + size + (size & 1)))\n\t\t\t\t\t\treturn count ;\n\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\theader_put_be_int (psf, size + (size & 1)) ;\n\t\t\t\t\telse\n\t\t\t\t\t\theader_put_le_int (psf, size + (size & 1)) ;\n\t\t\t\t\tmemcpy (&(psf->header.ptr [psf->header.indx]), strptr, size) ;\n\t\t\t\t\tsize += (size & 1) ;\n\t\t\t\t\tpsf->header.indx += size ;\n\t\t\t\t\tpsf->header.ptr [psf->header.indx - 1] = 0 ;\n\t\t\t\t\tcount += 4 + size ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'S' :\n\t\t\t\t\t/*\n\t\t\t\t\t**\tWrite an AIFF style string (no zero terminator but possibly\n\t\t\t\t\t**\tan extra pad byte if the string length is odd).\n\t\t\t\t\t*/\n\t\t\t\t\tstrptr = va_arg (argptr, char *) ;\n\t\t\t\t\tsize = strlen (strptr) ;\n\t\t\t\t\tif (psf->header.indx + 4 + (sf_count_t) size + (sf_count_t) (size & 1) > psf->header.len && psf_bump_header_allocation (psf, 4 + size + (size & 1)))\n\t\t\t\t\t\treturn count ;\n\t\t\t\t\tif (psf->rwf_endian == SF_ENDIAN_BIG)\n\t\t\t\t\t\theader_put_be_int (psf, size) ;\n\t\t\t\t\telse\n\t\t\t\t\t\theader_put_le_int (psf, size) ;\n\t\t\t\t\tmemcpy (&(psf->header.ptr [psf->header.indx]), strptr, size + (size & 1)) ;\n\t\t\t\t\tsize += (size & 1) ;\n\t\t\t\t\tpsf->header.indx += size ;\n\t\t\t\t\tcount += 4 + size ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'p' :\n\t\t\t\t\t/* Write a PASCAL string (as used by AIFF files).\n\t\t\t\t\t*/\n\t\t\t\t\tstrptr = va_arg (argptr, char *) ;\n\t\t\t\t\tsize = strlen (strptr) ;\n\t\t\t\t\tsize = (size & 1) ? size : size + 1 ;\n\t\t\t\t\tsize = (size > 254) ? 254 : size ;\n\n\t\t\t\t\tif (psf->header.indx + 1 + (sf_count_t) size > psf->header.len && psf_bump_header_allocation (psf, 1 + size))\n\t\t\t\t\t\treturn count ;\n\n\t\t\t\t\theader_put_byte (psf, size) ;\n\t\t\t\t\tmemcpy (&(psf->header.ptr [psf->header.indx]), strptr, size) ;\n\t\t\t\t\tpsf->header.indx += size ;\n\t\t\t\t\tcount += 1 + size ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'b' :\n\t\t\t\t\tbindata\t= va_arg (argptr, void *) ;\n\t\t\t\t\tsize\t= va_arg (argptr, size_t) ;\n\n\t\t\t\t\tif (psf->header.indx + (sf_count_t) size > psf->header.len && psf_bump_header_allocation (psf, size))\n\t\t\t\t\t\treturn count ;\n\n\t\t\t\t\tmemcpy (&(psf->header.ptr [psf->header.indx]), bindata, size) ;\n\t\t\t\t\tpsf->header.indx += size ;\n\t\t\t\t\tcount += size ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'z' :\n\t\t\t\t\tsize = va_arg (argptr, size_t) ;\n\n\t\t\t\t\tif (psf->header.indx + (sf_count_t) size > psf->header.len && psf_bump_header_allocation (psf, size))\n\t\t\t\t\t\treturn count ;\n\n\t\t\t\t\tcount += size ;\n\t\t\t\t\twhile (size)\n\t\t\t\t\t{\tpsf->header.ptr [psf->header.indx] = 0 ;\n\t\t\t\t\t\tpsf->header.indx ++ ;\n\t\t\t\t\t\tsize -- ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'h' :\n\t\t\t\t\tbindata = va_arg (argptr, void *) ;\n\t\t\t\t\tmemcpy (&(psf->header.ptr [psf->header.indx]), bindata, 16) ;\n\t\t\t\t\tpsf->header.indx += 16 ;\n\t\t\t\t\tcount += 16 ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'j' :\t/* Jump forwards/backwards by specified amount. */\n\t\t\t\t\tsize = va_arg (argptr, size_t) ;\n\n\t\t\t\t\tif (psf->header.indx + (sf_count_t) size > psf->header.len && psf_bump_header_allocation (psf, size))\n\t\t\t\t\t\treturn count ;\n\n\t\t\t\t\tpsf->header.indx += size ;\n\t\t\t\t\tcount += size ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'o' :\t/* Jump to specified offset. */\n\t\t\t\t\tsize = va_arg (argptr, size_t) ;\n\n\t\t\t\t\tif ((sf_count_t) size >= psf->header.len && psf_bump_header_allocation (psf, size))\n\t\t\t\t\t\treturn count ;\n\n\t\t\t\t\tpsf->header.indx = size ;\n\t\t\t\t\tbreak ;\n\n\t\t\tdefault :\n\t\t\t\tpsf_log_printf (psf, \"*** Invalid format specifier `%c'\\n\", c) ;\n\t\t\t\tpsf->error = SFE_INTERNAL ;\n\t\t\t\tbreak ;\n\t\t\t} ;\n\t\t} ;\n\n\tva_end (argptr) ;\n\treturn count ;\n} /* psf_binheader_writef */",
+            1
+        ],
+        [
+            "src/common.c",
+            "header_seek",
+            "static void /* <=== header_seek */ \nheader_seek (SF_PRIVATE *psf, sf_count_t position, int whence)\n{\n\tswitch (whence)\n\t{\tcase SEEK_SET :\n\t\t\tif (psf->header.indx + position >= psf->header.len)\n\t\t\t\tpsf_bump_header_allocation (psf, position) ;\n\t\t\tif (position > psf->header.len)\n\t\t\t{\t/* Too much header to cache so just seek instead. */\n\t\t\t\tpsf_fseek (psf, position, whence) ;\n\t\t\t\treturn ;\n\t\t\t\t} ;\n\t\t\tif (position > psf->header.end)\n\t\t\t\tpsf->header.end += psf_fread (psf->header.ptr + psf->header.end, 1, position - psf->header.end, psf) ;\n\t\t\tpsf->header.indx = position ;\n\t\t\tbreak ;\n\n\t\tcase SEEK_CUR :\n\t\t\tif (psf->header.indx + position >= psf->header.len)\n\t\t\t\tpsf_bump_header_allocation (psf, position) ;\n\n\t\t\tif (psf->header.indx + position < 0)\n\t\t\t\tbreak ;\n\n\t\t\tif (psf->header.indx >= psf->header.len)\n\t\t\t{\tpsf_fseek (psf, position, whence) ;\n\t\t\t\treturn ;\n\t\t\t\t} ;\n\n\t\t\tif (psf->header.indx + position <= psf->header.end)\n\t\t\t{\tpsf->header.indx += position ;\n\t\t\t\tbreak ;\n\t\t\t\t} ;\n\n\t\t\tif (psf->header.indx + position > psf->header.len)\n\t\t\t{\t/* Need to jump this without caching it. */\n\t\t\t\tpsf->header.indx = psf->header.end ;\n\t\t\t\tpsf_fseek (psf, position, SEEK_CUR) ;\n\t\t\t\tbreak ;\n\t\t\t\t} ;\n\n\t\t\tpsf->header.end += psf_fread (psf->header.ptr + psf->header.end, 1, position - (psf->header.end - psf->header.indx), psf) ;\n\t\t\tpsf->header.indx = psf->header.end ;\n\t\t\tbreak ;\n\n\t\tcase SEEK_END :\n\t\tdefault :\n\t\t\tpsf_log_printf (psf, \"Bad whence param in header_seek().\\n\") ;\n\t\t\tbreak ;\n\t\t} ;\n\n\treturn ;\n} /* header_seek */",
+            2
+        ],
+        [
+            "src/sfendian.h",
+            "psf_get_le64",
+            "static inline int64_t /* <=== psf_get_le64 */ \npsf_get_le64 (uint8_t *ptr, int offset)\n{\tint64_t value ;\n\n\tvalue = ((uint32_t) ptr [offset + 7]) << 24 ;\n\tvalue += ptr [offset + 6] << 16 ;\n\tvalue += ptr [offset + 5] << 8 ;\n\tvalue += ptr [offset + 4] ;\n\n\tvalue = ((uint64_t) value) << 32 ;\n\n\tvalue += ((uint32_t) ptr [offset + 3]) << 24 ;\n\tvalue += ptr [offset + 2] << 16 ;\n\tvalue += ptr [offset + 1] << 8 ;\n\tvalue += ptr [offset] ;\n\treturn value ;\n} /* psf_get_le64 */",
+            2
+        ],
+        [
+            "src/common.c",
+            "header_put_be_short",
+            "static inline void /* <=== header_put_be_short */ \nheader_put_be_short (SF_PRIVATE *psf, int x)\n{\tpsf->header.ptr [psf->header.indx++] = (x >> 8) ;\n\tpsf->header.ptr [psf->header.indx++] = x ;\n} /* header_put_be_short */",
+            2
+        ],
+        [
+            "src/common.h",
+            "BHWz",
+            "#define BHWz(x) ((size_t) (x)) /* <=== src/common.h:152:152:BHWz:1 */ ",
+            1
+        ],
+        [
+            "src/wav.c",
+            "wavex_write_fmt_chunk",
+            "static int /* <=== wavex_write_fmt_chunk */ \nwavex_write_fmt_chunk (SF_PRIVATE *psf)\n{\tWAVLIKE_PRIVATE\t*wpriv ;\n\tint subformat, fmt_size ;\n\n\tif ((wpriv = psf->container_data) == NULL)\n\t\treturn SFE_INTERNAL ;\n\n\tsubformat = SF_CODEC (psf->sf.format) ;\n\n\t/* initial section (same for all, it appears) */\n\tswitch (subformat)\n\t{\tcase SF_FORMAT_PCM_U8 :\n\t\tcase SF_FORMAT_PCM_16 :\n\t\tcase SF_FORMAT_PCM_24 :\n\t\tcase SF_FORMAT_PCM_32 :\n\t\tcase SF_FORMAT_FLOAT :\n\t\tcase SF_FORMAT_DOUBLE :\n\t\tcase SF_FORMAT_ULAW :\n\t\tcase SF_FORMAT_ALAW :\n\t\t\tfmt_size = 2 + 2 + 4 + 4 + 2 + 2 + 2 + 2 + 4 + 4 + 2 + 2 + 8 ;\n\n\t\t\t/* fmt : format, channels, samplerate */\n\t\t\tpsf_binheader_writef (psf, \"4224\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_EXTENSIBLE), BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;\n\t\t\t/*  fmt : bytespersec */\n\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (psf->sf.samplerate * psf->bytewidth * psf->sf.channels)) ;\n\t\t\t/*  fmt : blockalign, bitwidth */\n\t\t\tpsf_binheader_writef (psf, \"22\", BHW2 (psf->bytewidth * psf->sf.channels), BHW2 (psf->bytewidth * 8)) ;\n\n\t\t\t/* cbSize 22 is sizeof (WAVEFORMATEXTENSIBLE) - sizeof (WAVEFORMATEX) */\n\t\t\tpsf_binheader_writef (psf, \"2\", BHW2 (22)) ;\n\n\t\t\t/* wValidBitsPerSample, for our use same as bitwidth as we use it fully */\n\t\t\tpsf_binheader_writef (psf, \"2\", BHW2 (psf->bytewidth * 8)) ;\n\n\t\t\t/* For an Ambisonic file set the channel mask to zero.\n\t\t\t** Otherwise use a default based on the channel count.\n\t\t\t*/\n\t\t\tif (wpriv->wavex_ambisonic != SF_AMBISONIC_NONE)\n\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (0)) ;\n\t\t\telse if (wpriv->wavex_channelmask != 0)\n\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (wpriv->wavex_channelmask)) ;\n\t\t\telse\n\t\t\t{\t/*\n\t\t\t\t** Ok some liberty is taken here to use the most commonly used channel masks\n\t\t\t\t** instead of \"no mapping\". If you really want to use \"no mapping\" for 8 channels and less\n\t\t\t\t** please don't use wavex. (otherwise we'll have to create a new SF_COMMAND)\n\t\t\t\t*/\n\t\t\t\tswitch (psf->sf.channels)\n\t\t\t\t{\tcase 1 :\t/* center channel mono */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (0x4)) ;\n\t\t\t\t\t\tbreak ;\n\n\t\t\t\t\tcase 2 :\t/* front left and right */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (0x1 | 0x2)) ;\n\t\t\t\t\t\tbreak ;\n\n\t\t\t\t\tcase 4 :\t/* Quad */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (0x1 | 0x2 | 0x10 | 0x20)) ;\n\t\t\t\t\t\tbreak ;\n\n\t\t\t\t\tcase 6 :\t/* 5.1 */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20)) ;\n\t\t\t\t\t\tbreak ;\n\n\t\t\t\t\tcase 8 :\t/* 7.1 */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80)) ;\n\t\t\t\t\t\tbreak ;\n\n\t\t\t\t\tdefault :\t/* 0 when in doubt , use direct out, ie NO mapping*/\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (0x0)) ;\n\t\t\t\t\t\tbreak ;\n\t\t\t\t\t} ;\n\t\t\t\t} ;\n\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_MS_ADPCM : /* Todo, GUID exists might have different header as per wav_write_header */\n\t\tdefault :\n\t\t\treturn SFE_UNIMPLEMENTED ;\n\t\t} ;\n\n\t/* GUID section, different for each */\n\n\tswitch (subformat)\n\t{\tcase SF_FORMAT_PCM_U8 :\n\t\tcase SF_FORMAT_PCM_16 :\n\t\tcase SF_FORMAT_PCM_24 :\n\t\tcase SF_FORMAT_PCM_32 :\n\t\t\twavlike_write_guid (psf, wpriv->wavex_ambisonic == SF_AMBISONIC_NONE ?\n\t\t\t\t\t\t&MSGUID_SUBTYPE_PCM : &MSGUID_SUBTYPE_AMBISONIC_B_FORMAT_PCM) ;\n\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_FLOAT :\n\t\tcase SF_FORMAT_DOUBLE :\n\t\t\twavlike_write_guid (psf, wpriv->wavex_ambisonic == SF_AMBISONIC_NONE ?\n\t\t\t\t\t\t&MSGUID_SUBTYPE_IEEE_FLOAT : &MSGUID_SUBTYPE_AMBISONIC_B_FORMAT_IEEE_FLOAT) ;\n\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_ULAW :\n\t\t\twavlike_write_guid (psf, &MSGUID_SUBTYPE_MULAW) ;\n\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_ALAW :\n\t\t\twavlike_write_guid (psf, &MSGUID_SUBTYPE_ALAW) ;\n\t\t\tbreak ;\n\n#if 0\n\t\t/* This is dead code due to return in previous switch statement. */\n\t\tcase SF_FORMAT_MS_ADPCM : /* todo, GUID exists */\n\t\t\twavlike_write_guid (psf, &MSGUID_SUBTYPE_MS_ADPCM) ;\n\t\t\tbreak ;\n\t\t\treturn SFE_UNIMPLEMENTED ;\n#endif\n\n\t\tdefault : return SFE_UNIMPLEMENTED ;\n\t\t} ;\n\n\tpsf_binheader_writef (psf, \"tm48\", BHWm (fact_MARKER), BHW4 (4), BHW8 (psf->sf.frames)) ;\n\n\treturn 0 ;\n} /* wavex_write_fmt_chunk */",
+            1
+        ],
+        [
+            "src/common.c",
+            "psf_log_printf",
+            "void /* <=== psf_log_printf */ \npsf_log_printf (SF_PRIVATE *psf, const char *format, ...)\n{\tva_list\t\tap ;\n\tuint32_t\tu ;\n\tint\t\t\td, tens, shift, width, width_specifier, left_align, slen ;\n\tchar\t\tc, *strptr, istr [5], lead_char, sign_char ;\n\n\tva_start (ap, format) ;\n\n\twhile ((c = *format++))\n\t{\tif (c != '%')\n\t\t{\tlog_putchar (psf, c) ;\n\t\t\tcontinue ;\n\t\t\t} ;\n\n\t\tif (format [0] == '%') /* Handle %% */\n\t\t{ \tlog_putchar (psf, '%') ;\n\t\t\tformat ++ ;\n\t\t\tcontinue ;\n\t\t\t} ;\n\n\t\tsign_char = 0 ;\n\t\tleft_align = SF_FALSE ;\n\t\twhile (1)\n\t\t{\tswitch (format [0])\n\t\t\t{\tcase ' ' :\n\t\t\t\tcase '+' :\n\t\t\t\t\tsign_char = format [0] ;\n\t\t\t\t\tformat ++ ;\n\t\t\t\t\tcontinue ;\n\n\t\t\t\tcase '-' :\n\t\t\t\t\tleft_align = SF_TRUE ;\n\t\t\t\t\tformat ++ ;\n\t\t\t\t\tcontinue ;\n\n\t\t\t\tdefault : break ;\n\t\t\t\t} ;\n\n\t\t\tbreak ;\n\t\t\t} ;\n\n\t\tif (format [0] == 0)\n\t\t\tbreak ;\n\n\t\tlead_char = ' ' ;\n\t\tif (format [0] == '0')\n\t\t\tlead_char = '0' ;\n\n\t\twidth_specifier = 0 ;\n\t\twhile ((c = *format++) && isdigit (c))\n\t\t\twidth_specifier = width_specifier * 10 + (c - '0') ;\n\n\t\tswitch (c)\n\t\t{\tcase 0 : /* NULL character. */\n\t\t\t\t\tva_end (ap) ;\n\t\t\t\t\treturn ;\n\n\t\t\tcase 's': /* string */\n\t\t\t\t\tstrptr = va_arg (ap, char *) ;\n\t\t\t\t\tif (strptr == NULL)\n\t\t\t\t\t\tbreak ;\n\t\t\t\t\tslen = strlen (strptr) ;\n\t\t\t\t\twidth_specifier = width_specifier >= slen ? width_specifier - slen : 0 ;\n\t\t\t\t\tif (left_align == SF_FALSE)\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, ' ') ;\n\t\t\t\t\twhile (*strptr)\n\t\t\t\t\t\tlog_putchar (psf, *strptr++) ;\n\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\tlog_putchar (psf, ' ') ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'd': /* int */\n\t\t\t\t\td = va_arg (ap, int) ;\n\n\t\t\t\t\tif (d < 0)\n\t\t\t\t\t{\td = -d ;\n\t\t\t\t\t\tsign_char = '-' ;\n\t\t\t\t\t\tif (lead_char != '0' && left_align == SF_FALSE)\n\t\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\ttens = 1 ;\n\t\t\t\t\twidth = 1 ;\n\t\t\t\t\twhile (d / tens >= 10)\n\t\t\t\t\t{\ttens *= 10 ;\n\t\t\t\t\t\twidth ++ ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twidth_specifier -= width ;\n\n\t\t\t\t\tif (sign_char == ' ')\n\t\t\t\t\t{\tlog_putchar (psf, ' ') ;\n\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (left_align == SF_FALSE && lead_char != '0')\n\t\t\t\t\t{\tif (sign_char == '+')\n\t\t\t\t\t\t\twidth_specifier -- ;\n\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (sign_char == '+' || sign_char == '-')\n\t\t\t\t\t{\tlog_putchar (psf, sign_char) ;\n\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (left_align == SF_FALSE)\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\n\t\t\t\t\twhile (tens > 0)\n\t\t\t\t\t{\tlog_putchar (psf, '0' + d / tens) ;\n\t\t\t\t\t\td %= tens ;\n\t\t\t\t\t\ttens /= 10 ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'D': /* sf_count_t */\n\t\t\t\t\t{\tsf_count_t\t\tD, Tens ;\n\n\t\t\t\t\t\tD = va_arg (ap, sf_count_t) ;\n\n\t\t\t\t\t\tif (D == 0)\n\t\t\t\t\t\t{\twhile (-- width_specifier > 0)\n\t\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\t\tlog_putchar (psf, '0') ;\n\t\t\t\t\t\t\tbreak ;\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\tif (D < 0)\n\t\t\t\t\t\t{\tlog_putchar (psf, '-') ;\n\t\t\t\t\t\t\tD = -D ;\n\t\t\t\t\t\t\t} ;\n\t\t\t\t\t\tTens = 1 ;\n\t\t\t\t\t\twidth = 1 ;\n\t\t\t\t\t\twhile (D / Tens >= 10)\n\t\t\t\t\t\t{\tTens *= 10 ;\n\t\t\t\t\t\t\twidth ++ ;\n\t\t\t\t\t\t\t} ;\n\n\t\t\t\t\t\twhile (width_specifier > width)\n\t\t\t\t\t\t{\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\t\twidth_specifier-- ;\n\t\t\t\t\t\t\t} ;\n\n\t\t\t\t\t\twhile (Tens > 0)\n\t\t\t\t\t\t{\tlog_putchar (psf, '0' + D / Tens) ;\n\t\t\t\t\t\t\tD %= Tens ;\n\t\t\t\t\t\t\tTens /= 10 ;\n\t\t\t\t\t\t\t} ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'u': /* unsigned int */\n\t\t\t\t\tu = va_arg (ap, unsigned int) ;\n\n\t\t\t\t\ttens = 1 ;\n\t\t\t\t\twidth = 1 ;\n\t\t\t\t\twhile (u / tens >= 10)\n\t\t\t\t\t{\ttens *= 10 ;\n\t\t\t\t\t\twidth ++ ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twidth_specifier -= width ;\n\n\t\t\t\t\tif (sign_char == ' ')\n\t\t\t\t\t{\tlog_putchar (psf, ' ') ;\n\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (left_align == SF_FALSE && lead_char != '0')\n\t\t\t\t\t{\tif (sign_char == '+')\n\t\t\t\t\t\t\twidth_specifier -- ;\n\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (sign_char == '+' || sign_char == '-')\n\t\t\t\t\t{\tlog_putchar (psf, sign_char) ;\n\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (left_align == SF_FALSE)\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\n\t\t\t\t\twhile (tens > 0)\n\t\t\t\t\t{\tlog_putchar (psf, '0' + u / tens) ;\n\t\t\t\t\t\tu %= tens ;\n\t\t\t\t\t\ttens /= 10 ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'c': /* char */\n\t\t\t\t\tc = va_arg (ap, int) & 0xFF ;\n\t\t\t\t\tlog_putchar (psf, c) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'x': /* hex */\n\t\t\tcase 'X': /* hex */\n\t\t\t\t\td = va_arg (ap, int) ;\n\n\t\t\t\t\tif (d == 0)\n\t\t\t\t\t{\twhile (--width_specifier > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\tlog_putchar (psf, '0') ;\n\t\t\t\t\t\tbreak ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tshift = 28 ;\n\t\t\t\t\twidth = (width_specifier < 8) ? 8 : width_specifier ;\n\t\t\t\t\twhile (! ((((uint32_t) 0xF) << shift) & d))\n\t\t\t\t\t{\tshift -= 4 ;\n\t\t\t\t\t\twidth -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twhile (width > 0 && width_specifier > width)\n\t\t\t\t\t{\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\twidth_specifier-- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twhile (shift >= 0)\n\t\t\t\t\t{\tc = (d >> shift) & 0xF ;\n\t\t\t\t\t\tlog_putchar (psf, (c > 9) ? c + 'A' - 10 : c + '0') ;\n\t\t\t\t\t\tshift -= 4 ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'M': /* int2str */\n\t\t\t\t\td = va_arg (ap, int) ;\n\t\t\t\t\tif (CPU_IS_LITTLE_ENDIAN)\n\t\t\t\t\t{\tistr [0] = d & 0xFF ;\n\t\t\t\t\t\tistr [1] = (d >> 8) & 0xFF ;\n\t\t\t\t\t\tistr [2] = (d >> 16) & 0xFF ;\n\t\t\t\t\t\tistr [3] = (d >> 24) & 0xFF ;\n\t\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\tistr [3] = d & 0xFF ;\n\t\t\t\t\t\tistr [2] = (d >> 8) & 0xFF ;\n\t\t\t\t\t\tistr [1] = (d >> 16) & 0xFF ;\n\t\t\t\t\t\tistr [0] = (d >> 24) & 0xFF ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tistr [4] = 0 ;\n\t\t\t\t\tstrptr = istr ;\n\t\t\t\t\twhile (*strptr)\n\t\t\t\t\t{\tc = *strptr++ ;\n\t\t\t\t\t\tlog_putchar (psf, c) ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tbreak ;\n\n\t\t\tdefault :\n\t\t\t\t\tlog_putchar (psf, '*') ;\n\t\t\t\t\tlog_putchar (psf, c) ;\n\t\t\t\t\tlog_putchar (psf, '*') ;\n\t\t\t\t\tbreak ;\n\t\t\t} /* switch */\n\t\t} /* while */\n\n\tva_end (ap) ;\n\treturn ;\n} /* psf_log_printf */",
+            2
+        ],
+        [
+            "src/common.h",
+            "float32_be_write",
+            "void\tfloat32_be_write\t(float in, unsigned char *out) ; /* <=== float32_be_write */ ",
+            2
+        ],
+        [
+            "src/wavlike.h",
+            "WAVLIKE_GSM610_BLOCKSIZE",
+            "#define\t\tWAVLIKE_GSM610_BLOCKSIZE\t65 /* <=== src/wavlike.h:318:318:WAVLIKE_GSM610_BLOCKSIZE:0 */ ",
+            2
+        ],
+        [
+            "src/common.c",
+            "log_putchar",
+            "static inline void /* <=== log_putchar */ \nlog_putchar (SF_PRIVATE *psf, char ch)\n{\tif (psf->parselog.indx < SIGNED_SIZEOF (psf->parselog.buf) - 1)\n\t{\tpsf->parselog.buf [psf->parselog.indx++] = ch ;\n\t\tpsf->parselog.buf [psf->parselog.indx] = 0 ;\n\t\t} ;\n\treturn ;\n} /* log_putchar */",
+            2
+        ],
+        [
+            "src/file_io.c",
+            "psf_log_syserr",
+            "static void /* <=== psf_log_syserr */ \npsf_log_syserr (SF_PRIVATE *psf, int error)\n{\n\t/* Only log an error if no error has been set yet. */\n\tif (psf->error == 0)\n\t{\tpsf->error = SFE_SYSTEM ;\n\t\tsnprintf (psf->syserr, sizeof (psf->syserr), \"System error : %s.\", strerror (error)) ;\n\t\t} ;\n\n\treturn ;\n} /* psf_log_syserr */",
+            3
+        ],
+        [
+            "src/common.c",
+            "header_put_le_int",
+            "static inline void /* <=== header_put_le_int */ \nheader_put_le_int (SF_PRIVATE *psf, int x)\n{\tpsf->header.ptr [psf->header.indx++] = x ;\n\tpsf->header.ptr [psf->header.indx++] = (x >> 8) ;\n\tpsf->header.ptr [psf->header.indx++] = (x >> 16) ;\n\tpsf->header.ptr [psf->header.indx++] = (x >> 24) ;\n} /* header_put_le_int */",
+            2
+        ],
+        [
+            "src/file_io.c",
+            "SENSIBLE_SIZE",
+            "#define\tSENSIBLE_SIZE\t(0x40000000) /* <=== src/file_io.c:56:56:SENSIBLE_SIZE:0 */ ",
+            2
+        ],
+        [
+            "src/common.c",
+            "psf_bump_header_allocation",
+            "static int /* <=== psf_bump_header_allocation */ \npsf_bump_header_allocation (SF_PRIVATE * psf, sf_count_t needed)\n{\n\tsf_count_t newlen, smallest = INITIAL_HEADER_SIZE ;\n\tvoid * ptr ;\n\n\tnewlen = (needed > psf->header.len) ? 2 * SF_MAX (needed, smallest) : 2 * psf->header.len ;\n\n\tif (newlen > 100 * 1024)\n\t{\tpsf_log_printf (psf, \"Request for header allocation of %D denied.\\n\", newlen) ;\n\t\treturn 1 ;\n\t\t}\n\n\tif ((ptr = realloc (psf->header.ptr, newlen)) == NULL)\n\t{\tpsf_log_printf (psf, \"realloc (%p, %D) failed\\n\", psf->header.ptr, newlen) ;\n\t\tpsf->error = SFE_MALLOC_FAILED ;\n\t\treturn 1 ;\n\t\t} ;\n\n\t/* Always zero-out new header memory to avoid un-initializer memory accesses. */\n\tif (newlen > psf->header.len)\n\t\tmemset ((char *) ptr + psf->header.len, 0, newlen - psf->header.len) ;\n\n\tpsf->header.ptr = ptr ;\n\tpsf->header.len = newlen ;\n\treturn 0 ;\n} /* psf_bump_header_allocation */",
+            2
+        ],
+        [
+            "src/common.h",
+            "float32_le_write",
+            "void\tfloat32_le_write\t(float in, unsigned char *out) ; /* <=== float32_le_write */ ",
+            2
+        ],
+        [
+            "src/sfendian.h",
+            "psf_get_be64",
+            "static inline int64_t /* <=== psf_get_be64 */ \npsf_get_be64 (uint8_t *ptr, int offset)\n{\tint64_t value ;\n\n\tvalue = ((uint32_t) ptr [offset]) << 24 ;\n\tvalue += ptr [offset + 1] << 16 ;\n\tvalue += ptr [offset + 2] << 8 ;\n\tvalue += ptr [offset + 3] ;\n\n\tvalue = ((uint64_t) value) << 32 ;\n\n\tvalue += ((uint32_t) ptr [offset + 4]) << 24 ;\n\tvalue += ptr [offset + 5] << 16 ;\n\tvalue += ptr [offset + 6] << 8 ;\n\tvalue += ptr [offset + 7] ;\n\treturn value ;\n} /* psf_get_be64 */",
+            2
+        ],
+        [
+            "src/wav.c",
+            "wav_write_fmt_chunk",
+            "static int /* <=== wav_write_fmt_chunk */ \nwav_write_fmt_chunk (SF_PRIVATE *psf)\n{\tint subformat, fmt_size, add_fact_chunk = 0 ;\n\n\tsubformat = SF_CODEC (psf->sf.format) ;\n\n\tswitch (subformat)\n\t{\tcase SF_FORMAT_PCM_U8 :\n\t\tcase SF_FORMAT_PCM_16 :\n\t\tcase SF_FORMAT_PCM_24 :\n\t\tcase SF_FORMAT_PCM_32 :\n\t\t\t\t\tfmt_size = 2 + 2 + 4 + 4 + 2 + 2 ;\n\n\t\t\t\t\t/* fmt : format, channels, samplerate */\n\t\t\t\t\tpsf_binheader_writef (psf, \"4224\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_PCM), BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;\n\t\t\t\t\t/*  fmt : bytespersec */\n\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (psf->sf.samplerate * psf->bytewidth * psf->sf.channels)) ;\n\t\t\t\t\t/*  fmt : blockalign, bitwidth */\n\t\t\t\t\tpsf_binheader_writef (psf, \"22\", BHW2 (psf->bytewidth * psf->sf.channels), BHW2 (psf->bytewidth * 8)) ;\n\t\t\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_FLOAT :\n\t\tcase SF_FORMAT_DOUBLE :\n\t\t\t\t\tfmt_size = 2 + 2 + 4 + 4 + 2 + 2 ;\n\n\t\t\t\t\t/* fmt : format, channels, samplerate */\n\t\t\t\t\tpsf_binheader_writef (psf, \"4224\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_IEEE_FLOAT), BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;\n\t\t\t\t\t/*  fmt : bytespersec */\n\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (psf->sf.samplerate * psf->bytewidth * psf->sf.channels)) ;\n\t\t\t\t\t/*  fmt : blockalign, bitwidth */\n\t\t\t\t\tpsf_binheader_writef (psf, \"22\", BHW2 (psf->bytewidth * psf->sf.channels), BHW2 (psf->bytewidth * 8)) ;\n\n\t\t\t\t\tadd_fact_chunk = SF_TRUE ;\n\t\t\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_ULAW :\n\t\t\t\t\tfmt_size = 2 + 2 + 4 + 4 + 2 + 2 + 2 ;\n\n\t\t\t\t\t/* fmt : format, channels, samplerate */\n\t\t\t\t\tpsf_binheader_writef (psf, \"4224\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_MULAW), BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;\n\t\t\t\t\t/*  fmt : bytespersec */\n\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (psf->sf.samplerate * psf->bytewidth * psf->sf.channels)) ;\n\t\t\t\t\t/*  fmt : blockalign, bitwidth, extrabytes */\n\t\t\t\t\tpsf_binheader_writef (psf, \"222\", BHW2 (psf->bytewidth * psf->sf.channels), BHW2 (8), BHW2 (0)) ;\n\n\t\t\t\t\tadd_fact_chunk = SF_TRUE ;\n\t\t\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_ALAW :\n\t\t\t\t\tfmt_size = 2 + 2 + 4 + 4 + 2 + 2 + 2 ;\n\n\t\t\t\t\t/* fmt : format, channels, samplerate */\n\t\t\t\t\tpsf_binheader_writef (psf, \"4224\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_ALAW), BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;\n\t\t\t\t\t/*  fmt : bytespersec */\n\t\t\t\t\tpsf_binheader_writef (psf, \"4\", BHW4 (psf->sf.samplerate * psf->bytewidth * psf->sf.channels)) ;\n\t\t\t\t\t/*  fmt : blockalign, bitwidth, extrabytes */\n\t\t\t\t\tpsf_binheader_writef (psf, \"222\", BHW2 (psf->bytewidth * psf->sf.channels), BHW2 (8), BHW2 (0)) ;\n\n\t\t\t\t\tadd_fact_chunk = SF_TRUE ;\n\t\t\t\t\tbreak ;\n\n\t\t/* Lite remove start */\n\t\tcase SF_FORMAT_IMA_ADPCM :\n\t\t\t\t\t{\tint blockalign, framesperblock, bytespersec ;\n\n\t\t\t\t\t\tblockalign\t\t= wavlike_srate2blocksize (psf->sf.samplerate * psf->sf.channels) ;\n\t\t\t\t\t\tframesperblock\t= 2 * (blockalign - 4 * psf->sf.channels) / psf->sf.channels + 1 ;\n\t\t\t\t\t\tbytespersec\t\t= (psf->sf.samplerate * blockalign) / framesperblock ;\n\n\t\t\t\t\t\t/* fmt chunk. */\n\t\t\t\t\t\tfmt_size = 2 + 2 + 4 + 4 + 2 + 2 + 2 + 2 ;\n\n\t\t\t\t\t\t/* fmt : size, WAV format type, channels, samplerate, bytespersec */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"42244\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_IMA_ADPCM),\n\t\t\t\t\t\t\t\t\tBHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate), BHW4 (bytespersec)) ;\n\n\t\t\t\t\t\t/* fmt : blockalign, bitwidth, extrabytes, framesperblock. */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"2222\", BHW2 (blockalign), BHW2 (4), BHW2 (2), BHW2 (framesperblock)) ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tadd_fact_chunk = SF_TRUE ;\n\t\t\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_MS_ADPCM :\n\t\t\t\t\t{\tint\tblockalign, framesperblock, bytespersec, extrabytes ;\n\n\t\t\t\t\t\tblockalign\t\t= wavlike_srate2blocksize (psf->sf.samplerate * psf->sf.channels) ;\n\t\t\t\t\t\tframesperblock\t= 2 + 2 * (blockalign - 7 * psf->sf.channels) / psf->sf.channels ;\n\t\t\t\t\t\tbytespersec\t\t= (psf->sf.samplerate * blockalign) / framesperblock ;\n\n\t\t\t\t\t\t/* fmt chunk. */\n\t\t\t\t\t\textrabytes\t= 2 + 2 + WAVLIKE_MSADPCM_ADAPT_COEFF_COUNT * (2 + 2) ;\n\t\t\t\t\t\tfmt_size\t= 2 + 2 + 4 + 4 + 2 + 2 + 2 + extrabytes ;\n\n\t\t\t\t\t\t/* fmt : size, WAV format type, channels. */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"422\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_MS_ADPCM), BHW2 (psf->sf.channels)) ;\n\n\t\t\t\t\t\t/* fmt : samplerate, bytespersec. */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"44\", BHW4 (psf->sf.samplerate), BHW4 (bytespersec)) ;\n\n\t\t\t\t\t\t/* fmt : blockalign, bitwidth, extrabytes, framesperblock. */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"22222\", BHW2 (blockalign), BHW2 (4), BHW2 (extrabytes), BHW2 (framesperblock), BHW2 (7)) ;\n\n\t\t\t\t\t\twavlike_msadpcm_write_adapt_coeffs (psf) ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tadd_fact_chunk = SF_TRUE ;\n\t\t\t\t\tbreak ;\n\n\n\t\tcase SF_FORMAT_G721_32 :\n\t\t\t\t\t/* fmt chunk. */\n\t\t\t\t\tfmt_size = 2 + 2 + 4 + 4 + 2 + 2 + 2 + 2 ;\n\n\t\t\t\t\t/* fmt : size, WAV format type, channels, samplerate, bytespersec */\n\t\t\t\t\tpsf_binheader_writef (psf, \"42244\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_G721_ADPCM),\n\t\t\t\t\t\t\t\tBHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate), BHW4 (psf->sf.samplerate * psf->sf.channels / 2)) ;\n\n\t\t\t\t\t/* fmt : blockalign, bitwidth, extrabytes, auxblocksize. */\n\t\t\t\t\tpsf_binheader_writef (psf, \"2222\", BHW2 (64), BHW2 (4), BHW2 (2), BHW2 (0)) ;\n\n\t\t\t\t\tadd_fact_chunk = SF_TRUE ;\n\t\t\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_NMS_ADPCM_16 :\n\t\tcase SF_FORMAT_NMS_ADPCM_24 :\n\t\tcase SF_FORMAT_NMS_ADPCM_32 :\n\t\t\t\t\t{\tint bytespersec, blockalign, bitwidth ;\n\n\t\t\t\t\t\tbitwidth \t= subformat == SF_FORMAT_NMS_ADPCM_16 ? 2 : subformat == SF_FORMAT_NMS_ADPCM_24 ? 3 : 4 ;\n\t\t\t\t\t\tblockalign \t= 20 * bitwidth + 2 ;\n\t\t\t\t\t\tbytespersec\t= psf->sf.samplerate * blockalign / 160 ;\n\n\t\t\t\t\t\t/* fmt chunk. */\n\t\t\t\t\t\tfmt_size = 2 + 2 + 4 + 4 + 2 + 2 ;\n\n\t\t\t\t\t\t/* fmt : format, channels, samplerate */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"4224\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_NMS_VBXADPCM),\n\t\t\t\t\t\t\t\t\tBHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;\n\t\t\t\t\t\t/*  fmt : bytespersec, blockalign, bitwidth */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"422\", BHW4 (bytespersec), BHW2 (blockalign), BHW2 (bitwidth)) ;\n\n\t\t\t\t\t\tadd_fact_chunk = SF_TRUE ;\n\t\t\t\t\t\tbreak ;\n\t\t\t\t\t\t}\n\n\t\t/* Lite remove end */\n\n\t\tcase SF_FORMAT_GSM610 :\n\t\t\t\t\t{\tint\tblockalign, framesperblock, bytespersec ;\n\n\t\t\t\t\t\tblockalign\t\t= WAVLIKE_GSM610_BLOCKSIZE ;\n\t\t\t\t\t\tframesperblock\t= WAVLIKE_GSM610_SAMPLES ;\n\t\t\t\t\t\tbytespersec\t\t= (psf->sf.samplerate * blockalign) / framesperblock ;\n\n\t\t\t\t\t\t/* fmt chunk. */\n\t\t\t\t\t\tfmt_size = 2 + 2 + 4 + 4 + 2 + 2 + 2 + 2 ;\n\n\t\t\t\t\t\t/* fmt : size, WAV format type, channels. */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"422\", BHW4 (fmt_size), BHW2 (WAVE_FORMAT_GSM610), BHW2 (psf->sf.channels)) ;\n\n\t\t\t\t\t\t/* fmt : samplerate, bytespersec. */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"44\", BHW4 (psf->sf.samplerate), BHW4 (bytespersec)) ;\n\n\t\t\t\t\t\t/* fmt : blockalign, bitwidth, extrabytes, framesperblock. */\n\t\t\t\t\t\tpsf_binheader_writef (psf, \"2222\", BHW2 (blockalign), BHW2 (0), BHW2 (2), BHW2 (framesperblock)) ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tadd_fact_chunk = SF_TRUE ;\n\t\t\t\t\tbreak ;\n\n\t\tdefault : \treturn SFE_UNIMPLEMENTED ;\n\t\t} ;\n\n\tif (add_fact_chunk)\n\t\tpsf_binheader_writef (psf, \"tm48\", BHWm (fact_MARKER), BHW4 (4), BHW8 (psf->sf.frames)) ;\n\n\treturn 0 ;\n} /* wav_write_fmt_chunk */",
+            1
+        ],
+        [
+            "src/common.h",
+            "SF_CONTAINER",
+            "#define SF_CONTAINER(x)\t\t((x) & SF_FORMAT_TYPEMASK) /* <=== src/common.h:126:126:SF_CONTAINER:1 */ ",
+            1
+        ],
+        [
+            "src/common.h",
+            "SIGNED_SIZEOF",
+            "#define\t\tSIGNED_SIZEOF(x)\t((int) sizeof (x)) /* <=== src/common.h:92:92:SIGNED_SIZEOF:1 */ ",
+            3
+        ],
+        [
+            "src/common.c",
+            "GET_BE_3BYTE",
+            "#define\tGET_BE_3BYTE(ptr)\t(\t((ptr) [0] << 16) | ((ptr) [1] << 8) | ((ptr) [2])) /* <=== src/common.c:825:825:GET_BE_3BYTE:1 */ ",
+            2
+        ],
+        [
+            "src/common.h",
+            "SF_CODEC",
+            "#define SF_CODEC(x)\t\t\t((x) & SF_FORMAT_SUBMASK) /* <=== src/common.h:127:127:SF_CODEC:1 */ ",
+            2
+        ],
+        [
+            "src/wavlike.h",
+            "WAVLIKE_MSADPCM_ADAPT_COEFF_COUNT",
+            "#define\tWAVLIKE_MSADPCM_ADAPT_COEFF_COUNT\t7 /* <=== src/wavlike.h:327:327:WAVLIKE_MSADPCM_ADAPT_COEFF_COUNT:0 */ ",
+            2
+        ],
+        [
+            "src/common.c",
+            "header_read",
+            "static int /* <=== header_read */ \nheader_read (SF_PRIVATE *psf, void *ptr, int bytes)\n{\tint count = 0 ;\n\n\tif (psf->header.indx + bytes >= psf->header.len && psf_bump_header_allocation (psf, bytes))\n\t\treturn count ;\n\n\tif (psf->header.indx + bytes > psf->header.end)\n\t{\tcount = psf_fread (psf->header.ptr + psf->header.end, 1, bytes - (psf->header.end - psf->header.indx), psf) ;\n\t\tif (count != bytes - (int) (psf->header.end - psf->header.indx))\n\t\t{\tpsf_log_printf (psf, \"Error : psf_fread returned short count.\\n\") ;\n\t\t\treturn count ;\n\t\t\t} ;\n\t\tpsf->header.end += count ;\n\t\t} ;\n\n\tmemcpy (ptr, psf->header.ptr + psf->header.indx, bytes) ;\n\tpsf->header.indx += bytes ;\n\n\treturn bytes ;\n} /* header_read */",
+            2
+        ],
+        [
+            "src/common.c",
+            "psf_instrument_alloc",
+            "SF_INSTRUMENT * /* <=== psf_instrument_alloc */ \npsf_instrument_alloc (void)\n{\tSF_INSTRUMENT *instr ;\n\n\tinstr = calloc (1, sizeof (SF_INSTRUMENT)) ;\n\n\tif (instr == NULL)\n\t\treturn NULL ;\n\n\t/* Set non-zero default values. */\n\tinstr->basenote = -1 ;\n\tinstr->velocity_lo = -1 ;\n\tinstr->velocity_hi = -1 ;\n\tinstr->key_lo = -1 ;\n\tinstr->key_hi = -1 ;\n\n\treturn instr ;\n} /* psf_instrument_alloc */",
+            1
+        ],
+        [
+            "src/common.h",
+            "SF_MAX",
+            "#define\t\tSF_MAX(a, b)\t((a) > (b) ? (a) : (b)) /* <=== src/common.h:111:111:SF_MAX:2 */ ",
+            3
+        ],
+        [
+            "src/file_io.c",
+            "psf_ftell",
+            "sf_count_t /* <=== psf_ftell */ \npsf_ftell (SF_PRIVATE *psf)\n{\tsf_count_t pos ;\n\n\tif (psf->virtual_io)\n\t\treturn psf->vio.tell (psf->vio_user_data) ;\n\n\tif (psf->is_pipe)\n\t\treturn psf->pipeoffset ;\n\n\tpos = lseek (psf->file.filedes, 0, SEEK_CUR) ;\n\n\tif (pos == ((sf_count_t) -1))\n\t{\tpsf_log_syserr (psf, errno) ;\n\t\treturn -1 ;\n\t\t} ;\n\n\treturn pos - psf->fileoffset ;\n} /* psf_ftell */",
+            1
+        ],
+        [
+            "src/common.c",
+            "header_put_byte",
+            "static inline void /* <=== header_put_byte */ \nheader_put_byte (SF_PRIVATE *psf, char x)\n{\tpsf->header.ptr [psf->header.indx++] = x ;\n} /* header_put_byte */",
+            2
+        ],
+        [
+            "src/common.h",
+            "BHWm",
+            "#define BHWm(x) ((uint32_t) (x)) /* <=== src/common.h:140:140:BHWm:1 */ ",
+            1
+        ],
+        [
+            "src/common.h",
+            "BHWv",
+            "#define BHWv(x) ((const void *) (x)) /* <=== src/common.h:151:151:BHWv:1 */ ",
+            2
+        ],
+        [
+            "src/file_io.c",
+            "psf_get_filelen_fd",
+            "static sf_count_t /* <=== psf_get_filelen_fd */ \npsf_get_filelen_fd (int fd)\n{\n#if (SIZEOF_OFF_T == 4 && SIZEOF_SF_COUNT_T == 8 && HAVE_FSTAT64)\n\tstruct stat64 statbuf ;\n\n\tif (fstat64 (fd, &statbuf) == -1)\n\t\treturn (sf_count_t) -1 ;\n\n\treturn statbuf.st_size ;\n#else\n\tstruct stat statbuf ;\n\n\tif (fstat (fd, &statbuf) == -1)\n\t\treturn (sf_count_t) -1 ;\n\n\treturn statbuf.st_size ;\n#endif\n} /* psf_get_filelen_fd */",
+            2
+        ],
+        [
+            "src/common.c",
+            "GET_LE_3BYTE",
+            "#define\tGET_LE_3BYTE(ptr)\t(\t((ptr) [2] << 16) | ((ptr) [1] << 8) | ((ptr) [0])) /* <=== src/common.c:824:824:GET_LE_3BYTE:1 */ ",
+            2
+        ],
+        [
+            "src/file_io.c",
+            "psf_log_syserr",
+            "static void /* <=== psf_log_syserr */ \npsf_log_syserr (SF_PRIVATE *psf, int error)\n{\n\t/* Only log an error if no error has been set yet. */\n\tif (psf->error == 0)\n\t{\tpsf->error = SFE_SYSTEM ;\n\t\tsnprintf (psf->syserr, sizeof (psf->syserr), \"System error : %s.\", strerror (error)) ;\n\t\t} ;\n\n\treturn ;\n} /* psf_log_syserr */",
+            2
+        ],
+        [
+            "src/sfendian.h",
+            "psf_get_be32",
+            "static inline int32_t /* <=== psf_get_be32 */ \npsf_get_be32 (uint8_t *ptr, int offset)\n{\tint32_t value ;\n\n\tvalue = ((uint32_t) ptr [offset]) << 24 ;\n\tvalue += ptr [offset + 1] << 16 ;\n\tvalue += ptr [offset + 2] << 8 ;\n\tvalue += ptr [offset + 3] ;\n\treturn value ;\n} /* psf_get_be32 */",
+            2
+        ],
+        [
+            "src/sfendian.h",
+            "psf_get_le32",
+            "static inline int32_t /* <=== psf_get_le32 */ \npsf_get_le32 (uint8_t *ptr, int offset)\n{\tint32_t value ;\n\n\tvalue = ((uint32_t) ptr [offset + 3]) << 24 ;\n\tvalue += ptr [offset + 2] << 16 ;\n\tvalue += ptr [offset + 1] << 8 ;\n\tvalue += ptr [offset] ;\n\treturn value ;\n} /* psf_get_le32 */",
+            2
+        ],
+        [
+            "src/common.h",
+            "double64_be_write",
+            "void\tdouble64_be_write\t(double in, unsigned char *out) ; /* <=== double64_be_write */ ",
+            2
+        ],
+        [
+            "src/common.h",
+            "BHW2",
+            "#define BHW2(x) ((uint16_t) (x)) /* <=== src/common.h:135:135:BHW2:1 */ ",
+            2
+        ],
+        [
+            "src/file_io.c",
+            "psf_fwrite",
+            "sf_count_t /* <=== psf_fwrite */ \npsf_fwrite (const void *ptr, sf_count_t bytes, sf_count_t items, SF_PRIVATE *psf)\n{\tsf_count_t total = 0 ;\n\tssize_t\tcount ;\n\n\tif (bytes == 0 || items == 0)\n\t\treturn 0 ;\n\n\tif (psf->virtual_io)\n\t\treturn psf->vio.write (ptr, bytes*items, psf->vio_user_data) / bytes ;\n\n\titems *= bytes ;\n\n\t/* Do this check after the multiplication above. */\n\tif (items <= 0)\n\t\treturn 0 ;\n\n\twhile (items > 0)\n\t{\t/* Break the writes down to a sensible size. */\n\t\tcount = (items > SENSIBLE_SIZE) ? SENSIBLE_SIZE : items ;\n\n\t\tcount = write (psf->file.filedes, ((const char*) ptr) + total, count) ;\n\n\t\tif (count == -1)\n\t\t{\tif (errno == EINTR)\n\t\t\t\tcontinue ;\n\n\t\t\tpsf_log_syserr (psf, errno) ;\n\t\t\tbreak ;\n\t\t\t} ;\n\n\t\tif (count == 0)\n\t\t\tbreak ;\n\n\t\ttotal += count ;\n\t\titems -= count ;\n\t\t} ;\n\n\tif (psf->is_pipe)\n\t\tpsf->pipeoffset += total ;\n\n\treturn total / bytes ;\n} /* psf_fwrite */",
+            1
+        ],
+        [
+            "src/common.h",
+            "BHW4",
+            "#define BHW4(x) ((uint32_t) (x)) /* <=== src/common.h:137:137:BHW4:1 */ ",
+            1
+        ],
+        [
+            "src/wavlike.c",
+            "wavlike_write_custom_chunks",
+            "void /* <=== wavlike_write_custom_chunks */ \nwavlike_write_custom_chunks (SF_PRIVATE * psf)\n{\tuint32_t k ;\n\n\tfor (k = 0 ; k < psf->wchunks.used ; k++)\n\t\tpsf_binheader_writef (psf, \"m4b\", BHWm (psf->wchunks.chunks [k].mark32), BHW4 (psf->wchunks.chunks [k].len),\n\t\t\t\t\t\t\tBHWv (psf->wchunks.chunks [k].data), BHWz (psf->wchunks.chunks [k].len)) ;\n\n} /* wavlike_write_custom_chunks */",
+            1
+        ],
+        [
+            "src/common.h",
+            "double64_le_read",
+            "double\tdouble64_le_read\t(const unsigned char *cptr) ; /* <=== double64_le_read */ ",
+            2
+        ],
+        [
+            "src/common.c",
+            "header_put_le_3byte",
+            "static inline void /* <=== header_put_le_3byte */ \nheader_put_le_3byte (SF_PRIVATE *psf, int x)\n{\tpsf->header.ptr [psf->header.indx++] = x ;\n\tpsf->header.ptr [psf->header.indx++] = (x >> 8) ;\n\tpsf->header.ptr [psf->header.indx++] = (x >> 16) ;\n} /* header_put_le_3byte */",
+            2
+        ],
+        [
+            "src/file_io.c",
+            "psf_get_filelen",
+            "sf_count_t /* <=== psf_get_filelen */ \npsf_get_filelen (SF_PRIVATE *psf)\n{\tsf_count_t\tfilelen ;\n\n\tif (psf->virtual_io)\n\t\treturn psf->vio.get_filelen (psf->vio_user_data) ;\n\n\tfilelen = psf_get_filelen_fd (psf->file.filedes) ;\n\n\tif (filelen == -1)\n\t{\tpsf_log_syserr (psf, errno) ;\n\t\treturn (sf_count_t) -1 ;\n\t\t} ;\n\n\tif (filelen == -SFE_BAD_STAT_SIZE)\n\t{\tpsf->error = SFE_BAD_STAT_SIZE ;\n\t\treturn (sf_count_t) -1 ;\n\t\t} ;\n\n\tswitch (psf->file.mode)\n\t{\tcase SFM_WRITE :\n\t\t\tfilelen = filelen - psf->fileoffset ;\n\t\t\tbreak ;\n\n\t\tcase SFM_READ :\n\t\t\tif (psf->fileoffset > 0 && psf->filelength > 0)\n\t\t\t\tfilelen = psf->filelength ;\n\t\t\tbreak ;\n\n\t\tcase SFM_RDWR :\n\t\t\t/*\n\t\t\t** Cannot open embedded files SFM_RDWR so we don't need to\n\t\t\t** subtract psf->fileoffset. We already have the answer we\n\t\t\t** need.\n\t\t\t*/\n\t\t\tbreak ;\n\n\t\tdefault :\n\t\t\t/* Shouldn't be here, so return error. */\n\t\t\tfilelen = -1 ;\n\t\t} ;\n\n\treturn filelen ;\n} /* psf_get_filelen */",
+            1
+        ],
+        [
+            "src/common.c",
+            "psf_log_printf",
+            "void /* <=== psf_log_printf */ \npsf_log_printf (SF_PRIVATE *psf, const char *format, ...)\n{\tva_list\t\tap ;\n\tuint32_t\tu ;\n\tint\t\t\td, tens, shift, width, width_specifier, left_align, slen ;\n\tchar\t\tc, *strptr, istr [5], lead_char, sign_char ;\n\n\tva_start (ap, format) ;\n\n\twhile ((c = *format++))\n\t{\tif (c != '%')\n\t\t{\tlog_putchar (psf, c) ;\n\t\t\tcontinue ;\n\t\t\t} ;\n\n\t\tif (format [0] == '%') /* Handle %% */\n\t\t{ \tlog_putchar (psf, '%') ;\n\t\t\tformat ++ ;\n\t\t\tcontinue ;\n\t\t\t} ;\n\n\t\tsign_char = 0 ;\n\t\tleft_align = SF_FALSE ;\n\t\twhile (1)\n\t\t{\tswitch (format [0])\n\t\t\t{\tcase ' ' :\n\t\t\t\tcase '+' :\n\t\t\t\t\tsign_char = format [0] ;\n\t\t\t\t\tformat ++ ;\n\t\t\t\t\tcontinue ;\n\n\t\t\t\tcase '-' :\n\t\t\t\t\tleft_align = SF_TRUE ;\n\t\t\t\t\tformat ++ ;\n\t\t\t\t\tcontinue ;\n\n\t\t\t\tdefault : break ;\n\t\t\t\t} ;\n\n\t\t\tbreak ;\n\t\t\t} ;\n\n\t\tif (format [0] == 0)\n\t\t\tbreak ;\n\n\t\tlead_char = ' ' ;\n\t\tif (format [0] == '0')\n\t\t\tlead_char = '0' ;\n\n\t\twidth_specifier = 0 ;\n\t\twhile ((c = *format++) && isdigit (c))\n\t\t\twidth_specifier = width_specifier * 10 + (c - '0') ;\n\n\t\tswitch (c)\n\t\t{\tcase 0 : /* NULL character. */\n\t\t\t\t\tva_end (ap) ;\n\t\t\t\t\treturn ;\n\n\t\t\tcase 's': /* string */\n\t\t\t\t\tstrptr = va_arg (ap, char *) ;\n\t\t\t\t\tif (strptr == NULL)\n\t\t\t\t\t\tbreak ;\n\t\t\t\t\tslen = strlen (strptr) ;\n\t\t\t\t\twidth_specifier = width_specifier >= slen ? width_specifier - slen : 0 ;\n\t\t\t\t\tif (left_align == SF_FALSE)\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, ' ') ;\n\t\t\t\t\twhile (*strptr)\n\t\t\t\t\t\tlog_putchar (psf, *strptr++) ;\n\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\tlog_putchar (psf, ' ') ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'd': /* int */\n\t\t\t\t\td = va_arg (ap, int) ;\n\n\t\t\t\t\tif (d < 0)\n\t\t\t\t\t{\td = -d ;\n\t\t\t\t\t\tsign_char = '-' ;\n\t\t\t\t\t\tif (lead_char != '0' && left_align == SF_FALSE)\n\t\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\ttens = 1 ;\n\t\t\t\t\twidth = 1 ;\n\t\t\t\t\twhile (d / tens >= 10)\n\t\t\t\t\t{\ttens *= 10 ;\n\t\t\t\t\t\twidth ++ ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twidth_specifier -= width ;\n\n\t\t\t\t\tif (sign_char == ' ')\n\t\t\t\t\t{\tlog_putchar (psf, ' ') ;\n\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (left_align == SF_FALSE && lead_char != '0')\n\t\t\t\t\t{\tif (sign_char == '+')\n\t\t\t\t\t\t\twidth_specifier -- ;\n\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (sign_char == '+' || sign_char == '-')\n\t\t\t\t\t{\tlog_putchar (psf, sign_char) ;\n\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (left_align == SF_FALSE)\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\n\t\t\t\t\twhile (tens > 0)\n\t\t\t\t\t{\tlog_putchar (psf, '0' + d / tens) ;\n\t\t\t\t\t\td %= tens ;\n\t\t\t\t\t\ttens /= 10 ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'D': /* sf_count_t */\n\t\t\t\t\t{\tsf_count_t\t\tD, Tens ;\n\n\t\t\t\t\t\tD = va_arg (ap, sf_count_t) ;\n\n\t\t\t\t\t\tif (D == 0)\n\t\t\t\t\t\t{\twhile (-- width_specifier > 0)\n\t\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\t\tlog_putchar (psf, '0') ;\n\t\t\t\t\t\t\tbreak ;\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\tif (D < 0)\n\t\t\t\t\t\t{\tlog_putchar (psf, '-') ;\n\t\t\t\t\t\t\tD = -D ;\n\t\t\t\t\t\t\t} ;\n\t\t\t\t\t\tTens = 1 ;\n\t\t\t\t\t\twidth = 1 ;\n\t\t\t\t\t\twhile (D / Tens >= 10)\n\t\t\t\t\t\t{\tTens *= 10 ;\n\t\t\t\t\t\t\twidth ++ ;\n\t\t\t\t\t\t\t} ;\n\n\t\t\t\t\t\twhile (width_specifier > width)\n\t\t\t\t\t\t{\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\t\twidth_specifier-- ;\n\t\t\t\t\t\t\t} ;\n\n\t\t\t\t\t\twhile (Tens > 0)\n\t\t\t\t\t\t{\tlog_putchar (psf, '0' + D / Tens) ;\n\t\t\t\t\t\t\tD %= Tens ;\n\t\t\t\t\t\t\tTens /= 10 ;\n\t\t\t\t\t\t\t} ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'u': /* unsigned int */\n\t\t\t\t\tu = va_arg (ap, unsigned int) ;\n\n\t\t\t\t\ttens = 1 ;\n\t\t\t\t\twidth = 1 ;\n\t\t\t\t\twhile (u / tens >= 10)\n\t\t\t\t\t{\ttens *= 10 ;\n\t\t\t\t\t\twidth ++ ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twidth_specifier -= width ;\n\n\t\t\t\t\tif (sign_char == ' ')\n\t\t\t\t\t{\tlog_putchar (psf, ' ') ;\n\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (left_align == SF_FALSE && lead_char != '0')\n\t\t\t\t\t{\tif (sign_char == '+')\n\t\t\t\t\t\t\twidth_specifier -- ;\n\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (sign_char == '+' || sign_char == '-')\n\t\t\t\t\t{\tlog_putchar (psf, sign_char) ;\n\t\t\t\t\t\twidth_specifier -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\tif (left_align == SF_FALSE)\n\t\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\n\t\t\t\t\twhile (tens > 0)\n\t\t\t\t\t{\tlog_putchar (psf, '0' + u / tens) ;\n\t\t\t\t\t\tu %= tens ;\n\t\t\t\t\t\ttens /= 10 ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twhile (width_specifier -- > 0)\n\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'c': /* char */\n\t\t\t\t\tc = va_arg (ap, int) & 0xFF ;\n\t\t\t\t\tlog_putchar (psf, c) ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'x': /* hex */\n\t\t\tcase 'X': /* hex */\n\t\t\t\t\td = va_arg (ap, int) ;\n\n\t\t\t\t\tif (d == 0)\n\t\t\t\t\t{\twhile (--width_specifier > 0)\n\t\t\t\t\t\t\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\tlog_putchar (psf, '0') ;\n\t\t\t\t\t\tbreak ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tshift = 28 ;\n\t\t\t\t\twidth = (width_specifier < 8) ? 8 : width_specifier ;\n\t\t\t\t\twhile (! ((((uint32_t) 0xF) << shift) & d))\n\t\t\t\t\t{\tshift -= 4 ;\n\t\t\t\t\t\twidth -- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twhile (width > 0 && width_specifier > width)\n\t\t\t\t\t{\tlog_putchar (psf, lead_char) ;\n\t\t\t\t\t\twidth_specifier-- ;\n\t\t\t\t\t\t} ;\n\n\t\t\t\t\twhile (shift >= 0)\n\t\t\t\t\t{\tc = (d >> shift) & 0xF ;\n\t\t\t\t\t\tlog_putchar (psf, (c > 9) ? c + 'A' - 10 : c + '0') ;\n\t\t\t\t\t\tshift -= 4 ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tbreak ;\n\n\t\t\tcase 'M': /* int2str */\n\t\t\t\t\td = va_arg (ap, int) ;\n\t\t\t\t\tif (CPU_IS_LITTLE_ENDIAN)\n\t\t\t\t\t{\tistr [0] = d & 0xFF ;\n\t\t\t\t\t\tistr [1] = (d >> 8) & 0xFF ;\n\t\t\t\t\t\tistr [2] = (d >> 16) & 0xFF ;\n\t\t\t\t\t\tistr [3] = (d >> 24) & 0xFF ;\n\t\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\tistr [3] = d & 0xFF ;\n\t\t\t\t\t\tistr [2] = (d >> 8) & 0xFF ;\n\t\t\t\t\t\tistr [1] = (d >> 16) & 0xFF ;\n\t\t\t\t\t\tistr [0] = (d >> 24) & 0xFF ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tistr [4] = 0 ;\n\t\t\t\t\tstrptr = istr ;\n\t\t\t\t\twhile (*strptr)\n\t\t\t\t\t{\tc = *strptr++ ;\n\t\t\t\t\t\tlog_putchar (psf, c) ;\n\t\t\t\t\t\t} ;\n\t\t\t\t\tbreak ;\n\n\t\t\tdefault :\n\t\t\t\t\tlog_putchar (psf, '*') ;\n\t\t\t\t\tlog_putchar (psf, c) ;\n\t\t\t\t\tlog_putchar (psf, '*') ;\n\t\t\t\t\tbreak ;\n\t\t\t} /* switch */\n\t\t} /* while */\n\n\tva_end (ap) ;\n\treturn ;\n} /* psf_log_printf */",
+            1
+        ],
+        [
+            "src/common.h",
+            "ARRAY_LEN",
+            "#define\t\tARRAY_LEN(x)\t((int) (sizeof (x) / sizeof ((x) [0]))) /* <=== src/common.h:94:94:ARRAY_LEN:1 */ ",
+            1
+        ],
+        [
+            "src/common.c",
+            "INITIAL_HEADER_SIZE",
+            "#define\tINITIAL_HEADER_SIZE\t256 /* <=== src/common.c:38:38:INITIAL_HEADER_SIZE:0 */ ",
+            3
+        ],
+        [
+            "src/common.c",
+            "header_put_le_short",
+            "static inline void /* <=== header_put_le_short */ \nheader_put_le_short (SF_PRIVATE *psf, int x)\n{\tpsf->header.ptr [psf->header.indx++] = x ;\n\tpsf->header.ptr [psf->header.indx++] = (x >> 8) ;\n} /* header_put_le_short */",
+            2
+        ],
+        [
+            "src/common.c",
+            "GET_LE_SHORT",
+            "#define\tGET_LE_SHORT(ptr)\t(((ptr) [1] << 8) | ((ptr) [0])) /* <=== src/common.c:821:821:GET_LE_SHORT:1 */ ",
+            2
+        ],
+        [
+            "src/file_io.c",
+            "psf_fread",
+            "sf_count_t /* <=== psf_fread */ \npsf_fread (void *ptr, sf_count_t bytes, sf_count_t items, SF_PRIVATE *psf)\n{\tsf_count_t total = 0 ;\n\tssize_t\tcount ;\n\n\tif (psf->virtual_io)\n\t\treturn psf->vio.read (ptr, bytes*items, psf->vio_user_data) / bytes ;\n\n\titems *= bytes ;\n\n\t/* Do this check after the multiplication above. */\n\tif (items <= 0)\n\t\treturn 0 ;\n\n\twhile (items > 0)\n\t{\t/* Break the read down to a sensible size. */\n\t\tcount = (items > SENSIBLE_SIZE) ? SENSIBLE_SIZE : (ssize_t) items ;\n\n\t\tcount = read (psf->file.filedes, ((char*) ptr) + total, (size_t) count) ;\n\n\t\tif (count == -1)\n\t\t{\tif (errno == EINTR)\n\t\t\t\tcontinue ;\n\n\t\t\tpsf_log_syserr (psf, errno) ;\n\t\t\tbreak ;\n\t\t\t} ;\n\n\t\tif (count == 0)\n\t\t\tbreak ;\n\n\t\ttotal += count ;\n\t\titems -= count ;\n\t\t} ;\n\n\tif (psf->is_pipe)\n\t\tpsf->pipeoffset += total ;\n\n\treturn total / bytes ;\n} /* psf_fread */",
+            3
+        ],
+        [
+            "src/file_io.c",
+            "psf_fseek",
+            "sf_count_t /* <=== psf_fseek */ \npsf_fseek (SF_PRIVATE *psf, sf_count_t offset, int whence)\n{\tsf_count_t\tabsolute_position ;\n\n\tif (psf->virtual_io)\n\t\treturn psf->vio.seek (offset, whence, psf->vio_user_data) ;\n\n\t/* When decoding from pipes sometimes see seeks to the pipeoffset, which appears to mean do nothing. */\n\tif (psf->is_pipe)\n\t{\tif (whence != SEEK_SET || offset != psf->pipeoffset)\n\t\t\tpsf_log_printf (psf, \"psf_fseek : pipe seek to value other than pipeoffset\\n\") ;\n\t\treturn offset ;\n\t\t}\n\n\tswitch (whence)\n\t{\tcase SEEK_SET :\n\t\t\t\toffset += psf->fileoffset ;\n\t\t\t\tbreak ;\n\n\t\tcase SEEK_END :\n\t\t\t\tbreak ;\n\n\t\tcase SEEK_CUR :\n\t\t\t\tbreak ;\n\n\t\tdefault :\n\t\t\t\t/* We really should not be here. */\n\t\t\t\tpsf_log_printf (psf, \"psf_fseek : whence is %d *****.\\n\", whence) ;\n\t\t\t\treturn 0 ;\n\t\t} ;\n\n\tabsolute_position = lseek (psf->file.filedes, offset, whence) ;\n\n\tif (absolute_position < 0)\n\t\tpsf_log_syserr (psf, errno) ;\n\n\treturn absolute_position - psf->fileoffset ;\n} /* psf_fseek */",
+            1
+        ],
+        [
+            "src/file_io.c",
+            "psf_ftell",
+            "sf_count_t /* <=== psf_ftell */ \npsf_ftell (SF_PRIVATE *psf)\n{\tsf_count_t pos ;\n\n\tif (psf->virtual_io)\n\t\treturn psf->vio.tell (psf->vio_user_data) ;\n\n\tif (psf->is_pipe)\n\t\treturn psf->pipeoffset ;\n\n\tpos = lseek (psf->file.filedes, 0, SEEK_CUR) ;\n\n\tif (pos == ((sf_count_t) -1))\n\t{\tpsf_log_syserr (psf, errno) ;\n\t\treturn -1 ;\n\t\t} ;\n\n\treturn pos - psf->fileoffset ;\n} /* psf_ftell */",
+            2
+        ],
+        [
+            "src/common.c",
+            "log_putchar",
+            "static inline void /* <=== log_putchar */ \nlog_putchar (SF_PRIVATE *psf, char ch)\n{\tif (psf->parselog.indx < SIGNED_SIZEOF (psf->parselog.buf) - 1)\n\t{\tpsf->parselog.buf [psf->parselog.indx++] = ch ;\n\t\tpsf->parselog.buf [psf->parselog.indx] = 0 ;\n\t\t} ;\n\treturn ;\n} /* log_putchar */",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include\t\"common.h\"",
+        "#include\t<time.h>",
+        "#include\t\"sndfile.h\"",
+        "#include\t<stdlib.h>",
+        "#include\t\"wavlike.h\"",
+        "#include\t<ctype.h>",
+        "#include\t\"sfendian.h\"",
+        "#include\t<inttypes.h>",
+        "#include\t<stdio.h>",
+        "#include\t\"sfconfig.h\"",
+        "#include\t<string.h>"
+    ],
+    "typeDefs": [
+        [
+            "inline sf_count_t",
+            "sf_count_t"
+        ],
+        [
+            "typedef struct sf_private_tag\n{\n\t/* Canary in a coal mine. */\n\tunion\n\t{\t/* Place a double here to encourage double alignment. */\n\t\tdouble d [2] ;\n\t\tchar c [16] ;\n\t\t} canary ;\n\n\tPSF_FILE\t\tfile, rsrc ;\n\n\tchar\t\t\tsyserr\t\t[SF_SYSERR_LEN] ;\n\n\t/* parselog and indx should only be changed within the logging functions\n\t** of common.c\n\t*/\n\tstruct\n\t{\tchar\t\t\tbuf\t[SF_PARSELOG_LEN] ;\n\t\tint\t\t\t\tindx ;\n\t} parselog ;\n\n\n\tstruct\n\t{\tunsigned char\t* ptr ;\n\t\tsf_count_t\t\tindx, end, len ;\n\t} header ;\n\n\tint\t\t\t\trwf_endian ;\t/* Header endian-ness flag. */\n\n\t/* Storage and housekeeping data for adding/reading strings from\n\t** sound files.\n\t*/\n\tstruct\n\t{\tSTR_DATA\tdata [SF_MAX_STRINGS] ;\n\t\tchar\t\t*storage ;\n\t\tsize_t\t\tstorage_len ;\n\t\tsize_t\t\tstorage_used ;\n\t\tuint32_t\tflags ;\n\t} strings ;\n\n\t/* Guard value. If this changes the buffers above have overflowed. */\n\tint\t\t\t\tMagick ;\n\n\tunsigned\t\tunique_id ;\n\n\tint\t\t\t\terror ;\n\n\tint\t\t\t\tendian ;\t\t/* File endianness : SF_ENDIAN_LITTLE or SF_ENDIAN_BIG. */\n\tint\t\t\t\tdata_endswap ;\t/* Need to endswap data? */\n\n\t/*\n\t** Maximum float value for calculating the multiplier for\n\t** float/double to short/int conversions.\n\t*/\n\tint\t\t\t\tfloat_int_mult ;\n\tfloat\t\t\tfloat_max ;\n\n\tint\t\t\t\tscale_int_float ;\n\n\t/* Vairables for handling pipes. */\n\tint\t\t\t\tis_pipe ;\t\t/* True if file is a pipe. */\n\tsf_count_t\t\tpipeoffset ;\t/* Number of bytes read from a pipe. */\n\n\t/* True if clipping must be performed on float->int conversions. */\n\tint\t\t\t\tadd_clipping ;\n\n\tSF_INFO\t\t\tsf ;\n\n\tint\t\t\t\thave_written ;\t/* Has a single write been done to the file? */\n\tPEAK_INFO\t\t*peak_info ;\n\n\t/* Cue Marker Info */\n\tSF_CUES\t\t*cues ;\n\n\t/* Loop Info */\n\tSF_LOOP_INFO\t*loop_info ;\n\tSF_INSTRUMENT\t*instrument ;\n\n\t/* Broadcast (EBU) Info */\n\tSF_BROADCAST_INFO_16K *broadcast_16k ;\n\n\t/* Cart (AES46) Info */\n\tSF_CART_INFO_16K *cart_16k ;\n\n\t/* Channel map data (if present) : an array of ints. */\n\tint\t\t\t\t*channel_map ;\n\n\tsf_count_t\t\tfilelength ;\t/* Overall length of (embedded) file. */\n\tsf_count_t\t\tfileoffset ;\t/* Offset in number of bytes from beginning of file. */\n\n\tsf_count_t\t\trsrclength ;\t/* Length of the resource fork (if it exists). */\n\n\tsf_count_t\t\tdataoffset ;\t/* Offset in number of bytes from beginning of file. */\n\tsf_count_t\t\tdatalength ;\t/* Length in bytes of the audio data. */\n\tsf_count_t\t\tdataend ;\t\t/* Offset to file tailer. */\n\n\tint\t\t\t\tblockwidth ;\t/* Size in bytes of one set of interleaved samples. */\n\tint\t\t\t\tbytewidth ;\t\t/* Size in bytes of one sample (one channel). */\n\n\tvoid\t\t\t*dither ;\n\tvoid\t\t\t*interleave ;\n\n\tint\t\t\t\tlast_op ;\t\t/* Last operation; either SFM_READ or SFM_WRITE */\n\tsf_count_t\t\tread_current ;\n\tsf_count_t\t\twrite_current ;\n\n\tvoid\t\t\t*container_data ;\t/*\tThis is a pointer to dynamically allocated file\n\t\t\t\t\t\t\t\t\t\t**\tcontainer format specific data.\n\t\t\t\t\t\t\t\t\t\t*/\n\n\tvoid\t\t\t*codec_data ;\t\t/*\tThis is a pointer to dynamically allocated file\n\t\t\t\t\t\t\t\t\t\t**\tcodec format specific data.\n\t\t\t\t\t\t\t\t\t\t*/\n\n\tSF_DITHER_INFO\twrite_dither ;\n\tSF_DITHER_INFO\tread_dither ;\n\n\tint\t\t\t\tnorm_double ;\n\tint\t\t\t\tnorm_float ;\n\n\tint\t\t\t\tauto_header ;\n\n\tint\t\t\t\tieee_replace ;\n\n\t/* A set of file specific function pointers */\n\tsf_count_t\t\t(*read_short)\t(struct sf_private_tag*, short *ptr, sf_count_t len) ;\n\tsf_count_t\t\t(*read_int)\t\t(struct sf_private_tag*, int *ptr, sf_count_t len) ;\n\tsf_count_t\t\t(*read_float)\t(struct sf_private_tag*, float *ptr, sf_count_t len) ;\n\tsf_count_t\t\t(*read_double)\t(struct sf_private_tag*, double *ptr, sf_count_t len) ;\n\n\tsf_count_t\t\t(*write_short)\t(struct sf_private_tag*, const short *ptr, sf_count_t len) ;\n\tsf_count_t\t\t(*write_int)\t(struct sf_private_tag*, const int *ptr, sf_count_t len) ;\n\tsf_count_t\t\t(*write_float)\t(struct sf_private_tag*, const float *ptr, sf_count_t len) ;\n\tsf_count_t\t\t(*write_double)\t(struct sf_private_tag*, const double *ptr, sf_count_t len) ;\n\n\tsf_count_t\t\t(*seek) \t\t(struct sf_private_tag*, int mode, sf_count_t samples_from_start) ;\n\tint\t\t\t\t(*write_header)\t(struct sf_private_tag*, int calc_length) ;\n\tint\t\t\t\t(*command)\t\t(struct sf_private_tag*, int command, void *data, int datasize) ;\n\tint\t\t\t\t(*byterate)\t\t(struct sf_private_tag*) ;\n\n\t/*\n\t**\tSeparate close functions for the codec and the container.\n\t**\tThe codec close function is always called first.\n\t*/\n\tint\t\t\t\t(*codec_close)\t\t(struct sf_private_tag*) ;\n\tint\t\t\t\t(*container_close)\t(struct sf_private_tag*) ;\n\n\tchar\t\t\t*format_desc ;\n\n\t/* Virtual I/O functions. */\n\tint\t\t\t\t\tvirtual_io ;\n\tSF_VIRTUAL_IO\t\tvio ;\n\tvoid\t\t\t\t*vio_user_data ;\n\n\t/* Chunk get/set. */\n\tSF_CHUNK_ITERATOR\t*iterator ;\n\n\tREAD_CHUNKS\t\t\trchunks ;\n\tWRITE_CHUNKS\t\twchunks ;\n\n\tint\t\t\t\t\t(*set_chunk)\t\t(struct sf_private_tag*, const SF_CHUNK_INFO * chunk_info) ;\n\tSF_CHUNK_ITERATOR *\t(*next_chunk_iterator)\t(struct sf_private_tag*, SF_CHUNK_ITERATOR * iterator) ;\n\tint\t\t\t\t\t(*get_chunk_size)\t(struct sf_private_tag*, const SF_CHUNK_ITERATOR * iterator, SF_CHUNK_INFO * chunk_info) ;\n\tint\t\t\t\t\t(*get_chunk_data)\t(struct sf_private_tag*, const SF_CHUNK_ITERATOR * iterator, SF_CHUNK_INFO * chunk_info) ;\n} SF_PRIVATE ;",
+            "SF_PRIVATE"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/wav.c": [
+            1054,
+            1055,
+            1059,
+            1061,
+            1062,
+            1064,
+            1065,
+            1067,
+            1069,
+            1070,
+            1071,
+            1072,
+            1078,
+            1088,
+            1089,
+            1091,
+            1094,
+            1097,
+            1099,
+            1104,
+            1113,
+            1114,
+            1116,
+            1117,
+            1119,
+            1120,
+            1122,
+            1123,
+            1125,
+            1128,
+            1130,
+            1131,
+            1136,
+            1138,
+            1140,
+            1141,
+            1143,
+            1144,
+            1145,
+            1146,
+            1147,
+            1150,
+            1151,
+            1154,
+            1155,
+            1157,
+            1158,
+            1159,
+            1164,
+            1165,
+            1167,
+            1169,
+            1170,
+            1173,
+            1174,
+            1175,
+            1176,
+            1178,
+            1179,
+            1180,
+            1183,
+            1185,
+            1186,
+            1187,
+            1188,
+            1190,
+            1287,
+            1288,
+            1290,
+            1291,
+            1294,
+            1296,
+            1297,
+            1299,
+            1300,
+            1302,
+            1303,
+            1305,
+            1306,
+            1308,
+            1309,
+            1311,
+            1312,
+            1315,
+            1317,
+            1318,
+            1320,
+            1322,
+            1323,
+            1325,
+            1326,
+            1328,
+            1334,
+            1336,
+            1339,
+            1341,
+            1342,
+            1344,
+            1345,
+            1347,
+            1348,
+            1350,
+            1351,
+            1353,
+            1354,
+            1356,
+            1357,
+            1359,
+            1360,
+            1362,
+            1363,
+            1364,
+            1365,
+            1383,
+            1386,
+            1387,
+            1388,
+            1390,
+            1393,
+            1394,
+            1395,
+            1398,
+            1400,
+            1401,
+            1404,
+            1405,
+            1407,
+            1410,
+            1413,
+            1416,
+            1417,
+            1418,
+            1419,
+            1420
+        ]
+    },
+    "visitedLines_before": {
+        "src/wav.c": [
+            1054,
+            1055,
+            1059,
+            1061,
+            1062,
+            1064,
+            1065,
+            1067,
+            1069,
+            1070,
+            1071,
+            1072,
+            1078,
+            1088,
+            1089,
+            1091,
+            1094,
+            1097,
+            1099,
+            1104,
+            1113,
+            1114,
+            1116,
+            1117,
+            1119,
+            1120,
+            1122,
+            1123,
+            1125,
+            1128,
+            1130,
+            1131,
+            1136,
+            1138,
+            1140,
+            1141,
+            1143,
+            1144,
+            1145,
+            1146,
+            1147,
+            1149,
+            1152,
+            1153,
+            1155,
+            1156,
+            1157,
+            1162,
+            1163,
+            1165,
+            1167,
+            1168,
+            1171,
+            1172,
+            1173,
+            1174,
+            1176,
+            1177,
+            1178,
+            1181,
+            1183,
+            1184,
+            1185,
+            1186,
+            1188,
+            1285,
+            1286,
+            1288,
+            1289,
+            1292,
+            1294,
+            1295,
+            1297,
+            1298,
+            1300,
+            1301,
+            1303,
+            1304,
+            1306,
+            1307,
+            1309,
+            1310,
+            1313,
+            1315,
+            1316,
+            1318,
+            1320,
+            1321,
+            1323,
+            1324,
+            1326,
+            1332,
+            1334,
+            1337,
+            1339,
+            1340,
+            1342,
+            1343,
+            1345,
+            1346,
+            1348,
+            1349,
+            1351,
+            1352,
+            1354,
+            1355,
+            1357,
+            1358,
+            1360,
+            1361,
+            1362,
+            1363,
+            1381,
+            1384,
+            1385,
+            1386,
+            1388,
+            1391,
+            1392,
+            1393,
+            1396,
+            1398,
+            1399,
+            1402,
+            1403,
+            1405,
+            1408,
+            1411,
+            1414,
+            1415,
+            1416,
+            1417,
+            1418
+        ]
+    },
+    "visitedParams": {
+        "src/wav.c": [
+            [
+                "SF_PRIVATE *psf",
+                "wav_read_smpl_chunk"
+            ],
+            [
+                "SF_PRIVATE *psf",
+                "wav_write_header"
+            ],
+            [
+                "uint32_t chunklen",
+                "wav_read_smpl_chunk"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/wav.c",
+            "wav_write_header",
+            "static int /* <=== wav_write_header */ \nwav_write_header (SF_PRIVATE *psf, int calc_length)\n{\tsf_count_t\tcurrent ;\n\tint \t\terror, has_data = SF_FALSE ;\n\n\tcurrent = psf_ftell (psf) ;\n\n\tif (current > psf->dataoffset)\n\t\thas_data = SF_TRUE ;\n\n\tif (calc_length)\n\t{\tpsf->filelength = psf_get_filelen (psf) ;\n\n\t\tpsf->datalength = psf->filelength - psf->dataoffset ;\n\n\t\tif (psf->dataend)\n\t\t\tpsf->datalength -= psf->filelength - psf->dataend ;\n\t\telse if (psf->bytewidth > 0 && psf->sf.seekable == SF_TRUE)\n\t\t\tpsf->datalength = psf->sf.frames * psf->bytewidth * psf->sf.channels ;\n\t\t} ;\n\n\t/* Reset the current header length to zero. */\n\tpsf->header.ptr [0] = 0 ;\n\tpsf->header.indx = 0 ;\n\tpsf_fseek (psf, 0, SEEK_SET) ;\n\n\t/*\n\t** RIFX signifies big-endian format for all header and data.\n\t** To prevent lots of code copying here, we'll set the psf->rwf_endian flag\n\t** once here, and never specify endian-ness for all other header operations.\n\t*/\n\n\t/* RIFF/RIFX marker, length, WAVE and 'fmt ' markers. */\n\n\tif (psf->endian == SF_ENDIAN_LITTLE)\n\t\tpsf_binheader_writef (psf, \"etm8\", BHWm (RIFF_MARKER), BHW8 ((psf->filelength < 8) ? 8 : psf->filelength - 8)) ;\n\telse\n\t\tpsf_binheader_writef (psf, \"Etm8\", BHWm (RIFX_MARKER), BHW8 ((psf->filelength < 8) ? 8 : psf->filelength - 8)) ;\n\n\t/* WAVE and 'fmt ' markers. */\n\tpsf_binheader_writef (psf, \"mm\", BHWm (WAVE_MARKER), BHWm (fmt_MARKER)) ;\n\n\t/* Write the 'fmt ' chunk. */\n\tswitch (SF_CONTAINER (psf->sf.format))\n\t{\tcase SF_FORMAT_WAV :\n\t\t\t\tif ((error = wav_write_fmt_chunk (psf)) != 0)\n\t\t\t\t\treturn error ;\n\t\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_WAVEX :\n\t\t\t\tif ((error = wavex_write_fmt_chunk (psf)) != 0)\n\t\t\t\t\treturn error ;\n\t\t\t\tbreak ;\n\n\t\tdefault :\n\t\t\t\treturn SFE_UNIMPLEMENTED ;\n\t\t} ;\n\n\t/* The LIST/INFO chunk. */\n\tif (psf->strings.flags & SF_STR_LOCATE_START)\n\t\twavlike_write_strings (psf, SF_STR_LOCATE_START) ;\n\n\tif (psf->peak_info != NULL && psf->peak_info->peak_loc == SF_PEAK_START)\n\t\twavlike_write_peak_chunk (psf) ;\n\n\tif (psf->broadcast_16k != NULL)\n\t\twavlike_write_bext_chunk (psf) ;\n\n\tif (psf->cart_16k != NULL)\n\t\twavlike_write_cart_chunk (psf) ;\n\n\tif (psf->cues != NULL)\n\t{\tuint32_t k ;\n\n\t\tpsf_binheader_writef (psf, \"em44\", BHWm (cue_MARKER), BHW4 (4 + psf->cues->cue_count * 6 * 4), BHW4 (psf->cues->cue_count)) ;\n\n\t\tfor (k = 0 ; k < psf->cues->cue_count ; k++)\n\t\t\tpsf_binheader_writef (psf, \"e44m444\", BHW4 (psf->cues->cue_points [k].indx), BHW4 (psf->cues->cue_points [k].position),\n\t\t\t\t\t\tBHWm (psf->cues->cue_points [k].fcc_chunk), BHW4 (psf->cues->cue_points [k].chunk_start),\n\t\t\t\t\t\tBHW4 (psf->cues->cue_points [k].block_start), BHW4 (psf->cues->cue_points [k].sample_offset)) ;\n\t\t} ;\n\n\tif (psf->instrument != NULL)\n\t{\tint\t\ttmp ;\n\t\tdouble\tdtune = (double) (0x40000000) / 25.0 ;\n\n\t\tpsf_binheader_writef (psf, \"m4\", BHWm (smpl_MARKER), BHW4 (9 * 4 + psf->instrument->loop_count * 6 * 4)) ;\n\t\tpsf_binheader_writef (psf, \"44\", BHW4 (0), BHW4 (0)) ; /* Manufacturer zero is everyone */\n\t\ttmp = (int) (1.0e9 / psf->sf.samplerate) ; /* Sample period in nano seconds */\n\t\tpsf_binheader_writef (psf, \"44\", BHW4 (tmp), BHW4 (psf->instrument->basenote)) ;\n\t\ttmp = (uint32_t) (psf->instrument->detune * dtune + 0.5) ;\n\t\tpsf_binheader_writef (psf, \"4\", BHW4 (tmp)) ;\n\t\tpsf_binheader_writef (psf, \"44\", BHW4 (0), BHW4 (0)) ; /* SMTPE format */\n\t\tpsf_binheader_writef (psf, \"44\", BHW4 (psf->instrument->loop_count), BHW4 (0)) ;\n\n\t\t/* Loop count is signed 16 bit number so we limit it range to something sensible. */\n\t\tpsf->instrument->loop_count &= 0x7fff ;\n\t\tfor (tmp = 0 ; tmp < psf->instrument->loop_count ; tmp++)\n\t\t{\tint type ;\n\n\t\t\ttype = psf->instrument->loops [tmp].mode ;\n\t\t\ttype = (type == SF_LOOP_FORWARD ? 0 : type == SF_LOOP_BACKWARD ? 2 : type == SF_LOOP_ALTERNATING ? 1 : 32) ;\n\n\t\t\tpsf_binheader_writef (psf, \"44\", BHW4 (tmp), BHW4 (type)) ;\n\t\t\tpsf_binheader_writef (psf, \"44\", BHW4 (psf->instrument->loops [tmp].start), BHW4 (psf->instrument->loops [tmp].end - 1)) ;\n\t\t\tpsf_binheader_writef (psf, \"44\", BHW4 (0), BHW4 (psf->instrument->loops [tmp].count)) ;\n\t\t\t} ;\n\t\t} ;\n\n\t/* Write custom headers. */\n\tif (psf->wchunks.used > 0)\n\t\twavlike_write_custom_chunks (psf) ;\n\n\tif (psf->header.indx + 16 < psf->dataoffset)\n\t{\t/* Add PAD data if necessary. */\n\t\tsize_t k = psf->dataoffset - (psf->header.indx + 16) ;\n\t\tpsf_binheader_writef (psf, \"m4z\", BHWm (PAD_MARKER), BHW4 (k), BHWz (k)) ;\n\t\t} ;\n\n\tpsf_binheader_writef (psf, \"tm8\", BHWm (data_MARKER), BHW8 (psf->datalength)) ;\n\tpsf_fwrite (psf->header.ptr, psf->header.indx, 1, psf) ;\n\tif (psf->error)\n\t\treturn psf->error ;\n\n\tif (has_data && psf->dataoffset != psf->header.indx)\n\t{\tpsf_log_printf (psf, \"Oooops : has_data && psf->dataoffset != psf->header.indx\\n\") ;\n\t\treturn psf->error = SFE_INTERNAL ;\n\t\t} ;\n\n\tpsf->dataoffset = psf->header.indx ;\n\n\tif (! has_data)\n\t\tpsf_fseek (psf, psf->dataoffset, SEEK_SET) ;\n\telse if (current > 0)\n\t\tpsf_fseek (psf, current, SEEK_SET) ;\n\n\treturn psf->error ;\n} /* wav_write_header */",
+            1054
+        ],
+        [
+            "src/wav.c",
+            "wav_read_smpl_chunk",
+            "static int /* <=== wav_read_smpl_chunk */ \nwav_read_smpl_chunk (SF_PRIVATE *psf, uint32_t chunklen)\n{\tchar buffer [512] ;\n\tuint32_t thisread, bytesread = 0, dword, sampler_data, loop_count ;\n\tuint32_t note, pitch, start, end, type = -1, count ;\n\tint j, k ;\n\n\tchunklen += (chunklen & 1) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tpsf_log_printf (psf, \"  Manufacturer : %X\\n\", dword) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tpsf_log_printf (psf, \"  Product      : %u\\n\", dword) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tpsf_log_printf (psf, \"  Period       : %u nsec\\n\", dword) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &note) ;\n\tpsf_log_printf (psf, \"  Midi Note    : %u\\n\", note) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &pitch) ;\n\tif (pitch != 0)\n\t{\tsnprintf (buffer, sizeof (buffer), \"%f\",\n\t\t\t\t\t(1.0 * 0x80000000) / ((uint32_t) pitch)) ;\n\t\tpsf_log_printf (psf, \"  Pitch Fract. : %s\\n\", buffer) ;\n\t\t}\n\telse\n\t\tpsf_log_printf (psf, \"  Pitch Fract. : 0\\n\") ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tpsf_log_printf (psf, \"  SMPTE Format : %u\\n\", dword) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tsnprintf (buffer, sizeof (buffer), \"%02d:%02d:%02d %02d\",\n\t\t\t\t(dword >> 24) & 0x7F, (dword >> 16) & 0x7F, (dword >> 8) & 0x7F, dword & 0x7F) ;\n\tpsf_log_printf (psf, \"  SMPTE Offset : %s\\n\", buffer) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &loop_count) ;\n\tpsf_log_printf (psf, \"  Loop Count   : %u\\n\", loop_count) ;\n\n\tif (loop_count == 0 && chunklen == bytesread)\n\t\treturn 0 ;\n\n\t/* Sampler Data holds the number of data bytes after the CUE chunks which\n\t** is not actually CUE data. Display value after CUE data.\n\t*/\n\tbytesread += psf_binheader_readf (psf, \"4\", &sampler_data) ;\n\n\tif ((psf->instrument = psf_instrument_alloc ()) == NULL)\n\t\treturn SFE_MALLOC_FAILED ;\n\n\tpsf->instrument->loop_count = loop_count ;\n\n\tfor (j = 0 ; loop_count > 0 && chunklen - bytesread >= 24 ; j ++)\n\t{\tif ((thisread = psf_binheader_readf (psf, \"4\", &dword)) == 0)\n\t\t\tbreak ;\n\t\tbytesread += thisread ;\n\t\tpsf_log_printf (psf, \"    Cue ID : %2u\", dword) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &type) ;\n\t\tpsf_log_printf (psf, \"  Type : %2u\", type) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &start) ;\n\t\tpsf_log_printf (psf, \"  Start : %5u\", start) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &end) ;\n\t\tpsf_log_printf (psf, \"  End : %5u\", end) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\t\tpsf_log_printf (psf, \"  Fraction : %5u\", dword) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &count) ;\n\t\tpsf_log_printf (psf, \"  Count : %5u\\n\", count) ;\n\n\t\tif (j < ARRAY_LEN (psf->instrument->loops))\n\t\t{\tpsf->instrument->loops [j].start = start ;\n\t\t\tpsf->instrument->loops [j].end = end + 1 ;\n\t\t\tpsf->instrument->loops [j].count = count ;\n\n\t\t\tswitch (type)\n\t\t\t{\tcase 0 :\n\t\t\t\t\tpsf->instrument->loops [j].mode = SF_LOOP_FORWARD ;\n\t\t\t\t\tbreak ;\n\t\t\t\tcase 1 :\n\t\t\t\t\tpsf->instrument->loops [j].mode = SF_LOOP_ALTERNATING ;\n\t\t\t\t\tbreak ;\n\t\t\t\tcase 2 :\n\t\t\t\t\tpsf->instrument->loops [j].mode = SF_LOOP_BACKWARD ;\n\t\t\t\t\tbreak ;\n\t\t\t\tdefault:\n\t\t\t\t\tpsf->instrument->loops [j].mode = SF_LOOP_NONE ;\n\t\t\t\t\tbreak ;\n\t\t\t\t} ;\n\t\t\t} ;\n\n\t\tloop_count -- ;\n\t\t} ;\n\n\tif (chunklen - bytesread == 0)\n\t{\tif (sampler_data != 0)\n\t\t\tpsf_log_printf (psf, \"  Sampler Data : %u (should be 0)\\n\", sampler_data) ;\n\t\telse\n\t\t\tpsf_log_printf (psf, \"  Sampler Data : %u\\n\", sampler_data) ;\n\t\t}\n\telse\n\t{\tif (sampler_data != chunklen - bytesread)\n\t\t{\tpsf_log_printf (psf, \"  Sampler Data : %u (should have been %u)\\n\", sampler_data, chunklen - bytesread) ;\n\t\t\tsampler_data = chunklen - bytesread ;\n\t\t\t}\n\t\telse\n\t\t\tpsf_log_printf (psf, \"  Sampler Data : %u\\n\", sampler_data) ;\n\n\t\tpsf_log_printf (psf, \"      \") ;\n\t\tfor (k = 0 ; k < (int) sampler_data ; k++)\n\t\t{\tchar ch ;\n\n\t\t\tif (k > 0 && (k % 20) == 0)\n\t\t\t\tpsf_log_printf (psf, \"\\n      \") ;\n\n\t\t\tif ((thisread = psf_binheader_readf (psf, \"1\", &ch)) == 0)\n\t\t\t\tbreak ;\n\t\t\tbytesread += thisread ;\n\t\t\tpsf_log_printf (psf, \"%02X \", ch & 0xFF) ;\n\t\t\t} ;\n\n\t\tpsf_log_printf (psf, \"\\n\") ;\n\t\t} ;\n\n\tpsf->instrument->basenote = note ;\n\tpsf->instrument->detune = (int8_t) (pitch / (0x40000000 / 25.0) + 0.5) ;\n\tpsf->instrument->gain = 1 ;\n\tpsf->instrument->velocity_lo = psf->instrument->key_lo = 0 ;\n\tpsf->instrument->velocity_hi = psf->instrument->key_hi = 127 ;\n\n\treturn 0 ;\n} /* wav_read_smpl_chunk */",
+            1287
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/wav.c",
+            "wav_write_header",
+            "static int /* <=== wav_write_header */ \nwav_write_header (SF_PRIVATE *psf, int calc_length)\n{\tsf_count_t\tcurrent ;\n\tint \t\terror, has_data = SF_FALSE ;\n\n\tcurrent = psf_ftell (psf) ;\n\n\tif (current > psf->dataoffset)\n\t\thas_data = SF_TRUE ;\n\n\tif (calc_length)\n\t{\tpsf->filelength = psf_get_filelen (psf) ;\n\n\t\tpsf->datalength = psf->filelength - psf->dataoffset ;\n\n\t\tif (psf->dataend)\n\t\t\tpsf->datalength -= psf->filelength - psf->dataend ;\n\t\telse if (psf->bytewidth > 0 && psf->sf.seekable == SF_TRUE)\n\t\t\tpsf->datalength = psf->sf.frames * psf->bytewidth * psf->sf.channels ;\n\t\t} ;\n\n\t/* Reset the current header length to zero. */\n\tpsf->header.ptr [0] = 0 ;\n\tpsf->header.indx = 0 ;\n\tpsf_fseek (psf, 0, SEEK_SET) ;\n\n\t/*\n\t** RIFX signifies big-endian format for all header and data.\n\t** To prevent lots of code copying here, we'll set the psf->rwf_endian flag\n\t** once here, and never specify endian-ness for all other header operations.\n\t*/\n\n\t/* RIFF/RIFX marker, length, WAVE and 'fmt ' markers. */\n\n\tif (psf->endian == SF_ENDIAN_LITTLE)\n\t\tpsf_binheader_writef (psf, \"etm8\", BHWm (RIFF_MARKER), BHW8 ((psf->filelength < 8) ? 8 : psf->filelength - 8)) ;\n\telse\n\t\tpsf_binheader_writef (psf, \"Etm8\", BHWm (RIFX_MARKER), BHW8 ((psf->filelength < 8) ? 8 : psf->filelength - 8)) ;\n\n\t/* WAVE and 'fmt ' markers. */\n\tpsf_binheader_writef (psf, \"mm\", BHWm (WAVE_MARKER), BHWm (fmt_MARKER)) ;\n\n\t/* Write the 'fmt ' chunk. */\n\tswitch (SF_CONTAINER (psf->sf.format))\n\t{\tcase SF_FORMAT_WAV :\n\t\t\t\tif ((error = wav_write_fmt_chunk (psf)) != 0)\n\t\t\t\t\treturn error ;\n\t\t\t\tbreak ;\n\n\t\tcase SF_FORMAT_WAVEX :\n\t\t\t\tif ((error = wavex_write_fmt_chunk (psf)) != 0)\n\t\t\t\t\treturn error ;\n\t\t\t\tbreak ;\n\n\t\tdefault :\n\t\t\t\treturn SFE_UNIMPLEMENTED ;\n\t\t} ;\n\n\t/* The LIST/INFO chunk. */\n\tif (psf->strings.flags & SF_STR_LOCATE_START)\n\t\twavlike_write_strings (psf, SF_STR_LOCATE_START) ;\n\n\tif (psf->peak_info != NULL && psf->peak_info->peak_loc == SF_PEAK_START)\n\t\twavlike_write_peak_chunk (psf) ;\n\n\tif (psf->broadcast_16k != NULL)\n\t\twavlike_write_bext_chunk (psf) ;\n\n\tif (psf->cart_16k != NULL)\n\t\twavlike_write_cart_chunk (psf) ;\n\n\tif (psf->cues != NULL)\n\t{\tuint32_t k ;\n\n\t\tpsf_binheader_writef (psf, \"em44\", BHWm (cue_MARKER), BHW4 (4 + psf->cues->cue_count * 6 * 4), BHW4 (psf->cues->cue_count)) ;\n\n\t\tfor (k = 0 ; k < psf->cues->cue_count ; k++)\n\t\t\tpsf_binheader_writef (psf, \"e44m444\", BHW4 (psf->cues->cue_points [k].indx), BHW4 (psf->cues->cue_points [k].position),\n\t\t\t\t\t\tBHWm (psf->cues->cue_points [k].fcc_chunk), BHW4 (psf->cues->cue_points [k].chunk_start),\n\t\t\t\t\t\tBHW4 (psf->cues->cue_points [k].block_start), BHW4 (psf->cues->cue_points [k].sample_offset)) ;\n\t\t} ;\n\n\tif (psf->instrument != NULL)\n\t{\tint\t\ttmp ;\n\t\tdouble\tdtune = (double) (0x40000000) / 25.0 ;\n\n\t\tpsf_binheader_writef (psf, \"m4\", BHWm (smpl_MARKER), BHW4 (9 * 4 + psf->instrument->loop_count * 6 * 4)) ;\n\t\tpsf_binheader_writef (psf, \"44\", BHW4 (0), BHW4 (0)) ; /* Manufacturer zero is everyone */\n\t\ttmp = (int) (1.0e9 / psf->sf.samplerate) ; /* Sample period in nano seconds */\n\t\tpsf_binheader_writef (psf, \"44\", BHW4 (tmp), BHW4 (psf->instrument->basenote)) ;\n\t\ttmp = (uint32_t) (psf->instrument->detune * dtune + 0.5) ;\n\t\tpsf_binheader_writef (psf, \"4\", BHW4 (tmp)) ;\n\t\tpsf_binheader_writef (psf, \"44\", BHW4 (0), BHW4 (0)) ; /* SMTPE format */\n\t\tpsf_binheader_writef (psf, \"44\", BHW4 (psf->instrument->loop_count), BHW4 (0)) ;\n\n\t\tfor (tmp = 0 ; tmp < psf->instrument->loop_count ; tmp++)\n\t\t{\tint type ;\n\n\t\t\ttype = psf->instrument->loops [tmp].mode ;\n\t\t\ttype = (type == SF_LOOP_FORWARD ? 0 : type == SF_LOOP_BACKWARD ? 2 : type == SF_LOOP_ALTERNATING ? 1 : 32) ;\n\n\t\t\tpsf_binheader_writef (psf, \"44\", BHW4 (tmp), BHW4 (type)) ;\n\t\t\tpsf_binheader_writef (psf, \"44\", BHW4 (psf->instrument->loops [tmp].start), BHW4 (psf->instrument->loops [tmp].end - 1)) ;\n\t\t\tpsf_binheader_writef (psf, \"44\", BHW4 (0), BHW4 (psf->instrument->loops [tmp].count)) ;\n\t\t\t} ;\n\t\t} ;\n\n\t/* Write custom headers. */\n\tif (psf->wchunks.used > 0)\n\t\twavlike_write_custom_chunks (psf) ;\n\n\tif (psf->header.indx + 16 < psf->dataoffset)\n\t{\t/* Add PAD data if necessary. */\n\t\tsize_t k = psf->dataoffset - (psf->header.indx + 16) ;\n\t\tpsf_binheader_writef (psf, \"m4z\", BHWm (PAD_MARKER), BHW4 (k), BHWz (k)) ;\n\t\t} ;\n\n\tpsf_binheader_writef (psf, \"tm8\", BHWm (data_MARKER), BHW8 (psf->datalength)) ;\n\tpsf_fwrite (psf->header.ptr, psf->header.indx, 1, psf) ;\n\tif (psf->error)\n\t\treturn psf->error ;\n\n\tif (has_data && psf->dataoffset != psf->header.indx)\n\t{\tpsf_log_printf (psf, \"Oooops : has_data && psf->dataoffset != psf->header.indx\\n\") ;\n\t\treturn psf->error = SFE_INTERNAL ;\n\t\t} ;\n\n\tpsf->dataoffset = psf->header.indx ;\n\n\tif (! has_data)\n\t\tpsf_fseek (psf, psf->dataoffset, SEEK_SET) ;\n\telse if (current > 0)\n\t\tpsf_fseek (psf, current, SEEK_SET) ;\n\n\treturn psf->error ;\n} /* wav_write_header */",
+            1054
+        ],
+        [
+            "src/wav.c",
+            "wav_read_smpl_chunk",
+            "static int /* <=== wav_read_smpl_chunk */ \nwav_read_smpl_chunk (SF_PRIVATE *psf, uint32_t chunklen)\n{\tchar buffer [512] ;\n\tuint32_t thisread, bytesread = 0, dword, sampler_data, loop_count ;\n\tuint32_t note, pitch, start, end, type = -1, count ;\n\tint j, k ;\n\n\tchunklen += (chunklen & 1) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tpsf_log_printf (psf, \"  Manufacturer : %X\\n\", dword) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tpsf_log_printf (psf, \"  Product      : %u\\n\", dword) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tpsf_log_printf (psf, \"  Period       : %u nsec\\n\", dword) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &note) ;\n\tpsf_log_printf (psf, \"  Midi Note    : %u\\n\", note) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &pitch) ;\n\tif (pitch != 0)\n\t{\tsnprintf (buffer, sizeof (buffer), \"%f\",\n\t\t\t\t\t(1.0 * 0x80000000) / ((uint32_t) pitch)) ;\n\t\tpsf_log_printf (psf, \"  Pitch Fract. : %s\\n\", buffer) ;\n\t\t}\n\telse\n\t\tpsf_log_printf (psf, \"  Pitch Fract. : 0\\n\") ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tpsf_log_printf (psf, \"  SMPTE Format : %u\\n\", dword) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\tsnprintf (buffer, sizeof (buffer), \"%02d:%02d:%02d %02d\",\n\t\t\t\t(dword >> 24) & 0x7F, (dword >> 16) & 0x7F, (dword >> 8) & 0x7F, dword & 0x7F) ;\n\tpsf_log_printf (psf, \"  SMPTE Offset : %s\\n\", buffer) ;\n\n\tbytesread += psf_binheader_readf (psf, \"4\", &loop_count) ;\n\tpsf_log_printf (psf, \"  Loop Count   : %u\\n\", loop_count) ;\n\n\tif (loop_count == 0 && chunklen == bytesread)\n\t\treturn 0 ;\n\n\t/* Sampler Data holds the number of data bytes after the CUE chunks which\n\t** is not actually CUE data. Display value after CUE data.\n\t*/\n\tbytesread += psf_binheader_readf (psf, \"4\", &sampler_data) ;\n\n\tif ((psf->instrument = psf_instrument_alloc ()) == NULL)\n\t\treturn SFE_MALLOC_FAILED ;\n\n\tpsf->instrument->loop_count = loop_count ;\n\n\tfor (j = 0 ; loop_count > 0 && chunklen - bytesread >= 24 ; j ++)\n\t{\tif ((thisread = psf_binheader_readf (psf, \"4\", &dword)) == 0)\n\t\t\tbreak ;\n\t\tbytesread += thisread ;\n\t\tpsf_log_printf (psf, \"    Cue ID : %2u\", dword) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &type) ;\n\t\tpsf_log_printf (psf, \"  Type : %2u\", type) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &start) ;\n\t\tpsf_log_printf (psf, \"  Start : %5u\", start) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &end) ;\n\t\tpsf_log_printf (psf, \"  End : %5u\", end) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &dword) ;\n\t\tpsf_log_printf (psf, \"  Fraction : %5u\", dword) ;\n\n\t\tbytesread += psf_binheader_readf (psf, \"4\", &count) ;\n\t\tpsf_log_printf (psf, \"  Count : %5u\\n\", count) ;\n\n\t\tif (j < ARRAY_LEN (psf->instrument->loops))\n\t\t{\tpsf->instrument->loops [j].start = start ;\n\t\t\tpsf->instrument->loops [j].end = end + 1 ;\n\t\t\tpsf->instrument->loops [j].count = count ;\n\n\t\t\tswitch (type)\n\t\t\t{\tcase 0 :\n\t\t\t\t\tpsf->instrument->loops [j].mode = SF_LOOP_FORWARD ;\n\t\t\t\t\tbreak ;\n\t\t\t\tcase 1 :\n\t\t\t\t\tpsf->instrument->loops [j].mode = SF_LOOP_ALTERNATING ;\n\t\t\t\t\tbreak ;\n\t\t\t\tcase 2 :\n\t\t\t\t\tpsf->instrument->loops [j].mode = SF_LOOP_BACKWARD ;\n\t\t\t\t\tbreak ;\n\t\t\t\tdefault:\n\t\t\t\t\tpsf->instrument->loops [j].mode = SF_LOOP_NONE ;\n\t\t\t\t\tbreak ;\n\t\t\t\t} ;\n\t\t\t} ;\n\n\t\tloop_count -- ;\n\t\t} ;\n\n\tif (chunklen - bytesread == 0)\n\t{\tif (sampler_data != 0)\n\t\t\tpsf_log_printf (psf, \"  Sampler Data : %u (should be 0)\\n\", sampler_data) ;\n\t\telse\n\t\t\tpsf_log_printf (psf, \"  Sampler Data : %u\\n\", sampler_data) ;\n\t\t}\n\telse\n\t{\tif (sampler_data != chunklen - bytesread)\n\t\t{\tpsf_log_printf (psf, \"  Sampler Data : %u (should have been %u)\\n\", sampler_data, chunklen - bytesread) ;\n\t\t\tsampler_data = chunklen - bytesread ;\n\t\t\t}\n\t\telse\n\t\t\tpsf_log_printf (psf, \"  Sampler Data : %u\\n\", sampler_data) ;\n\n\t\tpsf_log_printf (psf, \"      \") ;\n\t\tfor (k = 0 ; k < (int) sampler_data ; k++)\n\t\t{\tchar ch ;\n\n\t\t\tif (k > 0 && (k % 20) == 0)\n\t\t\t\tpsf_log_printf (psf, \"\\n      \") ;\n\n\t\t\tif ((thisread = psf_binheader_readf (psf, \"1\", &ch)) == 0)\n\t\t\t\tbreak ;\n\t\t\tbytesread += thisread ;\n\t\t\tpsf_log_printf (psf, \"%02X \", ch & 0xFF) ;\n\t\t\t} ;\n\n\t\tpsf_log_printf (psf, \"\\n\") ;\n\t\t} ;\n\n\tpsf->instrument->basenote = note ;\n\tpsf->instrument->detune = (int8_t)(pitch / (0x40000000 / 25.0) + 0.5) ;\n\tpsf->instrument->gain = 1 ;\n\tpsf->instrument->velocity_lo = psf->instrument->key_lo = 0 ;\n\tpsf->instrument->velocity_hi = psf->instrument->key_hi = 127 ;\n\n\treturn 0 ;\n} /* wav_read_smpl_chunk */",
+            1285
+        ]
+    ]
+}

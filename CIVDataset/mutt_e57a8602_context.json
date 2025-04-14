@@ -1,0 +1,732 @@
+{
+    "calleeMethods": [
+        [
+            "mutt_socket.c",
+            "mutt_socket_free",
+            "void mutt_socket_free (CONNECTION* conn) /* <=== mutt_socket_free */ \n{\n  CONNECTION* iter;\n  CONNECTION* tmp;\n\n  iter = Connections;\n\n  /* head is special case, doesn't need prev updated */\n  if (iter == conn)\n  {\n    Connections = iter->next;\n    FREE (&iter);\n    return;\n  }\n\n  while (iter->next)\n  {\n    if (iter->next == conn)\n    {\n      tmp = iter->next;\n      iter->next = tmp->next;\n      FREE (&tmp);\n      return;\n    }\n    iter = iter->next;\n  }\n}",
+            3
+        ],
+        [
+            "mutt_socket.c",
+            "mutt_socket_readchar",
+            "int mutt_socket_readchar (CONNECTION *conn, char *c) /* <=== mutt_socket_readchar */ \n{\n  if (conn->bufpos >= conn->available)\n  {\n    if (conn->fd >= 0)\n      conn->available = conn->conn_read (conn, conn->inbuf, sizeof (conn->inbuf));\n    else\n    {\n      dprint (1, (debugfile, \"mutt_socket_readchar: attempt to read from closed connection.\\n\"));\n      return -1;\n    }\n    conn->bufpos = 0;\n    if (conn->available == 0)\n    {\n      mutt_error (_(\"Connection to %s closed\"), conn->account.host);\n      mutt_sleep (2);\n    }\n    if (conn->available <= 0)\n    {\n      mutt_socket_close (conn);\n      return -1;\n    }\n  }\n  *c = conn->inbuf[conn->bufpos];\n  conn->bufpos++;\n  return 1;\n}",
+            3
+        ],
+        [
+            "lib.h",
+            "dprint",
+            "#  define dprint(N,X) do { } while (0) /* <=== lib.h:157:157:dprint:2 */ ",
+            1
+        ],
+        [
+            "protos.h",
+            "sscanf",
+            "extern int sscanf (); /* <=== sscanf */ ",
+            2
+        ],
+        [
+            "imap/message.c",
+            "imap_read_headers",
+            "int imap_read_headers (IMAP_DATA* idata, unsigned int msn_begin, unsigned int msn_end) /* <=== imap_read_headers */ \n{\n  CONTEXT* ctx;\n  char *hdrreq = NULL;\n  FILE *fp;\n  char tempfile[_POSIX_PATH_MAX];\n  int msgno, idx;\n  IMAP_HEADER h;\n  IMAP_STATUS* status;\n  int rc, mfhrc = 0, oldmsgcount;\n  int fetch_msn_end = 0;\n  unsigned int maxuid = 0;\n  static const char * const want_headers = \"DATE FROM SUBJECT TO CC MESSAGE-ID REFERENCES CONTENT-TYPE CONTENT-DESCRIPTION IN-REPLY-TO REPLY-TO LINES LIST-POST X-LABEL\";\n  progress_t progress;\n  int retval = -1;\n  int evalhc = 0;\n\n#if USE_HCACHE\n  char buf[LONG_STRING];\n  unsigned int *uid_validity = NULL;\n  unsigned int *puidnext = NULL;\n  unsigned int uidnext = 0;\n#endif /* USE_HCACHE */\n\n  ctx = idata->ctx;\n\n  if (mutt_bit_isset (idata->capabilities,IMAP4REV1))\n  {\n    safe_asprintf (&hdrreq, \"BODY.PEEK[HEADER.FIELDS (%s%s%s)]\",\n                           want_headers, ImapHeaders ? \" \" : \"\", NONULL (ImapHeaders));\n  }\n  else if (mutt_bit_isset (idata->capabilities,IMAP4))\n  {\n    safe_asprintf (&hdrreq, \"RFC822.HEADER.LINES (%s%s%s)\",\n                           want_headers, ImapHeaders ? \" \" : \"\", NONULL (ImapHeaders));\n  }\n  else\n  {\t/* Unable to fetch headers for lower versions */\n    mutt_error _(\"Unable to fetch headers from this IMAP server version.\");\n    mutt_sleep (2);\t/* pause a moment to let the user see the error */\n    goto error_out_0;\n  }\n\n  /* instead of downloading all headers and then parsing them, we parse them\n   * as they come in. */\n  mutt_mktemp (tempfile, sizeof (tempfile));\n  if (!(fp = safe_fopen (tempfile, \"w+\")))\n  {\n    mutt_error (_(\"Could not create temporary file %s\"), tempfile);\n    mutt_sleep (2);\n    goto error_out_0;\n  }\n  unlink (tempfile);\n\n  /* make sure context has room to hold the mailbox */\n  while (msn_end > ctx->hdrmax)\n    mx_alloc_memory (ctx);\n  imap_alloc_msn_index (idata, msn_end);\n\n  idx = ctx->msgcount;\n  oldmsgcount = ctx->msgcount;\n  idata->reopen &= ~(IMAP_REOPEN_ALLOW|IMAP_NEWMAIL_PENDING);\n  idata->newMailCount = 0;\n\n#if USE_HCACHE\n  idata->hcache = imap_hcache_open (idata, NULL);\n\n  if (idata->hcache && (msn_begin == 1))\n  {\n    uid_validity = mutt_hcache_fetch_raw (idata->hcache, \"/UIDVALIDITY\", imap_hcache_keylen);\n    puidnext = mutt_hcache_fetch_raw (idata->hcache, \"/UIDNEXT\", imap_hcache_keylen);\n    if (puidnext)\n    {\n      uidnext = *puidnext;\n      mutt_hcache_free ((void **)&puidnext);\n    }\n    if (uid_validity && uidnext && *uid_validity == idata->uid_validity)\n      evalhc = 1;\n    mutt_hcache_free ((void **)&uid_validity);\n  }\n  if (evalhc)\n  {\n    /* L10N:\n       Comparing the cached data with the IMAP server's data */\n    mutt_progress_init (&progress, _(\"Evaluating cache...\"),\n\t\t\tMUTT_PROGRESS_MSG, ReadInc, msn_end);\n\n    snprintf (buf, sizeof (buf),\n      \"UID FETCH 1:%u (UID FLAGS)\", uidnext - 1);\n\n    imap_cmd_start (idata, buf);\n\n    rc = IMAP_CMD_CONTINUE;\n    for (msgno = 1; rc == IMAP_CMD_CONTINUE; msgno++)\n    {\n      mutt_progress_update (&progress, msgno, -1);\n\n      memset (&h, 0, sizeof (h));\n      h.data = safe_calloc (1, sizeof (IMAP_HEADER_DATA));\n      do\n      {\n        rc = imap_cmd_step (idata);\n        if (rc != IMAP_CMD_CONTINUE)\n          break;\n\n        if ((mfhrc = msg_fetch_header (ctx, &h, idata->buf, NULL)) < 0)\n          continue;\n\n        if (!h.data->uid)\n        {\n          dprint (2, (debugfile, \"imap_read_headers: skipping hcache FETCH \"\n                      \"response for message number %d missing a UID\\n\", h.data->msn));\n          continue;\n        }\n\n        if (h.data->msn < 1 || h.data->msn > msn_end)\n        {\n          dprint (1, (debugfile, \"imap_read_headers: skipping hcache FETCH \"\n                      \"response for unknown message number %d\\n\", h.data->msn));\n          continue;\n        }\n\n        if (idata->msn_index[h.data->msn - 1])\n        {\n          dprint (2, (debugfile, \"imap_read_headers: skipping hcache FETCH \"\n                      \"for duplicate message %d\\n\", h.data->msn));\n          continue;\n        }\n\n        ctx->hdrs[idx] = imap_hcache_get (idata, h.data->uid);\n        if (ctx->hdrs[idx])\n        {\n          idata->max_msn = MAX (idata->max_msn, h.data->msn);\n          idata->msn_index[h.data->msn - 1] = ctx->hdrs[idx];\n\n  \t  ctx->hdrs[idx]->index = idx;\n  \t  /* messages which have not been expunged are ACTIVE (borrowed from mh\n  \t   * folders) */\n  \t  ctx->hdrs[idx]->active = 1;\n          ctx->hdrs[idx]->read = h.data->read;\n          ctx->hdrs[idx]->old = h.data->old;\n          ctx->hdrs[idx]->deleted = h.data->deleted;\n          ctx->hdrs[idx]->flagged = h.data->flagged;\n          ctx->hdrs[idx]->replied = h.data->replied;\n          ctx->hdrs[idx]->changed = h.data->changed;\n          /*  ctx->hdrs[msgno]->received is restored from mutt_hcache_restore */\n          ctx->hdrs[idx]->data = (void *) (h.data);\n\n          ctx->msgcount++;\n          ctx->size += ctx->hdrs[idx]->content->length;\n\n          h.data = NULL;\n          idx++;\n        }\n      }\n      while (mfhrc == -1);\n\n      imap_free_header_data (&h.data);\n\n      if ((mfhrc < -1) || ((rc != IMAP_CMD_CONTINUE) && (rc != IMAP_CMD_OK)))\n      {\n        imap_hcache_close (idata);\n\tgoto error_out_1;\n      }\n    }\n\n    /* Look for the first empty MSN and start there */\n    while (msn_begin <= msn_end)\n    {\n      if (!idata->msn_index[msn_begin -1])\n        break;\n      msn_begin++;\n    }\n  }\n#endif /* USE_HCACHE */\n\n  mutt_progress_init (&progress, _(\"Fetching message headers...\"),\n\t\t      MUTT_PROGRESS_MSG, ReadInc, msn_end);\n\n  while (msn_begin <= msn_end && fetch_msn_end < msn_end)\n  {\n    char *cmd;\n    BUFFER *b;\n\n    b = mutt_buffer_new ();\n    if (evalhc)\n    {\n      /* In case there are holes in the header cache. */\n      evalhc = 0;\n      imap_generate_seqset (b, idata, msn_begin, msn_end);\n    }\n    else\n      mutt_buffer_printf (b, \"%u:%u\", msn_begin, msn_end);\n\n    fetch_msn_end = msn_end;\n    safe_asprintf (&cmd, \"FETCH %s (UID FLAGS INTERNALDATE RFC822.SIZE %s)\",\n                   b->data, hdrreq);\n    imap_cmd_start (idata, cmd);\n    FREE (&cmd);\n    mutt_buffer_free (&b);\n\n    rc = IMAP_CMD_CONTINUE;\n    for (msgno = msn_begin; rc == IMAP_CMD_CONTINUE; msgno++)\n    {\n      mutt_progress_update (&progress, msgno, -1);\n\n      rewind (fp);\n      memset (&h, 0, sizeof (h));\n      h.data = safe_calloc (1, sizeof (IMAP_HEADER_DATA));\n\n      /* this DO loop does two things:\n       * 1. handles untagged messages, so we can try again on the same msg\n       * 2. fetches the tagged response at the end of the last message.\n       */\n      do\n      {\n        rc = imap_cmd_step (idata);\n        if (rc != IMAP_CMD_CONTINUE)\n          break;\n\n        if ((mfhrc = msg_fetch_header (ctx, &h, idata->buf, fp)) < 0)\n          continue;\n\n        if (!ftello (fp))\n        {\n          dprint (2, (debugfile, \"msg_fetch_header: ignoring fetch response with no body\\n\"));\n          continue;\n        }\n\n        /* make sure we don't get remnants from older larger message headers */\n        fputs (\"\\n\\n\", fp);\n\n        if (h.data->msn < 1 || h.data->msn > fetch_msn_end)\n        {\n          dprint (1, (debugfile, \"imap_read_headers: skipping FETCH response for \"\n                      \"unknown message number %d\\n\", h.data->msn));\n          continue;\n        }\n\n        /* May receive FLAGS updates in a separate untagged response (#2935) */\n        if (idata->msn_index[h.data->msn - 1])\n        {\n          dprint (2, (debugfile, \"imap_read_headers: skipping FETCH response for \"\n                      \"duplicate message %d\\n\", h.data->msn));\n          continue;\n        }\n\n        ctx->hdrs[idx] = mutt_new_header ();\n\n        idata->max_msn = MAX (idata->max_msn, h.data->msn);\n        idata->msn_index[h.data->msn - 1] = ctx->hdrs[idx];\n\n        ctx->hdrs[idx]->index = idx;\n        /* messages which have not been expunged are ACTIVE (borrowed from mh\n         * folders) */\n        ctx->hdrs[idx]->active = 1;\n        ctx->hdrs[idx]->read = h.data->read;\n        ctx->hdrs[idx]->old = h.data->old;\n        ctx->hdrs[idx]->deleted = h.data->deleted;\n        ctx->hdrs[idx]->flagged = h.data->flagged;\n        ctx->hdrs[idx]->replied = h.data->replied;\n        ctx->hdrs[idx]->changed = h.data->changed;\n        ctx->hdrs[idx]->received = h.received;\n        ctx->hdrs[idx]->data = (void *) (h.data);\n\n        if (maxuid < h.data->uid)\n          maxuid = h.data->uid;\n\n        rewind (fp);\n        /* NOTE: if Date: header is missing, mutt_read_rfc822_header depends\n         *   on h.received being set */\n        ctx->hdrs[idx]->env = mutt_read_rfc822_header (fp, ctx->hdrs[idx],\n                                                       0, 0);\n        /* content built as a side-effect of mutt_read_rfc822_header */\n        ctx->hdrs[idx]->content->length = h.content_length;\n        ctx->size += h.content_length;\n\n#if USE_HCACHE\n        imap_hcache_put (idata, ctx->hdrs[idx]);\n#endif /* USE_HCACHE */\n\n        ctx->msgcount++;\n\n        h.data = NULL;\n        idx++;\n      }\n      while (mfhrc == -1);\n\n      imap_free_header_data (&h.data);\n\n      if ((mfhrc < -1) || ((rc != IMAP_CMD_CONTINUE) && (rc != IMAP_CMD_OK)))\n      {\n#if USE_HCACHE\n        imap_hcache_close (idata);\n#endif\n        goto error_out_1;\n      }\n    }\n\n    /* In case we get new mail while fetching the headers.\n     *\n     * Note: The RFC says we shouldn't get any EXPUNGE responses in the\n     * middle of a FETCH.  But just to be cautious, use the current state\n     * of max_msn, not fetch_msn_end to set the next start range.\n     */\n    if (idata->reopen & IMAP_NEWMAIL_PENDING)\n    {\n      /* update to the last value we actually pulled down */\n      fetch_msn_end = idata->max_msn;\n      msn_begin = idata->max_msn + 1;\n      msn_end = idata->newMailCount;\n      while (msn_end > ctx->hdrmax)\n        mx_alloc_memory (ctx);\n      imap_alloc_msn_index (idata, msn_end);\n      idata->reopen &= ~IMAP_NEWMAIL_PENDING;\n      idata->newMailCount = 0;\n    }\n  }\n\n  if (maxuid && (status = imap_mboxcache_get (idata, idata->mailbox, 0)) &&\n      (status->uidnext < maxuid + 1))\n    status->uidnext = maxuid + 1;\n\n#if USE_HCACHE\n  mutt_hcache_store_raw (idata->hcache, \"/UIDVALIDITY\", &idata->uid_validity,\n                         sizeof (idata->uid_validity), imap_hcache_keylen);\n  if (maxuid && idata->uidnext < maxuid + 1)\n  {\n    dprint (2, (debugfile, \"Overriding UIDNEXT: %u -> %u\\n\", idata->uidnext, maxuid + 1));\n    idata->uidnext = maxuid + 1;\n  }\n  if (idata->uidnext > 1)\n    mutt_hcache_store_raw (idata->hcache, \"/UIDNEXT\", &idata->uidnext,\n\t\t\t   sizeof (idata->uidnext), imap_hcache_keylen);\n\n  imap_hcache_close (idata);\n#endif /* USE_HCACHE */\n\n  if (ctx->msgcount > oldmsgcount)\n  {\n    /* TODO: it's not clear to me why we are calling mx_alloc_memory\n     *       yet again. */\n    mx_alloc_memory(ctx);\n    mx_update_context (ctx, ctx->msgcount - oldmsgcount);\n    imap_update_context (idata, oldmsgcount);\n  }\n\n  idata->reopen |= IMAP_REOPEN_ALLOW;\n\n  retval = msn_end;\n\nerror_out_1:\n  safe_fclose (&fp);\n\nerror_out_0:\n  FREE (&hdrreq);\n\n  return retval;\n}",
+            3
+        ],
+        [
+            "lib.h",
+            "NONULL",
+            "# define NONULL(x) x?x:\"\" /* <=== lib.h:78:78:NONULL:1 */ ",
+            2
+        ],
+        [
+            "imap/imap_private.h",
+            "MUTT_IMAP_CONN_NONEW",
+            "#define MUTT_IMAP_CONN_NONEW    (1<<0) /* <=== imap/imap_private.h:125:125:MUTT_IMAP_CONN_NONEW:0 */ ",
+            2
+        ],
+        [
+            "imap/command.c",
+            "cmd_handle_untagged",
+            "static int cmd_handle_untagged (IMAP_DATA* idata) /* <=== cmd_handle_untagged */ \n{\n  char* s;\n  char* pn;\n  unsigned int count;\n\n  s = imap_next_word (idata->buf);\n  pn = imap_next_word (s);\n\n  if ((idata->state >= IMAP_SELECTED) && isdigit ((unsigned char) *s))\n  {\n    pn = s;\n    s = imap_next_word (s);\n\n    /* EXISTS and EXPUNGE are always related to the SELECTED mailbox for the\n     * connection, so update that one.\n     */\n    if (ascii_strncasecmp (\"EXISTS\", s, 6) == 0)\n    {\n      dprint (2, (debugfile, \"Handling EXISTS\\n\"));\n\n      /* new mail arrived */\n      mutt_atoui (pn, &count);\n\n      if ( !(idata->reopen & IMAP_EXPUNGE_PENDING) &&\n\t   count < idata->max_msn)\n      {\n        /* Notes 6.0.3 has a tendency to report fewer messages exist than\n         * it should. */\n\tdprint (1, (debugfile, \"Message count is out of sync\"));\n\treturn 0;\n      }\n      /* at least the InterChange server sends EXISTS messages freely,\n       * even when there is no new mail */\n      else if (count == idata->max_msn)\n\tdprint (3, (debugfile,\n          \"cmd_handle_untagged: superfluous EXISTS message.\\n\"));\n      else\n      {\n\tif (!(idata->reopen & IMAP_EXPUNGE_PENDING))\n        {\n          dprint (2, (debugfile,\n            \"cmd_handle_untagged: New mail in %s - %d messages total.\\n\",\n            idata->mailbox, count));\n\t  idata->reopen |= IMAP_NEWMAIL_PENDING;\n        }\n\tidata->newMailCount = count;\n      }\n    }\n    /* pn vs. s: need initial seqno */\n    else if (ascii_strncasecmp (\"EXPUNGE\", s, 7) == 0)\n      cmd_parse_expunge (idata, pn);\n    else if (ascii_strncasecmp (\"FETCH\", s, 5) == 0)\n      cmd_parse_fetch (idata, pn);\n  }\n  else if (ascii_strncasecmp (\"CAPABILITY\", s, 10) == 0)\n    cmd_parse_capability (idata, s);\n  else if (!ascii_strncasecmp (\"OK [CAPABILITY\", s, 14))\n    cmd_parse_capability (idata, pn);\n  else if (!ascii_strncasecmp (\"OK [CAPABILITY\", pn, 14))\n    cmd_parse_capability (idata, imap_next_word (pn));\n  else if (ascii_strncasecmp (\"LIST\", s, 4) == 0)\n    cmd_parse_list (idata, s);\n  else if (ascii_strncasecmp (\"LSUB\", s, 4) == 0)\n    cmd_parse_lsub (idata, s);\n  else if (ascii_strncasecmp (\"MYRIGHTS\", s, 8) == 0)\n    cmd_parse_myrights (idata, s);\n  else if (ascii_strncasecmp (\"SEARCH\", s, 6) == 0)\n    cmd_parse_search (idata, s);\n  else if (ascii_strncasecmp (\"STATUS\", s, 6) == 0)\n    cmd_parse_status (idata, s);\n  else if (ascii_strncasecmp (\"ENABLED\", s, 7) == 0)\n    cmd_parse_enabled (idata, s);\n  else if (ascii_strncasecmp (\"BYE\", s, 3) == 0)\n  {\n    dprint (2, (debugfile, \"Handling BYE\\n\"));\n\n    /* check if we're logging out */\n    if (idata->status == IMAP_BYE)\n      return 0;\n\n    /* server shut down our connection */\n    s += 3;\n    SKIPWS (s);\n    mutt_error (\"%s\", s);\n    mutt_sleep (2);\n    cmd_handle_fatal (idata);\n\n    return -1;\n  }\n  else if (option (OPTIMAPSERVERNOISE) && (ascii_strncasecmp (\"NO\", s, 2) == 0))\n  {\n    dprint (2, (debugfile, \"Handling untagged NO\\n\"));\n\n    /* Display the warning message from the server */\n    mutt_error (\"%s\", s+2);\n    mutt_sleep (2);\n  }\n\n  return 0;\n}",
+            2
+        ],
+        [
+            "account.h",
+            "MUTT_ACCT_USER",
+            "#define MUTT_ACCT_USER  (1<<1) /* <=== account.h:37:37:MUTT_ACCT_USER:0 */ ",
+            2
+        ],
+        [
+            "protos.h",
+            "time",
+            "extern time_t time (); /* <=== time */ ",
+            2
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_CMD_QUEUE",
+            "#define IMAP_CMD_QUEUE   (1<<2) /* <=== imap/imap_private.h:72:72:IMAP_CMD_QUEUE:0 */ ",
+            3
+        ],
+        [
+            "lib.c",
+            "mutt_atoui",
+            "int mutt_atoui (const char *str, unsigned int *dst) /* <=== mutt_atoui */ \n{\n  int rc;\n  unsigned long res;\n  unsigned int tmp;\n  unsigned int *t = dst ? dst : &tmp;\n\n  *t = 0;\n\n  if ((rc = mutt_atoul (str, &res)) < 0)\n    return rc;\n  if ((unsigned int) res != res)\n    return -2;\n\n  *t = (unsigned int) res;\n  return rc;\n}",
+            2
+        ],
+        [
+            "lib.h",
+            "strfcpy",
+            "# define strfcpy(A,B,C) strncpy(A,B,C), *(A+(C)-1)=0 /* <=== lib.h:80:80:strfcpy:3 */ ",
+            2
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_CMD_FAIL_OK",
+            "#define IMAP_CMD_FAIL_OK (1<<0) /* <=== imap/imap_private.h:70:70:IMAP_CMD_FAIL_OK:0 */ ",
+            3
+        ],
+        [
+            "lib.h",
+            "_",
+            "#  define _(a) (a) /* <=== lib.h:53:53:_:1 */ ",
+            3
+        ],
+        [
+            "url.c",
+            "ciss_parse_userhost",
+            "static int ciss_parse_userhost (ciss_url_t *ciss, char *src) /* <=== ciss_parse_userhost */ \n{\n  char *t, *p;\n\n  ciss->user = NULL;\n  ciss->pass = NULL;\n  ciss->host = NULL;\n  ciss->port = 0;\n\n  if (strncmp (src, \"//\", 2) != 0)\n  {\n    ciss->path = src;\n    return url_pct_decode (ciss->path);\n  }\n\n  src += 2;\n\n  if ((ciss->path = strchr (src, '/')))\n    *ciss->path++ = '\\0';\n\n  if ((t = strrchr (src, '@')))\n  {\n    *t = '\\0';\n    if ((p = strchr (src, ':')))\n    {\n      *p = '\\0';\n      ciss->pass = p + 1;\n      if (url_pct_decode (ciss->pass) < 0)\n\treturn -1;\n    }\n    ciss->user = src;\n    if (url_pct_decode (ciss->user) < 0)\n      return -1;\n    src = t + 1;\n  }\n\n  /* IPv6 literal address.  It may contain colons, so set t to start\n   * the port scan after it.\n   */\n  if ((*src == '[') && (t = strchr (src, ']')))\n  {\n    src++;\n    *t++ = '\\0';\n  }\n  else\n    t = src;\n\n  if ((p = strchr (t, ':')))\n  {\n    int t;\n    *p++ = '\\0';\n    if (mutt_atoi (p, &t) < 0 || t < 0 || t > 0xffff)\n      return -1;\n    ciss->port = (unsigned short)t;\n  }\n  else\n    ciss->port = 0;\n\n  ciss->host = src;\n  return url_pct_decode (ciss->host) >= 0 &&\n    (!ciss->path || url_pct_decode (ciss->path) >= 0) ? 0 : -1;\n}",
+            3
+        ],
+        [
+            "ascii.c",
+            "ascii_strncasecmp",
+            "int ascii_strncasecmp (const char *a, const char *b, int n) /* <=== ascii_strncasecmp */ \n{\n  int i, j;\n  \n  if (a == b)\n    return 0;\n  if (a == NULL && b)\n    return -1;\n  if (b == NULL && a)\n    return 1;\n  \n  for (j = 0; (*a || *b) && j < n; a++, b++, j++)\n  {\n    if ((i = ascii_tolower (*a) - ascii_tolower (*b)))\n      return i;\n  }\n  \n  return 0;\n}",
+            3
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_PORT",
+            "#define IMAP_PORT 143 /* <=== imap/imap_private.h:33:33:IMAP_PORT:0 */ ",
+            2
+        ],
+        [
+            "imap/command.c",
+            "cmd_parse_fetch",
+            "static void cmd_parse_fetch (IMAP_DATA* idata, char* s) /* <=== cmd_parse_fetch */ \n{\n  unsigned int msn, uid;\n  HEADER *h;\n  int server_changes = 0;\n\n  dprint (3, (debugfile, \"Handling FETCH\\n\"));\n\n  if (mutt_atoui (s, &msn) < 0 ||\n      msn < 1 || msn > idata->max_msn)\n  {\n    dprint (3, (debugfile, \"FETCH response ignored for this message\\n\"));\n    return;\n  }\n\n  h = idata->msn_index[msn - 1];\n  if (!h || !h->active)\n  {\n    dprint (3, (debugfile, \"FETCH response ignored for this message\\n\"));\n    return;\n  }\n\n  dprint (2, (debugfile, \"Message UID %u updated\\n\", HEADER_DATA(h)->uid));\n  /* skip FETCH */\n  s = imap_next_word (s);\n  s = imap_next_word (s);\n\n  if (*s != '(')\n  {\n    dprint (1, (debugfile, \"Malformed FETCH response\"));\n    return;\n  }\n  s++;\n\n  while (*s)\n  {\n    SKIPWS (s);\n\n    if (ascii_strncasecmp (\"FLAGS\", s, 5) == 0)\n    {\n      imap_set_flags (idata, h, s, &server_changes);\n      if (server_changes)\n      {\n        /* If server flags could conflict with mutt's flags, reopen the mailbox. */\n        if (h->changed)\n          idata->reopen |= IMAP_EXPUNGE_PENDING;\n        else\n          idata->check_status = IMAP_FLAGS_PENDING;\n      }\n      return;\n    }\n    else if (ascii_strncasecmp (\"UID\", s, 3) == 0)\n    {\n      s += 3;\n      SKIPWS (s);\n      if (mutt_atoui (s, &uid) < 0)\n      {\n        dprint (2, (debugfile, \"Illegal UID.  Skipping update.\\n\"));\n        return;\n      }\n      if (uid != HEADER_DATA(h)->uid)\n      {\n        dprint (2, (debugfile, \"FETCH UID vs MSN mismatch.  Skipping update.\\n\"));\n        return;\n      }\n      s = imap_next_word (s);\n    }\n    else if (*s == ')')\n      s++; /* end of request */\n    else if (*s)\n    {\n      dprint (2, (debugfile, \"Only handle FLAGS updates\\n\"));\n      return;\n    }\n  }\n}",
+            3
+        ],
+        [
+            "url.c",
+            "url_check_scheme",
+            "url_scheme_t url_check_scheme (const char *s) /* <=== url_check_scheme */ \n{\n  char sbuf[STRING];\n  char *t;\n  int i;\n\n  if (!s || !(t = strchr (s, ':')))\n    return U_UNKNOWN;\n  if ((size_t)(t - s) >= sizeof (sbuf) - 1)\n    return U_UNKNOWN;\n\n  strfcpy (sbuf, s, t - s + 1);\n  for (t = sbuf; *t; t++)\n    *t = ascii_tolower (*t);\n\n  if ((i = mutt_getvaluebyname (sbuf, UrlMap)) == -1)\n    return U_UNKNOWN;\n  else\n    return (url_scheme_t) i;\n}",
+            3
+        ],
+        [
+            "lib.c",
+            "mutt_strncmp",
+            "int mutt_strncmp(const char *a, const char *b, size_t l) /* <=== mutt_strncmp */ \n{\n  return strncmp(NONULL(a), NONULL(b), l);\n}",
+            1
+        ],
+        [
+            "muttlib.c",
+            "mutt_sleep",
+            "void mutt_sleep (short s) /* <=== mutt_sleep */ \n{\n  if (SleepTime > s)\n    sleep (SleepTime);\n  else if (s)\n    sleep(s);\n}",
+            3
+        ],
+        [
+            "imap/command.c",
+            "cmd_handle_fatal",
+            "static void cmd_handle_fatal (IMAP_DATA* idata) /* <=== cmd_handle_fatal */ \n{\n  idata->status = IMAP_FATAL;\n\n  if ((idata->state >= IMAP_SELECTED) &&\n      (idata->reopen & IMAP_REOPEN_ALLOW))\n  {\n    mx_fastclose_mailbox (idata->ctx);\n    mutt_socket_close (idata->conn);\n    mutt_error (_(\"Mailbox %s@%s closed\"),\n\tidata->conn->account.login, idata->conn->account.host);\n    mutt_sleep (1);\n    idata->state = IMAP_DISCONNECTED;\n  }\n\n  if (idata->state < IMAP_SELECTED)\n    imap_close_connection (idata);\n}",
+            2
+        ],
+        [
+            "mutt_socket.h",
+            "mutt_socket_readln",
+            "#define mutt_socket_readln(A,B,C) mutt_socket_readln_d(A,B,C,MUTT_SOCK_LOG_CMD) /* <=== mutt_socket.h:59:59:mutt_socket_readln:3 */ ",
+            2
+        ],
+        [
+            "imap/command.c",
+            "cmd_status",
+            "static int cmd_status (const char *s) /* <=== cmd_status */ \n{\n  s = imap_next_word((char*)s);\n  \n  if (!ascii_strncasecmp(\"OK\", s, 2))\n    return IMAP_CMD_OK;\n  if (!ascii_strncasecmp(\"NO\", s, 2))\n    return IMAP_CMD_NO;\n\n  return IMAP_CMD_BAD;\n}",
+            2
+        ],
+        [
+            "imap/util.c",
+            "imap_next_word",
+            "char *imap_next_word (char *s) /* <=== imap_next_word */ \n{\n  int quoted = 0;\n\n  while (*s) {\n    if (*s == '\\\\') {\n      s++;\n      if (*s)\n\ts++;\n      continue;\n    }\n    if (*s == '\\\"')\n      quoted = quoted ? 0 : 1;\n    if (!quoted && ISSPACE (*s))\n      break;\n    s++;\n  }\n\n  SKIPWS (s);\n  return s;\n}",
+            1
+        ],
+        [
+            "imap/imap.c",
+            "imap_expunge_mailbox",
+            "void imap_expunge_mailbox (IMAP_DATA* idata) /* <=== imap_expunge_mailbox */ \n{\n  HEADER* h;\n  int i, cacheno;\n  short old_sort;\n\n#ifdef USE_HCACHE\n  idata->hcache = imap_hcache_open (idata, NULL);\n#endif\n\n  old_sort = Sort;\n  Sort = SORT_ORDER;\n  mutt_sort_headers (idata->ctx, 0);\n\n  for (i = 0; i < idata->ctx->msgcount; i++)\n  {\n    h = idata->ctx->hdrs[i];\n\n    if (h->index == INT_MAX)\n    {\n      dprint (2, (debugfile, \"Expunging message UID %u.\\n\", HEADER_DATA (h)->uid));\n\n      h->active = 0;\n      idata->ctx->size -= h->content->length;\n\n      imap_cache_del (idata, h);\n#if USE_HCACHE\n      imap_hcache_del (idata, HEADER_DATA(h)->uid);\n#endif\n\n      /* free cached body from disk, if necessary */\n      cacheno = HEADER_DATA(h)->uid % IMAP_CACHE_LEN;\n      if (idata->cache[cacheno].uid == HEADER_DATA(h)->uid &&\n\t  idata->cache[cacheno].path)\n      {\n\tunlink (idata->cache[cacheno].path);\n\tFREE (&idata->cache[cacheno].path);\n      }\n\n      int_hash_delete (idata->uid_hash, HEADER_DATA(h)->uid, h, NULL);\n\n      imap_free_header_data ((IMAP_HEADER_DATA**)&h->data);\n    }\n    else\n    {\n      h->index = i;\n      /* Mutt has several places where it turns off h->active as a\n       * hack.  For example to avoid FLAG updates, or to exclude from\n       * imap_exec_msgset.\n       *\n       * Unfortunately, when a reopen is allowed and the IMAP_EXPUNGE_PENDING\n       * flag becomes set (e.g. a flag update to a modified header),\n       * this function will be called by imap_cmd_finish().\n       *\n       * The mx_update_tables() will free and remove these \"inactive\" headers,\n       * despite that an EXPUNGE was not received for them.\n       * This would result in memory leaks and segfaults due to dangling\n       * pointers in the msn_index and uid_hash.\n       *\n       * So this is another hack to work around the hacks.  We don't want to\n       * remove the messages, so make sure active is on.\n       */\n      h->active = 1;\n    }\n  }\n\n#if USE_HCACHE\n  imap_hcache_close (idata);\n#endif\n\n  /* We may be called on to expunge at any time. We can't rely on the caller\n   * to always know to rethread */\n  mx_update_tables (idata->ctx, 0);\n  Sort = old_sort;\n  mutt_sort_headers (idata->ctx, 1);\n}",
+            3
+        ],
+        [
+            "lib.c",
+            "mutt_strcmp",
+            "int mutt_strcmp(const char *a, const char *b) /* <=== mutt_strcmp */ \n{\n  return strcmp(NONULL(a), NONULL(b));\n}",
+            2
+        ],
+        [
+            "account.h",
+            "MUTT_ACCT_PORT",
+            "#define MUTT_ACCT_PORT  (1<<0) /* <=== account.h:36:36:MUTT_ACCT_PORT:0 */ ",
+            2
+        ],
+        [
+            "url.c",
+            "url_parse_ciss",
+            "int url_parse_ciss (ciss_url_t *ciss, char *src) /* <=== url_parse_ciss */ \n{\n  char *tmp;\n\n  if ((ciss->scheme = url_check_scheme (src)) == U_UNKNOWN)\n    return -1;\n\n  tmp = strchr (src, ':') + 1;\n\n  return ciss_parse_userhost (ciss, tmp);\n}",
+            2
+        ],
+        [
+            "mutt_socket.c",
+            "mutt_socket_readln_d",
+            "int mutt_socket_readln_d (char* buf, size_t buflen, CONNECTION* conn, int dbg) /* <=== mutt_socket_readln_d */ \n{\n  char ch;\n  int i;\n\n  for (i = 0; i < buflen-1; i++)\n  {\n    if (mutt_socket_readchar (conn, &ch) != 1)\n    {\n      buf[i] = '\\0';\n      return -1;\n    }\n\n    if (ch == '\\n')\n      break;\n    buf[i] = ch;\n  }\n\n  /* strip \\r from \\r\\n termination */\n  if (i && buf[i-1] == '\\r')\n    i--;\n  buf[i] = '\\0';\n\n  dprint (dbg, (debugfile, \"%d< %s\\n\", conn->fd, buf));\n  \n  /* number of bytes read, not strlen */\n  return i + 1;\n}",
+            2
+        ],
+        [
+            "imap/imap.c",
+            "imap_open_connection",
+            "int imap_open_connection (IMAP_DATA* idata) /* <=== imap_open_connection */ \n{\n  char buf[LONG_STRING];\n\n  if (mutt_socket_open (idata->conn) < 0)\n    return -1;\n\n  idata->state = IMAP_CONNECTED;\n\n  if (imap_cmd_step (idata) != IMAP_CMD_OK)\n  {\n    imap_close_connection (idata);\n    return -1;\n  }\n\n  if (ascii_strncasecmp (\"* OK\", idata->buf, 4) == 0)\n  {\n    if (ascii_strncasecmp (\"* OK [CAPABILITY\", idata->buf, 16)\n        && imap_check_capabilities (idata))\n      goto bail;\n#if defined(USE_SSL)\n    /* Attempt STARTTLS if available and desired. */\n    if (!idata->conn->ssf && (option(OPTSSLFORCETLS) ||\n                              mutt_bit_isset (idata->capabilities, STARTTLS)))\n    {\n      int rc;\n\n      if (option(OPTSSLFORCETLS))\n        rc = MUTT_YES;\n      else if ((rc = query_quadoption (OPT_SSLSTARTTLS,\n        _(\"Secure connection with TLS?\"))) == -1)\n\tgoto err_close_conn;\n      if (rc == MUTT_YES) {\n\tif ((rc = imap_exec (idata, \"STARTTLS\", IMAP_CMD_FAIL_OK)) == -1)\n\t  goto bail;\n\tif (rc != -2)\n\t{\n\t  if (mutt_ssl_starttls (idata->conn))\n\t  {\n\t    mutt_error (_(\"Could not negotiate TLS connection\"));\n\t    mutt_sleep (1);\n\t    goto err_close_conn;\n\t  }\n\t  else\n\t  {\n\t    /* RFC 2595 demands we recheck CAPABILITY after TLS completes. */\n\t    if (imap_exec (idata, \"CAPABILITY\", 0))\n\t      goto bail;\n\t  }\n\t}\n      }\n    }\n\n    if (option(OPTSSLFORCETLS) && ! idata->conn->ssf)\n    {\n      mutt_error _(\"Encrypted connection unavailable\");\n      mutt_sleep (1);\n      goto err_close_conn;\n    }\n#endif\n  }\n  else if (ascii_strncasecmp (\"* PREAUTH\", idata->buf, 9) == 0)\n  {\n    idata->state = IMAP_AUTHENTICATED;\n    if (imap_check_capabilities (idata) != 0)\n      goto bail;\n    FREE (&idata->capstr);\n  }\n  else\n  {\n    imap_error (\"imap_open_connection()\", buf);\n    goto bail;\n  }\n\n  return 0;\n\n#if defined(USE_SSL)\n err_close_conn:\n  imap_close_connection (idata);\n#endif\n bail:\n  FREE (&idata->capstr);\n  return -1;\n}",
+            3
+        ],
+        [
+            "imap/util.c",
+            "imap_account_match",
+            "int imap_account_match (const ACCOUNT* a1, const ACCOUNT* a2) /* <=== imap_account_match */ \n{\n  IMAP_DATA* a1_idata = imap_conn_find (a1, MUTT_IMAP_CONN_NONEW);\n  IMAP_DATA* a2_idata = imap_conn_find (a2, MUTT_IMAP_CONN_NONEW);\n  const ACCOUNT* a1_canon = a1_idata == NULL ? a1 : &a1_idata->conn->account;\n  const ACCOUNT* a2_canon = a2_idata == NULL ? a2 : &a2_idata->conn->account;\n\n  return mutt_account_match (a1_canon, a2_canon);\n}",
+            1
+        ],
+        [
+            "protos.h",
+            "strchr",
+            "extern char *strchr (); /* <=== strchr */ ",
+            2
+        ],
+        [
+            "imap/imap_private.h",
+            "imap_authenticate",
+            "int imap_authenticate (IMAP_DATA* idata); /* <=== imap_authenticate */ ",
+            3
+        ],
+        [
+            "imap/command.c",
+            "cmd_parse_list",
+            "static void cmd_parse_list (IMAP_DATA* idata, char* s) /* <=== cmd_parse_list */ \n{\n  IMAP_LIST* list;\n  IMAP_LIST lb;\n  char delimbuf[5]; /* worst case: \"\\\\\"\\0 */\n  unsigned int litlen;\n\n  if (idata->cmddata && idata->cmdtype == IMAP_CT_LIST)\n    list = (IMAP_LIST*)idata->cmddata;\n  else\n    list = &lb;\n\n  memset (list, 0, sizeof (IMAP_LIST));\n\n  /* flags */\n  s = imap_next_word (s);\n  if (*s != '(')\n  {\n    dprint (1, (debugfile, \"Bad LIST response\\n\"));\n    return;\n  }\n  s++;\n  while (*s)\n  {\n    if (!ascii_strncasecmp (s, \"\\\\NoSelect\", 9))\n      list->noselect = 1;\n    else if (!ascii_strncasecmp (s, \"\\\\NoInferiors\", 12))\n      list->noinferiors = 1;\n    /* See draft-gahrns-imap-child-mailbox-?? */\n    else if (!ascii_strncasecmp (s, \"\\\\HasNoChildren\", 14))\n      list->noinferiors = 1;\n    \n    s = imap_next_word (s);\n    if (*(s - 2) == ')')\n      break;\n  }\n\n  /* Delimiter */\n  if (ascii_strncasecmp (s, \"NIL\", 3))\n  {\n    delimbuf[0] = '\\0';\n    safe_strcat (delimbuf, 5, s); \n    imap_unquote_string (delimbuf);\n    list->delim = delimbuf[0];\n  }\n\n  /* Name */\n  s = imap_next_word (s);\n  /* Notes often responds with literals here. We need a real tokenizer. */\n  if (!imap_get_literal_count (s, &litlen))\n  {\n    if (imap_cmd_step (idata) != IMAP_CMD_CONTINUE)\n    {\n      idata->status = IMAP_FATAL;\n      return;\n    }\n    list->name = idata->buf;\n  }\n  else\n  {\n    imap_unmunge_mbox_name (idata, s);\n    list->name = s;\n  }\n\n  if (list->name[0] == '\\0')\n  {\n    idata->delim = list->delim;\n    dprint (3, (debugfile, \"Root delimiter: %c\\n\", idata->delim));\n  }\n}",
+            3
+        ],
+        [
+            "imap/imap.c",
+            "imap_conn_find",
+            "IMAP_DATA* imap_conn_find (const ACCOUNT* account, int flags) /* <=== imap_conn_find */ \n{\n  CONNECTION* conn = NULL;\n  ACCOUNT* creds = NULL;\n  IMAP_DATA* idata = NULL;\n  int new = 0;\n\n  while ((conn = mutt_conn_find (conn, account)))\n  {\n    if (!creds)\n      creds = &conn->account;\n    else\n      memcpy (&conn->account, creds, sizeof (ACCOUNT));\n\n    idata = (IMAP_DATA*)conn->data;\n    if (flags & MUTT_IMAP_CONN_NONEW)\n    {\n      if (!idata)\n      {\n        /* This should only happen if we've come to the end of the list */\n        mutt_socket_free (conn);\n        return NULL;\n      }\n      else if (idata->state < IMAP_AUTHENTICATED)\n        continue;\n    }\n    if (flags & MUTT_IMAP_CONN_NOSELECT && idata && idata->state >= IMAP_SELECTED)\n      continue;\n    if (idata && idata->status == IMAP_FATAL)\n      continue;\n    break;\n  }\n  if (!conn)\n    return NULL; /* this happens when the initial connection fails */\n\n  if (!idata)\n  {\n    /* The current connection is a new connection */\n    if (! (idata = imap_new_idata ()))\n    {\n      mutt_socket_free (conn);\n      return NULL;\n    }\n\n    conn->data = idata;\n    idata->conn = conn;\n    new = 1;\n  }\n\n  if (idata->state == IMAP_DISCONNECTED)\n    imap_open_connection (idata);\n  if (idata->state == IMAP_CONNECTED)\n  {\n    if (!imap_authenticate (idata))\n    {\n      idata->state = IMAP_AUTHENTICATED;\n      FREE (&idata->capstr);\n      new = 1;\n      if (idata->conn->ssf)\n\tdprint (2, (debugfile, \"Communication encrypted at %d bits\\n\",\n\t\t    idata->conn->ssf));\n    }\n    else\n      mutt_account_unsetpass (&idata->conn->account);\n  }\n  if (new && idata->state == IMAP_AUTHENTICATED)\n  {\n    /* capabilities may have changed */\n    imap_exec (idata, \"CAPABILITY\", IMAP_CMD_QUEUE);\n    /* enable RFC6855, if the server supports that */\n    if (mutt_bit_isset (idata->capabilities, ENABLE))\n      imap_exec (idata, \"ENABLE UTF8=ACCEPT\", IMAP_CMD_QUEUE);\n    /* get root delimiter, '/' as default */\n    idata->delim = '/';\n    imap_exec (idata, \"LIST \\\"\\\" \\\"\\\"\", IMAP_CMD_QUEUE);\n    if (option (OPTIMAPCHECKSUBSCRIBED))\n      imap_exec (idata, \"LSUB \\\"\\\" \\\"*\\\"\", IMAP_CMD_QUEUE);\n    /* we may need the root delimiter before we open a mailbox */\n    imap_exec (idata, NULL, IMAP_CMD_FAIL_OK);\n  }\n\n  return idata;\n}",
+            2
+        ],
+        [
+            "account.h",
+            "MUTT_ACCT_SSL",
+            "#define MUTT_ACCT_SSL   (1<<4) /* <=== account.h:40:40:MUTT_ACCT_SSL:0 */ ",
+            2
+        ],
+        [
+            "imap/imap.c",
+            "imap_mboxcache_get",
+            "IMAP_STATUS* imap_mboxcache_get (IMAP_DATA* idata, const char* mbox, int create) /* <=== imap_mboxcache_get */ \n{\n  LIST* cur;\n  IMAP_STATUS* status;\n  IMAP_STATUS scache;\n#ifdef USE_HCACHE\n  header_cache_t *hc = NULL;\n  unsigned int *uidvalidity = NULL;\n  unsigned int *uidnext = NULL;\n#endif\n\n  for (cur = idata->mboxcache; cur; cur = cur->next)\n  {\n    status = (IMAP_STATUS*)cur->data;\n\n    if (!imap_mxcmp (mbox, status->name))\n      return status;\n  }\n  status = NULL;\n\n  /* lame */\n  if (create)\n  {\n    memset (&scache, 0, sizeof (scache));\n    scache.name = (char*)mbox;\n    idata->mboxcache = mutt_add_list_n (idata->mboxcache, &scache,\n                                        sizeof (scache));\n    status = imap_mboxcache_get (idata, mbox, 0);\n    status->name = safe_strdup (mbox);\n  }\n\n#ifdef USE_HCACHE\n  hc = imap_hcache_open (idata, mbox);\n  if (hc)\n  {\n    uidvalidity = mutt_hcache_fetch_raw (hc, \"/UIDVALIDITY\", imap_hcache_keylen);\n    uidnext = mutt_hcache_fetch_raw (hc, \"/UIDNEXT\", imap_hcache_keylen);\n    if (uidvalidity)\n    {\n      if (!status)\n      {\n        mutt_hcache_free ((void **)&uidvalidity);\n        mutt_hcache_free ((void **)&uidnext);\n        mutt_hcache_close (hc);\n        return imap_mboxcache_get (idata, mbox, 1);\n      }\n      status->uidvalidity = *uidvalidity;\n      status->uidnext = uidnext ? *uidnext: 0;\n      dprint (3, (debugfile, \"mboxcache: hcache uidvalidity %u, uidnext %u\\n\",\n                  status->uidvalidity, status->uidnext));\n    }\n    mutt_hcache_free ((void **)&uidvalidity);\n    mutt_hcache_free ((void **)&uidnext);\n    mutt_hcache_close (hc);\n  }\n#endif\n\n  return status;\n}",
+            1
+        ],
+        [
+            "imap/util.c",
+            "imap_mxcmp",
+            "int imap_mxcmp (const char* mx1, const char* mx2) /* <=== imap_mxcmp */ \n{\n  char* b1;\n  char* b2;\n  int rc;\n\n  if (!mx1 || !*mx1)\n    mx1 = \"INBOX\";\n  if (!mx2 || !*mx2)\n    mx2 = \"INBOX\";\n  if (!ascii_strcasecmp (mx1, \"INBOX\") && !ascii_strcasecmp (mx2, \"INBOX\"))\n    return 0;\n\n  b1 = safe_malloc (strlen (mx1) + 1);\n  b2 = safe_malloc (strlen (mx2) + 1);\n\n  imap_fix_path (NULL, mx1, b1, strlen (mx1) + 1);\n  imap_fix_path (NULL, mx2, b2, strlen (mx2) + 1);\n\n  rc = mutt_strcmp (b1, b2);\n  FREE (&b1);\n  FREE (&b2);\n\n  return rc;\n}",
+            1
+        ],
+        [
+            "imap/command.c",
+            "cmd_parse_search",
+            "static void cmd_parse_search (IMAP_DATA* idata, const char* s) /* <=== cmd_parse_search */ \n{\n  unsigned int uid;\n  HEADER *h;\n\n  dprint (2, (debugfile, \"Handling SEARCH\\n\"));\n\n  while ((s = imap_next_word ((char*)s)) && *s != '\\0')\n  {\n    if (mutt_atoui (s, &uid) < 0)\n      continue;\n    h = (HEADER *)int_hash_find (idata->uid_hash, uid);\n    if (h)\n      h->matched = 1;\n  }\n}",
+            3
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_CMD_NO",
+            "#define IMAP_CMD_NO       (-2) /* <=== imap/imap_private.h:47:47:IMAP_CMD_NO:0 */ ",
+            3
+        ],
+        [
+            "muttlib.c",
+            "mutt_add_list_n",
+            "LIST *mutt_add_list_n (LIST *head, const void *data, size_t len) /* <=== mutt_add_list_n */ \n{\n  LIST *tmp;\n  \n  for (tmp = head; tmp && tmp->next; tmp = tmp->next)\n    ;\n  if (tmp)\n  {\n    tmp->next = safe_malloc (sizeof (LIST));\n    tmp = tmp->next;\n  }\n  else\n    head = tmp = safe_malloc (sizeof (LIST));\n  \n  tmp->data = safe_malloc (len);\n  if (len)\n    memcpy (tmp->data, data, len);\n  tmp->next = NULL;\n  return head;\n}",
+            2
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_CMD_RESPOND",
+            "#define IMAP_CMD_RESPOND  (2) /* <=== imap/imap_private.h:51:51:IMAP_CMD_RESPOND:0 */ ",
+            2
+        ],
+        [
+            "lib.c",
+            "safe_strdup",
+            "char *safe_strdup (const char *s) /* <=== safe_strdup */ \n{\n  char *p;\n  size_t l;\n\n  if (!s || !*s)\n    return 0;\n  l = strlen (s) + 1;\n  p = (char *)safe_malloc (l);\n  memcpy (p, s, l);\n  return (p);\n}",
+            1
+        ],
+        [
+            "mutt_socket.c",
+            "mutt_conn_find",
+            "CONNECTION* mutt_conn_find (const CONNECTION* start, const ACCOUNT* account) /* <=== mutt_conn_find */ \n{\n  CONNECTION* conn;\n  ciss_url_t url;\n  char hook[LONG_STRING];\n\n  /* account isn't actually modified, since url isn't either */\n  mutt_account_tourl ((ACCOUNT*) account, &url);\n  url.path = NULL;\n  url_ciss_tostring (&url, hook, sizeof (hook), 0);\n  mutt_account_hook (hook);\n\n  conn = start ? start->next : Connections;\n  while (conn)\n  {\n    if (mutt_account_match (account, &(conn->account)))\n      return conn;\n    conn = conn->next;\n  }\n\n  conn = socket_new_conn ();\n  memcpy (&conn->account, account, sizeof (ACCOUNT));\n\n  conn->next = Connections;\n  Connections = conn;\n\n  if (Tunnel && *Tunnel)\n    mutt_tunnel_socket_setup (conn);\n  else if (account->flags & MUTT_ACCT_SSL) \n  {\n#if defined(USE_SSL)\n    if (mutt_ssl_socket_setup (conn) < 0)\n    {\n      mutt_socket_free (conn);\n      return NULL;\n    }\n#else\n    mutt_error _(\"SSL is unavailable.\");\n    mutt_sleep (2);\n    mutt_socket_free (conn);\n\n    return NULL;\n#endif\n  }\n  else\n  {\n    conn->conn_read = raw_socket_read;\n    conn->conn_write = raw_socket_write;\n    conn->conn_open = raw_socket_open;\n    conn->conn_close = raw_socket_close;\n    conn->conn_poll = raw_socket_poll;\n  }\n\n  return conn;\n}",
+            3
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_EXPUNGE_EXPECTED",
+            "#define IMAP_EXPUNGE_EXPECTED (1<<1) /* <=== imap/imap_private.h:64:64:IMAP_EXPUNGE_EXPECTED:0 */ ",
+            3
+        ],
+        [
+            "imap/command.c",
+            "cmd_parse_capability",
+            "static void cmd_parse_capability (IMAP_DATA* idata, char* s) /* <=== cmd_parse_capability */ \n{\n  int x;\n  char* bracket;\n\n  dprint (3, (debugfile, \"Handling CAPABILITY\\n\"));\n\n  s = imap_next_word (s);\n  if ((bracket = strchr (s, ']')))\n    *bracket = '\\0';\n  FREE(&idata->capstr);\n  idata->capstr = safe_strdup (s);\n\n  memset (idata->capabilities, 0, sizeof (idata->capabilities));\n\n  while (*s)\n  {\n    for (x = 0; x < CAPMAX; x++)\n      if (imap_wordcasecmp(Capabilities[x], s) == 0)\n      {\n\tmutt_bit_set (idata->capabilities, x);\n\tbreak;\n      }\n    s = imap_next_word (s);\n  }\n}",
+            3
+        ],
+        [
+            "imap/command.c",
+            "imap_exec",
+            "int imap_exec (IMAP_DATA* idata, const char* cmdstr, int flags) /* <=== imap_exec */ \n{\n  int rc;\n\n  if ((rc = cmd_start (idata, cmdstr, flags)) < 0)\n  {\n    cmd_handle_fatal (idata);\n    return -1;\n  }\n\n  if (flags & IMAP_CMD_QUEUE)\n    return 0;\n\n  if ((flags & IMAP_CMD_POLL) &&\n      (ImapPollTimeout > 0) &&\n      (mutt_socket_poll (idata->conn, ImapPollTimeout)) == 0)\n  {\n    mutt_error (_(\"Connection to %s timed out\"), idata->conn->account.host);\n    mutt_sleep (2);\n    cmd_handle_fatal (idata);\n    return -1;\n  }\n\n  do\n    rc = imap_cmd_step (idata);\n  while (rc == IMAP_CMD_CONTINUE);\n\n  if (rc == IMAP_CMD_NO && (flags & IMAP_CMD_FAIL_OK))\n    return -2;\n\n  if (rc != IMAP_CMD_OK)\n  {\n    if ((flags & IMAP_CMD_FAIL_OK) && idata->status != IMAP_FATAL)\n      return -2;\n\n    dprint (1, (debugfile, \"imap_exec: command failed: %s\\n\", idata->buf));\n    return -1;\n  }\n\n  return 0;\n}",
+            3
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_CMD_NEW",
+            "#define IMAP_CMD_NEW    (3) /* <=== imap/imap_private.h:53:53:IMAP_CMD_NEW:0 */ ",
+            2
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_REOPEN_ALLOW",
+            "#define IMAP_REOPEN_ALLOW     (1<<0) /* <=== imap/imap_private.h:63:63:IMAP_REOPEN_ALLOW:0 */ ",
+            3
+        ],
+        [
+            "lib.c",
+            "safe_free",
+            "void safe_free (void *ptr)\t/* __SAFE_FREE_CHECKED__ */ /* <=== safe_free */ \n{\n  void **p = (void **)ptr;\n  if (*p)\n  {\n    free (*p);\t\t\t\t/* __MEM_CHECKED__ */\n    *p = 0;\n  }\n}",
+            1
+        ],
+        [
+            "imap/command.c",
+            "cmd_parse_expunge",
+            "static void cmd_parse_expunge (IMAP_DATA* idata, const char* s) /* <=== cmd_parse_expunge */ \n{\n  unsigned int exp_msn, cur;\n  HEADER* h;\n\n  dprint (2, (debugfile, \"Handling EXPUNGE\\n\"));\n\n  if (mutt_atoui (s, &exp_msn) < 0 ||\n      exp_msn < 1 || exp_msn > idata->max_msn)\n    return;\n\n  h = idata->msn_index[exp_msn - 1];\n  if (h)\n  {\n    /* imap_expunge_mailbox() will rewrite h->index.\n     * It needs to resort using SORT_ORDER anyway, so setting to INT_MAX\n     * makes the code simpler and possibly more efficient. */\n    h->index = INT_MAX;\n    HEADER_DATA(h)->msn = 0;\n  }\n\n  /* decrement seqno of those above. */\n  for (cur = exp_msn; cur < idata->max_msn; cur++)\n  {\n    h = idata->msn_index[cur];\n    if (h)\n      HEADER_DATA(h)->msn--;\n    idata->msn_index[cur - 1] = h;\n  }\n\n  idata->msn_index[idata->max_msn - 1] = NULL;\n  idata->max_msn--;\n\n  idata->reopen |= IMAP_EXPUNGE_PENDING;\n}",
+            3
+        ],
+        [
+            "lib.c",
+            "safe_realloc",
+            "void safe_realloc (void *ptr, size_t siz) /* <=== safe_realloc */ \n{\n  void *r;\n  void **p = (void **)ptr;\n\n  if (siz == 0)\n  {\n    if (*p)\n    {\n      free (*p);\t\t\t/* __MEM_CHECKED__ */\n      *p = NULL;\n    }\n    return;\n  }\n\n  if (*p)\n    r = (void *) realloc (*p, siz);\t/* __MEM_CHECKED__ */\n  else\n  {\n    /* realloc(NULL, nbytes) doesn't seem to work under SunOS 4.1.x  --- __MEM_CHECKED__ */\n    r = (void *) malloc (siz);\t\t/* __MEM_CHECKED__ */\n  }\n\n  if (!r)\n  {\n    mutt_error _(\"Out of memory!\");\n    sleep (1);\n    mutt_exit (1);\n  }\n\n  *p = r;\n}",
+            2
+        ],
+        [
+            "imap/command.c",
+            "cmd_parse_lsub",
+            "static void cmd_parse_lsub (IMAP_DATA* idata, char* s) /* <=== cmd_parse_lsub */ \n{\n  char buf[STRING];\n  char errstr[STRING];\n  BUFFER err, token;\n  ciss_url_t url;\n  IMAP_LIST list;\n\n  if (idata->cmddata && idata->cmdtype == IMAP_CT_LIST)\n  {\n    /* caller will handle response itself */\n    cmd_parse_list (idata, s);\n    return;\n  }\n\n  if (!option (OPTIMAPCHECKSUBSCRIBED))\n    return;\n\n  idata->cmdtype = IMAP_CT_LIST;\n  idata->cmddata = &list;\n  cmd_parse_list (idata, s);\n  idata->cmddata = NULL;\n  /* noselect is for a gmail quirk (#3445) */\n  if (!list.name || list.noselect)\n    return;\n\n  dprint (3, (debugfile, \"Subscribing to %s\\n\", list.name));\n\n  strfcpy (buf, \"mailboxes \\\"\", sizeof (buf));\n  mutt_account_tourl (&idata->conn->account, &url);\n  /* escape \\ and \". Also escape ` because the resulting\n   * string will be passed to mutt_parse_rc_line. */\n  imap_quote_string_and_backquotes (errstr, sizeof (errstr), list.name);\n  url.path = errstr + 1;\n  url.path[strlen(url.path) - 1] = '\\0';\n  if (!mutt_strcmp (url.user, ImapUser))\n    url.user = NULL;\n  url_ciss_tostring (&url, buf + 11, sizeof (buf) - 11, 0);\n  safe_strcat (buf, sizeof (buf), \"\\\"\");\n  mutt_buffer_init (&token);\n  mutt_buffer_init (&err);\n  err.data = errstr;\n  err.dsize = sizeof (errstr);\n  if (mutt_parse_rc_line (buf, &token, &err))\n    dprint (1, (debugfile, \"Error adding subscribed mailbox: %s\\n\", errstr));\n  FREE (&token.data);\n}",
+            3
+        ],
+        [
+            "lib.h",
+            "ISSPACE",
+            "# define ISSPACE(c) isspace((unsigned char)c) /* <=== lib.h:79:79:ISSPACE:1 */ ",
+            2
+        ],
+        [
+            "imap/imap_private.h",
+            "MUTT_IMAP_CONN_NOSELECT",
+            "#define MUTT_IMAP_CONN_NOSELECT (1<<1) /* <=== imap/imap_private.h:126:126:MUTT_IMAP_CONN_NOSELECT:0 */ ",
+            3
+        ],
+        [
+            "imap/util.c",
+            "imap_fix_path",
+            "char *imap_fix_path (IMAP_DATA *idata, const char *mailbox, char *path, /* <=== imap_fix_path */ \n    size_t plen)\n{\n  int i = 0;\n  char delim = '\\0';\n\n  if (idata)\n    delim = idata->delim;\n\n  while (mailbox && *mailbox && i < plen - 1)\n  {\n    if ((ImapDelimChars && strchr(ImapDelimChars, *mailbox))\n        || (delim && *mailbox == delim))\n    {\n      /* use connection delimiter if known. Otherwise use user delimiter */\n      if (!idata)\n        delim = *mailbox;\n\n      while (*mailbox\n\t     && ((ImapDelimChars && strchr(ImapDelimChars, *mailbox))\n\t         || (delim && *mailbox == delim)))\n        mailbox++;\n      path[i] = delim;\n    }\n    else\n    {\n      path[i] = *mailbox;\n      mailbox++;\n    }\n    i++;\n  }\n  if (i && path[--i] != delim)\n    i++;\n  path[i] = '\\0';\n\n  return path;\n}",
+            1
+        ],
+        [
+            "imap/util.c",
+            "imap_get_literal_count",
+            "int imap_get_literal_count(const char *buf, unsigned int *bytes) /* <=== imap_get_literal_count */ \n{\n  char *pc;\n  char *pn;\n\n  if (!buf || !(pc = strchr (buf, '{')))\n    return -1;\n\n  pc++;\n  pn = pc;\n  while (isdigit ((unsigned char) *pc))\n    pc++;\n  *pc = 0;\n  if (mutt_atoui (pn, bytes) < 0)\n    return -1;\n\n  return 0;\n}",
+            1
+        ],
+        [
+            "lib.c",
+            "mutt_strlen",
+            "size_t mutt_strlen(const char *a) /* <=== mutt_strlen */ \n{\n  return a ? strlen (a) : 0;\n}",
+            1
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_EXPUNGE_PENDING",
+            "#define IMAP_EXPUNGE_PENDING  (1<<2) /* <=== imap/imap_private.h:65:65:IMAP_EXPUNGE_PENDING:0 */ ",
+            3
+        ],
+        [
+            "mutt.h",
+            "option",
+            "#define option(x) mutt_bit_isset(Options,x) /* <=== mutt.h:585:585:option:1 */ ",
+            1
+        ],
+        [
+            "imap/command.c",
+            "IMAP_CMD_BUFSIZE",
+            "#define IMAP_CMD_BUFSIZE 512 /* <=== imap/command.c:38:38:IMAP_CMD_BUFSIZE:0 */ ",
+            2
+        ],
+        [
+            "imap/command.c",
+            "cmd_parse_enabled",
+            "static void cmd_parse_enabled (IMAP_DATA* idata, const char* s) /* <=== cmd_parse_enabled */ \n{\n  dprint (2, (debugfile, \"Handling ENABLED\\n\"));\n\n  while ((s = imap_next_word ((char*)s)) && *s != '\\0')\n  {\n    if (ascii_strncasecmp(s, \"UTF8=ACCEPT\", 11) == 0 ||\n        ascii_strncasecmp(s, \"UTF8=ONLY\", 9) == 0)\n      idata->unicode = 1;\n  }\n}",
+            3
+        ],
+        [
+            "lib.c",
+            "safe_malloc",
+            "void *safe_malloc (size_t siz) /* <=== safe_malloc */ \n{\n  void *p;\n\n  if (siz == 0)\n    return 0;\n  if ((p = (void *) malloc (siz)) == 0)\t/* __MEM_CHECKED__ */\n  {\n    mutt_error _(\"Out of memory!\");\n    sleep (1);\n    mutt_exit (1);\n  }\n  return (p);\n}",
+            2
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_SSL_PORT",
+            "#define IMAP_SSL_PORT 993 /* <=== imap/imap_private.h:34:34:IMAP_SSL_PORT:0 */ ",
+            2
+        ],
+        [
+            "lib.c",
+            "mutt_atoul",
+            "int mutt_atoul (const char *str, unsigned long *dst) /* <=== mutt_atoul */ \n{\n  unsigned long r;\n  unsigned long *res = dst ? dst : &r;\n  char *e = NULL;\n\n  /* no input: 0 */\n  if (!str || !*str)\n  {\n    *res = 0;\n    return 0;\n  }\n\n  errno = 0;\n  *res = strtoul (str, &e, 10);\n  if (*res == ULONG_MAX && errno == ERANGE)\n    return -1;\n  if (e && *e != '\\0')\n    return 1;\n  return 0;\n}",
+            3
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_CMD_BAD",
+            "#define IMAP_CMD_BAD      (-1) /* <=== imap/imap_private.h:45:45:IMAP_CMD_BAD:0 */ ",
+            2
+        ],
+        [
+            "imap/util.c",
+            "imap_new_idata",
+            "IMAP_DATA* imap_new_idata (void) /* <=== imap_new_idata */ \n{\n  IMAP_DATA* idata = safe_calloc (1, sizeof (IMAP_DATA));\n\n  if (!idata)\n    return NULL;\n\n  if (!(idata->cmdbuf = mutt_buffer_new ()))\n    FREE (&idata);\n\n  idata->cmdslots = ImapPipelineDepth + 2;\n  if (!(idata->cmds = safe_calloc(idata->cmdslots, sizeof(*idata->cmds))))\n  {\n    mutt_buffer_free(&idata->cmdbuf);\n    FREE (&idata);\n  }\n\n  return idata;\n}",
+            3
+        ],
+        [
+            "mutt.h",
+            "mutt_bit_isset",
+            "#define mutt_bit_isset(v,n) (v[n/8] & (1 << (n % 8))) /* <=== mutt.h:580:580:mutt_bit_isset:2 */ ",
+            3
+        ],
+        [
+            "ascii.h",
+            "ascii_strncmp",
+            "#define ascii_strncmp(a,b,c) mutt_strncmp(a,b,c) /* <=== ascii.h:40:40:ascii_strncmp:3 */ ",
+            1
+        ],
+        [
+            "imap/imap.c",
+            "imap_close_connection",
+            "void imap_close_connection(IMAP_DATA* idata) /* <=== imap_close_connection */ \n{\n  if (idata->state != IMAP_DISCONNECTED)\n  {\n    mutt_socket_close (idata->conn);\n    idata->state = IMAP_DISCONNECTED;\n  }\n  idata->seqno = idata->nextcmd = idata->lastcmd = idata->status = 0;\n  memset (idata->cmds, 0, sizeof (IMAP_COMMAND) * idata->cmdslots);\n}",
+            3
+        ],
+        [
+            "ascii.c",
+            "ascii_strcasecmp",
+            "int ascii_strcasecmp (const char *a, const char *b) /* <=== ascii_strcasecmp */ \n{\n  int i;\n  \n  if (a == b)\n    return 0;\n  if (a == NULL && b)\n    return -1;\n  if (b == NULL && a)\n    return 1;\n  \n  for (;; a++, b++)\n  {\n    if ((i = ascii_tolower (*a) - ascii_tolower (*b)))\n      return i;\n    /* test for NUL here rather that in the for loop in order to detect unqual\n     * length strings (see http://dev.mutt.org/trac/ticket/3601)\n     */\n    if (!*a)\n      break;\n  }\n  \n  return 0;\n}",
+            2
+        ],
+        [
+            "mx.c",
+            "mx_fastclose_mailbox",
+            "void mx_fastclose_mailbox (CONTEXT *ctx) /* <=== mx_fastclose_mailbox */ \n{\n  int i;\n  struct utimbuf ut;\n\n  if(!ctx) \n    return;\n\n  /* fix up the times so buffy won't get confused */\n  if (ctx->peekonly && ctx->path && (ctx->mtime > ctx->atime)) {\n    ut.actime  = ctx->atime;\n    ut.modtime = ctx->mtime;\n    utime (ctx->path, &ut);\n  }\n\n  /* never announce that a mailbox we've just left has new mail. #3290\n   * XXX: really belongs in mx_close_mailbox, but this is a nice hook point */\n  if (!ctx->peekonly)\n    mutt_buffy_setnotified(ctx->path);\n\n  if (ctx->mx_ops)\n    ctx->mx_ops->close (ctx);\n\n#ifdef USE_COMPRESSED\n  mutt_free_compress_info (ctx);\n#endif /* USE_COMPRESSED */\n\n  if (ctx->subj_hash)\n    hash_destroy (&ctx->subj_hash, NULL);\n  if (ctx->id_hash)\n    hash_destroy (&ctx->id_hash, NULL);\n  hash_destroy (&ctx->label_hash, NULL);\n  mutt_clear_threads (ctx);\n  for (i = 0; i < ctx->msgcount; i++)\n    mutt_free_header (&ctx->hdrs[i]);\n  FREE (&ctx->hdrs);\n  FREE (&ctx->v2r);\n  FREE (&ctx->path);\n  FREE (&ctx->realpath);\n  FREE (&ctx->pattern);\n  if (ctx->limit_pattern) \n    mutt_pattern_free (&ctx->limit_pattern);\n  safe_fclose (&ctx->fp);\n  memset (ctx, 0, sizeof (CONTEXT));\n}",
+            3
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_NEWMAIL_PENDING",
+            "#define IMAP_NEWMAIL_PENDING  (1<<3) /* <=== imap/imap_private.h:66:66:IMAP_NEWMAIL_PENDING:0 */ ",
+            3
+        ],
+        [
+            "imap/command.c",
+            "imap_cmd_finish",
+            "void imap_cmd_finish (IMAP_DATA* idata) /* <=== imap_cmd_finish */ \n{\n  if (idata->status == IMAP_FATAL)\n  {\n    cmd_handle_fatal (idata);\n    return;\n  }\n\n  if (!(idata->state >= IMAP_SELECTED) || idata->ctx->closing)\n    return;\n  \n  if (idata->reopen & IMAP_REOPEN_ALLOW)\n  {\n    unsigned int count = idata->newMailCount;\n\n    if (!(idata->reopen & IMAP_EXPUNGE_PENDING) &&\n\t(idata->reopen & IMAP_NEWMAIL_PENDING)\n\t&& count > idata->max_msn)\n    {\n      /* read new mail messages */\n      dprint (2, (debugfile, \"imap_cmd_finish: Fetching new mail\\n\"));\n      /* check_status: curs_main uses imap_check_mailbox to detect\n       *   whether the index needs updating */\n      idata->check_status = IMAP_NEWMAIL_PENDING;\n      imap_read_headers (idata, idata->max_msn+1, count);\n    }\n    else if (idata->reopen & IMAP_EXPUNGE_PENDING)\n    {\n      dprint (2, (debugfile, \"imap_cmd_finish: Expunging mailbox\\n\"));\n      imap_expunge_mailbox (idata);\n      /* Detect whether we've gotten unexpected EXPUNGE messages */\n      if ((idata->reopen & IMAP_EXPUNGE_PENDING) &&\n\t  !(idata->reopen & IMAP_EXPUNGE_EXPECTED))\n\tidata->check_status = IMAP_EXPUNGE_PENDING;\n      idata->reopen &= ~(IMAP_EXPUNGE_PENDING | IMAP_NEWMAIL_PENDING |\n\t\t\t IMAP_EXPUNGE_EXPECTED);\n    }\n  }\n\n  idata->status = 0;\n}",
+            2
+        ],
+        [
+            "lib.h",
+            "mutt_exit",
+            "void mutt_exit (int); /* <=== mutt_exit */ ",
+            3
+        ],
+        [
+            "lib.h",
+            "SKIPWS",
+            "# define SKIPWS(c) while (*(c) && isspace ((unsigned char) *(c))) c++; /* <=== lib.h:103:103:SKIPWS:1 */ ",
+            1
+        ],
+        [
+            "imap/command.c",
+            "cmd_parse_myrights",
+            "static void cmd_parse_myrights (IMAP_DATA* idata, const char* s) /* <=== cmd_parse_myrights */ \n{\n  dprint (2, (debugfile, \"Handling MYRIGHTS\\n\"));\n\n  s = imap_next_word ((char*)s);\n  s = imap_next_word ((char*)s);\n\n  /* zero out current rights set */\n  memset (idata->ctx->rights, 0, sizeof (idata->ctx->rights));\n\n  while (*s && !isspace((unsigned char) *s))\n  {\n    switch (*s) \n    {\n      case 'l':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_LOOKUP);\n\tbreak;\n      case 'r':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_READ);\n\tbreak;\n      case 's':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_SEEN);\n\tbreak;\n      case 'w':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_WRITE);\n\tbreak;\n      case 'i':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_INSERT);\n\tbreak;\n      case 'p':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_POST);\n\tbreak;\n      case 'a':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_ADMIN);\n\tbreak;\n      case 'k':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_CREATE);\n        break;\n      case 'x':\n        mutt_bit_set (idata->ctx->rights, MUTT_ACL_DELMX);\n        break;\n      case 't':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_DELETE);\n        break;\n      case 'e':\n        mutt_bit_set (idata->ctx->rights, MUTT_ACL_EXPUNGE);\n        break;\n\n        /* obsolete rights */\n      case 'c':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_CREATE);\n        mutt_bit_set (idata->ctx->rights, MUTT_ACL_DELMX);\n\tbreak;\n      case 'd':\n\tmutt_bit_set (idata->ctx->rights, MUTT_ACL_DELETE);\n        mutt_bit_set (idata->ctx->rights, MUTT_ACL_EXPUNGE);\n\tbreak;\n      default:\n        dprint(1, (debugfile, \"Unknown right: %c\\n\", *s));\n    }\n    s++;\n  }\n}",
+            3
+        ],
+        [
+            "lib.h",
+            "FREE",
+            "# define FREE(x) safe_free(x) /* <=== lib.h:77:77:FREE:1 */ ",
+            1
+        ],
+        [
+            "imap/util.c",
+            "imap_parse_path",
+            "int imap_parse_path (const char* path, IMAP_MBOX* mx) /* <=== imap_parse_path */ \n{\n  static unsigned short ImapPort = 0;\n  static unsigned short ImapsPort = 0;\n  struct servent* service;\n  char tmp[128];\n  ciss_url_t url;\n  char *c;\n  int n;\n\n  if (!ImapPort)\n  {\n    service = getservbyname (\"imap\", \"tcp\");\n    if (service)\n      ImapPort = ntohs (service->s_port);\n    else\n      ImapPort = IMAP_PORT;\n    dprint (3, (debugfile, \"Using default IMAP port %d\\n\", ImapPort));\n  }\n  if (!ImapsPort)\n  {\n    service = getservbyname (\"imaps\", \"tcp\");\n    if (service)\n      ImapsPort = ntohs (service->s_port);\n    else\n      ImapsPort = IMAP_SSL_PORT;\n    dprint (3, (debugfile, \"Using default IMAPS port %d\\n\", ImapsPort));\n  }\n\n  /* Defaults */\n  memset(&mx->account, 0, sizeof(mx->account));\n  mx->account.port = ImapPort;\n  mx->account.type = MUTT_ACCT_TYPE_IMAP;\n\n  c = safe_strdup (path);\n  url_parse_ciss (&url, c);\n  if (url.scheme == U_IMAP || url.scheme == U_IMAPS)\n  {\n    if (mutt_account_fromurl (&mx->account, &url) < 0 || !*mx->account.host)\n    {\n      FREE (&c);\n      return -1;\n    }\n\n    mx->mbox = safe_strdup (url.path);\n\n    if (url.scheme == U_IMAPS)\n      mx->account.flags |= MUTT_ACCT_SSL;\n\n    FREE (&c);\n  }\n  /* old PINE-compatibility code */\n  else\n  {\n    FREE (&c);\n    if (sscanf (path, \"{%127[^}]}\", tmp) != 1)\n      return -1;\n\n    c = strchr (path, '}');\n    if (!c)\n      return -1;\n    else\n      /* walk past closing '}' */\n      mx->mbox = safe_strdup (c+1);\n\n    if ((c = strrchr (tmp, '@')))\n    {\n      *c = '\\0';\n      strfcpy (mx->account.user, tmp, sizeof (mx->account.user));\n      strfcpy (tmp, c+1, sizeof (tmp));\n      mx->account.flags |= MUTT_ACCT_USER;\n    }\n\n    if ((n = sscanf (tmp, \"%127[^:/]%127s\", mx->account.host, tmp)) < 1)\n    {\n      dprint (1, (debugfile, \"imap_parse_path: NULL host in %s\\n\", path));\n      FREE (&mx->mbox);\n      return -1;\n    }\n\n    if (n > 1) {\n      if (sscanf (tmp, \":%hu%127s\", &(mx->account.port), tmp) >= 1)\n\tmx->account.flags |= MUTT_ACCT_PORT;\n      if (sscanf (tmp, \"/%s\", tmp) == 1)\n      {\n\tif (!ascii_strncmp (tmp, \"ssl\", 3))\n\t  mx->account.flags |= MUTT_ACCT_SSL;\n\telse\n\t{\n\t  dprint (1, (debugfile, \"imap_parse_path: Unknown connection type in %s\\n\", path));\n\t  FREE (&mx->mbox);\n\t  return -1;\n\t}\n      }\n    }\n  }\n\n  if ((mx->account.flags & MUTT_ACCT_SSL) && !(mx->account.flags & MUTT_ACCT_PORT))\n    mx->account.port = ImapsPort;\n\n  return 0;\n}",
+            1
+        ],
+        [
+            "protos.h",
+            "memset",
+            "extern void *memset (); /* <=== memset */ ",
+            2
+        ],
+        [
+            "ascii.c",
+            "ascii_tolower",
+            "inline int ascii_tolower (int c) /* <=== ascii_tolower */ \n{\n  if (ascii_isupper (c))\n    return c | 32;\n  \n  return c;\n}",
+            3
+        ],
+        [
+            "imap/command.c",
+            "imap_cmd_step",
+            "int imap_cmd_step (IMAP_DATA* idata) /* <=== imap_cmd_step */ \n{\n  size_t len = 0;\n  int c;\n  int rc;\n  int stillrunning = 0;\n  IMAP_COMMAND* cmd;\n\n  if (idata->status == IMAP_FATAL)\n  {\n    cmd_handle_fatal (idata);\n    return IMAP_CMD_BAD;\n  }\n\n  /* read into buffer, expanding buffer as necessary until we have a full\n   * line */\n  do\n  {\n    if (len == idata->blen)\n    {\n      safe_realloc (&idata->buf, idata->blen + IMAP_CMD_BUFSIZE);\n      idata->blen = idata->blen + IMAP_CMD_BUFSIZE;\n      dprint (3, (debugfile, \"imap_cmd_step: grew buffer to %u bytes\\n\",\n\t\t  idata->blen));\n    }\n\n    /* back up over '\\0' */\n    if (len)\n      len--;\n    c = mutt_socket_readln (idata->buf + len, idata->blen - len, idata->conn);\n    if (c <= 0)\n    {\n      dprint (1, (debugfile, \"imap_cmd_step: Error reading server response.\\n\"));\n      cmd_handle_fatal (idata);\n      return IMAP_CMD_BAD;\n    }\n\n    len += c;\n  }\n  /* if we've read all the way to the end of the buffer, we haven't read a\n   * full line (mutt_socket_readln strips the \\r, so we always have at least\n   * one character free when we've read a full line) */\n  while (len == idata->blen);\n\n  /* don't let one large string make cmd->buf hog memory forever */\n  if ((idata->blen > IMAP_CMD_BUFSIZE) && (len <= IMAP_CMD_BUFSIZE))\n  {\n    safe_realloc (&idata->buf, IMAP_CMD_BUFSIZE);\n    idata->blen = IMAP_CMD_BUFSIZE;\n    dprint (3, (debugfile, \"imap_cmd_step: shrank buffer to %u bytes\\n\", idata->blen));\n  }\n\n  idata->lastread = time (NULL);\n\n  /* handle untagged messages. The caller still gets its shot afterwards. */\n  if ((!ascii_strncmp (idata->buf, \"* \", 2)\n       || !ascii_strncmp (imap_next_word (idata->buf), \"OK [\", 4))\n      && cmd_handle_untagged (idata))\n    return IMAP_CMD_BAD;\n\n  /* server demands a continuation response from us */\n  if (idata->buf[0] == '+')\n    return IMAP_CMD_RESPOND;\n\n  /* Look for tagged command completions.\n   *\n   * Some response handlers can end up recursively calling\n   * imap_cmd_step() and end up handling all tagged command\n   * completions.\n   * (e.g. FETCH->set_flag->set_header_color->~h pattern match.)\n   *\n   * Other callers don't even create an idata->cmds entry.\n   *\n   * For both these cases, we default to returning OK */\n  rc = IMAP_CMD_OK;\n  c = idata->lastcmd;\n  do\n  {\n    cmd = &idata->cmds[c];\n    if (cmd->state == IMAP_CMD_NEW)\n    {\n      if (!ascii_strncmp (idata->buf, cmd->seq, SEQLEN)) {\n\tif (!stillrunning)\n\t{\n\t  /* first command in queue has finished - move queue pointer up */\n\t  idata->lastcmd = (idata->lastcmd + 1) % idata->cmdslots;\n\t}\n\tcmd->state = cmd_status (idata->buf);\n\t/* bogus - we don't know which command result to return here. Caller\n\t * should provide a tag. */\n\trc = cmd->state;\n      }\n      else\n\tstillrunning++;\n    }\n\n    c = (c + 1) % idata->cmdslots;\n  }\n  while (c != idata->nextcmd);\n\n  if (stillrunning)\n    rc = IMAP_CMD_CONTINUE;\n  else\n  {\n    dprint (3, (debugfile, \"IMAP queue drained\\n\"));\n    imap_cmd_finish (idata);\n  }\n  \n\n  return rc;\n}",
+            1
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_CMD_CONTINUE",
+            "#define IMAP_CMD_CONTINUE (1) /* <=== imap/imap_private.h:49:49:IMAP_CMD_CONTINUE:0 */ ",
+            1
+        ],
+        [
+            "mutt_socket.c",
+            "mutt_socket_close",
+            "int mutt_socket_close (CONNECTION* conn) /* <=== mutt_socket_close */ \n{\n  int rc = -1;\n\n  if (conn->fd < 0)\n    dprint (1, (debugfile, \"mutt_socket_close: Attempt to close closed connection.\\n\"));\n  else\n    rc = conn->conn_close (conn);\n\n  conn->fd = -1;\n  conn->ssf = 0;\n\n  return rc;\n}",
+            3
+        ],
+        [
+            "imap/imap_private.h",
+            "IMAP_CMD_OK",
+            "#define IMAP_CMD_OK       (0) /* <=== imap/imap_private.h:43:43:IMAP_CMD_OK:0 */ ",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"mutt_menu.h\"",
+        "#include <ctype.h>",
+        "#include \"buffy.h\"",
+        "# include \"config.h\"",
+        "#include \"mutt.h\"",
+        "#include \"imap_private.h\"",
+        "#include <stdlib.h>",
+        "#include \"mx.h\"",
+        "#include <errno.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct\n{\n  /* This data is specific to a CONNECTION to an IMAP server */\n  CONNECTION *conn;\n  unsigned char state;\n  unsigned char status;\n  /* let me explain capstr: SASL needs the capability string (not bits).\n   * we have 3 options:\n   *   1. rerun CAPABILITY inside SASL function.\n   *   2. build appropriate CAPABILITY string by reverse-engineering from bits.\n   *   3. keep a copy until after authentication.\n   * I've chosen (3) for now. (2) might not be too bad, but it involves\n   * tracking all possible capabilities. bah. (1) I don't like because\n   * it's just no fun to get the same information twice */\n  char* capstr;\n  unsigned char capabilities[(CAPMAX + 7)/8];\n  unsigned int seqno;\n  time_t lastread; /* last time we read a command for the server */\n  char* buf;\n  unsigned int blen;\n  \n  /* If nonzero, we can send UTF-8, and the server will use UTF8 rather\n   * than mUTF7 */\n  int unicode;\n\n  /* if set, the response parser will store results for complicated commands\n   * here. */\n  IMAP_COMMAND_TYPE cmdtype;\n  void* cmddata;\n\n  /* command queue */\n  IMAP_COMMAND* cmds;\n  int cmdslots;\n  int nextcmd;\n  int lastcmd;\n  BUFFER* cmdbuf;\n\n  /* cache IMAP_STATUS of visited mailboxes */\n  LIST* mboxcache;\n\n  /* The following data is all specific to the currently SELECTED mbox */\n  char delim;\n  CONTEXT *ctx;\n  char *mailbox;\n  unsigned short check_status;\n  unsigned char reopen;\n  unsigned int newMailCount;   /* Set when EXISTS notifies of new mail */\n  IMAP_CACHE cache[IMAP_CACHE_LEN];\n  HASH *uid_hash;\n  unsigned int uid_validity;\n  unsigned int uidnext;\n  HEADER **msn_index;          /* look up headers by (MSN-1) */\n  unsigned int msn_index_size; /* allocation size */\n  unsigned int max_msn;        /* the largest MSN fetched so far */\n  body_cache_t *bcache;\n\n  /* all folder flags - system flags AND keywords */\n  LIST *flags;\n#ifdef USE_HCACHE\n  header_cache_t *hcache;\n#endif\n}",
+            "IMAP_DATA"
+        ],
+        [
+            "typedef struct\n{\n  ACCOUNT account;\n  char* mbox;\n}",
+            "IMAP_MBOX"
+        ],
+        [
+            "typedef struct buffy_t\n{\n  char path[_POSIX_PATH_MAX];\n  char realpath[_POSIX_PATH_MAX]; /* used for duplicate detection, context comparison,\n                                     and the sidebar */\n  off_t size;\n  struct buffy_t *next;\n  short new;\t\t\t/* mailbox has new mail */\n\n  /* These next three are only set when OPTMAILCHECKSTATS is set */\n  int msg_count;\t\t/* total number of messages */\n  int msg_unread;\t\t/* number of unread messages */\n  int msg_flagged;\t\t/* number of flagged messages */\n\n  short notified;\t\t/* user has been notified */\n  short magic;\t\t\t/* mailbox type */\n  short newly_created;\t\t/* mbox or mmdf just popped into existence */\n  time_t last_visited;\t\t/* time of last exit from this mailbox */\n  time_t stats_last_checked;\t/* mtime of mailbox the last time stats where checked. */\n}\nBUFFY;",
+            "BUFFY"
+        ],
+        [
+            "typedef struct\n{\n  char* name;\n\n  unsigned int messages;\n  unsigned int recent;\n  unsigned int uidnext;\n  unsigned int uidvalidity;\n  unsigned int unseen;\n}",
+            "IMAP_STATUS"
+        ]
+    ],
+    "visitedLines_after": {
+        "imap/command.c": [
+            948,
+            962,
+            965,
+            967,
+            973,
+            975,
+            979,
+            980,
+            981,
+            982,
+            983,
+            992,
+            993,
+            994,
+            996,
+            998,
+            1001,
+            1003,
+            1005,
+            1006,
+            1007,
+            1008,
+            1010,
+            1013,
+            1015,
+            1017,
+            1018,
+            1020,
+            1021,
+            1022,
+            1023,
+            1024,
+            1025,
+            1026,
+            1027,
+            1029,
+            1030,
+            1031,
+            1033,
+            1038,
+            1040,
+            1044,
+            1047,
+            1049,
+            1052,
+            1054,
+            1059,
+            1061,
+            1063,
+            1064,
+            1065,
+            1068,
+            1070,
+            1072,
+            1075,
+            1077,
+            1079,
+            1080,
+            1082,
+            1084,
+            1086,
+            1089,
+            1097,
+            1098,
+            1099,
+            1100,
+            1102,
+            1105,
+            1107,
+            1111,
+            1114
+        ]
+    },
+    "visitedLines_before": {
+        "imap/command.c": [
+            948,
+            962,
+            965,
+            967,
+            972,
+            973,
+            974,
+            975,
+            976,
+            985,
+            986,
+            987,
+            989,
+            991,
+            994,
+            996,
+            998,
+            999,
+            1000,
+            1001,
+            1003,
+            1006,
+            1008,
+            1010,
+            1011,
+            1013,
+            1014,
+            1015,
+            1016,
+            1017,
+            1018,
+            1019,
+            1020,
+            1022,
+            1023,
+            1024,
+            1026,
+            1031,
+            1033,
+            1037,
+            1040,
+            1042,
+            1045,
+            1047,
+            1052,
+            1054,
+            1056,
+            1057,
+            1058,
+            1061,
+            1063,
+            1065,
+            1068,
+            1070,
+            1072,
+            1073,
+            1075,
+            1077,
+            1079,
+            1082,
+            1090,
+            1091,
+            1092,
+            1093,
+            1095,
+            1098,
+            1100,
+            1104,
+            1107
+        ]
+    },
+    "visitedParams": {
+        "imap/command.c": [
+            [
+                "IMAP_DATA* idata",
+                "cmd_parse_status"
+            ],
+            [
+                "char* s",
+                "cmd_parse_status"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "imap/command.c",
+            "cmd_parse_status",
+            "static void cmd_parse_status (IMAP_DATA* idata, char* s) /* <=== cmd_parse_status */ \n{\n  char* mailbox;\n  char* value;\n  BUFFY* inc;\n  IMAP_MBOX mx;\n  unsigned long ulcount;\n  unsigned int count;\n  IMAP_STATUS *status;\n  unsigned int olduv, oldun;\n  unsigned int litlen;\n  short new = 0;\n  short new_msg_count = 0;\n\n  mailbox = imap_next_word (s);\n\n  /* We need a real tokenizer. */\n  if (!imap_get_literal_count (mailbox, &litlen))\n  {\n    if (imap_cmd_step (idata) != IMAP_CMD_CONTINUE)\n    {\n      idata->status = IMAP_FATAL;\n      return;\n    }\n\n    if (strlen(idata->buf) < litlen)\n    {\n      dprint (1, (debugfile, \"Error parsing STATUS mailbox\\n\"));\n      return;\n    }\n\n    mailbox = idata->buf;\n    s = mailbox + litlen;\n    *s = '\\0';\n    s++;\n    SKIPWS(s);\n  }\n  else\n  {\n    s = imap_next_word (mailbox);\n    *(s - 1) = '\\0';\n    imap_unmunge_mbox_name (idata, mailbox);\n  }\n\n  status = imap_mboxcache_get (idata, mailbox, 1);\n  olduv = status->uidvalidity;\n  oldun = status->uidnext;\n\n  if (*s++ != '(')\n  {\n    dprint (1, (debugfile, \"Error parsing STATUS\\n\"));\n    return;\n  }\n  while (*s && *s != ')')\n  {\n    value = imap_next_word (s);\n\n    errno = 0;\n    ulcount = strtoul (value, &value, 10);\n    if ((errno == ERANGE && ulcount == ULONG_MAX) ||\n        ((unsigned int) ulcount != ulcount))\n    {\n      dprint (1, (debugfile, \"Error parsing STATUS number\\n\"));\n      return;\n    }\n    count = (unsigned int) ulcount;\n\n    if (!ascii_strncmp (\"MESSAGES\", s, 8))\n    {\n      status->messages = count;\n      new_msg_count = 1;\n    }\n    else if (!ascii_strncmp (\"RECENT\", s, 6))\n      status->recent = count;\n    else if (!ascii_strncmp (\"UIDNEXT\", s, 7))\n      status->uidnext = count;\n    else if (!ascii_strncmp (\"UIDVALIDITY\", s, 11))\n      status->uidvalidity = count;\n    else if (!ascii_strncmp (\"UNSEEN\", s, 6))\n      status->unseen = count;\n\n    s = value;\n    if (*s && *s != ')')\n      s = imap_next_word (s);\n  }\n  dprint (3, (debugfile, \"%s (UIDVALIDITY: %u, UIDNEXT: %u) %d messages, %d recent, %d unseen\\n\",\n              status->name, status->uidvalidity, status->uidnext,\n              status->messages, status->recent, status->unseen));\n\n  /* caller is prepared to handle the result herself */\n  if (idata->cmddata && idata->cmdtype == IMAP_CT_STATUS)\n  {\n    memcpy (idata->cmddata, status, sizeof (IMAP_STATUS));\n    return;\n  }\n\n  dprint (3, (debugfile, \"Running default STATUS handler\\n\"));\n\n  /* should perhaps move this code back to imap_buffy_check */\n  for (inc = Incoming; inc; inc = inc->next)\n  {\n    if (inc->magic != MUTT_IMAP)\n      continue;\n    \n    if (imap_parse_path (inc->path, &mx) < 0)\n    {\n      dprint (1, (debugfile, \"Error parsing mailbox %s, skipping\\n\", inc->path));\n      continue;\n    }\n    /* dprint (2, (debugfile, \"Buffy entry: [%s] mbox: [%s]\\n\", inc->path, NONULL(mx.mbox))); */\n    \n    if (imap_account_match (&idata->conn->account, &mx.account))\n    {\n      if (mx.mbox)\n      {\n\tvalue = safe_strdup (mx.mbox);\n\timap_fix_path (idata, mx.mbox, value, mutt_strlen (value) + 1);\n\tFREE (&mx.mbox);\n      }\n      else\n\tvalue = safe_strdup (\"INBOX\");\n\n      if (value && !imap_mxcmp (mailbox, value))\n      {\n        dprint (3, (debugfile, \"Found %s in buffy list (OV: %u ON: %u U: %d)\\n\",\n                    mailbox, olduv, oldun, status->unseen));\n        \n\tif (option(OPTMAILCHECKRECENT))\n\t{\n\t  if (olduv && olduv == status->uidvalidity)\n\t  {\n\t    if (oldun < status->uidnext)\n\t      new = (status->unseen > 0);\n\t  }\n\t  else if (!olduv && !oldun)\n\t    /* first check per session, use recent. might need a flag for this. */\n\t    new = (status->recent > 0);\n\t  else\n\t    new = (status->unseen > 0);\n\t}\n\telse\n          new = (status->unseen > 0);\n\n#ifdef USE_SIDEBAR\n        if ((inc->new != new) ||\n            (inc->msg_count != status->messages) ||\n            (inc->msg_unread != status->unseen))\n          mutt_set_current_menu_redraw (REDRAW_SIDEBAR);\n#endif\n        inc->new = new;\n        if (new_msg_count)\n          inc->msg_count = status->messages;\n        inc->msg_unread = status->unseen;\n\n\tif (inc->new)\n\t  /* force back to keep detecting new mail until the mailbox is\n\t     opened */\n\t  status->uidnext = oldun;\n\n        FREE (&value);\n        return;\n      }\n\n      FREE (&value);\n    }\n\n    FREE (&mx.mbox);\n  }\n}",
+            948
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "imap/command.c",
+            "cmd_parse_status",
+            "static void cmd_parse_status (IMAP_DATA* idata, char* s) /* <=== cmd_parse_status */ \n{\n  char* mailbox;\n  char* value;\n  BUFFY* inc;\n  IMAP_MBOX mx;\n  unsigned long ulcount;\n  unsigned int count;\n  IMAP_STATUS *status;\n  unsigned int olduv, oldun;\n  unsigned int litlen;\n  short new = 0;\n  short new_msg_count = 0;\n\n  mailbox = imap_next_word (s);\n\n  /* We need a real tokenizer. */\n  if (!imap_get_literal_count (mailbox, &litlen))\n  {\n    if (imap_cmd_step (idata) != IMAP_CMD_CONTINUE)\n    {\n      idata->status = IMAP_FATAL;\n      return;\n    }\n    mailbox = idata->buf;\n    s = mailbox + litlen;\n    *s = '\\0';\n    s++;\n    SKIPWS(s);\n  }\n  else\n  {\n    s = imap_next_word (mailbox);\n    *(s - 1) = '\\0';\n    imap_unmunge_mbox_name (idata, mailbox);\n  }\n\n  status = imap_mboxcache_get (idata, mailbox, 1);\n  olduv = status->uidvalidity;\n  oldun = status->uidnext;\n\n  if (*s++ != '(')\n  {\n    dprint (1, (debugfile, \"Error parsing STATUS\\n\"));\n    return;\n  }\n  while (*s && *s != ')')\n  {\n    value = imap_next_word (s);\n\n    errno = 0;\n    ulcount = strtoul (value, &value, 10);\n    if ((errno == ERANGE && ulcount == ULONG_MAX) ||\n        ((unsigned int) ulcount != ulcount))\n    {\n      dprint (1, (debugfile, \"Error parsing STATUS number\\n\"));\n      return;\n    }\n    count = (unsigned int) ulcount;\n\n    if (!ascii_strncmp (\"MESSAGES\", s, 8))\n    {\n      status->messages = count;\n      new_msg_count = 1;\n    }\n    else if (!ascii_strncmp (\"RECENT\", s, 6))\n      status->recent = count;\n    else if (!ascii_strncmp (\"UIDNEXT\", s, 7))\n      status->uidnext = count;\n    else if (!ascii_strncmp (\"UIDVALIDITY\", s, 11))\n      status->uidvalidity = count;\n    else if (!ascii_strncmp (\"UNSEEN\", s, 6))\n      status->unseen = count;\n\n    s = value;\n    if (*s && *s != ')')\n      s = imap_next_word (s);\n  }\n  dprint (3, (debugfile, \"%s (UIDVALIDITY: %u, UIDNEXT: %u) %d messages, %d recent, %d unseen\\n\",\n              status->name, status->uidvalidity, status->uidnext,\n              status->messages, status->recent, status->unseen));\n\n  /* caller is prepared to handle the result herself */\n  if (idata->cmddata && idata->cmdtype == IMAP_CT_STATUS)\n  {\n    memcpy (idata->cmddata, status, sizeof (IMAP_STATUS));\n    return;\n  }\n\n  dprint (3, (debugfile, \"Running default STATUS handler\\n\"));\n\n  /* should perhaps move this code back to imap_buffy_check */\n  for (inc = Incoming; inc; inc = inc->next)\n  {\n    if (inc->magic != MUTT_IMAP)\n      continue;\n    \n    if (imap_parse_path (inc->path, &mx) < 0)\n    {\n      dprint (1, (debugfile, \"Error parsing mailbox %s, skipping\\n\", inc->path));\n      continue;\n    }\n    /* dprint (2, (debugfile, \"Buffy entry: [%s] mbox: [%s]\\n\", inc->path, NONULL(mx.mbox))); */\n    \n    if (imap_account_match (&idata->conn->account, &mx.account))\n    {\n      if (mx.mbox)\n      {\n\tvalue = safe_strdup (mx.mbox);\n\timap_fix_path (idata, mx.mbox, value, mutt_strlen (value) + 1);\n\tFREE (&mx.mbox);\n      }\n      else\n\tvalue = safe_strdup (\"INBOX\");\n\n      if (value && !imap_mxcmp (mailbox, value))\n      {\n        dprint (3, (debugfile, \"Found %s in buffy list (OV: %u ON: %u U: %d)\\n\",\n                    mailbox, olduv, oldun, status->unseen));\n        \n\tif (option(OPTMAILCHECKRECENT))\n\t{\n\t  if (olduv && olduv == status->uidvalidity)\n\t  {\n\t    if (oldun < status->uidnext)\n\t      new = (status->unseen > 0);\n\t  }\n\t  else if (!olduv && !oldun)\n\t    /* first check per session, use recent. might need a flag for this. */\n\t    new = (status->recent > 0);\n\t  else\n\t    new = (status->unseen > 0);\n\t}\n\telse\n          new = (status->unseen > 0);\n\n#ifdef USE_SIDEBAR\n        if ((inc->new != new) ||\n            (inc->msg_count != status->messages) ||\n            (inc->msg_unread != status->unseen))\n          mutt_set_current_menu_redraw (REDRAW_SIDEBAR);\n#endif\n        inc->new = new;\n        if (new_msg_count)\n          inc->msg_count = status->messages;\n        inc->msg_unread = status->unseen;\n\n\tif (inc->new)\n\t  /* force back to keep detecting new mail until the mailbox is\n\t     opened */\n\t  status->uidnext = oldun;\n\n        FREE (&value);\n        return;\n      }\n\n      FREE (&value);\n    }\n\n    FREE (&mx.mbox);\n  }\n}",
+            948
+        ]
+    ]
+}

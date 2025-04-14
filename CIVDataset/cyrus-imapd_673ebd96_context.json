@@ -1,0 +1,893 @@
+{
+    "calleeMethods": [
+        [
+            "imap/sync_log.c",
+            "sync_log_base",
+            "static void sync_log_base(const char *channel, const char *string) /* <=== sync_log_base */ \n{\n    int fd;\n    struct stat sbuffile, sbuffd;\n    int retries = 0;\n    const char *fname;\n\n    fname = sync_log_fname(channel);\n\n    while (retries++ < SYNC_LOG_RETRIES) {\n        fd = open(fname, O_WRONLY|O_APPEND|O_CREAT, 0640);\n        if (fd < 0 && errno == ENOENT) {\n            if (!cyrus_mkdir(fname, 0755)) {\n                fd = open(fname, O_WRONLY|O_APPEND|O_CREAT, 0640);\n            }\n        }\n        if (fd < 0) {\n            syslog(LOG_ERR, \"sync_log(): Unable to write to log file %s: %s\",\n                   fname, strerror(errno));\n            return;\n        }\n\n        if (lock_blocking(fd, fname) == -1) {\n            syslog(LOG_ERR, \"sync_log(): Failed to lock %s for %s: %m\",\n                   fname, string);\n            xclose(fd);\n            return;\n        }\n\n        /* Check that the file wasn't renamed after it was opened above */\n        if ((fstat(fd, &sbuffd) == 0) &&\n            (stat(fname, &sbuffile) == 0) &&\n            (sbuffd.st_ino == sbuffile.st_ino))\n            break;\n\n        lock_unlock(fd, fname);\n        xclose(fd);\n    }\n    if (retries >= SYNC_LOG_RETRIES) {\n        xclose(fd);\n        syslog(LOG_ERR,\n               \"sync_log(): Failed to lock %s for %s after %d attempts\",\n               fname, string, retries);\n        return;\n    }\n\n    if (retry_write(fd, string, strlen(string)) < 0)\n        syslog(LOG_ERR, \"write() to %s failed: %s\",\n               fname, strerror(errno));\n\n    (void)fsync(fd); /* paranoia */\n    lock_unlock(fd, fname);\n    xclose(fd);\n}",
+            3
+        ],
+        [
+            "lib/assert.c",
+            "assertionfailed",
+            "EXPORTED void /* <=== assertionfailed */ \nassertionfailed(const char *file, int line, const char *expr)\n{\n    char buf[1024];\n\n    snprintf(buf, sizeof(buf), \"Internal error: assertion failed: %s: %d%s%s\",\n            file, line, expr ? \": \" : \"\", expr ? expr : \"\");\n    fatal(buf, EX_SOFTWARE);\n}",
+            2
+        ],
+        [
+            "com_err/et/error_message.c",
+            "error_message",
+            "EXPORTED const char * INTERFACE error_message (code) /* <=== error_message */ \nlong code;\n{\n    int offset;\n    long l_offset;\n    struct et_list *et;\n    long table_num;\n    int started = 0;\n    char *cp;\n\n    l_offset = code & ((1<<ERRCODE_RANGE)-1);\n    offset = (int) l_offset;\n    table_num = code - l_offset;\n    if (!table_num) {\n#ifdef HAS_STRERROR\n        return strerror (offset);\n#else\n        if (offset < sys_nerr)\n            return(sys_errlist[offset]);\n        else\n            goto oops;\n#endif\n    }\n    for (et = _et_list; et; et = et->next) {\n        if (et->table->base == table_num) {\n            /* This is the right table */\n            if (et->table->n_msgs <= offset)\n                goto oops;\n            return(et->table->msgs[offset]);\n        }\n    }\noops:\n    strcpy (buffer, \"Unknown code \");\n    if (table_num) {\n        strcat (buffer, error_table_name (table_num));\n        strcat (buffer, \" \");\n    }\n    for (cp = buffer; *cp; cp++)\n        ;\n    if (offset >= 100) {\n        *cp++ = '0' + offset / 100;\n        offset %= 100;\n        started++;\n    }\n    if (started || offset >= 10) {\n        *cp++ = '0' + offset / 10;\n        offset %= 10;\n    }\n    *cp++ = '0' + offset;\n    *cp = '\\0';\n    return(buffer);\n}",
+            1
+        ],
+        [
+            "imap/sync_log.c",
+            "sync_log_init",
+            "EXPORTED void sync_log_init(void) /* <=== sync_log_init */ \n{\n    const char *conf;\n    int i;\n\n    /* sync_log_init() may be called more than once */\n    if (channels) strarray_free(channels);\n\n    conf = config_getstring(IMAPOPT_SYNC_LOG_CHANNELS);\n    if (!conf) conf = \"\\\"\\\"\";\n    channels = strarray_split(conf, \" \", 0);\n    /*\n     * The sysadmin can specify \"\" in the value of sync_log_channels to\n     * mean the default channel name - this will be useful for sysadmins\n     * who want to start using a sync log channel for squatter but who\n     * have been using the default sync log channel for sync_client.\n     */\n    i = strarray_find(channels, \"\\\"\\\"\", 0);\n    if (i >= 0)\n        strarray_set(channels, i, NULL);\n\n    strarray_free(unsuppressable);\n    unsuppressable = NULL;\n    conf = config_getstring(IMAPOPT_SYNC_LOG_UNSUPPRESSABLE_CHANNELS);\n    if (conf)\n        unsuppressable = strarray_split(conf, \" \", 0);\n\n    sync_log_initialized = 1;\n}",
+            3
+        ],
+        [
+            "imap/mboxname.c",
+            "mbname_from_intname",
+            "EXPORTED mbname_t *mbname_from_intname(const char *intname) /* <=== mbname_from_intname */ \n{\n    mbname_t *mbname = xzmalloc(sizeof(mbname_t));\n    const char *p;\n\n    if (!intname)\n        return mbname;\n\n    if (!*intname)\n        return mbname; // empty string, *sigh*\n\n    const char *dp = config_getstring(IMAPOPT_DELETEDPREFIX);\n\n    mbname->intname = xstrdup(intname); // may as well cache it\n\n    p = strchr(intname, '!');\n    if (p) {\n        mbname->domain = xstrndup(intname, p - intname);\n        if (!strcmpsafe(mbname->domain, config_defdomain)) {\n            free(mbname->domain);\n            mbname->domain = NULL;\n        }\n        intname = p+1;\n    }\n\n    mbname->boxes = _array_from_intname(strarray_split(intname, \".\", 0));\n\n    if (!strarray_size(mbname->boxes))\n        return mbname;\n\n    if (strarray_size(mbname->boxes) > 2 && !strcmpsafe(strarray_nth(mbname->boxes, 0), dp)) {\n        free(strarray_shift(mbname->boxes));\n        char *delval = strarray_pop(mbname->boxes);\n        mbname->is_deleted = strtoul(delval, NULL, 16);\n        free(delval);\n    }\n\n    if (strarray_size(mbname->boxes) > 1 && !strcmpsafe(strarray_nth(mbname->boxes, 0), \"user\")) {\n        free(strarray_shift(mbname->boxes));\n        mbname->localpart = strarray_shift(mbname->boxes);\n    }\n\n    return mbname;\n}",
+            3
+        ],
+        [
+            "imap/mboxevent.c",
+            "mboxevent_init",
+            "EXPORTED int mboxevent_init(void) /* <=== mboxevent_init */ \n{\n    const char *options;\n    int groups;\n\n    if (!(notifier = config_getstring(IMAPOPT_EVENT_NOTIFIER))) return 0;\n\n    /* some don't want to notify events for some IMAP flags */\n    options = config_getstring(IMAPOPT_EVENT_EXCLUDE_FLAGS);\n    excluded_flags = strarray_split(options, NULL, 0);\n\n    /* some don't want to notify events on some folders (ie. Sent, Spam) */\n    /* identify those folders with IMAP SPECIAL-USE */\n    options = config_getstring(IMAPOPT_EVENT_EXCLUDE_SPECIALUSE);\n    excluded_specialuse = strarray_split(options, NULL, 0);\n\n    /* special meaning to disable event notification on all sub folders */\n    if (strarray_find_case(excluded_specialuse, \"ALL\", 0) >= 0)\n        enable_subfolder = 0;\n\n    /* get event types's extra parameters */\n    extra_params = config_getbitfield(IMAPOPT_EVENT_EXTRA_PARAMS);\n\n    /* groups of related events to turn on notification */\n    groups = config_getbitfield(IMAPOPT_EVENT_GROUPS);\n    if (groups & IMAP_ENUM_EVENT_GROUPS_MESSAGE)\n        enabled_events |= MESSAGE_EVENTS;\n\n    if (groups & IMAP_ENUM_EVENT_GROUPS_QUOTA)\n        enabled_events |= QUOTA_EVENTS;\n\n    if (groups & IMAP_ENUM_EVENT_GROUPS_FLAGS)\n        enabled_events |= FLAGS_EVENTS;\n\n    if (groups & IMAP_ENUM_EVENT_GROUPS_ACCESS)\n        enabled_events |= (EVENT_LOGIN|EVENT_LOGOUT|EVENT_ACL_CHANGE);\n\n    if (groups & IMAP_ENUM_EVENT_GROUPS_SUBSCRIPTION)\n        enabled_events |= SUBS_EVENTS;\n\n    if (groups & IMAP_ENUM_EVENT_GROUPS_MAILBOX)\n        enabled_events |= MAILBOX_EVENTS;\n\n    if (groups & IMAP_ENUM_EVENT_GROUPS_CALENDAR)\n        enabled_events |= CALENDAR_EVENTS;\n\n    if (groups & IMAP_ENUM_EVENT_GROUPS_APPLEPUSHSERVICE)\n        enabled_events |= APPLEPUSHSERVICE_EVENTS;\n\n    mboxevent_initialized = 1;\n\n    return enabled_events;\n}",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_size",
+            "EXPORTED int strarray_size(const strarray_t *sa) /* <=== strarray_size */ \n{\n    if (!sa) return 0;\n    return sa->count;\n}",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_remove",
+            "EXPORTED char *strarray_remove(strarray_t *sa, int idx) /* <=== strarray_remove */ \n{\n    char *s;\n    if ((idx = adjust_index_ro(sa, idx)) < 0)\n        return NULL;\n    s = sa->data[idx];\n    sa->count--;\n    if (idx < sa->count)\n        memmove(sa->data+idx, sa->data+idx+1,\n                sizeof(char *) * (sa->count-idx));\n    return s;\n}",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_join",
+            "EXPORTED char *strarray_join(const strarray_t *sa, const char *sep) /* <=== strarray_join */ \n{\n    int seplen = (sep ? strlen(sep) : 0);\n    int len = 0;\n    int i;  /* array index */\n    int j;  /* index into non-sparse logical subset of the array\n             * i.e. doesn't count NULLs */\n    char *buf, *p;\n\n    for (i = 0, j = 0 ; i < sa->count ; i++) {\n        if (sa->data[i])\n            len += strlen(sa->data[i]) + (j++ ? seplen : 0);\n    }\n\n    if (!len)\n        return NULL;\n    len++;      /* room for NUL terminator */\n    p = buf = xmalloc(len);\n\n    for (i = 0, j = 0 ; i < sa->count ; i++) {\n        if (sa->data[i]) {\n            if (j++ && sep) {\n                strcpy(p, sep);\n                p += strlen(p);\n            }\n            strcpy(p, sa->data[i]);\n            p += strlen(p);\n        }\n    }\n\n    return buf;\n}",
+            3
+        ],
+        [
+            "imap/notify.c",
+            "notify",
+            "EXPORTED void notify(const char *method, /* <=== notify */ \n            const char *class, const char *priority,\n            const char *user, const char *mailbox,\n            int nopt, const char **options,\n            const char *message, const char *fname)\n{\n    const char *notify_sock = config_getstring(IMAPOPT_NOTIFYSOCKET);\n    int soc = -1;\n    struct sockaddr_un sun_data;\n    char buf[NOTIFY_MAXSIZE] = \"\", noptstr[20];\n    int buflen = 0;\n    int i, r = 0;\n    unsigned bufsiz;\n    socklen_t optlen;\n\n    if (!strncmp(notify_sock, \"dlist:\", 6)) {\n        notify_dlist(notify_sock+6, method, class, priority,\n                            user, mailbox, nopt, options,\n                            message, fname);\n        return;\n    }\n\n    soc = socket(AF_UNIX, SOCK_DGRAM, 0);\n    if (soc == -1) {\n        syslog(LOG_ERR, \"unable to create notify socket(): %m\");\n        goto out;\n    }\n\n    memset((char *)&sun_data, 0, sizeof(sun_data));\n    sun_data.sun_family = AF_UNIX;\n    if (notify_sock) {\n        strlcpy(sun_data.sun_path, notify_sock, sizeof(sun_data.sun_path));\n    }\n    else {\n        strlcpy(sun_data.sun_path, config_dir, sizeof(sun_data.sun_path));\n        strlcat(sun_data.sun_path,\n                FNAME_NOTIFY_SOCK, sizeof(sun_data.sun_path));\n    }\n\n    /* Get send buffer size */\n    optlen = sizeof(bufsiz);\n    r = getsockopt(soc, SOL_SOCKET, SO_SNDBUF, &bufsiz, &optlen);\n    if (r == -1) {\n        syslog(LOG_ERR, \"unable to getsockopt(SO_SNDBUF) on notify socket: %m\");\n        goto out;\n    }\n\n    /* Use minimum of 1/10 of send buffer size (-overhead) NOTIFY_MAXSIZE */\n    bufsiz = MIN(bufsiz / 10 - 32, NOTIFY_MAXSIZE);\n\n    /*\n     * build request of the form:\n     *\n     * method NUL class NUL priority NUL user NUL mailbox NUL\n     *   nopt NUL N(option NUL) message NUL\n     */\n\n    r = add_arg(buf, bufsiz, method, &buflen);\n    if (!r) r = add_arg(buf, bufsiz, class, &buflen);\n    if (!r) r = add_arg(buf, bufsiz, priority, &buflen);\n    if (!r) r = add_arg(buf, bufsiz, user, &buflen);\n    if (!r) r = add_arg(buf, bufsiz, mailbox, &buflen);\n\n    snprintf(noptstr, sizeof(noptstr), \"%d\", nopt);\n    if (!r) r = add_arg(buf, bufsiz, noptstr, &buflen);\n\n    for (i = 0; !r && i < nopt; i++) {\n        r = add_arg(buf, bufsiz, options[i], &buflen);\n    }\n\n    if (!r) r = add_arg(buf, bufsiz, message, &buflen);\n    if (!r && fname) r = add_arg(buf, bufsiz, fname, &buflen);\n\n    if (r) {\n        syslog(LOG_ERR, \"notify datagram too large, %s, %s\",\n               user, mailbox);\n        goto out;\n    }\n\n    r = sendto(soc, buf, buflen, 0,\n               (struct sockaddr *)&sun_data, sizeof(sun_data));\n\n    if (r < 0) {\n        syslog(LOG_ERR, \"unable to sendto() notify socket: %m\");\n        goto out;\n    }\n    if (r < buflen) {\n        syslog(LOG_ERR, \"short write to notify socket\");\n        goto out;\n    }\n\nout:\n    xclose(soc);\n}",
+            3
+        ],
+        [
+            "imap/mboxevent.c",
+            "init_internal",
+            "static void init_internal() { /* <=== init_internal */ \n    if (!mboxevent_initialized) {\n        mboxevent_init();\n        cyrus_modules_add(done_cb, NULL);\n    }\n}",
+            2
+        ],
+        [
+            "imap/mboxname.c",
+            "mbname_extname",
+            "EXPORTED const char *mbname_extname(const mbname_t *mbname, const struct namespace *ns, const char *userid) /* <=== mbname_extname */ \n{\n    int crossdomains = config_getswitch(IMAPOPT_CROSSDOMAINS) && !ns->isadmin;\n    int cdother = config_getswitch(IMAPOPT_CROSSDOMAINS_ONLYOTHER);\n    /* old-school virtdomains requires admin to be a different domain than the userid */\n    int admindomains = config_virtdomains && ns->isadmin;\n\n    /* gotta match up! */\n    if (mbname->extname && ns == mbname->extns && !strcmpsafe(userid, mbname->extuserid))\n        return mbname->extname;\n\n    struct buf buf = BUF_INITIALIZER;\n\n    /* have to zero out any existing value just in case we drop through */\n    mbname_t *backdoor = (mbname_t *)mbname;\n    if (backdoor->extname) {\n        free(backdoor->extname);\n        backdoor->extname = NULL;\n        backdoor->extns = ns;\n        free(backdoor->extuserid);\n        backdoor->extuserid = xstrdupnull(userid);\n    }\n\n    mbname_t *userparts = mbname_from_userid(userid);\n    strarray_t *boxes = strarray_dup(mbname_boxes(mbname));\n\n    if (ns->isalt) {\n        assert(!ns->isadmin);\n\n        const char *up = config_getstring(IMAPOPT_USERPREFIX);\n        const char *sp = config_getstring(IMAPOPT_SHAREDPREFIX);\n        const char *ap = config_getstring(IMAPOPT_ALTPREFIX);\n\n        /* DELETED mailboxes have no extname in alt namespace.\n         * There's also no need to display domains unless in crossdomains,\n         * because admins are never in altnamespace, and only admins can\n         * see domains in the admindomains space */\n        if (mbname->is_deleted)\n            goto done;\n\n        /* shared */\n        if (!mbname_localpart(mbname)) {\n            /* can't represent an empty mailbox */\n            if (!strarray_size(boxes))\n                goto done;\n\n            const char *toplevel = strarray_nth(boxes, 0);\n\n            if (strarray_size(boxes) == 1 && !strcmpsafe(toplevel, \"user\")) {\n                /* special case user all by itself */\n                buf_appendcstr(&buf, up);\n                goto end;\n            }\n            buf_appendcstr(&buf, sp);\n            buf_putc(&buf, ns->hier_sep);\n            _append_extbuf(ns, &buf, toplevel);\n            /* domains go on the top level folder */\n            if (crossdomains) {\n                const char *domain = mbname_domain(mbname);\n                if (!cdother || strcmpsafe(domain, mbname_domain(userparts))) {\n                    if (!domain) domain = config_defdomain;\n                    buf_putc(&buf, '@');\n                    _append_extbuf(ns, &buf, domain);\n                }\n            }\n            int i;\n            for (i = 1; i < strarray_size(boxes); i++) {\n                buf_putc(&buf, ns->hier_sep);\n                _append_extbuf(ns, &buf, strarray_nth(boxes, i));\n            }\n            goto end;\n        }\n\n        /* other users */\n        if (strcmpsafe(mbname_userid(mbname), userid)) {\n            buf_appendcstr(&buf, up);\n            buf_putc(&buf, ns->hier_sep);\n            _append_extbuf(ns, &buf, mbname_localpart(mbname));\n            if (crossdomains) {\n                const char *domain = mbname_domain(mbname);\n                if (!cdother || strcmpsafe(domain, mbname_domain(userparts))) {\n                    if (!domain) domain = config_defdomain;\n                    buf_putc(&buf, '@');\n                    _append_extbuf(ns, &buf, domain);\n                }\n            }\n            int i;\n            for (i = 0; i < strarray_size(boxes); i++) {\n                buf_putc(&buf, ns->hier_sep);\n                _append_extbuf(ns, &buf, strarray_nth(boxes, i));\n            }\n            goto end;\n        }\n\n        /* own user */\n        if (!strarray_size(boxes)) {\n            buf_appendcstr(&buf, \"INBOX\");\n            goto end;\n        }\n\n        const char *toplevel = strarray_nth(boxes, 0);\n        /* INBOX is very special, because it can only be represented with exact case,\n         * and it skips a level. Everything else including allcaps INBOX goes into\n         * the Alt Prefix */\n        if (!strcasecmpsafe(toplevel, \"INBOX\")) {\n            if (strarray_size(boxes) == 1 || strcmpsafe(toplevel, \"INBOX\")) {\n                buf_appendcstr(&buf, ap);\n                buf_putc(&buf, ns->hier_sep);\n            }\n        }\n        /* likewise anything exactly matching the user, alt or shared prefixes, both top level\n         * or with children goes into alt prefix */\n        else if (!strcmpsafe(toplevel, up) || !strcmpsafe(toplevel, sp) || !strcmpsafe(toplevel, ap)) {\n            buf_appendcstr(&buf, ap);\n            buf_putc(&buf, ns->hier_sep);\n        }\n\n         _append_extbuf(ns, &buf, toplevel);\n\n        int i;\n        for (i = 1; i < strarray_size(boxes); i++) {\n           buf_putc(&buf, ns->hier_sep);\n            _append_extbuf(ns, &buf, strarray_nth(boxes, i));\n        }\n\n        goto end;\n    }\n\n    if (mbname->is_deleted) {\n        buf_appendcstr(&buf, config_getstring(IMAPOPT_DELETEDPREFIX));\n        buf_putc(&buf, ns->hier_sep);\n    }\n\n    /* shared */\n    if (!mbname_localpart(mbname)) {\n        /* invalid names - not sure it's even possible, but hey */\n        if (!strarray_size(boxes))\n            goto done;\n        if (!strcasecmpsafe(strarray_nth(boxes, 0), \"INBOX\"))\n            goto done;\n\n        /* shared folders can ONLY be in the same domain except for admin */\n        if (!admindomains && strcmpsafe(mbname_domain(mbname), mbname_domain(userparts)))\n            goto done;\n\n        /* note \"user\" precisely appears here, but no need to special case it\n         * since the output is the same */\n        int i;\n        for (i = 0; i < strarray_size(boxes); i++) {\n            if (i) buf_putc(&buf, ns->hier_sep);\n            _append_extbuf(ns, &buf, strarray_nth(boxes, i));\n        }\n\n        goto end;\n    }\n\n    /* other users or DELETED */\n    if (mbname->is_deleted || strcmpsafe(mbname_userid(mbname), userid)) {\n        buf_appendcstr(&buf, \"user\");\n        buf_putc(&buf, ns->hier_sep);\n        _append_extbuf(ns, &buf, mbname_localpart(mbname));\n        if (crossdomains) {\n            const char *domain = mbname_domain(mbname);\n            if (!cdother || strcmpsafe(domain, mbname_domain(userparts))) {\n                if (!domain) domain = config_defdomain;\n                buf_putc(&buf, '@');\n                _append_extbuf(ns, &buf, domain);\n            }\n        }\n        /* shared folders can ONLY be in the same domain except for admin */\n        else if (!admindomains && strcmpsafe(mbname_domain(mbname), mbname_domain(userparts)))\n            goto done;\n        int i;\n        for (i = 0; i < strarray_size(boxes); i++) {\n            buf_putc(&buf, ns->hier_sep);\n            _append_extbuf(ns, &buf, strarray_nth(boxes, i));\n        }\n        goto end;\n    }\n\n    buf_appendcstr(&buf, \"INBOX\");\n    int i;\n    for (i = 0; i < strarray_size(boxes); i++) {\n       buf_putc(&buf, ns->hier_sep);\n       _append_extbuf(ns, &buf, strarray_nth(boxes, i));\n    }\n\n end:\n\n    /* note: kinda bogus in altnamespace, meh */\n    if (mbname->is_deleted) {\n        buf_putc(&buf, ns->hier_sep);\n        buf_printf(&buf, \"%X\", (unsigned)mbname->is_deleted);\n    }\n\n    if (admindomains && mbname_domain(mbname)) {\n        buf_putc(&buf, '@');\n        buf_appendcstr(&buf, mbname_domain(mbname));\n    }\n\n    backdoor->extname = buf_release(&buf);\n\n done:\n\n    buf_free(&buf);\n    mbname_free(&userparts);\n    strarray_free(boxes);\n\n    return mbname->extname;\n}",
+            3
+        ],
+        [
+            "lib/xmalloc.c",
+            "xstrndup",
+            "EXPORTED char *xstrndup(const char* str, size_t len) /* <=== xstrndup */ \n{\n    char *p = xmalloc(len+1);\n    if (len) strncpy(p, str, len);\n    p[len] = '\\0';\n    return p;\n}",
+            3
+        ],
+        [
+            "imap/mailbox.h",
+            "MAX_MAILBOX_PATH",
+            "#define MAX_MAILBOX_PATH 4096 /* <=== imap/mailbox.h:63:63:MAX_MAILBOX_PATH:0 */ ",
+            3
+        ],
+        [
+            "imap/mboxevent.c",
+            "filled_params",
+            "static int filled_params(enum event_type type, struct mboxevent *event) /* <=== filled_params */ \n{\n    struct buf missing = BUF_INITIALIZER;\n    int param, ret = 1;\n\n    if (!event)\n        return 0;\n\n    for (param = 0; param <= MAX_PARAM; param++) {\n\n        if (mboxevent_expected_param(type, param) &&\n                !event->params[param].filled) {\n            switch (event->params[param].id) {\n            case EVENT_FLAG_NAMES:\n                /* flagNames may be included with MessageAppend and MessageNew\n                 * also we don't expect it here. */\n                if (!(type & (EVENT_MESSAGE_APPEND|EVENT_MESSAGE_NEW)))\n                    buf_appendcstr(&missing, \" flagNames\");\n                break;\n            case EVENT_MESSAGE_CONTENT:\n                /* messageContent is not included in standard mode if the size\n                 * of the message exceed the limit */\n                if (config_getenum(IMAPOPT_EVENT_CONTENT_INCLUSION_MODE) !=\n                    IMAP_ENUM_EVENT_CONTENT_INCLUSION_MODE_STANDARD)\n                    buf_appendcstr(&missing, \" messageContent\");\n                break;\n            case EVENT_MODSEQ:\n                /* modseq is not included if notification refers to several\n                 * messages */\n                if (!event->uidset || (seqset_first(event->uidset) == seqset_last(event->uidset)))\n                    buf_appendcstr(&missing, \" modseq\");\n                break;\n            default:\n                buf_appendcstr(&missing, \" \");\n                buf_appendcstr(&missing, event->params[param].name);\n                break;\n            }\n        }\n    }\n\n    if (buf_len(&missing)) {\n        syslog(LOG_ALERT, \"Cannot notify event %s: missing parameters:%s\",\n               event_to_name(type), buf_cstring(&missing));\n        ret = 0;\n    }\n\n    buf_free(&missing);\n    return ret;\n}",
+            3
+        ],
+        [
+            "imap/mboxlist.c",
+            "init_internal",
+            "static void init_internal() /* <=== init_internal */ \n{\n    if (!mboxlist_initialized) {\n        mboxlist_init(0);\n    }\n    if (!mboxlist_dbopen) {\n        mboxlist_open(NULL);\n    }\n}",
+            2
+        ],
+        [
+            "imap/mboxevent.c",
+            "mboxevent_set_access",
+            "EXPORTED void mboxevent_set_access(struct mboxevent *event, /* <=== mboxevent_set_access */ \n                                   const char *serveraddr, const char *clientaddr,\n                                   const char *userid, const char *mailboxname,\n                                   const int ext_name __attribute__((unused)))\n{\n    char url[MAX_MAILBOX_PATH+1];\n    struct imapurl imapurl;\n    int r;\n\n    if (!event)\n        return;\n\n    init_internal();\n\n    /* only notify Logout after successful Login */\n    if (!userid && event->type & EVENT_LOGOUT) {\n        event->type = EVENT_CANCELLED;\n        return;\n    }\n\n    /* all events needs uri parameter */\n    memset(&imapurl, 0, sizeof(struct imapurl));\n    imapurl.server = config_servername;\n\n    mbname_t *mbname = mbname_from_intname(mailboxname);\n    char *extname = xstrdupnull(mbname_extname(mbname, &namespace, NULL));\n    imapurl.mailbox = extname;\n    mbname_free(&mbname);\n\n    imapurl_toURL(url, &imapurl);\n\n    // All events want a URI parameter, which in the case of Login/Logout\n    // might be useful if it took in to account TLS SNI for example.\n    if (!event->params[EVENT_URI].filled) {\n        FILL_STRING_PARAM(event, EVENT_URI, xstrdup(url));\n    }\n\n    // Login and Logout events do not have a mailboxname, so avoid looking that up...\n    if (mailboxname) {\n        mbentry_t *mbentry = NULL;\n        r = mboxlist_lookup(mailboxname, &mbentry, NULL);\n        if (!r && mbentry->uniqueid) {\n            /* mboxevent_extract_mailbox may already have set EVENT_MAILBOX_ID,\n             * so make sure to deallocate its previous value */\n            if (event->params[EVENT_MAILBOX_ID].filled) {\n                free(event->params[EVENT_MAILBOX_ID].value.s);\n            }\n            FILL_STRING_PARAM(event, EVENT_MAILBOX_ID, xstrdup(mbentry->uniqueid));\n        }\n        mboxlist_entry_free(&mbentry);\n    }\n\n    if (serveraddr && mboxevent_expected_param(event->type, EVENT_SERVER_ADDRESS)) {\n        FILL_STRING_PARAM(event, EVENT_SERVER_ADDRESS, xstrdup(serveraddr));\n    }\n\n    if (clientaddr && mboxevent_expected_param(event->type, EVENT_CLIENT_ADDRESS)) {\n        FILL_STRING_PARAM(event, EVENT_CLIENT_ADDRESS, xstrdup(clientaddr));\n    }\n\n    if (userid && mboxevent_expected_param(event->type, EVENT_USER)) {\n        FILL_STRING_PARAM(event, EVENT_USER, xstrdupsafe(userid));\n    }\n\n    free(extname);\n}",
+            2
+        ],
+        [
+            "imap/mboxevent.c",
+            "mboxevent_notify",
+            "EXPORTED void mboxevent_notify(struct mboxevent **mboxevents) /* <=== mboxevent_notify */ \n{\n    enum event_type type;\n    struct mboxevent *event;\n    char stimestamp[TIMESTAMP_MAX+1];\n    char *formatted_message;\n    const char *fname = NULL;\n\n    /* nothing to notify */\n    if (!*mboxevents)\n        return;\n\n    init_internal();\n\n    /* loop over the chained list of events */\n    for (event = *mboxevents; event; event = event->next) {\n        if (event->type == EVENT_CANCELLED)\n            continue;\n\n        /* swap FlagsSet and FlagsClear notification order depending the presence of\n         * the \\Seen flag because it changes the value of vnd.cmu.unseenMessages.\n         * kinda bogus because it only finds two next to each other, but hey */\n        if (event->type == EVENT_FLAGS_SET &&\n            event->next &&\n            event->next->type == EVENT_FLAGS_CLEAR &&\n            strarray_find_case(&event->next->flagnames, \"\\\\Seen\", 0) >= 0) {\n\n            struct mboxevent *other = event->next;\n            // swap the outsides first\n            other->prev = event->prev;\n            event->next = other->next;\n            // swap the insides\n            event->prev = other;\n            other->next = event;\n            // switch the head if needed\n            if (event == *mboxevents) *mboxevents = other;\n            // and jump to this one for further processing\n            event = other;\n        }\n\n        /* verify that at least one message has been added depending the event type */\n        if (event->type & (MESSAGE_EVENTS|FLAGS_EVENTS)) {\n            if (event->type & (EVENT_MESSAGE_NEW|EVENT_MESSAGE_APPEND)) {\n                if (!event->params[EVENT_URI].filled)\n                    continue;\n            }\n            else\n                if (event->uidset == NULL)\n                    continue;\n        }\n\n        /* others quota are not supported by RFC 5423 */\n        if ((event->type & QUOTA_EVENTS) &&\n            !event->params[EVENT_QUOTA_STORAGE].filled &&\n            !event->params[EVENT_QUOTA_MESSAGES].filled)\n            continue;\n\n        /* finish to fill event parameters structure */\n\n        if (mboxevent_expected_param(event->type, EVENT_SERVICE)) {\n            FILL_STRING_PARAM(event, EVENT_SERVICE, xstrdup(config_ident));\n        }\n\n        if (mboxevent_expected_param(event->type, EVENT_SERVERFQDN)) {\n            FILL_STRING_PARAM(event, EVENT_SERVERFQDN, xstrdup(config_servername));\n        }\n\n        if (mboxevent_expected_param(event->type, EVENT_TIMESTAMP)) {\n            timeval_to_iso8601(&event->timestamp, timeval_ms,\n                               stimestamp, sizeof(stimestamp));\n            FILL_STRING_PARAM(event, EVENT_TIMESTAMP, xstrdup(stimestamp));\n        }\n\n        if (event->uidset) {\n            FILL_STRING_PARAM(event, EVENT_UIDSET, seqset_cstring(event->uidset));\n        }\n        if (strarray_size(&event->midset) > 0) {\n            FILL_ARRAY_PARAM(event, EVENT_MIDSET, &event->midset);\n        }\n        if (event->olduidset) {\n            FILL_STRING_PARAM(event, EVENT_OLD_UIDSET, seqset_cstring(event->olduidset));\n        }\n\n        /* may split FlagsSet event in several event notifications */\n        do {\n            type = event->type;\n            /* prefer MessageRead and MessageTrash to FlagsSet as\n             * advised in RFC 5423 section 4.2\n             */\n            if (type == EVENT_FLAGS_SET) {\n                int i;\n\n                if ((i = strarray_find(&event->flagnames, \"\\\\Deleted\", 0)) >= 0) {\n                    type = EVENT_MESSAGE_TRASH;\n                    free(strarray_remove(&event->flagnames, i));\n                }\n                else if ((i = strarray_find(&event->flagnames, \"\\\\Seen\", 0)) >= 0) {\n                    type = EVENT_MESSAGE_READ;\n                    free(strarray_remove(&event->flagnames, i));\n                }\n            }\n\n            if (strarray_size(&event->flagnames) > 0) {\n                /* don't send flagNames parameter for those events */\n                if (type != EVENT_MESSAGE_TRASH && type != EVENT_MESSAGE_READ) {\n                    char *flagnames = strarray_join(&event->flagnames, \" \");\n                    FILL_STRING_PARAM(event, EVENT_FLAG_NAMES, flagnames);\n\n                    /* stop to loop for flagsSet event here */\n                    strarray_fini(&event->flagnames);\n                }\n            }\n\n            /* check if expected event parameters are filled */\n            assert(filled_params(type, event));\n\n            /* notification is ready to send */\n            formatted_message = json_formatter(type, event->params);\n            notify(notifier, \"EVENT\", NULL, NULL, NULL, 0, NULL, formatted_message, fname);\n\n            free(formatted_message);\n        }\n        while (strarray_size(&event->flagnames) > 0);\n    }\n\n    return;\n}",
+            2
+        ],
+        [
+            "imap/lmtp_sieve.c",
+            "SEP",
+            "#define SEP \"|\" /* <=== imap/lmtp_sieve.c:1967:1967:SEP:0 */ ",
+            1
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_fini",
+            "EXPORTED void strarray_fini(strarray_t *sa) /* <=== strarray_fini */ \n{\n    int i;\n\n    if (!sa)\n        return;\n    for (i = 0 ; i < sa->count ; i++) {\n        xzfree(sa->data[i]);\n    }\n    xzfree(sa->data);\n    sa->count = 0;\n    sa->alloc = 0;\n}",
+            3
+        ],
+        [
+            "imap/mupdate.c",
+            "fatal",
+            "EXPORTED void fatal(const char *s, int code) /* <=== fatal */ \n{\n    static int recurse_code = 0;\n\n    if (recurse_code) exit(code);\n    else recurse_code = code;\n\n    syslog(LOG_ERR, \"%s\", s);\n    shut_down(code);\n\n    /* NOTREACHED */\n    exit(code); /* shut up GCC */\n}",
+            3
+        ],
+        [
+            "imap/carddav_db.c",
+            "init_internal",
+            "static void init_internal() { /* <=== init_internal */ \n    if (!carddav_initialized) {\n        carddav_init();\n        cyrus_modules_add(done_cb, NULL);\n    }\n}",
+            2
+        ],
+        [
+            "cunit/syslog.c",
+            "MAX_SLMATCH",
+            "#define MAX_SLMATCH 32 /* <=== cunit/syslog.c:61:61:MAX_SLMATCH:0 */ ",
+            3
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_closesubs",
+            "static void mboxlist_closesubs(struct db *sub) /* <=== mboxlist_closesubs */ \n{\n    cyrusdb_close(sub);\n}",
+            2
+        ],
+        [
+            "imap/mboxevent.h",
+            "FILL_ARRAY_PARAM",
+            "#define FILL_ARRAY_PARAM(e,p,v) do { \\ /* <=== imap/mboxevent.h:217:221:FILL_ARRAY_PARAM:3 */ \n    e->params[p].value.a = v; \\\n    e->params[p].type = EVENT_PARAM_ARRAY; \\\n    e->params[p].filled = 1; \\\n} while (0)",
+            3
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_opensubs",
+            "static int /* <=== mboxlist_opensubs */ \nmboxlist_opensubs(const char *userid,\n                  struct db **ret)\n{\n    int r = 0, flags;\n    char *subsfname;\n\n    /* Build subscription list filename */\n    subsfname = user_hash_subs(userid);\n\n    flags = CYRUSDB_CREATE;\n    if (config_getswitch(IMAPOPT_IMPROVED_MBOXLIST_SORT)) {\n        flags |= CYRUSDB_MBOXSORT;\n    }\n\n    r = cyrusdb_open(SUBDB, subsfname, flags, ret);\n    if (r != CYRUSDB_OK) {\n        r = IMAP_IOERROR;\n    }\n    free(subsfname);\n\n    return r;\n}",
+            2
+        ],
+        [
+            "imap/mboxname.c",
+            "mbname_free",
+            "EXPORTED void mbname_free(mbname_t **mbnamep) /* <=== mbname_free */ \n{\n    mbname_t *mbname = *mbnamep;\n    if (!mbname) return;\n\n    *mbnamep = NULL;\n\n    strarray_free(mbname->boxes);\n    free(mbname->localpart);\n    free(mbname->domain);\n\n    /* cached values */\n    free(mbname->userid);\n    free(mbname->intname);\n    free(mbname->extname);\n    free(mbname->extuserid);\n    free(mbname->recipient);\n\n    /* thing itself */\n    free(mbname);\n}",
+            2
+        ],
+        [
+            "lib/util.c",
+            "buf_printf",
+            "EXPORTED void buf_printf(struct buf *buf, const char *fmt, ...) /* <=== buf_printf */ \n{\n    va_list args;\n\n    va_start(args, fmt);\n    buf_vprintf(buf, fmt, args);\n    va_end(args);\n}",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_nth",
+            "EXPORTED const char *strarray_nth(const strarray_t *sa, int idx) /* <=== strarray_nth */ \n{\n    if ((idx = adjust_index_ro(sa, idx)) < 0)\n        return NULL;\n    return sa->data[idx];\n}",
+            1
+        ],
+        [
+            "lib/libconfig.c",
+            "assert_not_deprecated",
+            "static void assert_not_deprecated(enum imapopt opt) /* <=== assert_not_deprecated */ \n{\n    if (imapopts[opt].deprecated_since) {\n        char errbuf[1024];\n        enum imapopt popt = imapopts[opt].preferred_opt;\n        if (popt != IMAPOPT_ZERO) {\n            snprintf(errbuf, sizeof(errbuf),\n                    \"Option '%s' is deprecated in favor of '%s' since version %s.\",\n                    imapopts[opt].optname, imapopts[popt].optname,\n                    imapopts[opt].deprecated_since);\n        }\n        else {\n            snprintf(errbuf, sizeof(errbuf),\n                    \"Option '%s' is deprecated in version %s.\",\n                    imapopts[opt].optname, imapopts[opt].deprecated_since);\n        }\n        fatal(errbuf, EX_SOFTWARE);\n    }\n}",
+            2
+        ],
+        [
+            "lib/libconfig.c",
+            "config_getswitch",
+            "EXPORTED int config_getswitch(enum imapopt opt) /* <=== config_getswitch */ \n{\n    assert(config_loaded);\n    assert(opt > IMAPOPT_ZERO && opt < IMAPOPT_LAST);\n    assert_not_deprecated(opt);\n    assert(imapopts[opt].t == OPT_SWITCH);\n#if (SIZEOF_LONG != 4)\n    if ((imapopts[opt].val.b > 0x7fffffff)||\n        (imapopts[opt].val.b < -0x7fffffff)) {\n        syslog(LOG_ERR, \"config_getswitch: %s: %ld too large for type\",\n               imapopts[opt].optname, imapopts[opt].val.b);\n    }\n#endif\n    return imapopts[opt].val.b;\n}",
+            1
+        ],
+        [
+            "imap/mboxevent.c",
+            "TIMESTAMP_MAX",
+            "#define TIMESTAMP_MAX 32 /* <=== imap/mboxevent.c:628:628:TIMESTAMP_MAX:0 */ ",
+            3
+        ],
+        [
+            "lib/assert.h",
+            "assert",
+            "#define assert(ex)      {if (!(ex))assertionfailed(__FILE__, __LINE__, #ex);} /* <=== lib/assert.h:47:47:assert:1 */ ",
+            2
+        ],
+        [
+            "imap/mboxlist.h",
+            "MBTYPE_DELETED",
+            "#define MBTYPE_DELETED      (1<<4) /* Mailbox has been deleted, /* <=== imap/mboxlist.h:83:83:MBTYPE_DELETED:0 */ ",
+            2
+        ],
+        [
+            "imap/mboxevent.h",
+            "MAX_PARAM",
+            "#define MAX_PARAM EVENT_MESSAGE_CONTENT /* <=== imap/mboxevent.h:175:175:MAX_PARAM:0 */ ",
+            3
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_entry_free",
+            "EXPORTED void mboxlist_entry_free(mbentry_t **mbentryptr) /* <=== mboxlist_entry_free */ \n{\n    mbentry_t *mbentry = *mbentryptr;\n\n    /* idempotent */\n    if (!mbentry) return;\n\n    free(mbentry->name);\n    free(mbentry->ext_name);\n\n    free(mbentry->partition);\n    free(mbentry->server);\n    free(mbentry->acl);\n    free(mbentry->uniqueid);\n\n    free(mbentry->legacy_specialuse);\n\n    free(mbentry);\n\n    *mbentryptr = NULL;\n}",
+            2
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_init",
+            "EXPORTED void mboxlist_init(int myflags) /* <=== mboxlist_init */ \n{\n    if (myflags & MBOXLIST_SYNC) {\n        cyrusdb_sync(DB);\n    }\n    cyrus_modules_add(done_cb, NULL);\n    mboxlist_initialized = 1;\n}",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_new",
+            "EXPORTED strarray_t *strarray_new(void) /* <=== strarray_new */ \n{\n    return xzmalloc(sizeof(strarray_t));\n}",
+            2
+        ],
+        [
+            "com_err/et/error_table.h",
+            "ERRCODE_RANGE",
+            "#define ERRCODE_RANGE   8       /* # of bits to shift table number */ /* <=== com_err/et/error_table.h:78:78:ERRCODE_RANGE:0 */ ",
+            2
+        ],
+        [
+            "",
+            "__LINE__",
+            "",
+            3
+        ],
+        [
+            "imap/global.c",
+            "session_id",
+            "EXPORTED const char *session_id(void) /* <=== session_id */ \n{\n    if (!session_id_count)\n        session_new_id();\n    return (const char *)session_id_buf;\n}",
+            3
+        ],
+        [
+            "imap/mboxevent.c",
+            "MESSAGE_EVENTS",
+            "#define MESSAGE_EVENTS (EVENT_MESSAGE_APPEND|EVENT_MESSAGE_EXPIRE|\\ /* <=== imap/mboxevent.c:75:77:MESSAGE_EVENTS:0 */ \n                        EVENT_MESSAGE_EXPUNGE|EVENT_MESSAGE_NEW|\\\n                        EVENT_MESSAGE_COPY|EVENT_MESSAGE_MOVE)",
+            3
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_createmailbox_opts",
+            "EXPORTED int mboxlist_createmailbox_opts(const char *name, int mbtype, /* <=== mboxlist_createmailbox_opts */ \n                                         const char *partition,\n                                         int isadmin, const char *userid,\n                                         const struct auth_state *auth_state,\n                                         int options, int localonly,\n                                         int forceuser, int dbonly,\n                                         int notify, const char *uniqueid,\n                                         struct mailbox **mailboxptr)\n{\n    int r;\n    struct mailbox *mailbox = NULL;\n    uint32_t uidvalidity = 0;\n    modseq_t createdmodseq = 0;\n    mbentry_t *oldmbentry = NULL;\n\n    init_internal();\n\n    /* check if a mailbox tombstone or intermediate record exists */\n    r = mboxlist_lookup_allow_all(name, &oldmbentry, NULL);\n    if (!r) {\n        if (oldmbentry->mbtype & MBTYPE_DELETED) {\n            /* then the UIDVALIDITY must be higher than before */\n            if (uidvalidity <= oldmbentry->uidvalidity)\n                uidvalidity = oldmbentry->uidvalidity+1;\n        }\n        else if (oldmbentry->mbtype & MBTYPE_INTERMEDIATE) {\n            /* then use the existing mailbox ID and createdmodseq */\n            if (!uniqueid) uniqueid = oldmbentry->uniqueid;\n            createdmodseq = oldmbentry->createdmodseq;\n        }\n    }\n\n    r = mboxlist_createmailbox_full(name, mbtype, partition,\n                                    isadmin, userid, auth_state,\n                                    options, uidvalidity, createdmodseq, 0, NULL,\n                                    uniqueid, localonly,\n                                    forceuser, dbonly, 0, &mailbox);\n\n    if (notify && !r) {\n        /* send a MailboxCreate event notification */\n        struct mboxevent *mboxevent = mboxevent_new(EVENT_MAILBOX_CREATE);\n        mboxevent_extract_mailbox(mboxevent, mailbox);\n        mboxevent_set_access(mboxevent, NULL, NULL, userid, mailbox->name, 1);\n\n        mboxevent_notify(&mboxevent);\n        mboxevent_free(&mboxevent);\n    }\n\n    if (mailboxptr && !r) *mailboxptr = mailbox;\n    else mailbox_close(&mailbox);\n\n    mboxlist_entry_free(&oldmbentry);\n\n    return r;\n}",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_append",
+            "EXPORTED int strarray_append(strarray_t *sa, const char *s) /* <=== strarray_append */ \n{\n    return strarray_appendm(sa, xstrdupnull(s));\n}",
+            3
+        ],
+        [
+            "imap/sync_log.h",
+            "sync_log_subscribe",
+            "#define sync_log_subscribe(user, name) \\ /* <=== imap/sync_log.h:88:89:sync_log_subscribe:2 */ \n    sync_log(\"SUB %s %s\\n\", user, name)",
+            2
+        ],
+        [
+            "imap/mboxname.c",
+            "_append_intbuf",
+            "static void _append_intbuf(struct buf *buf, const char *val) /* <=== _append_intbuf */ \n{\n    const char *p;\n    for (p = val; *p; p++) {\n        switch (*p) {\n        case '.':\n            buf_putc(buf, '^');\n            break;\n        default:\n            buf_putc(buf, *p);\n            break;\n        }\n    }\n}",
+            3
+        ],
+        [
+            "imap/carddav_db.c",
+            "carddav_init",
+            "EXPORTED int carddav_init(void) /* <=== carddav_init */ \n{\n    int r = sqldb_init();\n    if (!r) carddav_initialized = 1;\n    return r;\n}",
+            3
+        ],
+        [
+            "imap/sync_log.c",
+            "va_format",
+            "static char *va_format(const char *fmt, va_list ap) /* <=== va_format */ \n{\n    static char buf[BUFSIZE+1];\n    size_t len;\n    int ival;\n    const char *sval;\n    const char *p;\n\n    for (len = 0, p = fmt; *p && len < BUFSIZE; p++) {\n        if (*p != '%') {\n            buf[len++] = *p;\n            continue;\n        }\n        switch (*++p) {\n        case 'd':\n            ival = va_arg(ap, int);\n            len += snprintf(buf+len, BUFSIZE-len, \"%d\", ival);\n            break;\n        case 's':\n            sval = va_arg(ap, const char *);\n            sval = sync_quote_name(sval);\n            strlcpy(buf+len, sval, BUFSIZE-len);\n            len += strlen(sval);\n            break;\n        default:\n            buf[len++] = *p;\n            break;\n        }\n    }\n\n    if (buf[len-1] != '\\n') buf[len++] = '\\n';\n    buf[len] = '\\0';\n\n    return buf;\n}",
+            3
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_lookup",
+            "EXPORTED int mboxlist_lookup(const char *name, mbentry_t **entryptr, /* <=== mboxlist_lookup */ \n                             struct txn **tid)\n{\n    mbentry_t *entry = NULL;\n    int r;\n\n    init_internal();\n\n    r = mboxlist_mylookup(name, &entry, tid, 0);\n\n    if (r) return r;\n\n    /* Ignore \"reserved\" entries, like they aren't there */\n    if (entry->mbtype & MBTYPE_RESERVE) {\n        mboxlist_entry_free(&entry);\n        return IMAP_MAILBOX_RESERVED;\n    }\n\n    /* Ignore \"deleted\" entries, like they aren't there */\n    if (entry->mbtype & MBTYPE_DELETED) {\n        mboxlist_entry_free(&entry);\n        return IMAP_MAILBOX_NONEXISTENT;\n    }\n\n    /* Ignore \"intermediate\" entries, like they aren't there */\n    if (entry->mbtype & MBTYPE_INTERMEDIATE) {\n        mboxlist_entry_free(&entry);\n        return IMAP_MAILBOX_NONEXISTENT;\n    }\n\n    if (entryptr) *entryptr = entry;\n    else mboxlist_entry_free(&entry);\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "imap/mboxevent.c",
+            "mboxevent_free",
+            "EXPORTED void mboxevent_free(struct mboxevent **mboxevent) /* <=== mboxevent_free */ \n{\n    struct mboxevent *event = *mboxevent;\n    int i;\n\n    if (!event)\n        return;\n\n    seqset_free(event->uidset);\n    seqset_free(event->olduidset);\n    strarray_fini(&event->midset);\n    strarray_fini(&event->flagnames);\n\n    for (i = 0; i <= MAX_PARAM; i++) {\n        if (event->params[i].filled && event->params[i].type == EVENT_PARAM_STRING)\n            free(event->params[i].value.s);\n    }\n\n    if (event->prev)\n        event->prev->next = event->next;\n\n    if (event->next)\n        event->next->prev = event->prev;\n\n    free(event);\n\n    *mboxevent = NULL;\n}",
+            2
+        ],
+        [
+            "lib/libconfig.c",
+            "config_getstring",
+            "EXPORTED const char *config_getstring(enum imapopt opt) /* <=== config_getstring */ \n{\n    assert(config_loaded);\n    assert(opt > IMAPOPT_ZERO && opt < IMAPOPT_LAST);\n    assert_not_deprecated(opt);\n    assert((imapopts[opt].t == OPT_STRING) ||\n           (imapopts[opt].t == OPT_STRINGLIST));\n\n    return imapopts[opt].val.s;\n}",
+            1
+        ],
+        [
+            "cunit/syslog.c",
+            "syslog",
+            "void syslog(int prio, const char *fmt, ...) /* <=== syslog */ \n{\n    va_list args;\n\n    va_start(args, fmt);\n    vlog(prio, fmt, args);\n    va_end(args);\n}",
+            1
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_changesub",
+            "EXPORTED int mboxlist_changesub(const char *name, const char *userid, /* <=== mboxlist_changesub */ \n                                const struct auth_state *auth_state,\n                                int add, int force, int notify)\n{\n    mbentry_t *mbentry = NULL;\n    int r;\n    struct db *subs;\n    struct mboxevent *mboxevent;\n\n    init_internal();\n\n    if ((r = mboxlist_opensubs(userid, &subs)) != 0) {\n        return r;\n    }\n\n    if (add && !force) {\n        /* Ensure mailbox exists and can be seen by user */\n        if ((r = mboxlist_lookup(name, &mbentry, NULL))!=0) {\n            mboxlist_closesubs(subs);\n            return r;\n        }\n        if ((cyrus_acl_myrights(auth_state, mbentry->acl) & ACL_LOOKUP) == 0) {\n            mboxlist_closesubs(subs);\n            mboxlist_entry_free(&mbentry);\n            return IMAP_MAILBOX_NONEXISTENT;\n        }\n    }\n\n    if (add) {\n        r = cyrusdb_store(subs, name, strlen(name), \"\", 0, NULL);\n    } else {\n        r = cyrusdb_delete(subs, name, strlen(name), NULL, 0);\n        /* if it didn't exist, that's ok */\n        if (r == CYRUSDB_EXISTS) r = CYRUSDB_OK;\n    }\n\n    switch (r) {\n    case CYRUSDB_OK:\n        r = 0;\n        break;\n\n    default:\n        r = IMAP_IOERROR;\n        break;\n    }\n\n    sync_log_subscribe(userid, name);\n    mboxlist_closesubs(subs);\n    mboxlist_entry_free(&mbentry);\n\n    /* prepare a MailboxSubscribe or MailboxUnSubscribe event notification */\n    if (notify && r == 0) {\n        mboxevent = mboxevent_new(add ? EVENT_MAILBOX_SUBSCRIBE :\n                                        EVENT_MAILBOX_UNSUBSCRIBE);\n\n        mboxevent_set_access(mboxevent, NULL, NULL, userid, name, 1);\n        mboxevent_notify(&mboxevent);\n        mboxevent_free(&mboxevent);\n    }\n\n    return r;\n}",
+            1
+        ],
+        [
+            "imap/mboxname.c",
+            "_mbdirty",
+            "static void _mbdirty(mbname_t *mbname) /* <=== _mbdirty */ \n{\n    free(mbname->userid);\n    free(mbname->intname);\n    free(mbname->extname);\n    free(mbname->recipient);\n\n    mbname->userid = NULL;\n    mbname->intname = NULL;\n    mbname->extname = NULL;\n    mbname->recipient = NULL;\n}",
+            3
+        ],
+        [
+            "lib/cyrusdb.h",
+            "cyrusdb_delete",
+            "extern int cyrusdb_delete(struct db *db, /* <=== cyrusdb_delete */ \n                          const char *key, size_t keylen,\n                          struct txn **tid, int force);",
+            2
+        ],
+        [
+            "lib/util.c",
+            "_buf_ensure",
+            "EXPORTED void _buf_ensure(struct buf *buf, size_t n) /* <=== _buf_ensure */ \n{\n    size_t newlen = buf->len + n;\n    char *s;\n\n    assert(newlen); /* we never alloc zero bytes */\n\n    if (buf->alloc >= newlen)\n        return;\n\n    if (buf->alloc) {\n        buf->alloc = roundup(newlen);\n        buf->s = xrealloc(buf->s, buf->alloc);\n    }\n    else {\n        buf->alloc = roundup(newlen);\n        s = xmalloc(buf->alloc);\n\n        /* if no allocation, but data exists, it means copy on write.\n         * grab a copy of what's there now */\n        if (buf->len) {\n            assert(buf->s);\n            memcpy(s, buf->s, buf->len);\n        }\n\n        /* can release MMAP now, we've copied the data out */\n        if (buf->flags & BUF_MMAP) {\n            size_t len = buf->len; /* don't wipe the length, we still need it */\n            map_free((const char **)&buf->s, &len);\n            buf->flags &= ~BUF_MMAP;\n        }\n\n        buf->s = s;\n    }\n}",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_dup",
+            "EXPORTED strarray_t *strarray_dup(const strarray_t *sa) /* <=== strarray_dup */ \n{\n    strarray_t *new = strarray_new();\n    int i;\n\n    if (!sa) return new;\n\n    strarray_truncate(new, sa->count);\n    for (i = 0 ; i < sa->count ; i++)\n        new->data[i] = xstrdupnull(sa->data[i]);\n    return new;\n}",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_splitm",
+            "EXPORTED strarray_t *strarray_splitm(char *buf, const char *sep, int flags) /* <=== strarray_splitm */ \n{\n    strarray_t *sa = strarray_new();\n    char *p, *q;\n\n    if (!buf) return sa;\n\n    if (!sep)\n        sep = \" \\t\\r\\n\";\n\n    for (p = strtok(buf, sep) ; p ; p = strtok(NULL, sep)) {\n        if (flags & STRARRAY_TRIM) {\n            while (Uisspace(*p)) p++;\n            q = p + strlen(p);\n            while (q > p && Uisspace(q[-1])) q--;\n            *q = '\\0';\n        }\n        if (*p) strarray_append(sa, p);\n    }\n\n    free(buf);\n    return sa;\n}",
+            2
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_find",
+            "EXPORTED int strarray_find(const strarray_t *sa, const char *match, int starting) /* <=== strarray_find */ \n{\n    return strarray_findg(sa, match, starting, strcmpsafe);\n}",
+            3
+        ],
+        [
+            "lib/util.h",
+            "Uisspace",
+            "#define Uisspace(c) isspace((int)((unsigned char)(c))) /* <=== lib/util.h:122:122:Uisspace:1 */ ",
+            3
+        ],
+        [
+            "imap/mboxname.c",
+            "mboxname_user_mbox",
+            "EXPORTED char *mboxname_user_mbox(const char *userid, const char *subfolder) /* <=== mboxname_user_mbox */ \n{\n    if (!userid) return NULL;\n\n    mbname_t *mbname = mbname_from_userid(userid);\n\n    if (subfolder) {\n        strarray_t *bits = strarray_split(subfolder, \".\", 0);\n        mbname_set_boxes(mbname, bits);\n        strarray_free(bits);\n    }\n\n    char *res = xstrdup(mbname_intname(mbname));\n    mbname_free(&mbname);\n\n    return res;\n}",
+            1
+        ],
+        [
+            "lib/libconfig.c",
+            "config_getint",
+            "EXPORTED int config_getint(enum imapopt opt) /* <=== config_getint */ \n{\n    assert(config_loaded);\n    assert(opt > IMAPOPT_ZERO && opt < IMAPOPT_LAST);\n    assert_not_deprecated(opt);\n    assert(imapopts[opt].t == OPT_INT);\n#if (SIZEOF_LONG != 4)\n    if ((imapopts[opt].val.i > 0x7fffffff)||\n        (imapopts[opt].val.i < -0x7fffffff)) {\n        syslog(LOG_ERR, \"config_getint: %s: %ld too large for type\",\n               imapopts[opt].optname, imapopts[opt].val.i);\n    }\n#endif\n    return imapopts[opt].val.i;\n}",
+            3
+        ],
+        [
+            "imap/sync_log.c",
+            "sync_log_enabled",
+            "static int sync_log_enabled(const char *channel) /* <=== sync_log_enabled */ \n{\n    if (!config_getswitch(IMAPOPT_SYNC_LOG))\n        return 0;       /* entire mechanism is disabled */\n    if (!sync_log_suppressed)\n        return 1;       /* _suppress() wasn't called */\n    if (unsuppressable && strarray_find(unsuppressable, channel, 0) >= 0)\n        return 1;       /* channel is unsuppressable */\n    return 0;           /* suppressed */\n}",
+            3
+        ],
+        [
+            "lib/cyrusdb.h",
+            "cyrusdb_store",
+            "extern int cyrusdb_store(struct db *db, /* <=== cyrusdb_store */ \n                         const char *key, size_t keylen,\n                         const char *data, size_t datalen,\n                         struct txn **tid);",
+            2
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_createmailbox",
+            "EXPORTED int mboxlist_createmailbox(const char *name, int mbtype, /* <=== mboxlist_createmailbox */ \n                           const char *partition,\n                           int isadmin, const char *userid,\n                           const struct auth_state *auth_state,\n                           int localonly, int forceuser, int dbonly,\n                           int notify, struct mailbox **mailboxptr)\n{\n    return mboxlist_createmailbox_unq(name, mbtype, partition, isadmin,\n                                      userid, auth_state, localonly,\n                                      forceuser, dbonly, notify, NULL,\n                                      mailboxptr);\n}",
+            1
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_createmailbox_unq",
+            "EXPORTED int mboxlist_createmailbox_unq(const char *name, int mbtype, /* <=== mboxlist_createmailbox_unq */ \n                           const char *partition,\n                           int isadmin, const char *userid,\n                           const struct auth_state *auth_state,\n                           int localonly, int forceuser, int dbonly,\n                           int notify, const char *uniqueid,\n                           struct mailbox **mailboxptr)\n{\n    int options = config_getint(IMAPOPT_MAILBOX_DEFAULT_OPTIONS)\n                  | OPT_POP3_NEW_UIDL;\n\n    return mboxlist_createmailbox_opts(name, mbtype, partition, isadmin, userid,\n                                       auth_state, options, localonly, forceuser,\n                                       dbonly, notify, uniqueid, mailboxptr);\n}",
+            2
+        ],
+        [
+            "imap/mboxlist.c",
+            "SUBDB",
+            "#define SUBDB config_subscription_db /* <=== imap/mboxlist.c:88:88:SUBDB:0 */ ",
+            3
+        ],
+        [
+            "lib/xmalloc.c",
+            "xstrdupnull",
+            "EXPORTED char *xstrdupnull(const char *str) /* <=== xstrdupnull */ \n{\n    return str ? xstrdup(str) : NULL;\n}",
+            3
+        ],
+        [
+            "imap/sync_log.c",
+            "init_internal",
+            "static void init_internal() { /* <=== init_internal */ \n    if (!sync_log_initialized) {\n        sync_log_init();\n        cyrus_modules_add(done_cb, NULL);\n    }\n}",
+            2
+        ],
+        [
+            "lib/acl.h",
+            "cyrus_acl_myrights",
+            "extern int cyrus_acl_myrights(const struct auth_state *auth_state, const char *acl); /* <=== cyrus_acl_myrights */ ",
+            2
+        ],
+        [
+            "lib/cyrusdb.h",
+            "cyrusdb_close",
+            "extern int cyrusdb_close(struct db *db); /* <=== cyrusdb_close */ ",
+            3
+        ],
+        [
+            "imap/mboxevent.h",
+            "FILL_UNSIGNED_PARAM",
+            "#define FILL_UNSIGNED_PARAM(e,p,v) do { \\ /* <=== imap/mboxevent.h:222:226:FILL_UNSIGNED_PARAM:3 */ \n    e->params[p].value.u = v; \\\n    e->params[p].type = EVENT_PARAM_INT; \\\n    e->params[p].filled = 1; \\\n} while (0)",
+            3
+        ],
+        [
+            "cunit/syslog.c",
+            "vlog",
+            "static void vlog(int prio, const char *fmt, va_list args) /* <=== vlog */ \n{\n    if (nslmatches) {\n        int e = errno;      /* save errno Just In Case */\n        va_list args2;\n        unsigned int i;\n        int r;\n        char line[2048];\n\n        /* This only works for all cases because of the glibc\n         * extension which supports %m in printf() */\n        va_copy(args2, args);\n        vsnprintf(line, sizeof(line), fmt, args2);\n        va_end(args2);\n\n        for (i = 0 ; i < MAX_SLMATCH ; i++) {\n            if (!slmatches[i].re)\n                continue; /* empty slot */\n            r = regexec(&slmatches[i].cre, line, 0, NULL, 0);\n            if (!r) {\n                /* found */\n                if (verbose >= 2)\n                    fprintf(stderr, \"\\nSYSLOG matched /%s/\\n\", slmatches[i].re);\n                slmatches[i].count++;\n                break;\n            } else {\n                /* don't naively report mismatches when we're looking for multiple patterns */\n                if (nslmatches == 1 || verbose >= 2)\n                    fprintf(stderr, \"\\nSYSLOG didn't match '%s' against '%s'\\n\", line, slmatches[i].re);\n            }\n\n            if (r != REG_NOMATCH) {\n                /* error */\n                const char *msg = match_error(&slmatches[i], r);\n                CU_assertImplementation(0, __LINE__, msg, __FILE__, NULL, CU_TRUE);\n                /* NOTREACHED */\n                break;\n            }\n        }\n\n        errno = e;\n    }\n\n    /* glibc handles %m in vfprintf() so we don't need to do\n     * anything special to simulate that feature of syslog() */\n     /* TODO: find and expand %m on non-glibc platforms */\n\n    if (verbose < 2)\n        return;\n    fprintf(stderr, \"\\nSYSLOG %d[\", prio & LOG_PRIMASK);\n    vfprintf(stderr, fmt, args);\n    fprintf(stderr, \"]\\n\");\n    fflush(stderr);\n}",
+            2
+        ],
+        [
+            "imap/mboxevent.c",
+            "json_formatter",
+            "static char *json_formatter(enum event_type type, struct event_parameter params[]) /* <=== json_formatter */ \n{\n    int param, ival;\n    char *val, *ptr, *result;\n    json_t *event_json = json_object();\n    json_t *jarray;\n\n    json_object_set_new(event_json, \"event\", json_string(event_to_name(type)));\n\n    for (param = 0; param <= MAX_PARAM; param++) {\n\n        if (!params[param].filled)\n            continue;\n\n        switch (params[param].id) {\n        case EVENT_CLIENT_ADDRESS:\n            /* come from saslprops structure */\n            val = strdup(params[param].value.s);\n            ptr = strchr(val, ';');\n            *ptr++ = '\\0';\n\n            json_object_set_new(event_json, \"clientIP\", json_string(val));\n\n            if (parseint32(ptr, (const char **)&ptr, &ival) >= 0)\n                json_object_set_new(event_json, \"clientPort\", json_integer(ival));\n\n            free(val);\n            break;\n        case EVENT_SERVER_ADDRESS:\n            /* come from saslprops structure */\n            val = strdup(params[param].value.s);\n            ptr = strchr(val, ';');\n            *ptr++ = '\\0';\n\n            json_object_set_new(event_json, \"serverDomain\", json_string(val));\n\n            if (parseint32(ptr, (const char **)&ptr, &ival) >= 0)\n                json_object_set_new(event_json, \"serverPort\", json_integer(ival));\n\n            free(val);\n            break;\n        default:\n            switch (params[param].type) {\n            case EVENT_PARAM_INT:\n                json_object_set_new(event_json, params[param].name,\n                                    json_integer(params[param].value.u));\n                break;\n            case EVENT_PARAM_STRING:\n                json_object_set_new(event_json, params[param].name,\n                                    json_string(params[param].value.s));\n                break;\n            case EVENT_PARAM_ARRAY:\n                jarray = json_array();\n                strarray_t *sarray = params[param].value.a;\n                int i;\n\n                for (i = 0; i < strarray_size(sarray); i++) {\n                    json_array_append_new(jarray, json_string(strarray_nth(sarray, i)));\n                }\n\n                json_object_set_new(event_json, params[param].name, jarray);\n                break;\n            }\n            break;\n        }\n    }\n\n    result = json_dumps(event_json, JSON_PRESERVE_ORDER|JSON_COMPACT);\n    json_decref(event_json);\n\n    return result;\n\n}",
+            3
+        ],
+        [
+            "imap/mboxname.c",
+            "mbname_intname",
+            "EXPORTED const char *mbname_intname(const mbname_t *mbname) /* <=== mbname_intname */ \n{\n    if (mbname->intname)\n        return mbname->intname;\n\n    struct buf buf = BUF_INITIALIZER;\n    const char *dp = config_getstring(IMAPOPT_DELETEDPREFIX);\n    int sep = 0;\n    int i;\n\n    strarray_t *boxes = strarray_dup(mbname_boxes(mbname));\n\n    if (mbname->domain) {\n        buf_appendcstr(&buf, mbname->domain);\n        buf_putc(&buf, '!');\n    }\n\n    if (mbname->is_deleted) {\n        buf_appendcstr(&buf, dp);\n        sep = 1;\n    }\n\n    if (mbname->localpart) {\n        if (sep) buf_putc(&buf, '.');\n        buf_appendcstr(&buf, \"user.\");\n        _append_intbuf(&buf, mbname->localpart);\n        sep = 1;\n    }\n\n    for (i = 0; i < strarray_size(boxes); i++) {\n        if (sep) buf_putc(&buf, '.');\n        _append_intbuf(&buf, strarray_nth(boxes, i));\n        sep = 1;\n    }\n\n    if (mbname->is_deleted) {\n        if (sep) buf_putc(&buf, '.');\n        buf_printf(&buf, \"%X\", (unsigned)mbname->is_deleted);\n        sep = 1;\n    }\n\n    mbname_t *backdoor = (mbname_t *)mbname;\n    backdoor->intname = buf_release(&buf);\n\n    buf_free(&buf);\n    strarray_free(boxes);\n\n    return mbname->intname;\n}",
+            2
+        ],
+        [
+            "lib/xmalloc.c",
+            "xzmalloc",
+            "EXPORTED void* xzmalloc(size_t size) /* <=== xzmalloc */ \n{\n    void *ret = xmalloc(size);\n    memset(ret, 0, size);\n    return ret;\n}",
+            3
+        ],
+        [
+            "imap/mboxevent.c",
+            "mboxevent_expected_param",
+            "static int mboxevent_expected_param(enum event_type type, enum event_param param) /* <=== mboxevent_expected_param */ \n{\n    if (type == EVENT_CALENDAR_ALARM)\n        return mboxevent_expected_calendar_param(param);\n\n    if (type == EVENT_APPLEPUSHSERVICE)\n        return mboxevent_expected_applepushservice_param(param);\n    if (type == EVENT_APPLEPUSHSERVICE_DAV)\n        return mboxevent_expected_applepushservice_dav_param(param);\n\n    switch (param) {\n    case EVENT_BODYSTRUCTURE:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_BODYSTRUCTURE) &&\n               (type & (EVENT_MESSAGE_NEW|EVENT_MESSAGE_APPEND));\n    case EVENT_CLIENT_ADDRESS:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_CLIENTADDRESS) &&\n               (type & (EVENT_LOGIN|EVENT_LOGOUT));\n    case EVENT_QUOTA_STORAGE:\n        return type & QUOTA_EVENTS;\n    case EVENT_DISK_USED:\n        return (type & (EVENT_QUOTA_EXCEED|EVENT_QUOTA_WITHIN) ||\n                /* quota usage is not known on event MessageNew, MessageAppend,\n                 * MessageCopy and MessageExpunge.\n                 * Thus, some code refactoring is needed to support diskUsed\n                 * extra parameter */\n                ((extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_DISKUSED) &&\n                 (type & (EVENT_QUOTA_CHANGE))));\n    case EVENT_ENVELOPE:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_CMU_ENVELOPE) &&\n               (type & (EVENT_MESSAGE_NEW|EVENT_MESSAGE_APPEND));\n    case EVENT_FLAG_NAMES:\n        return (type & (EVENT_FLAGS_SET|EVENT_FLAGS_CLEAR)) ||\n               ((extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_FLAGNAMES) &&\n                (type & (EVENT_MESSAGE_APPEND|EVENT_MESSAGE_NEW)));\n    case EVENT_CLIENT_ID:\n        return extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_FASTMAIL_CLIENTID;\n    case EVENT_SESSION_ID:\n        return extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_FASTMAIL_SESSIONID;\n    case EVENT_MAILBOX_ID:\n        return (type & MAILBOX_EVENTS);\n    case EVENT_MBTYPE:\n        return (type & MAILBOX_EVENTS);\n    case EVENT_MAILBOX_ACL:\n        return (type & MAILBOX_EVENTS);\n    case EVENT_QUOTA_MESSAGES:\n        return type & QUOTA_EVENTS;\n    case EVENT_MESSAGE_CONTENT:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_MESSAGECONTENT) &&\n               (type & (EVENT_MESSAGE_APPEND|EVENT_MESSAGE_NEW));\n    case EVENT_MESSAGE_SIZE:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_MESSAGESIZE) &&\n               (type & (EVENT_MESSAGE_APPEND|EVENT_MESSAGE_NEW));\n    case EVENT_DAV_FILENAME:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_CMU_DAVFILENAME) &&\n               (type & EVENT_CALENDAR);\n    case EVENT_DAV_UID:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_CMU_DAVUID) &&\n               (type & EVENT_CALENDAR);\n    case EVENT_MESSAGE_CID:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_FASTMAIL_CID) &&\n               (type & (EVENT_MESSAGE_APPEND|EVENT_MESSAGE_NEW));\n    case EVENT_MESSAGE_EMAILID:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_CMU_EMAILID) &&\n               (type & (EVENT_MESSAGE_APPEND|EVENT_MESSAGE_NEW));\n    case EVENT_MESSAGE_THREADID:\n        return (extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_CMU_THREADID) &&\n               (type & (EVENT_MESSAGE_APPEND|EVENT_MESSAGE_NEW));\n    case EVENT_MESSAGES:\n        if (type & (EVENT_QUOTA_EXCEED|EVENT_QUOTA_WITHIN))\n            return 1;\n        if (!(extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_MESSAGES))\n            return 0;\n        break;\n    case EVENT_MODSEQ:\n        if (!(extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_MODSEQ))\n            return 0;\n        break;\n    case EVENT_OLD_MAILBOX_ID:\n        return type & (EVENT_MESSAGE_COPY|EVENT_MESSAGE_MOVE|EVENT_MAILBOX_RENAME);\n    case EVENT_SERVER_ADDRESS:\n        return type & (EVENT_LOGIN|EVENT_LOGOUT);\n    case EVENT_SERVICE:\n        return extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_SERVICE;\n    case EVENT_TIMESTAMP:\n        return extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_TIMESTAMP;\n    case EVENT_ACL_SUBJECT:\n        return type & EVENT_ACL_CHANGE;\n    case EVENT_ACL_RIGHTS:\n        return type & EVENT_ACL_CHANGE;\n    case EVENT_UIDNEXT:\n        if (!(extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_UIDNEXT))\n            return 0;\n        break;\n    case EVENT_UIDSET:\n        if (type & (EVENT_MESSAGE_NEW|EVENT_MESSAGE_APPEND))\n            return 0;\n        break;\n    case EVENT_URI:\n        return 1;\n    case EVENT_PID:\n        return 1;\n    case EVENT_SERVERFQDN:\n        return 1;\n    case EVENT_USER:\n        return (\n                type & MESSAGE_EVENTS ||\n                type & FLAGS_EVENTS ||\n                type & MAILBOX_EVENTS ||\n                type & SUBS_EVENTS ||\n                type & (EVENT_LOGIN|EVENT_LOGOUT|EVENT_QUOTA_CHANGE)\n            );\n    case EVENT_MIDSET:\n        if (!(extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_CMU_MIDSET))\n            return 0;\n        break;\n    case EVENT_SESSIONID:\n        return extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_CMU_SESSIONID;\n    case EVENT_UNSEEN_MESSAGES:\n        if (!(extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_CMU_UNSEENMESSAGES))\n            return 0;\n        break;\n    case EVENT_CONVEXISTS:\n        return extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_FASTMAIL_CONVEXISTS;\n    case EVENT_CONVUNSEEN:\n        return extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_FASTMAIL_CONVUNSEEN;\n    case EVENT_COUNTERS:\n        return extra_params & IMAP_ENUM_EVENT_EXTRA_PARAMS_VND_FASTMAIL_COUNTERS;\n    case EVENT_OLD_UIDSET:\n        return type & (EVENT_MESSAGE_COPY|EVENT_MESSAGE_MOVE);\n    default:\n        return 0;\n    }\n\n    /* test if the parameter is related to a message event */\n    return type & (MESSAGE_EVENTS|FLAGS_EVENTS);\n}",
+            3
+        ],
+        [
+            "imap/mboxevent.h",
+            "FILL_STRING_PARAM",
+            "#define FILL_STRING_PARAM(e,p,v) do { \\ /* <=== imap/mboxevent.h:212:216:FILL_STRING_PARAM:3 */ \n    e->params[p].value.s = v; \\\n    e->params[p].type = EVENT_PARAM_STRING; \\\n    e->params[p].filled = 1; \\\n} while(0)",
+            3
+        ],
+        [
+            "imap/annotate.c",
+            "init_internal",
+            "static void init_internal() /* <=== init_internal */ \n{\n    if (!annotate_initialized) {\n        annotate_init(NULL, NULL);\n        cyrus_modules_add(done_cb, NULL);\n    }\n    if (!annotatemore_dbopen) {\n        annotatemore_open();\n    }\n}",
+            2
+        ],
+        [
+            "lib/times.c",
+            "timeval_to_iso8601",
+            "EXPORTED int timeval_to_iso8601(const struct timeval *tv, enum timeval_precision tv_prec, /* <=== timeval_to_iso8601 */ \n                       char *buf, size_t len)\n{\n    struct tm *tm = localtime(&(tv->tv_sec));\n    long gmtoff = gmtoff_of(tm, tv->tv_sec);\n    return breakdown_time_to_iso8601(tv, tm, tv_prec, gmtoff, buf, len, 1);\n}",
+            3
+        ],
+        [
+            "imap/imapd.c",
+            "fatal",
+            "EXPORTED void fatal(const char *s, int code) /* <=== fatal */ \n{\n    static int recurse_code = 0;\n\n    if (recurse_code) {\n        /* We were called recursively. Just give up */\n        proc_cleanup();\n        prometheus_decrement(CYRUS_IMAP_ACTIVE_CONNECTIONS);\n        snmp_increment(ACTIVE_CONNECTIONS, -1);\n        exit(recurse_code);\n    }\n    recurse_code = code;\n    if (imapd_out) {\n        prot_printf(imapd_out, \"* BYE Fatal error: %s\\r\\n\", s);\n        prot_flush(imapd_out);\n    }\n    if (stages.count) {\n        /* Cleanup the stage(s) */\n        struct appendstage *curstage;\n        while ((curstage = ptrarray_pop(&stages))) {\n            if (curstage->f != NULL) fclose(curstage->f);\n            append_removestage(curstage->stage);\n            strarray_fini(&curstage->flags);\n            freeentryatts(curstage->annotations);\n            free(curstage);\n        }\n        ptrarray_fini(&stages);\n    }\n\n    syslog(LOG_ERR, \"Fatal error: %s\", s);\n    shut_down(code);\n}",
+            3
+        ],
+        [
+            "lib/util.c",
+            "buf_appendcstr",
+            "EXPORTED void buf_appendcstr(struct buf *buf, const char *str) /* <=== buf_appendcstr */ \n{\n    buf_appendmap(buf, str, strlen(str));\n}",
+            3
+        ],
+        [
+            "lib/acl.h",
+            "ACL_LOOKUP",
+            "#define ACL_LOOKUP      0x000001L /* <=== lib/acl.h:55:55:ACL_LOOKUP:0 */ ",
+            2
+        ],
+        [
+            "imap/sequence.c",
+            "seqset_free",
+            "EXPORTED void seqset_free(struct seqset *l) /* <=== seqset_free */ \n{\n    if (!l) return;\n\n    free(l->set);\n    free(l);\n}",
+            3
+        ],
+        [
+            "imap/global.c",
+            "cyrus_modules_add",
+            "EXPORTED void cyrus_modules_add(void (*done)(void*), void *rock) /* <=== cyrus_modules_add */ \n{\n    struct cyrus_module *cm = xmalloc(sizeof(struct cyrus_module));\n    cm->done = done;\n    cm->rock = rock;\n    ptrarray_append(&cyrus_modules, cm);\n}",
+            3
+        ],
+        [
+            "cunit/syslog.c",
+            "match_error",
+            "static char *match_error(struct slmatch *sl, int r) /* <=== match_error */ \n{\n    static char buf[2048];\n    int n;\n\n    buf[0] = '\\0';\n    if (sl->re)\n        snprintf(buf, sizeof(buf)-100, \"/%s/: \", sl->re);\n\n    n = strlen(buf);\n    regerror(r, &sl->cre, buf+n, sizeof(buf)-n-1);\n    strcat(buf, \"\\n\");\n\n    return buf;\n}",
+            3
+        ],
+        [
+            "lib/xmalloc.c",
+            "xstrdupsafe",
+            "EXPORTED char *xstrdupsafe(const char *str) /* <=== xstrdupsafe */ \n{\n    return str ? xstrdup(str) : xstrdup(\"\");\n}",
+            3
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_open",
+            "EXPORTED void mboxlist_open(const char *fname) /* <=== mboxlist_open */ \n{\n    int ret, flags;\n    char *tofree = NULL;\n\n    if (!fname)\n        fname = config_getstring(IMAPOPT_MBOXLIST_DB_PATH);\n\n    /* create db file name */\n    if (!fname) {\n        tofree = strconcat(config_dir, FNAME_MBOXLIST, (char *)NULL);\n        fname = tofree;\n    }\n\n    mboxlist_init(0);\n\n    flags = CYRUSDB_CREATE;\n    if (config_getswitch(IMAPOPT_IMPROVED_MBOXLIST_SORT)) {\n        flags |= CYRUSDB_MBOXSORT;\n    }\n\n    ret = cyrusdb_open(DB, fname, flags, &mbdb);\n    if (ret != 0) {\n        syslog(LOG_ERR, \"DBERROR: opening %s: %s\", fname,\n               cyrusdb_strerror(ret));\n            /* Exiting TEMPFAIL because Sendmail thinks this\n               EX_OSFILE == permanent failure. */\n        fatal(\"can't read mailboxes file\", EX_TEMPFAIL);\n    }\n\n    free(tofree);\n\n    mboxlist_dbopen = 1;\n}",
+            3
+        ],
+        [
+            "imap/mboxlist.h",
+            "MBTYPE_INTERMEDIATE",
+            "#define MBTYPE_INTERMEDIATE (1<<8) /* Place holder /* <=== imap/mboxlist.h:88:88:MBTYPE_INTERMEDIATE:0 */ ",
+            2
+        ],
+        [
+            "lib/util.h",
+            "buf_putc",
+            "#define buf_putc(b, c) do { buf_ensure((b), 1); (b)->s[(b)->len++] = (c); } while (0) /* <=== lib/util.h:278:278:buf_putc:2 */ ",
+            3
+        ],
+        [
+            "cunit/syslog.c",
+            "va_copy",
+            "#        define va_copy(d,s) (d) = (s) /* <=== cunit/syslog.c:69:69:va_copy:2 */ ",
+            3
+        ],
+        [
+            "imap/mboxname.c",
+            "mbname_set_boxes",
+            "EXPORTED void mbname_set_boxes(mbname_t *mbname, const strarray_t *boxes) /* <=== mbname_set_boxes */ \n{\n    _mbdirty(mbname);\n    strarray_free(mbname->boxes);\n    if (boxes)\n        mbname->boxes = strarray_dup(boxes);\n    else\n        mbname->boxes = NULL;\n}",
+            2
+        ],
+        [
+            "imap/sequence.c",
+            "seqset_cstring",
+            "EXPORTED char *seqset_cstring(const struct seqset *seq) /* <=== seqset_cstring */ \n{\n    struct buf buf = BUF_INITIALIZER;\n    unsigned i;\n\n    if (!seq) return NULL;\n    if (!seq->len) return NULL;\n\n    for (i = 0; i < seq->len; i++) {\n        /* join with comma if not the first item */\n        if (i) buf_putc(&buf, ',');\n\n        /* single value only */\n        if (seq->set[i].low == seq->set[i].high)\n            format_num(&buf, seq->set[i].low);\n\n        /* value range */\n        else {\n            format_num(&buf, seq->set[i].low);\n            buf_putc(&buf, ':');\n            format_num(&buf, seq->set[i].high);\n        }\n    }\n\n    return buf_release(&buf);\n}",
+            3
+        ],
+        [
+            "imap/user.c",
+            "user_hash_subs",
+            "HIDDEN char *user_hash_subs(const char *userid) /* <=== user_hash_subs */ \n{\n    return user_hash_meta(userid, FNAME_SUBSSUFFIX);\n}",
+            3
+        ],
+        [
+            "lib/xmalloc.c",
+            "xmalloc",
+            "EXPORTED void* xmalloc(size_t size) /* <=== xmalloc */ \n{\n    void *ret;\n\n    ret = malloc(size);\n    if (ret != NULL) return ret;\n\n    fatal(\"Virtual memory exhausted\", EX_TEMPFAIL);\n    return 0; /*NOTREACHED*/\n}",
+            3
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_parse_entry",
+            "EXPORTED int mboxlist_parse_entry(mbentry_t **mbentryptr, /* <=== mboxlist_parse_entry */ \n                                  const char *name, size_t namelen,\n                                  const char *data, size_t datalen)\n{\n    static struct buf aclbuf;\n    int r = IMAP_MAILBOX_BADFORMAT;\n    char *freeme = NULL;\n    char **target;\n    char *p, *q;\n    mbentry_t *mbentry = mboxlist_entry_create();\n\n    if (!datalen)\n        goto done;\n\n    /* copy name */\n    if (namelen)\n        mbentry->name = xstrndup(name, namelen);\n    else\n        mbentry->name = xstrdup(name);\n\n    /* check for DLIST mboxlist */\n    if (*data == '%') {\n        struct parseentry_rock rock;\n        memset(&rock, 0, sizeof(struct parseentry_rock));\n        rock.mbentry = mbentry;\n        rock.aclbuf = &aclbuf;\n        aclbuf.len = 0;\n        r = dlist_parsesax(data, datalen, 0, parseentry_cb, &rock);\n        if (!r) mbentry->acl = buf_newcstring(&aclbuf);\n        goto done;\n    }\n\n    /* copy data */\n    freeme = p = xstrndup(data, datalen);\n\n    /* check for extended mboxlist entry */\n    if (*p == '(') {\n        int last = 0;\n        p++; /* past leading '(' */\n        while (!last) {\n            target = NULL;\n            q = p;\n            while (*q && *q != ' ' && *q != ')') q++;\n            if (*q != ' ') break;\n            *q++ = '\\0';\n            if (!strcmp(p, \"uniqueid\")) target = &mbentry->uniqueid;\n            if (!strcmp(p, \"specialuse\")) target = &mbentry->legacy_specialuse;\n            p = q;\n            while (*q && *q != ' ' && *q != ')') q++;\n            if (*q != ' ') last = 1;\n            if (*q) *q++ = '\\0';\n            if (target) *target = xstrdup(p);\n            p = q;\n        }\n        if (*p == ' ') p++; /* past trailing ' ' */\n    }\n\n    /* copy out interesting parts */\n    mbentry->mbtype = strtol(p, &p, 10);\n    if (*p == ' ') p++;\n\n    q = p;\n    while (*q && *q != ' ' && *q != '!') q++;\n    if (*q == '!') {\n        *q++ = '\\0';\n        mbentry->server = xstrdup(p);\n        p = q;\n        while (*q && *q != ' ') q++;\n    }\n    if (*q) *q++ = '\\0';\n    mbentry->partition = xstrdup(p);\n\n    mbentry->acl = xstrdup(q);\n\n    r = 0;\n\ndone:\n    if (!r && mbentryptr)\n        *mbentryptr = mbentry;\n    else mboxlist_entry_free(&mbentry);\n    free(freeme);\n    return r;\n}",
+            3
+        ],
+        [
+            "imap/mboxevent.c",
+            "mboxevent_new",
+            "EXPORTED struct mboxevent *mboxevent_new(enum event_type type) /* <=== mboxevent_new */ \n{\n    struct mboxevent *mboxevent = NULL;\n\n    init_internal();\n\n    /* event notification is completely disabled */\n    if (!notifier)\n        return NULL;\n\n    /* the group to which belong the event is not enabled */\n    if (!(enabled_events & type))\n        return NULL;\n\n    mboxevent = xmalloc(sizeof(struct mboxevent));\n    memcpy(mboxevent, &event_template, sizeof(struct mboxevent));\n\n    unsigned i;\n    for (i = 0; mboxevent->params[i].id; i++) {\n        assert(i == mboxevent->params[i].id);\n    }\n\n    mboxevent->type = type;\n\n    /* From RFC 5423:\n     * the time at which the event occurred that triggered the notification\n     * (...). This MAY be an approximate time.\n     *\n     * so it seems appropriate here */\n    if (mboxevent_expected_param(type, EVENT_TIMESTAMP))\n        gettimeofday(&mboxevent->timestamp, NULL);\n\n    FILL_UNSIGNED_PARAM(mboxevent, EVENT_PID, getpid());\n\n    if (mboxevent_expected_param(type, EVENT_SESSIONID)) {\n        FILL_STRING_PARAM(mboxevent, EVENT_SESSIONID, xstrdup(session_id()));\n    }\n\n    if (mboxevent_expected_param(type, EVENT_CLIENT_ID)) {\n        // OK to be blank\n        FILL_STRING_PARAM(mboxevent, EVENT_CLIENT_ID, xstrdupsafe(client_id));\n    }\n\n    if (mboxevent_expected_param(type, EVENT_SESSION_ID)) {\n        FILL_STRING_PARAM(mboxevent, EVENT_SESSION_ID, xstrdup(session_id()));\n    }\n\n    return mboxevent;\n}",
+            2
+        ],
+        [
+            "imap/annotate.c",
+            "annotate_init",
+            "EXPORTED void annotate_init(int (*fetch_func)(const char *, const char *, /* <=== annotate_init */ \n                                     const strarray_t *, const strarray_t *),\n                            int (*store_func)(const char *, const char *,\n                                     struct entryattlist *))\n{\n    if (fetch_func) {\n        proxy_fetch_func = fetch_func;\n    }\n    if (store_func) {\n        proxy_store_func = store_func;\n    }\n\n    init_annotation_definitions();\n    annotate_initialized = 1;\n}",
+            3
+        ],
+        [
+            "lib/imapurl.c",
+            "imapurl_toURL",
+            "EXPORTED void imapurl_toURL(char *dst, const struct imapurl *url) /* <=== imapurl_toURL */ \n{\n\n    if (url->server) {\n        dst += sprintf(dst, \"imap://\");\n        if (url->user) dst += sprintf(dst, \"%s\", url->user);\n        if (url->auth) dst += sprintf(dst, \";AUTH=%s\", url->auth);\n        if (url->user || url->auth)\n            *dst++ = '@';\n        dst += sprintf(dst, \"%s\", url->server);\n    }\n    if (url->mailbox) {\n        *dst++ = '/';\n        MailboxToURL(dst, url->mailbox);\n        dst += strlen(dst);\n    }\n\n    if (url->uidvalidity)\n        dst += sprintf(dst, \";UIDVALIDITY=%lu\", url->uidvalidity);\n    if (url->uid) {\n        dst += sprintf(dst, \"/;UID=%lu\", url->uid);\n        if (url->section) dst += sprintf(dst, \"/;SECTION=%s\", url->section);\n        if (url->start_octet || url->octet_count) {\n            dst += sprintf(dst, \"/;PARTIAL=%lu\", url->start_octet);\n            if (url->octet_count) dst += sprintf(dst, \".%lu\", url->octet_count);\n        }\n    }\n    if (url->urlauth.access) {\n        if (url->urlauth.expire) {\n            strcpy(dst, \";EXPIRE=\");\n            dst += strlen(dst);\n            dst += time_to_iso8601(url->urlauth.expire, dst, INT_MAX, 1);\n        }\n        dst += sprintf(dst, \";URLAUTH=%s\", url->urlauth.access);\n        if (url->urlauth.mech) {\n            dst += sprintf(dst, \":%s\", url->urlauth.mech);\n            if (url->urlauth.token) dst += sprintf(dst, \":%s\", url->urlauth.token);\n        }\n    }\n}",
+            3
+        ],
+        [
+            "imap/annotate.c",
+            "annotatemore_open",
+            "EXPORTED void annotatemore_open(void) /* <=== annotatemore_open */ \n{\n    int r;\n    annotate_db_t *d = NULL;\n\n    /* force opening the global annotations db */\n    r = _annotate_getdb(NULL, 0, CYRUSDB_CREATE, &d);\n    if (r)\n        fatal(\"can't open global annotations database\", EX_TEMPFAIL);\n\n    annotatemore_dbopen = 1;\n}",
+            3
+        ],
+        [
+            "imap/mailbox.h",
+            "OPT_POP3_NEW_UIDL",
+            "#define OPT_POP3_NEW_UIDL (1<<0)        /* added for Outlook stupidity */ /* <=== imap/mailbox.h:415:415:OPT_POP3_NEW_UIDL:0 */ ",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_free",
+            "EXPORTED void strarray_free(strarray_t *sa) /* <=== strarray_free */ \n{\n    if (!sa)\n        return;\n    strarray_fini(sa);\n    free(sa);\n}",
+            2
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_split",
+            "EXPORTED strarray_t *strarray_split(const char *line, const char *sep, int flags) /* <=== strarray_split */ \n{\n    if (!line)\n        return strarray_new();\n    return strarray_splitm(xstrdup(line), sep, flags);\n}",
+            1
+        ],
+        [
+            "imap/sync_log.c",
+            "sync_log",
+            "EXPORTED void sync_log(const char *fmt, ...) /* <=== sync_log */ \n{\n    va_list ap;\n    const char *val;\n    int i;\n\n    init_internal();\n\n    if (!channels) return;\n\n    va_start(ap, fmt);\n    val = va_format(fmt, ap);\n    va_end(ap);\n\n    for (i = 0 ; i < channels->count ; i++) {\n        const char *channel = channels->data[i];\n        if (sync_log_enabled(channel))\n            sync_log_base(channel, val);\n    }\n}",
+            2
+        ],
+        [
+            "imap/mboxevent.c",
+            "QUOTA_EVENTS",
+            "#define QUOTA_EVENTS   (EVENT_QUOTA_EXCEED|EVENT_QUOTA_WITHIN|EVENT_QUOTA_CHANGE) /* <=== imap/mboxevent.c:87:87:QUOTA_EVENTS:0 */ ",
+            3
+        ],
+        [
+            "lib/util.c",
+            "buf_free",
+            "EXPORTED void buf_free(struct buf *buf) /* <=== buf_free */ \n{\n    if (buf->alloc)\n        free(buf->s);\n    else if (buf->flags & BUF_MMAP)\n        map_free((const char **)&buf->s, &buf->len);\n    buf->alloc = 0;\n    buf->s = NULL;\n    buf->len = 0;\n    buf->flags = 0;\n}",
+            3
+        ],
+        [
+            "lib/strarray.c",
+            "strarray_find_case",
+            "EXPORTED int strarray_find_case(const strarray_t *sa, const char *match, int starting) /* <=== strarray_find_case */ \n{\n    return strarray_findg(sa, match, starting, strcasecmpsafe);\n}",
+            3
+        ],
+        [
+            "imap/mboxevent.c",
+            "FLAGS_EVENTS",
+            "#define FLAGS_EVENTS   (EVENT_FLAGS_SET|EVENT_FLAGS_CLEAR|EVENT_MESSAGE_READ|\\ /* <=== imap/mboxevent.c:79:80:FLAGS_EVENTS:0 */ \n                        EVENT_MESSAGE_TRASH)",
+            3
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_read",
+            "static int mboxlist_read(const char *name, const char **dataptr, size_t *datalenptr, /* <=== mboxlist_read */ \n                         struct txn **tid, int wrlock)\n{\n    int namelen = strlen(name);\n    int r;\n\n    if (!namelen)\n        return IMAP_MAILBOX_NONEXISTENT;\n\n    if (wrlock) {\n        r = cyrusdb_fetchlock(mbdb, name, namelen, dataptr, datalenptr, tid);\n    } else {\n        r = cyrusdb_fetch(mbdb, name, namelen, dataptr, datalenptr, tid);\n    }\n\n    switch (r) {\n    case CYRUSDB_OK:\n        /* no entry required, just checking if it exists */\n        return 0;\n        break;\n\n    case CYRUSDB_AGAIN:\n        return IMAP_AGAIN;\n        break;\n\n    case CYRUSDB_NOTFOUND:\n        return IMAP_MAILBOX_NONEXISTENT;\n        break;\n\n    default:\n        syslog(LOG_ERR, \"DBERROR: error fetching mboxlist %s: %s\",\n               name, cyrusdb_strerror(r));\n        return IMAP_IOERROR;\n        break;\n    }\n\n    /* never get here */\n}",
+            3
+        ],
+        [
+            "",
+            "__FILE__",
+            "",
+            3
+        ],
+        [
+            "lib/util.c",
+            "buf_release",
+            "EXPORTED char *buf_release(struct buf *buf) /* <=== buf_release */ \n{\n    char *ret = (char *)buf_cstring(buf);\n    buf->alloc = 0;\n    buf->s = NULL;\n    buf_free(buf);\n    return ret;\n}",
+            3
+        ],
+        [
+            "lib/xmalloc.c",
+            "xstrdup",
+            "EXPORTED char *xstrdup(const char* str) /* <=== xstrdup */ \n{\n    char *p = xmalloc(strlen(str)+1);\n    strcpy(p, str);\n    return p;\n}",
+            2
+        ],
+        [
+            "imap/mboxlist.c",
+            "mboxlist_mylookup",
+            "static int mboxlist_mylookup(const char *name, /* <=== mboxlist_mylookup */ \n                             mbentry_t **mbentryptr,\n                             struct txn **tid, int wrlock)\n{\n    int r;\n    const char *data;\n    size_t datalen;\n\n    init_internal();\n\n    r = mboxlist_read(name, &data, &datalen, tid, wrlock);\n    if (r) return r;\n\n    return mboxlist_parse_entry(mbentryptr, name, 0, data, datalen);\n}",
+            2
+        ],
+        [
+            "imap/mboxname.c",
+            "mbname_from_userid",
+            "EXPORTED mbname_t *mbname_from_userid(const char *userid) /* <=== mbname_from_userid */ \n{\n    mbname_t *mbname = xzmalloc(sizeof(mbname_t));\n    const char *p;\n\n    if (!userid)\n        return mbname;\n\n    if (!*userid)\n        return mbname; // empty string, *sigh*\n\n    mbname->userid = xstrdup(userid); // may as well cache it\n\n    p = strrchr(userid, '@');\n    if (p) {\n        mbname->localpart = xstrndup(userid, p - userid);\n        const char *domain = p+1;\n        mbname->domain = strcmpsafe(domain, config_defdomain) ? xstrdupnull(domain) : NULL;\n    }\n    else {\n        mbname->localpart = xstrdup(userid);\n    }\n\n    return mbname;\n}",
+            2
+        ],
+        [
+            "imap/mboxname.c",
+            "mbname_boxes",
+            "EXPORTED const strarray_t *mbname_boxes(const mbname_t *mbname) /* <=== mbname_boxes */ \n{\n    if (!mbname->boxes) {\n        mbname_t *backdoor = (mbname_t *)mbname;\n        backdoor->boxes = strarray_new();\n    }\n    return mbname->boxes;\n}",
+            3
+        ],
+        [
+            "imap/mboxlist.h",
+            "MBTYPE_RESERVE",
+            "#define MBTYPE_RESERVE      (1<<1) /* Reserved [mupdate/imapd] / /* <=== imap/mboxlist.h:76:76:MBTYPE_RESERVE:0 */ ",
+            2
+        ],
+        [
+            "lib/strarray.c",
+            "adjust_index_ro",
+            "static inline int adjust_index_ro(const strarray_t *sa, int idx) /* <=== adjust_index_ro */ \n{\n    if (idx >= sa->count)\n        return -1;\n    else if (idx < 0)\n        idx += sa->count;\n    return idx;\n}",
+            2
+        ],
+        [
+            "lib/util.c",
+            "strcmpsafe",
+            "EXPORTED int strcmpsafe(const char *a, const char *b) /* <=== strcmpsafe */ \n{\n    return strcmp((a == NULL ? \"\" : a),\n                  (b == NULL ? \"\" : b));\n}",
+            3
+        ],
+        [
+            "lib/cyrusdb.h",
+            "cyrusdb_open",
+            "extern int cyrusdb_open(const char *backend, const char *fname, /* <=== cyrusdb_open */ \n                        int flags, struct db **ret);",
+            3
+        ],
+        [
+            "lib/strarray.h",
+            "STRARRAY_TRIM",
+            "#define STRARRAY_TRIM (1<<0) /* <=== lib/strarray.h:95:95:STRARRAY_TRIM:0 */ ",
+            1
+        ],
+        [
+            "imap/lmtpd.c",
+            "fatal",
+            "EXPORTED void fatal(const char* s, int code) /* <=== fatal */ \n{\n    static int recurse_code = 0;\n\n    if(recurse_code) {\n        /* We were called recursively. Just give up */\n        prometheus_decrement(CYRUS_LMTP_ACTIVE_CONNECTIONS);\n        snmp_increment(ACTIVE_CONNECTIONS, -1);\n        exit(recurse_code);\n    }\n    recurse_code = code;\n    if(deliver_out) {\n        prot_printf(deliver_out,\"421 4.3.0 lmtpd: %s\\r\\n\", s);\n        prot_flush(deliver_out);\n    }\n    if (stage) append_removestage(stage);\n\n    syslog(LOG_ERR, \"FATAL: %s\", s);\n\n    /* shouldn't return */\n    shut_down(code);\n\n    exit(code);\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"append.h\"",
+        "#include \"prot.h\"",
+        "#include \"lmtpengine.h\"",
+        "#include \"lmtp_sieve.h\"",
+        "#include <time.h>",
+        "#include \"lmtpd.h\"",
+        "#include \"user.h\"",
+        "#include \"auth.h\"",
+        "#include <sys/wait.h>",
+        "#include <srs2.h>",
+        "#include \"xstrlcat.h\"",
+        "#include <unistd.h>",
+        "#include \"imap/lmtpstats.h\"",
+        "#include \"global.h\"",
+        "#include <string.h>",
+        "#include <jansson.h>",
+        "#include \"imapurl.h\"",
+        "#include \"tok.h\"",
+        "#include \"assert.h\"",
+        "#include <sysexits.h>",
+        "#include \"times.h\"",
+        "#include <config.h>",
+        "#include \"version.h\"",
+        "#include \"strhash.h\"",
+        "#include \"xmalloc.h\"",
+        "#include \"map.h\"",
+        "#include \"prometheus.h\"",
+        "#include \"xstrlcpy.h\"",
+        "#include \"imap/lmtp_err.h\"",
+        "#include \"notify.h\"",
+        "#include \"smtpclient.h\"",
+        "#include \"util.h\"",
+        "#include \"imap/imap_err.h\"",
+        "#include \"jmap_mail_query.h\"",
+        "#include \"sieve/sieve_interface.h\"",
+        "#include <libxml/uri.h>",
+        "#include <syslog.h>",
+        "#include <sys/types.h>",
+        "#include <pwd.h>",
+        "#include <stdlib.h>",
+        "#include \"annotate.h\"",
+        "#include \"duplicate.h\""
+    ],
+    "typeDefs": [
+        [
+            "const struct auth_state",
+            "auth_state"
+        ],
+        [
+            "typedef union {\n    unsigned char buf[INDEX_HEADER_SIZE > INDEX_RECORD_SIZE ?\n                      INDEX_HEADER_SIZE : INDEX_RECORD_SIZE];\n    bit64 align8; /* align on 8-byte boundary */\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct\n{\n    int count;\n    int alloc;\n    uint64_t *data;\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct\n{\n    int count;\n    int alloc;\n    char **data;\n}",
+            "strarray_t"
+        ],
+        [
+            "extern struct auth_state",
+            "auth_state"
+        ]
+    ],
+    "visitedLines_after": {
+        "imap/lmtp_sieve.c": [
+            1969,
+            1970,
+            1977,
+            1981,
+            1983,
+            1984,
+            1986,
+            1987,
+            1989,
+            1990,
+            1991,
+            1993,
+            1994,
+            1997,
+            2004,
+            2007,
+            2010,
+            2011,
+            2013,
+            2014,
+            2016,
+            2017,
+            2021,
+            2022,
+            2023,
+            2027
+        ]
+    },
+    "visitedLines_before": {
+        "imap/lmtp_sieve.c": [
+            1969,
+            1970,
+            1977,
+            1981,
+            1983,
+            1984,
+            1986,
+            1987,
+            1989,
+            1990,
+            1991,
+            1993,
+            1994,
+            1997,
+            2004,
+            2007,
+            2010,
+            2011,
+            2013,
+            2014,
+            2016,
+            2017,
+            2021,
+            2022,
+            2023,
+            2027
+        ]
+    },
+    "visitedParams": {
+        "imap/lmtp_sieve.c": [
+            [
+                "const char *internalname",
+                "autosieve_createfolder"
+            ],
+            [
+                "const char *userid",
+                "autosieve_createfolder"
+            ],
+            [
+                "const struct auth_state *auth_state",
+                "autosieve_createfolder"
+            ],
+            [
+                "int createsievefolder",
+                "autosieve_createfolder"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "imap/lmtp_sieve.c",
+            "autosieve_createfolder",
+            "static int autosieve_createfolder(const char *userid, const struct auth_state *auth_state, /* <=== autosieve_createfolder */ \n                                  const char *internalname, int createsievefolder)\n{\n    const char *subf ;\n    int r = 0;\n    int n;\n\n    /* Check if internalname or userid are NULL */\n    if (userid == NULL || internalname == NULL)\n        return IMAP_MAILBOX_NONEXISTENT;\n\n    syslog(LOG_DEBUG, \"autosievefolder: autosieve_createfolder() was called for user %s, folder %s\",\n           userid, internalname);\n\n    if (config_getswitch(IMAPOPT_ANYSIEVEFOLDER)) {\n        createsievefolder = 1;\n    }\n    else if ((subf = config_getstring(IMAPOPT_AUTOCREATE_SIEVE_FOLDERS)) != NULL) {\n        strarray_t *create = strarray_split(subf, SEP, STRARRAY_TRIM);\n\n        for (n = 0; n < create->count; n++) {\n            const char *name = strarray_nth(create, n);\n            char *foldername = mboxname_user_mbox(userid, name);\n\n            if (!strcmp(foldername, internalname))\n                createsievefolder = 1;\n\n            free(foldername);\n            if (createsievefolder) break;\n        }\n\n        strarray_free(create);\n    }\n\n    // unless configured to create it, drop out now\n    if (!createsievefolder) return IMAP_MAILBOX_NONEXISTENT;\n\n    // lock the namespace and check again before trying to create\n    struct mboxlock *namespacelock = mboxname_usernamespacelock(internalname);\n\n    // did we lose the race?\n    r = mboxlist_lookup(internalname, 0, 0);\n    if (r != IMAP_MAILBOX_NONEXISTENT) goto done;\n\n    r = mboxlist_createmailbox(internalname, 0, NULL,\n                               0, userid, auth_state, 0, 0, 0, 1, NULL);\n    if (r) {\n        syslog(LOG_ERR, \"autosievefolder: User %s, folder %s creation failed. %s\",\n               userid, internalname, error_message(r));\n        goto done;\n    }\n\n    mboxlist_changesub(internalname, userid, auth_state, 1, 1, 1);\n    syslog(LOG_DEBUG, \"autosievefolder: User %s, folder %s creation succeeded\",\n           userid, internalname);\n\ndone:\n    mboxname_release(&namespacelock);\n    return r;\n}",
+            1969
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "imap/lmtp_sieve.c",
+            "autosieve_createfolder",
+            "static int autosieve_createfolder(const char *userid, const struct auth_state *auth_state, /* <=== autosieve_createfolder */ \n                                  const char *internalname, int createsievefolder)\n{\n    const char *subf ;\n    int r = 0;\n    int n;\n\n    /* Check if internalname or userid are NULL */\n    if (userid == NULL || internalname == NULL)\n        return IMAP_MAILBOX_NONEXISTENT;\n\n    syslog(LOG_DEBUG, \"autosievefolder: autosieve_createfolder() was called for user %s, folder %s\",\n           userid, internalname);\n\n    if (config_getswitch(IMAPOPT_ANYSIEVEFOLDER)) {\n        createsievefolder = 1;\n    }\n    else if ((subf = config_getstring(IMAPOPT_AUTOCREATE_SIEVE_FOLDERS)) != NULL) {\n        strarray_t *create = strarray_split(subf, SEP, STRARRAY_TRIM);\n\n        for (n = 0; n < create->count; n++) {\n            const char *name = strarray_nth(create, n);\n            char *foldername = mboxname_user_mbox(userid, name);\n\n            if (!strcmp(foldername, internalname))\n                createsievefolder = 1;\n\n            free(foldername);\n            if (createsievefolder) break;\n        }\n\n        strarray_free(create);\n    }\n\n    // unless configured to create it, drop out now\n    if (!createsievefolder) return IMAP_MAILBOX_NONEXISTENT;\n\n    // lock the namespace and check again before trying to create\n    struct mboxlock *namespacelock = mboxname_usernamespacelock(internalname);\n\n    // did we lose the race?\n    r = mboxlist_lookup(internalname, 0, 0);\n    if (r != IMAP_MAILBOX_NONEXISTENT) goto done;\n\n    r = mboxlist_createmailbox(internalname, 0, NULL,\n                               1, userid, auth_state, 0, 0, 0, 1, NULL);\n    if (r) {\n        syslog(LOG_ERR, \"autosievefolder: User %s, folder %s creation failed. %s\",\n               userid, internalname, error_message(r));\n        goto done;\n    }\n\n    mboxlist_changesub(internalname, userid, auth_state, 1, 1, 1);\n    syslog(LOG_DEBUG, \"autosievefolder: User %s, folder %s creation succeeded\",\n           userid, internalname);\n\ndone:\n    mboxname_release(&namespacelock);\n    return r;\n}",
+            1969
+        ]
+    ]
+}

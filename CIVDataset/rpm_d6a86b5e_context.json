@@ -1,0 +1,586 @@
+{
+    "calleeMethods": [
+        [
+            "lib/header.c",
+            "headerFree",
+            "Header headerFree(Header h) /* <=== headerFree */ \n{\n    (void) headerUnlink(h);\n\n    if (h == NULL || h->nrefs > 0)\n\treturn NULL;\n\n    if (h->index) {\n\tindexEntry entry = h->index;\n\tint i;\n\tfor (i = 0; i < h->indexUsed; i++, entry++) {\n\t    if ((h->flags & HEADERFLAG_ALLOCATED) && ENTRY_IS_REGION(entry)) {\n\t\tif (entry->length > 0) {\n\t\t    int32_t * ei = entry->data;\n\t\t    if ((ei - 2) == h->blob) h->blob = _free(h->blob);\n\t\t    entry->data = NULL;\n\t\t}\n\t    } else if (!ENTRY_IN_REGION(entry)) {\n\t\tentry->data = _free(entry->data);\n\t    }\n\t    entry->data = NULL;\n\t}\n\th->index = _free(h->index);\n    }\n\n    h = _free(h);\n    return NULL;\n}",
+            1
+        ],
+        [
+            "lib/header.c",
+            "REGION_TAG_COUNT",
+            "#define\tREGION_TAG_COUNT\tsizeof(struct entryInfo_s) /* <=== lib/header.c:117:117:REGION_TAG_COUNT:0 */ ",
+            2
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rcalloc",
+            "void * rcalloc(size_t nmemb, size_t size); /* <=== rcalloc */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "headerCreate",
+            "static Header headerCreate(void *blob, int32_t indexLen) /* <=== headerCreate */ \n{\n    Header h = xcalloc(1, sizeof(*h));\n    if (blob) {\n\th->blob = blob;\n\th->indexAlloced = indexLen + 1;\n\th->indexUsed = indexLen;\n    } else {\n\th->indexAlloced = INDEX_MALLOC_SIZE;\n\th->indexUsed = 0;\n    }\n    h->instance = 0;\n    h->sorted = 0;\n    h->index = xcalloc(h->indexAlloced, sizeof(*h->index));\n\n    h->nrefs = 0;\n    return headerLink(h);\n}",
+            2
+        ],
+        [
+            "lib/package.c",
+            "headerMergeLegacySigs",
+            "static /* <=== headerMergeLegacySigs */ \nrpmTagVal headerMergeLegacySigs(Header h, Header sigh, char **msg)\n{\n    const struct taglate_s *xl;\n    struct rpmtd_s td;\n\n    rpmtdReset(&td);\n    for (xl = xlateTags; xl->stag; xl++) {\n\t/* There mustn't be one in the main header */\n\tif (headerIsEntry(h, xl->xtag))\n\t    break;\n\tif (headerGet(sigh, xl->stag, &td, HEADERGET_RAW|HEADERGET_MINMEM)) {\n\t    /* Translate legacy tags */\n\t    if (xl->stag != xl->xtag)\n\t\ttd.tag = xl->xtag;\n\t    /* Ensure type and tag size match expectations */\n\t    if (td.type != rpmTagGetTagType(td.tag))\n\t\tbreak;\n\t    if (td.count < 1 || td.count > 16*1024*1024)\n\t\tbreak;\n\t    if (xl->count && td.count != xl->count)\n\t\tbreak;\n\t    if (!headerPut(h, &td, HEADERPUT_DEFAULT))\n\t\tbreak;\n\t    rpmtdFreeData(&td);\n\t}\n    }\n    rpmtdFreeData(&td);\n\n    if (xl->stag) {\n\trasprintf(msg, \"invalid signature tag %s (%d)\",\n\t\t\trpmTagGetName(xl->xtag), xl->xtag);\n    }\n\n    return xl->stag;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmlog.c",
+            "rpmlog",
+            "void rpmlog (int code, const char *fmt, ...) /* <=== rpmlog */ \n{\n    int saved_errno = errno;\n    unsigned pri = RPMLOG_PRI(code);\n    unsigned mask = RPMLOG_MASK(pri);\n    int saverec = (pri <= RPMLOG_WARNING);\n    va_list ap;\n    int n;\n\n    if ((mask & rpmlogSetMask(0)) == 0)\n\tgoto exit;\n\n    va_start(ap, fmt);\n    n = vsnprintf(NULL, 0, fmt, ap);\n    va_end(ap);\n\n    if (n >= -1) {\n\tstruct rpmlogRec_s rec;\n\tsize_t nb = n + 1;\n\tchar *msg = xmalloc(nb);\n\n\tva_start(ap, fmt);\n\tn = vsnprintf(msg, nb, fmt, ap);\n\tva_end(ap);\n\n\trec.code = code;\n\trec.pri = pri;\n\trec.message = msg;\n\n\tdolog(&rec, saverec);\n\n\tfree(msg);\n    }\nexit:\n    errno = saved_errno;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmlog.c",
+            "rpmlogCtxAcquire",
+            "static rpmlogCtx rpmlogCtxAcquire(int write) /* <=== rpmlogCtxAcquire */ \n{\n    static struct rpmlogCtx_s _globalCtx = { PTHREAD_RWLOCK_INITIALIZER,\n\t\t\t\t\t     RPMLOG_UPTO(RPMLOG_NOTICE),\n\t\t\t\t\t     0, NULL, NULL, NULL, NULL };\n    rpmlogCtx ctx = &_globalCtx;\n    int xx;\n\n    /* XXX Silently failing is bad, but we can't very well use log here... */\n    if (write)\n\txx = pthread_rwlock_wrlock(&ctx->lock);\n    else\n\txx = pthread_rwlock_rdlock(&ctx->lock);\n\n    return (xx == 0) ? ctx : NULL;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "dataLength",
+            "static int dataLength(rpm_tagtype_t type, rpm_constdata_t p, rpm_count_t count, /* <=== dataLength */ \n\t\t\t int onDisk, rpm_constdata_t pend)\n{\n    const char * s = p;\n    const char * se = pend;\n    int length = 0;\n\n    switch (type) {\n    case RPM_STRING_TYPE:\n\tif (count != 1)\n\t    return -1;\n\tlength = strtaglen(s, 1, se);\n\tbreak;\n\n    case RPM_STRING_ARRAY_TYPE:\n    case RPM_I18NSTRING_TYPE:\n\t/* These are like RPM_STRING_TYPE, except they're *always* an array */\n\t/* Compute sum of length of all strings, including nul terminators */\n\n\tif (onDisk) {\n\t    length = strtaglen(s, count, se);\n\t} else {\n\t    const char ** av = (const char **)p;\n\t    while (count--) {\n\t\t/* add one for null termination */\n\t\tlength += strlen(*av++) + 1;\n\t    }\n\t}\n\tbreak;\n\n    default:\n\tif (typeSizes[type] == -1)\n\t    return -1;\n\tlength = typeSizes[(type & 0xf)] * count;\n\tif (length < 0 || (se && (s + length) > se))\n\t    return -1;\n\tbreak;\n    }\n\n    return length;\n}",
+            3
+        ],
+        [
+            "system.h",
+            "xrealloc",
+            "#define xrealloc(_ptr, _size) rrealloc((_ptr), (_size)) /* <=== system.h:68:68:xrealloc:2 */ ",
+            3
+        ],
+        [
+            "lib/rpmvs.c",
+            "verifyDigest",
+            "static rpmRC verifyDigest(struct rpmsinfo_s *sinfo) /* <=== verifyDigest */ \n{\n    rpmRC res = RPMRC_FAIL; /* assume failure */\n    char * dig = NULL;\n    size_t diglen = 0;\n    DIGEST_CTX ctx = rpmDigestDup(sinfo->ctx);\n\n    if (rpmDigestFinal(ctx, (void **)&dig, &diglen, 1) || diglen == 0)\n\tgoto exit;\n\n    if (strcasecmp(sinfo->dig, dig) == 0) {\n\tres = RPMRC_OK;\n    } else {\n\trasprintf(&sinfo->msg, \"Expected %s != %s\", sinfo->dig, dig);\n    }\n\nexit:\n    free(dig);\n    return res;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "INDEX_MALLOC_SIZE",
+            "#define\tINDEX_MALLOC_SIZE\t8 /* <=== lib/header.c:110:110:INDEX_MALLOC_SIZE:0 */ ",
+            3
+        ],
+        [
+            "lib/rpmvs.c",
+            "rpmvsCreate",
+            "struct rpmvs_s *rpmvsCreate(int vfylevel, rpmVSFlags vsflags, rpmKeyring keyring) /* <=== rpmvsCreate */ \n{\n    struct rpmvs_s *sis = xcalloc(1, sizeof(*sis));\n    sis->vsflags = vsflags;\n    sis->keyring = rpmKeyringLink(keyring);\n    sis->vfylevel = vfylevel;\n\n    return sis;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmlog.c",
+            "rpmlogCtxRelease",
+            "static rpmlogCtx rpmlogCtxRelease(rpmlogCtx ctx) /* <=== rpmlogCtxRelease */ \n{\n    if (ctx)\n\tpthread_rwlock_unlock(&ctx->lock);\n    return NULL;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "headerIsSourceHeuristic",
+            "int headerIsSourceHeuristic(Header h) /* <=== headerIsSourceHeuristic */ \n{\n    indexEntry entry = findEntry(h, RPMTAG_DIRNAMES, RPM_STRING_ARRAY_TYPE);\n    return entry && entry->info.count == 1 && entry->data && !*(const char *)entry->data;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "hdrchkAlign",
+            "#define hdrchkAlign(_type, _off)\t((_off) & (typeAlign[_type]-1)) /* <=== lib/header.c:155:155:hdrchkAlign:2 */ ",
+            3
+        ],
+        [
+            "system.h",
+            "xstrdup",
+            "#define xstrdup(_str) rstrdup((_str)) /* <=== system.h:69:69:xstrdup:1 */ ",
+            3
+        ],
+        [
+            "rpmio/rpmlog.c",
+            "rpmlogDefault",
+            "static int rpmlogDefault(FILE *stdlog, rpmlogRec rec) /* <=== rpmlogDefault */ \n{\n    FILE *msgout = (stdlog ? stdlog : stderr);\n    static __thread int color = -1;\n    const char * colorOn = NULL;\n\n    if (color < 0)\n\tcolor = getColorConfig();\n\n    if (color == COLOR_ALWAYS ||\n\t    (color == COLOR_AUTO && isatty(fileno(msgout))))\n\tcolorOn = rpmlogLevelColor(rec->pri);\n\n    switch (rec->pri) {\n    case RPMLOG_INFO:\n    case RPMLOG_NOTICE:\n\tmsgout = (stdlog ? stdlog : stdout);\n\tbreak;\n    case RPMLOG_EMERG:\n    case RPMLOG_ALERT:\n    case RPMLOG_CRIT:\n    case RPMLOG_ERR:\n    case RPMLOG_WARNING:\n    case RPMLOG_DEBUG:\n\tif (colorOn && *colorOn)\n\t    if (fputs(rpmlogLevelColor(rec->pri), msgout) == EOF)\n\t\tlogerror();\n\tbreak;\n    default:\n\tbreak;\n    }\n\n    if (fputs(rpmlogLevelPrefix(rec->pri), msgout) == EOF)\n\tlogerror();\n\n    switch (rec->pri) {\n    case RPMLOG_INFO:\n    case RPMLOG_NOTICE:\n\tbreak;\n    case RPMLOG_EMERG:\n    case RPMLOG_ALERT:\n    case RPMLOG_CRIT:\n    case RPMLOG_ERR:\n    case RPMLOG_WARNING:\n\tif (colorOn && *colorOn) {\n\t    if (fputs(ANSI_COLOR_RESET, msgout) == EOF)\n\t\tlogerror();\n\t    if (fputs(ANSI_COLOR_BOLD, msgout) == EOF)\n\t\tlogerror();\n\t}\n    case RPMLOG_DEBUG:\n    default:\n\tbreak;\n    }\n\n    if (rec->message)\n\tif (fputs(rec->message, msgout) == EOF)\n\t    logerror();\n\n    switch (rec->pri) {\n    case RPMLOG_INFO:\n    case RPMLOG_NOTICE:\n\tbreak;\n    case RPMLOG_EMERG:\n    case RPMLOG_ALERT:\n    case RPMLOG_CRIT:\n    case RPMLOG_ERR:\n    case RPMLOG_WARNING:\n    case RPMLOG_DEBUG:\n\tif (colorOn && *colorOn)\n\t    if (fputs(ANSI_COLOR_RESET, msgout) == EOF)\n\t\tlogerror();\n\tbreak;\n    default:\n\tbreak;\n    }\n\n    if (fflush(msgout) == EOF)\n\tlogerror();\n\n    return (rec->pri <= RPMLOG_CRIT ? RPMLOG_EXIT : 0);\n}",
+            3
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rrealloc",
+            "void * rrealloc(void *ptr, size_t size); /* <=== rrealloc */ ",
+            3
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rstrdup",
+            "char * rstrdup(const char *str); /* <=== rstrdup */ ",
+            3
+        ],
+        [
+            "lib/header.c",
+            "headerPut",
+            "int headerPut(Header h, rpmtd td, headerPutFlags flags) /* <=== headerPut */ \n{\n    int rc;\n    \n    assert(td != NULL);\n    if (flags & HEADERPUT_APPEND) {\n\trc = findEntry(h, td->tag, td->type) ?\n\t\tintAppendEntry(h, td) :\n\t\tintAddEntry(h, td);\n    } else {\n\trc = intAddEntry(h, td);\n    }\n    return rc;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "headerFreeIterator",
+            "HeaderIterator headerFreeIterator(HeaderIterator hi) /* <=== headerFreeIterator */ \n{\n    if (hi != NULL) {\n\thi->h = headerFree(hi->h);\n\thi = _free(hi);\n    }\n    return NULL;\n}",
+            2
+        ],
+        [
+            "lib/rpmts.c",
+            "loadKeyring",
+            "static void loadKeyring(rpmts ts) /* <=== loadKeyring */ \n{\n    /* Never load the keyring if signature checking is disabled */\n    if ((rpmtsVSFlags(ts) & RPMVSF_MASK_NOSIGNATURES) !=\n\tRPMVSF_MASK_NOSIGNATURES) {\n\tchar *krtype = rpmExpand(\"%{?_keyring}\", NULL);\n\tts->keyring = rpmKeyringNew();\n\tif (rstreq(krtype, \"fs\")) {\n\t    loadKeyringFromFiles(ts);\n\t} else {\n\t    /* Fall back to using rpmdb if unknown, for now at least */\n\t    if (!(rstreq(krtype, \"\") || rstreq(krtype, \"rpmdb\")))\n\t\trpmlog(RPMLOG_WARNING,\n\t\t\t_(\"unknown keyring type: %s, using rpmdb\\n\"), krtype);\n\t    loadKeyringFromDB(ts);\n\t}\n\tfree(krtype);\n    }\n}",
+            2
+        ],
+        [
+            "system.h",
+            "xmalloc",
+            "#define xmalloc(_size) rmalloc((_size)) /* <=== system.h:66:66:xmalloc:1 */ ",
+            3
+        ],
+        [
+            "lib/header.c",
+            "nextIndex",
+            "static indexEntry nextIndex(HeaderIterator hi) /* <=== nextIndex */ \n{\n    Header h = hi->h;\n    int slot;\n    indexEntry entry = NULL;\n\n    for (slot = hi->next_index; slot < h->indexUsed; slot++) {\n\tentry = h->index + slot;\n\tif (!ENTRY_IS_REGION(entry))\n\t    break;\n    }\n    hi->next_index = slot;\n    if (entry == NULL || slot >= h->indexUsed)\n\treturn NULL;\n\n    hi->next_index++;\n    return entry;\n}",
+            3
+        ],
+        [
+            "rpmio/rpmlog.c",
+            "rpmlogSetMask",
+            "int rpmlogSetMask (int mask) /* <=== rpmlogSetMask */ \n{\n    rpmlogCtx ctx = rpmlogCtxAcquire(mask ? 1 : 0);\n\n    int omask = -1;\n    if (ctx) {\n\tomask = ctx->mask;\n\tif (mask)\n\t    ctx->mask = mask;\n    }\n\n    rpmlogCtxRelease(ctx);\n    return omask;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "hdrchkType",
+            "#define hdrchkType(_type) ((_type) < RPM_MIN_TYPE || (_type) > RPM_MAX_TYPE) /* <=== lib/header.c:142:142:hdrchkType:1 */ ",
+            3
+        ],
+        [
+            "lib/rpmts.c",
+            "loadKeyringFromDB",
+            "static int loadKeyringFromDB(rpmts ts) /* <=== loadKeyringFromDB */ \n{\n    Header h;\n    rpmdbMatchIterator mi;\n    int nkeys = 0;\n\n    rpmlog(RPMLOG_DEBUG, \"loading keyring from rpmdb\\n\");\n    mi = rpmtsInitIterator(ts, RPMDBI_NAME, \"gpg-pubkey\", 0);\n    while ((h = rpmdbNextIterator(mi)) != NULL) {\n\tstruct rpmtd_s pubkeys;\n\tconst char *key;\n\n\tif (!headerGet(h, RPMTAG_PUBKEYS, &pubkeys, HEADERGET_MINMEM))\n\t   continue;\n\n\twhile ((key = rpmtdNextString(&pubkeys))) {\n\t    uint8_t *pkt;\n\t    size_t pktlen;\n\n\t    if (rpmBase64Decode(key, (void **) &pkt, &pktlen) == 0) {\n\t\trpmPubkey key = rpmPubkeyNew(pkt, pktlen);\n\t\tint subkeysCount, i;\n\t\trpmPubkey *subkeys = rpmGetSubkeys(key, &subkeysCount);\n\n\t\tif (rpmKeyringAddKey(ts->keyring, key) == 0) {\n\t\t    char *nvr = headerGetAsString(h, RPMTAG_NVR);\n\t\t    rpmlog(RPMLOG_DEBUG, \"added key %s to keyring\\n\", nvr);\n\t\t    free(nvr);\n\t\t    nkeys++;\n\t\t}\n\t\trpmPubkeyFree(key);\n\n\t\tfor (i = 0; i < subkeysCount; i++) {\n\t\t    rpmPubkey subkey = subkeys[i];\n\n\t\t    if (rpmKeyringAddKey(ts->keyring, subkey) == 0) {\n\t\t\tchar *nvr = headerGetAsString(h, RPMTAG_NVR);\n\t\t\trpmlog(RPMLOG_DEBUG,\n\t\t\t    \"added subkey %d of main key %s to keyring\\n\",\n\t\t\t    i, nvr);\n\n\t\t\tfree(nvr);\n\t\t\tnkeys++;\n\t\t    }\n\t\t    rpmPubkeyFree(subkey);\n\t\t}\n\t\tfree(subkeys);\n\t\tfree(pkt);\n\t    }\n\t}\n\trpmtdFreeData(&pubkeys);\n    }\n    rpmdbFreeIterator(mi);\n\n    return nkeys;\n}",
+            3
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rmalloc",
+            "void * rmalloc(size_t size); /* <=== rmalloc */ ",
+            3
+        ],
+        [
+            "lib/header.c",
+            "alignDiff",
+            "static inline unsigned int alignDiff(rpm_tagtype_t type, unsigned int alignsize) /* <=== alignDiff */ \n{\n    int typesize = typeSizes[type];\n\n    if (typesize > 1) {\n\tunsigned int diff = typesize - (alignsize % typesize);\n\tif (diff != typesize)\n\t    return diff;\n    }\n    return 0;\n}",
+            3
+        ],
+        [
+            "rpmio/rpmlog.c",
+            "dolog",
+            "static void dolog(struct rpmlogRec_s *rec, int saverec) /* <=== dolog */ \n{\n    static pthread_mutex_t serialize = PTHREAD_MUTEX_INITIALIZER;\n\n    int cbrc = RPMLOG_DEFAULT;\n    int needexit = 0;\n    FILE *clog = NULL;\n    rpmlogCallbackData *cbdata = NULL;\n    rpmlogCallback cbfunc = NULL;\n    rpmlogCtx ctx = rpmlogCtxAcquire(saverec);\n\n    if (ctx == NULL)\n\treturn;\n\n    /* Save copy of all messages at warning (or below == \"more important\"). */\n    if (saverec) {\n\tctx->recs = xrealloc(ctx->recs, (ctx->nrecs+2) * sizeof(*ctx->recs));\n\tctx->recs[ctx->nrecs].code = rec->code;\n\tctx->recs[ctx->nrecs].pri = rec->pri;\n\tctx->recs[ctx->nrecs].message = xstrdup(rec->message);\n\tctx->recs[ctx->nrecs+1].code = 0;\n\tctx->recs[ctx->nrecs+1].message = NULL;\n\tctx->nrecs++;\n    }\n    cbfunc = ctx->cbfunc;\n    cbdata = ctx->cbdata;\n    clog = ctx->stdlog;\n\n    /* Free the context for callback and actual log output */\n    ctx = rpmlogCtxRelease(ctx);\n\n    /* Always serialize callback and output to avoid interleaved messages. */\n    if (pthread_mutex_lock(&serialize) == 0) {\n\tif (cbfunc) {\n\t    cbrc = cbfunc(rec, cbdata);\n\t    needexit += cbrc & RPMLOG_EXIT;\n\t}\n\n\tif (cbrc & RPMLOG_DEFAULT) {\n\t    cbrc = rpmlogDefault(clog, rec);\n\t    needexit += cbrc & RPMLOG_EXIT;\n\t}\n\tpthread_mutex_unlock(&serialize);\n    }\n    \n    if (needexit)\n\texit(EXIT_FAILURE);\n\n}",
+            2
+        ],
+        [
+            "lib/header_internal.h",
+            "ei2h",
+            "static inline void ei2h(const struct entryInfo_s *pe, struct entryInfo_s *info) /* <=== ei2h */ \n{\n    info->tag = ntohl(pe->tag);\n    info->type = ntohl(pe->type);\n    info->offset = ntohl(pe->offset);\n    info->count = ntohl(pe->count);\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "headerIsEntry",
+            "int headerIsEntry(Header h, rpmTagVal tag) /* <=== headerIsEntry */ \n{\n   \t\t/* FIX: h modified by sort. */\n    return (findEntry(h, tag, RPM_NULL_TYPE) ? 1 : 0);\n   \t\n}",
+            2
+        ],
+        [
+            "rpmio/rpmio.c",
+            "Fdescr",
+            "const char * Fdescr(FD_t fd) /* <=== Fdescr */ \n{\n    if (fd == NULL)\n\treturn _(\"[none]\");\n\n    /* Lazy lookup if description is not set (eg dupped fd) */\n    if (fd->descr == NULL) {\n\tint fdno = fd->fps->fdno;\n#if defined(__linux__)\n\t/* Grab the path from /proc if we can */\n\tchar *procpath = NULL;\n\tchar buf[PATH_MAX];\n\tssize_t llen;\n\n\trasprintf(&procpath, \"/proc/self/fd/%d\", fdno);\n\tllen = readlink(procpath, buf, sizeof(buf)-1);\n\tfree(procpath);\n\n\tif (llen >= 1) {\n\t    buf[llen] = '\\0';\n\t    /* Real paths in /proc are always absolute */\n\t    if (buf[0] == '/')\n\t\tfd->descr = xstrdup(buf);\n\t    else\n\t\tfd->descr = rstrscat(NULL, \"[\", buf, \"]\", NULL);\n\t}\n#endif\n\t/* Still no description, base it on fdno which is always there */\n\tif (fd->descr == NULL)\n\t    rasprintf(&(fd->descr), \"[fd %d]\", fdno);\n    }\n    return fd->descr;\n}",
+            1
+        ],
+        [
+            "lib/header.c",
+            "headerNext",
+            "int headerNext(HeaderIterator hi, rpmtd td) /* <=== headerNext */ \n{\n    indexEntry entry = nextIndex(hi);\n    int rc = 0;\n\n    rpmtdReset(td);\n    if (entry) {\n\ttd->tag = entry->info.tag;\n\trc = copyTdEntry(entry, td, HEADERGET_DEFAULT);\n    }\n    return ((rc == 1) ? 1 : 0);\n}",
+            2
+        ],
+        [
+            "system.h",
+            "xcalloc",
+            "#define xcalloc(_nmemb, _size) rcalloc((_nmemb), (_size)) /* <=== system.h:67:67:xcalloc:2 */ ",
+            2
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rfree",
+            "void * rfree(void *ptr); /* <=== rfree */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "headerSort",
+            "static void headerSort(Header h) /* <=== headerSort */ \n{\n    if (!h->sorted) {\n\tqsort(h->index, h->indexUsed, sizeof(*h->index), indexCmp);\n\th->sorted = 1;\n    }\n}",
+            2
+        ],
+        [
+            "lib/rpmts.c",
+            "loadKeyringFromFiles",
+            "static int loadKeyringFromFiles(rpmts ts) /* <=== loadKeyringFromFiles */ \n{\n    ARGV_t files = NULL;\n    /* XXX TODO: deal with chroot path issues */\n    char *pkpath = rpmGetPath(ts->rootDir, \"%{_keyringpath}/*.key\", NULL);\n    int nkeys = 0;\n\n    rpmlog(RPMLOG_DEBUG, \"loading keyring from pubkeys in %s\\n\", pkpath);\n    if (rpmGlob(pkpath, NULL, &files)) {\n\trpmlog(RPMLOG_DEBUG, \"couldn't find any keys in %s\\n\", pkpath);\n\tgoto exit;\n    }\n\n    for (char **f = files; *f; f++) {\n\tint subkeysCount, i;\n\trpmPubkey *subkeys;\n\trpmPubkey key = rpmPubkeyRead(*f);\n\n\tif (!key) {\n\t    rpmlog(RPMLOG_ERR, _(\"%s: reading of public key failed.\\n\"), *f);\n\t    continue;\n\t}\n\tif (rpmKeyringAddKey(ts->keyring, key) == 0) {\n\t    nkeys++;\n\t    rpmlog(RPMLOG_DEBUG, \"added key %s to keyring\\n\", *f);\n\t}\n\tsubkeys = rpmGetSubkeys(key, &subkeysCount);\n\trpmPubkeyFree(key);\n\n\tfor (i = 0; i < subkeysCount; i++) {\n\t    rpmPubkey subkey = subkeys[i];\n\n\t    if (rpmKeyringAddKey(ts->keyring, subkey) == 0) {\n\t\trpmlog(RPMLOG_DEBUG,\n\t\t    \"added subkey %d of main key %s to keyring\\n\",\n\t\t    i, *f);\n\n\t\tnkeys++;\n\t    }\n\t    rpmPubkeyFree(subkey);\n\t}\n\tfree(subkeys);\n    }\nexit:\n    free(pkpath);\n    argvFree(files);\n    return nkeys;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "REGION_TAG_TYPE",
+            "#define\tREGION_TAG_TYPE\t\tRPM_BIN_TYPE /* <=== lib/header.c:116:116:REGION_TAG_TYPE:0 */ ",
+            2
+        ],
+        [
+            "system.h",
+            "_",
+            "# define _(Text) Text /* <=== system.h:96:96:_:1 */ ",
+            2
+        ],
+        [
+            "lib/rpmvs.c",
+            "rpmVerifySignature",
+            "static void /* <=== rpmVerifySignature */ \nrpmVerifySignature(rpmKeyring keyring, struct rpmsinfo_s *sinfo)\n{\n    if (sinfo->type == RPMSIG_DIGEST_TYPE)\n\tsinfo->rc = verifyDigest(sinfo);\n    else if (sinfo->type == RPMSIG_SIGNATURE_TYPE)\n\tsinfo->rc = verifySignature(keyring, sinfo);\n    else\n\tsinfo->rc = RPMRC_FAIL;\n}",
+            2
+        ],
+        [
+            "system.h",
+            "_free",
+            "#define _free(_ptr) rfree((_ptr)) /* <=== system.h:70:70:_free:1 */ ",
+            2
+        ],
+        [
+            "rpmio/rpmkeyring.c",
+            "rpmKeyringNew",
+            "rpmKeyring rpmKeyringNew(void) /* <=== rpmKeyringNew */ \n{\n    rpmKeyring keyring = xcalloc(1, sizeof(*keyring));\n    keyring->keys = NULL;\n    keyring->numkeys = 0;\n    keyring->nrefs = 1;\n    pthread_rwlock_init(&keyring->lock, NULL);\n    return keyring;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "ENTRY_IN_REGION",
+            "#define\tENTRY_IN_REGION(_e)\t((_e)->info.offset < 0) /* <=== lib/header.c:114:114:ENTRY_IN_REGION:1 */ ",
+            2
+        ],
+        [
+            "lib/package.c",
+            "applyRetrofits",
+            "static /* <=== applyRetrofits */ \nvoid applyRetrofits(Header h)\n{\n    int v3 = 0;\n    /*\n     * Make sure that either RPMTAG_SOURCERPM or RPMTAG_SOURCEPACKAGE\n     * is set. Use a simple heuristic to find the type if both are unset.\n     */\n    if (!headerIsEntry(h, RPMTAG_SOURCERPM) && !headerIsEntry(h, RPMTAG_SOURCEPACKAGE)) {\n\t/* the heuristic needs the compressed file list */\n\tif (headerIsEntry(h, RPMTAG_OLDFILENAMES))\n\t    headerConvert(h, HEADERCONV_COMPRESSFILELIST);\n\tif (headerIsSourceHeuristic(h)) {\n\t    /* Retrofit RPMTAG_SOURCEPACKAGE to srpms for compatibility */\n\t    uint32_t one = 1;\n\t    headerPutUint32(h, RPMTAG_SOURCEPACKAGE, &one, 1);\n\t} else {\n\t    /*\n\t     * Make sure binary rpms have RPMTAG_SOURCERPM set as that's\n\t     * what we use for differentiating binary vs source elsewhere.\n\t     */\n\t    headerPutString(h, RPMTAG_SOURCERPM, \"(none)\");\n\t}\n    }\n\n    /*\n     * Convert legacy headers on the fly. Not having immutable region\n     * equals a truly ancient package, do full retrofit. OTOH newer\n     * packages might have been built with --nodirtokens, test and handle\n     * the non-compressed filelist case separately.\n     */\n    if (!headerIsEntry(h, RPMTAG_HEADERIMMUTABLE)) {\n\tv3 = 1;\n\theaderConvert(h, HEADERCONV_RETROFIT_V3);\n    } else if (headerIsEntry(h, RPMTAG_OLDFILENAMES)) {\n\theaderConvert(h, HEADERCONV_COMPRESSFILELIST);\n\tv3 = 1;\n    }\n    if (v3) {\n\tchar *s = headerGetAsString(h, RPMTAG_NEVRA);\n\trpmlog(RPMLOG_WARNING, _(\"RPM v3 packages are deprecated: %s\\n\"), s);\n\tfree(s);\n    }\n}",
+            1
+        ],
+        [
+            "lib/rpmts.c",
+            "rpmtsGetKeyring",
+            "rpmKeyring rpmtsGetKeyring(rpmts ts, int autoload) /* <=== rpmtsGetKeyring */ \n{\n    rpmKeyring keyring = NULL;\n    if (ts) {\n\tif (ts->keyring == NULL && autoload) {\n\t    loadKeyring(ts);\n\t}\n\tkeyring = rpmKeyringLink(ts->keyring);\n    }\n    return keyring;\n}",
+            1
+        ],
+        [
+            "lib/package.c",
+            "headerMergeLegacySigs",
+            "static /* <=== headerMergeLegacySigs */ \nvoid headerMergeLegacySigs(Header h, Header sigh)\n{\n    HeaderIterator hi;\n    struct rpmtd_s td;\n\n    hi = headerInitIterator(sigh);\n    for (; headerNext(hi, &td); rpmtdFreeData(&td))\n    {\n\tswitch (td.tag) {\n\t/* XXX Translate legacy signature tag values. */\n\tcase RPMSIGTAG_SIZE:\n\t    td.tag = RPMTAG_SIGSIZE;\n\t    break;\n\tcase RPMSIGTAG_PGP:\n\t    td.tag = RPMTAG_SIGPGP;\n\t    break;\n\tcase RPMSIGTAG_MD5:\n\t    td.tag = RPMTAG_SIGMD5;\n\t    break;\n\tcase RPMSIGTAG_GPG:\n\t    td.tag = RPMTAG_SIGGPG;\n\t    break;\n\tcase RPMSIGTAG_PGP5:\n\t    td.tag = RPMTAG_SIGPGP5;\n\t    break;\n\tcase RPMSIGTAG_PAYLOADSIZE:\n\t    td.tag = RPMTAG_ARCHIVESIZE;\n\t    break;\n\tcase RPMSIGTAG_FILESIGNATURES:\n\t    td.tag = RPMTAG_FILESIGNATURES;\n\t    break;\n\tcase RPMSIGTAG_FILESIGNATURELENGTH:\n\t    td.tag = RPMTAG_FILESIGNATURELENGTH;\n\t    break;\n\tcase RPMSIGTAG_VERITYSIGNATURES:\n\tcase RPMSIGTAG_VERITYSIGNATUREALGO:\n\tcase RPMSIGTAG_SHA1:\n\tcase RPMSIGTAG_SHA256:\n\tcase RPMSIGTAG_DSA:\n\tcase RPMSIGTAG_RSA:\n\tdefault:\n\t    if (!(td.tag >= HEADER_SIGBASE && td.tag < HEADER_TAGBASE))\n\t\tcontinue;\n\t    break;\n\t}\n\tif (!headerIsEntry(h, td.tag)) {\n\t    switch (td.type) {\n\t    case RPM_NULL_TYPE:\n\t\tcontinue;\n\t\tbreak;\n\t    case RPM_CHAR_TYPE:\n\t    case RPM_INT8_TYPE:\n\t    case RPM_INT16_TYPE:\n\t    case RPM_INT32_TYPE:\n\t    case RPM_INT64_TYPE:\n\t\tif (td.count != 1)\n\t\t    continue;\n\t\tbreak;\n\t    case RPM_STRING_TYPE:\n\t    case RPM_STRING_ARRAY_TYPE:\n\t    case RPM_BIN_TYPE:\n\t\tif (td.count >= 16*1024)\n\t\t    continue;\n\t\tbreak;\n\t    case RPM_I18NSTRING_TYPE:\n\t\tcontinue;\n\t\tbreak;\n\t    }\n\t    (void) headerPut(h, &td, HEADERPUT_DEFAULT);\n\t}\n    }\n    headerFreeIterator(hi);\n}",
+            1
+        ],
+        [
+            "lib/rpmts.c",
+            "rpmtsVSFlags",
+            "rpmVSFlags rpmtsVSFlags(rpmts ts) /* <=== rpmtsVSFlags */ \n{\n    rpmVSFlags vsflags = 0;\n    if (ts != NULL)\n\tvsflags = ts->vsflags;\n    return vsflags;\n}",
+            1
+        ],
+        [
+            "lib/header.c",
+            "headerLink",
+            "Header headerLink(Header h) /* <=== headerLink */ \n{\n    if (h != NULL)\n\th->nrefs++;\n    return h;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmlog.c",
+            "rpmlog",
+            "void rpmlog (int code, const char *fmt, ...) /* <=== rpmlog */ \n{\n    int saved_errno = errno;\n    unsigned pri = RPMLOG_PRI(code);\n    unsigned mask = RPMLOG_MASK(pri);\n    int saverec = (pri <= RPMLOG_WARNING);\n    va_list ap;\n    int n;\n\n    if ((mask & rpmlogSetMask(0)) == 0)\n\tgoto exit;\n\n    va_start(ap, fmt);\n    n = vsnprintf(NULL, 0, fmt, ap);\n    va_end(ap);\n\n    if (n >= -1) {\n\tstruct rpmlogRec_s rec;\n\tsize_t nb = n + 1;\n\tchar *msg = xmalloc(nb);\n\n\tva_start(ap, fmt);\n\tn = vsnprintf(msg, nb, fmt, ap);\n\tva_end(ap);\n\n\trec.code = code;\n\trec.pri = pri;\n\trec.message = msg;\n\n\tdolog(&rec, saverec);\n\n\tfree(msg);\n    }\nexit:\n    errno = saved_errno;\n}",
+            2
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rmalloc",
+            "void * rmalloc(size_t size); /* <=== rmalloc */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "headerUnlink",
+            "static Header headerUnlink(Header h) /* <=== headerUnlink */ \n{\n    if (h != NULL)\n\th->nrefs--;\n    return NULL;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "headerGet",
+            "int headerGet(Header h, rpmTagVal tag, rpmtd td, headerGetFlags flags) /* <=== headerGet */ \n{\n    int rc;\n    headerTagTagFunction tagfunc = intGetTdEntry;\n\n    if (td == NULL) return 0;\n\n    rpmtdReset(td);\n    td->tag = tag;\n\n    if (flags & HEADERGET_EXT) {\n\theaderTagTagFunction extfunc = rpmHeaderTagFunc(tag);\n\tif (extfunc) tagfunc = extfunc;\n    }\n    rc = tagfunc(h, td, flags);\n\n    assert(tag == td->tag);\n    return rc;\n}",
+            2
+        ],
+        [
+            "lib/rpmvs.c",
+            "getAlt",
+            "static const struct rpmsinfo_s *getAlt(const struct rpmvs_s *vs, const struct rpmsinfo_s *sinfo) /* <=== getAlt */ \n{\n    for (int i = 0; i < vs->nsigs; i++) {\n\tconst struct rpmsinfo_s *alt = &vs->sigs[i];\n\tif ((sinfo->id != alt->id) && (sinfo->disabler == alt->disabler))\n\t    return alt;\n    }\n    return NULL;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "headerDel",
+            "int headerDel(Header h, rpmTagVal tag) /* <=== headerDel */ \n{\n    indexEntry last = h->index + h->indexUsed;\n    indexEntry entry, first;\n    int ne;\n\n    entry = findEntry(h, tag, RPM_NULL_TYPE);\n    if (!entry) return 1;\n\n    /* Make sure entry points to the first occurrence of this tag. */\n    while (entry > h->index && (entry - 1)->info.tag == tag)  \n\tentry--;\n\n    /* Free data for tags being removed. */\n    for (first = entry; first < last; first++) {\n\trpm_data_t data;\n\tif (first->info.tag != tag)\n\t    break;\n\tdata = first->data;\n\tfirst->data = NULL;\n\tfirst->length = 0;\n\tif (ENTRY_IN_REGION(first))\n\t    continue;\n\tfree(data);\n    }\n\n    ne = (first - entry);\n    if (ne > 0) {\n\th->indexUsed -= ne;\n\tne = last - first;\n\tif (ne > 0)\n\t    memmove(entry, first, (ne * sizeof(*entry)));\n    }\n\n    return 0;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "copyTdEntry",
+            "static int copyTdEntry(const indexEntry entry, rpmtd td, headerGetFlags flags) /* <=== copyTdEntry */ \n{\n    rpm_count_t count = entry->info.count;\n    int rc = 1;\t\t/* XXX 1 on success. */\n    /* ALLOC overrides MINMEM */\n    int allocMem = flags & HEADERGET_ALLOC;\n    int minMem = allocMem ? 0 : flags & HEADERGET_MINMEM;\n    int argvArray = (flags & HEADERGET_ARGV) ? 1 : 0;\n\n    assert(td != NULL);\n    td->flags = RPMTD_IMMUTABLE;\n    switch (entry->info.type) {\n    case RPM_BIN_TYPE:\n\t/*\n\t * XXX This only works for\n\t * XXX \t\"sealed\" HEADER_IMMUTABLE/HEADER_SIGNATURES/HEADER_IMAGE.\n\t * XXX This will *not* work for unsealed legacy HEADER_IMAGE (i.e.\n\t * XXX a legacy header freshly read, but not yet unloaded to the rpmdb).\n\t */\n\tif (ENTRY_IS_REGION(entry)) {\n\t    int32_t * ei = ((int32_t *)entry->data) - 2;\n\t    entryInfo pe = (entryInfo) (ei + 2);\n\t    unsigned char * dataStart = (unsigned char *) (pe + ntohl(ei[0]));\n\t    int32_t rdl = -entry->info.offset;\t/* negative offset */\n\t    int32_t ril = rdl/sizeof(*pe);\n\n\t    rdl = entry->rdlen;\n\t    count = 2 * sizeof(*ei) + (ril * sizeof(*pe)) + rdl;\n\t    if (entry->info.tag == RPMTAG_HEADERIMAGE) {\n\t\tril -= 1;\n\t\tpe += 1;\n\t    } else {\n\t\tcount += REGION_TAG_COUNT;\n\t\trdl += REGION_TAG_COUNT;\n\t    }\n\n\t    td->data = xmalloc(count);\n\t    ei = (int32_t *) td->data;\n\t    ei[0] = htonl(ril);\n\t    ei[1] = htonl(rdl);\n\n\t    pe = (entryInfo) memcpy(ei + 2, pe, (ril * sizeof(*pe)));\n\n\t    dataStart = (unsigned char *) memcpy(pe + ril, dataStart, rdl);\n\n\t    rc = regionSwab(NULL, ril, 0, pe, dataStart, dataStart + rdl, 0, 0);\n\t    /* don't return data on failure */\n\t    if (rc < 0) {\n\t\ttd->data = _free(td->data);\n\t    }\n\t    /* XXX 1 on success. */\n\t    rc = (rc < 0) ? 0 : 1;\n\t} else {\n\t    td->data = (!minMem\n\t\t? memcpy(xmalloc(count), entry->data, count)\n\t\t: entry->data);\n\t}\n\tbreak;\n    case RPM_STRING_TYPE:\n\t/* simple string, but fallthrough if its actually an array */\n\tif (count == 1 && !argvArray) {\n\t    td->data = allocMem ? xstrdup(entry->data) : entry->data;\n\t    break;\n\t}\n    case RPM_STRING_ARRAY_TYPE:\n    case RPM_I18NSTRING_TYPE:\n    {\tconst char ** ptrEntry;\n\tint tableSize = (count + argvArray) * sizeof(char *);\n\tchar * t;\n\tint i;\n\n\tif (minMem) {\n\t    td->data = xmalloc(tableSize);\n\t    ptrEntry = (const char **) td->data;\n\t    t = entry->data;\n\t} else {\n\t    t = xmalloc(tableSize + entry->length);\n\t    td->data = (void *)t;\n\t    ptrEntry = (const char **) td->data;\n\t    t += tableSize;\n\t    memcpy(t, entry->data, entry->length);\n\t}\n\tfor (i = 0; i < count; i++) {\n\t    *ptrEntry++ = t;\n\t    t = strchr(t, 0);\n\t    t++;\n\t}\n\tif (argvArray) {\n\t    *ptrEntry = NULL;\n\t    td->flags |= RPMTD_ARGV;\n\t}\n    }\tbreak;\n    case RPM_CHAR_TYPE:\n    case RPM_INT8_TYPE:\n    case RPM_INT16_TYPE:\n    case RPM_INT32_TYPE:\n    case RPM_INT64_TYPE:\n\tif (allocMem) {\n\t    td->data = xmalloc(entry->length);\n\t    memcpy(td->data, entry->data, entry->length);\n\t} else {\n\t    td->data = entry->data;\n\t}\n\tbreak;\n    default:\n\t/* WTH? Don't mess with unknown data types... */\n\trc = 0;\n\ttd->data = NULL;\n\tbreak;\n    }\n    td->type = entry->info.type;\n    td->count = count;\n    td->size = entry->length;\n\n    if (td->data && entry->data != td->data) {\n\ttd->flags |= RPMTD_ALLOCED;\n    }\n\n    return rc;\n}",
+            3
+        ],
+        [
+            "system.h",
+            "xmalloc",
+            "#define xmalloc(_size) rmalloc((_size)) /* <=== system.h:66:66:xmalloc:1 */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "hdrblobImport",
+            "rpmRC hdrblobImport(hdrblob blob, int fast, Header *hdrp, char **emsg) /* <=== hdrblobImport */ \n{\n    Header h = NULL;\n    indexEntry entry; \n    int rdlen;\n\n    h = headerCreate(blob->ei, blob->il);\n\n    entry = h->index;\n    if (!(htonl(blob->pe->tag) < RPMTAG_HEADERI18NTABLE)) {\n\t/* An original v3 header, create a legacy region entry for it */\n\th->flags |= HEADERFLAG_LEGACY;\n\tentry->info.type = REGION_TAG_TYPE;\n\tentry->info.tag = RPMTAG_HEADERIMAGE;\n\tentry->info.count = REGION_TAG_COUNT;\n\tentry->info.offset = ((unsigned char *)blob->pe - blob->dataStart); /* negative offset */\n\n\tentry->data = blob->pe;\n\tentry->length = blob->pvlen - sizeof(blob->il) - sizeof(blob->dl);\n\trdlen = regionSwab(entry+1, blob->il, 0, blob->pe,\n\t\t\t   blob->dataStart, blob->dataEnd,\n\t\t\t   entry->info.offset, fast);\n\tif (rdlen != blob->dl)\n\t    goto errxit;\n\tentry->rdlen = rdlen;\n\th->indexUsed++;\n    } else {\n\t/* Either a v4 header or an \"upgraded\" v3 header with a legacy region */\n\tint32_t ril;\n\n\th->flags &= ~HEADERFLAG_LEGACY;\n\tei2h(blob->pe, &entry->info);\n\tril = (entry->info.offset != 0) ? blob->ril : blob->il;\n\n\tentry->info.offset = -(ril * sizeof(*blob->pe)); /* negative offset */\n\tentry->data = blob->pe;\n\tentry->length = blob->pvlen - sizeof(blob->il) - sizeof(blob->dl);\n\trdlen = regionSwab(entry+1, ril-1, 0, blob->pe+1,\n\t\t\t   blob->dataStart, blob->dataEnd,\n\t\t\t   entry->info.offset, fast);\n\tif (rdlen < 0)\n\t    goto errxit;\n\tentry->rdlen = rdlen;\n\n\tif (ril < h->indexUsed) {\n\t    indexEntry newEntry = entry + ril;\n\t    int ne = (h->indexUsed - ril);\n\t    int rid = entry->info.offset+1;\n\n\t    /* Load dribble entries from region. */\n\t    rdlen = regionSwab(newEntry, ne, rdlen, blob->pe+ril,\n\t\t\t\tblob->dataStart, blob->dataEnd, rid, fast);\n\t    if (rdlen < 0)\n\t\tgoto errxit;\n\n\t  { indexEntry firstEntry = newEntry;\n\t    int save = h->indexUsed;\n\t    int j;\n\n\t    /* Dribble entries replace duplicate region entries. */\n\t    h->indexUsed -= ne;\n\t    for (j = 0; j < ne; j++, newEntry++) {\n\t\t(void) headerDel(h, newEntry->info.tag);\n\t\tif (newEntry->info.tag == RPMTAG_BASENAMES)\n\t\t    (void) headerDel(h, RPMTAG_OLDFILENAMES);\n\t    }\n\n\t    /* If any duplicate entries were replaced, move new entries down. */\n\t    if (h->indexUsed < (save - ne)) {\n\t\tmemmove(h->index + h->indexUsed, firstEntry,\n\t\t\t(ne * sizeof(*entry)));\n\t    }\n\t    h->indexUsed += ne;\n\t  }\n\t}\n\n\trdlen += REGION_TAG_COUNT;\n\n\tif (rdlen != blob->dl)\n\t    goto errxit;\n    }\n\n    /* Force sorting, dribble lookups can cause early sort on partial header */\n    h->sorted = 0;\n    headerSort(h);\n    h->flags |= HEADERFLAG_ALLOCATED;\n    *hdrp = h;\n\n    /* We own the memory now, avoid double-frees */\n    blob->ei = NULL;\n\n    return RPMRC_OK;\n\nerrxit:\n    if (h) {\n\tfree(h->index);\n\tfree(h);\n\trasprintf(emsg, _(\"hdr load: BAD\"));\n    }\n    return RPMRC_FAIL;\n}",
+            1
+        ],
+        [
+            "lib/header.c",
+            "htonll",
+            "static uint64_t htonll(uint64_t n) /* <=== htonll */ \n{\n#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__\n    uint32_t *i = (uint32_t*)&n;\n    uint32_t b = i[0];\n    i[0] = htonl(i[1]);\n    i[1] = htonl(b);\n#endif\n    return n;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "headerInitIterator",
+            "HeaderIterator headerInitIterator(Header h) /* <=== headerInitIterator */ \n{\n    HeaderIterator hi = xmalloc(sizeof(*hi));\n\n    headerSort(h);\n\n    hi->h = headerLink(h);\n    hi->next_index = 0;\n    return hi;\n}",
+            2
+        ],
+        [
+            "rpmio/rpmkeyring.c",
+            "rpmKeyringLink",
+            "rpmKeyring rpmKeyringLink(rpmKeyring keyring) /* <=== rpmKeyringLink */ \n{\n    if (keyring) {\n\tpthread_rwlock_wrlock(&keyring->lock);\n\tkeyring->nrefs++;\n\tpthread_rwlock_unlock(&keyring->lock);\n    }\n    return keyring;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "hdrchkData",
+            "#define hdrchkData(_nbytes) ((_nbytes) & (~HEADER_DATA_MAX)) /* <=== lib/header.c:150:150:hdrchkData:1 */ ",
+            3
+        ],
+        [
+            "rpmio/rpmlog.c",
+            "dolog",
+            "static void dolog(struct rpmlogRec_s *rec, int saverec) /* <=== dolog */ \n{\n    static pthread_mutex_t serialize = PTHREAD_MUTEX_INITIALIZER;\n\n    int cbrc = RPMLOG_DEFAULT;\n    int needexit = 0;\n    FILE *clog = NULL;\n    rpmlogCallbackData *cbdata = NULL;\n    rpmlogCallback cbfunc = NULL;\n    rpmlogCtx ctx = rpmlogCtxAcquire(saverec);\n\n    if (ctx == NULL)\n\treturn;\n\n    /* Save copy of all messages at warning (or below == \"more important\"). */\n    if (saverec) {\n\tctx->recs = xrealloc(ctx->recs, (ctx->nrecs+2) * sizeof(*ctx->recs));\n\tctx->recs[ctx->nrecs].code = rec->code;\n\tctx->recs[ctx->nrecs].pri = rec->pri;\n\tctx->recs[ctx->nrecs].message = xstrdup(rec->message);\n\tctx->recs[ctx->nrecs+1].code = 0;\n\tctx->recs[ctx->nrecs+1].message = NULL;\n\tctx->nrecs++;\n    }\n    cbfunc = ctx->cbfunc;\n    cbdata = ctx->cbdata;\n    clog = ctx->stdlog;\n\n    /* Free the context for callback and actual log output */\n    ctx = rpmlogCtxRelease(ctx);\n\n    /* Always serialize callback and output to avoid interleaved messages. */\n    if (pthread_mutex_lock(&serialize) == 0) {\n\tif (cbfunc) {\n\t    cbrc = cbfunc(rec, cbdata);\n\t    needexit += cbrc & RPMLOG_EXIT;\n\t}\n\n\tif (cbrc & RPMLOG_DEFAULT) {\n\t    cbrc = rpmlogDefault(clog, rec);\n\t    needexit += cbrc & RPMLOG_EXIT;\n\t}\n\tpthread_mutex_unlock(&serialize);\n    }\n    \n    if (needexit)\n\texit(EXIT_FAILURE);\n\n}",
+            3
+        ],
+        [
+            "lib/rpmvs.c",
+            "rpmvsVerify",
+            "int rpmvsVerify(struct rpmvs_s *sis, int type, /* <=== rpmvsVerify */ \n\t\t       rpmsinfoCb cb, void *cbdata)\n{\n    int failed = 0;\n    int cont = 1;\n    int range = 0;\n    int verified[3] = { 0, 0, 0 };\n\n    /* sort for consistency and rough \"better comes first\" semantics*/\n    qsort(sis->sigs, sis->nsigs, sizeof(*sis->sigs), sinfoCmp);\n\n    for (int i = 0; i < sis->nsigs && cont; i++) {\n\tstruct rpmsinfo_s *sinfo = &sis->sigs[i];\n\n\tif (type & sinfo->type) {\n\t    /* Digests in signed header are signature strength */\n\t    if (sinfo->wrapped) {\n\t\tif (verified[RPMSIG_SIGNATURE_TYPE] & RPMSIG_HEADER)\n\t\t    sinfo->strength = RPMSIG_SIGNATURE_TYPE;\n\t    }\n\n\t    if (sinfo->ctx) {\n\t\trpmVerifySignature(sis->keyring, sinfo);\n\t\tif (sinfo->rc == RPMRC_OK) {\n\t\t    verified[sinfo->type] |= sinfo->range;\n\t\t    verified[sinfo->strength] |= sinfo->range;\n\t\t}\n\t    }\n\t    range |= sinfo->range;\n\t}\n    }\n\n    for (int i = 0; i < sis->nsigs && cont; i++) {\n\tstruct rpmsinfo_s *sinfo = &sis->sigs[i];\n\tint strength = (sinfo->type | sinfo->strength);\n\tint required = 0;\n\n\t/* Ignore failure if an alternative exists and verifies ok */\n\tif (sinfo->rc == RPMRC_FAIL) {\n\t    const struct rpmsinfo_s * alt = getAlt(sis, sinfo);\n\t    if (alt && alt->rc == RPMRC_OK)\n\t\tsinfo->rc = RPMRC_NOTFOUND;\n\t}\n\n\tif (sis->vfylevel & strength & RPMSIG_DIGEST_TYPE) {\n\t    int missing = (range & ~verified[RPMSIG_DIGEST_TYPE]);\n\t    required |= (missing & sinfo->range);\n\t}\n\tif (sis->vfylevel & strength & RPMSIG_SIGNATURE_TYPE) {\n\t    int missing = (range & ~verified[RPMSIG_SIGNATURE_TYPE]);\n\t    required |= (missing & sinfo->range);\n\t}\n\n\tif (!required && sinfo->rc == RPMRC_NOTFOUND)\n\t    continue;\n\n\tif (cb)\n\t    cont = cb(sinfo, cbdata);\n\n\tif (sinfo->rc != RPMRC_OK)\n\t    failed = 1;\n    }\n\n    return failed;\n}",
+            1
+        ],
+        [
+            "lib/header.c",
+            "intAppendEntry",
+            "static int intAppendEntry(Header h, rpmtd td) /* <=== intAppendEntry */ \n{\n    indexEntry entry;\n    int length;\n\n    if (td->type == RPM_STRING_TYPE || td->type == RPM_I18NSTRING_TYPE) {\n\t/* we can't do this */\n\treturn 0;\n    }\n\n    /* Find the tag entry in the header. */\n    entry = findEntry(h, td->tag, td->type);\n    if (!entry)\n\treturn 0;\n\n    length = dataLength(td->type, td->data, td->count, 0, NULL);\n    if (length < 0)\n\treturn 0;\n\n    if (ENTRY_IN_REGION(entry)) {\n\tchar * t = xmalloc(entry->length + length);\n\tmemcpy(t, entry->data, entry->length);\n\tentry->data = t;\n\tentry->info.offset = 0;\n    } else\n\tentry->data = xrealloc(entry->data, entry->length + length);\n\n    copyData(td->type, ((char *) entry->data) + entry->length, \n\t     td->data, td->count, length);\n\n    entry->length += length;\n\n    entry->info.count += td->count;\n\n    return 1;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "ENTRY_IS_REGION",
+            "#define\tENTRY_IS_REGION(_e) \\ /* <=== lib/header.c:112:113:ENTRY_IS_REGION:1 */ \n\t(((_e)->info.tag >= RPMTAG_HEADERIMAGE) && ((_e)->info.tag < RPMTAG_HEADERREGIONS))",
+            2
+        ],
+        [
+            "lib/header.c",
+            "findEntry",
+            "static /* <=== findEntry */ \nindexEntry findEntry(Header h, rpmTagVal tag, rpm_tagtype_t type)\n{\n    indexEntry entry;\n    struct indexEntry_s key;\n\n    if (h == NULL) return NULL;\n    headerSort(h);\n\n    key.info.tag = tag;\n\n    entry = bsearch(&key, h->index, h->indexUsed, sizeof(*h->index), indexCmp);\n    if (entry == NULL)\n\treturn NULL;\n\n    if (type == RPM_NULL_TYPE)\n\treturn entry;\n\n    /* look backwards */\n    while (entry->info.tag == tag && entry->info.type != type &&\n\t   entry > h->index) entry--;\n\n    if (entry->info.tag == tag && entry->info.type == type)\n\treturn entry;\n\n    return NULL;\n}",
+            3
+        ],
+        [
+            "lib/rpmvs.c",
+            "verifySignature",
+            "static rpmRC /* <=== verifySignature */ \nverifySignature(rpmKeyring keyring, struct rpmsinfo_s *sinfo)\n{\n    rpmRC res = rpmKeyringVerifySig(keyring, sinfo->sig, sinfo->ctx);\n\n    return res;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "intAddEntry",
+            "static int intAddEntry(Header h, rpmtd td) /* <=== intAddEntry */ \n{\n    indexEntry entry;\n    rpm_data_t data;\n    int length = 0;\n\n    /* Count must always be >= 1 for headerAddEntry. */\n    if (td->count <= 0)\n\treturn 0;\n\n    if (hdrchkType(td->type))\n\treturn 0;\n    if (hdrchkData(td->count))\n\treturn 0;\n\n    data = grabData(td->type, td->data, td->count, &length);\n    if (data == NULL)\n\treturn 0;\n\n    /* Allocate more index space if necessary */\n    if (h->indexUsed == h->indexAlloced) {\n\th->indexAlloced += INDEX_MALLOC_SIZE;\n\th->index = xrealloc(h->index, h->indexAlloced * sizeof(*h->index));\n    }\n\n    /* Fill in the index */\n    entry = h->index + h->indexUsed;\n    entry->info.tag = td->tag;\n    entry->info.type = td->type;\n    entry->info.count = td->count;\n    entry->info.offset = 0;\n    entry->data = data;\n    entry->length = length;\n\n    if (h->indexUsed > 0 && td->tag < h->index[h->indexUsed-1].info.tag)\n\th->sorted = 0;\n    h->indexUsed++;\n\n    return 1;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "regionSwab",
+            "static int regionSwab(indexEntry entry, int il, int dl, /* <=== regionSwab */ \n\t\tentryInfo pe,\n\t\tunsigned char * dataStart,\n\t\tconst unsigned char * dataEnd,\n\t\tint regionid, int fast)\n{\n    if ((entry != NULL && regionid >= 0) || (entry == NULL && regionid != 0))\n\treturn -1;\n\n    for (; il > 0; il--, pe++) {\n\tstruct indexEntry_s ie;\n\n\tei2h(pe, &ie.info);\n\n\tif (hdrchkType(ie.info.type))\n\t    return -1;\n\tif (hdrchkData(ie.info.count))\n\t    return -1;\n\tif (hdrchkData(ie.info.offset))\n\t    return -1;\n\tif (hdrchkAlign(ie.info.type, ie.info.offset))\n\t    return -1;\n\n\tie.data = dataStart + ie.info.offset;\n\tif (dataEnd && (unsigned char *)ie.data >= dataEnd)\n\t    return -1;\n\n\t/* The offset optimization is only relevant for string types */\n\tif (fast && il > 1 && typeSizes[ie.info.type] == -1) {\n\t    ie.length = ntohl(pe[1].offset) - ie.info.offset;\n\t} else {\n\t    ie.length = dataLength(ie.info.type, ie.data, ie.info.count,\n\t\t\t\t   1, dataEnd);\n\t}\n\tif (ie.length < 0 || hdrchkData(ie.length))\n\t    return -1;\n\n\tie.rdlen = 0;\n\n\tif (entry) {\n\t    ie.info.offset = regionid;\n\t    *entry = ie;\t/* structure assignment */\n\t    entry++;\n\t}\n\n\t/* Alignment */\n\tdl += alignDiff(ie.info.type, dl);\n\n\t/* Perform endian conversions */\n\tswitch (ntohl(pe->type)) {\n\tcase RPM_INT64_TYPE:\n\t{   uint64_t * it = ie.data;\n\t    for (; ie.info.count > 0; ie.info.count--, it += 1) {\n\t\tif (dataEnd && ((unsigned char *)it) >= dataEnd)\n\t\t    return -1;\n\t\t*it = htonll(*it);\n\t    }\n\t}   break;\n\tcase RPM_INT32_TYPE:\n\t{   int32_t * it = ie.data;\n\t    for (; ie.info.count > 0; ie.info.count--, it += 1) {\n\t\tif (dataEnd && ((unsigned char *)it) >= dataEnd)\n\t\t    return -1;\n\t\t*it = htonl(*it);\n\t    }\n\t}   break;\n\tcase RPM_INT16_TYPE:\n\t{   int16_t * it = ie.data;\n\t    for (; ie.info.count > 0; ie.info.count--, it += 1) {\n\t\tif (dataEnd && ((unsigned char *)it) >= dataEnd)\n\t\t    return -1;\n\t\t*it = htons(*it);\n\t    }\n\t}   break;\n\t}\n\n\tdl += ie.length;\n    }\n\n    return dl;\n}",
+            2
+        ],
+        [
+            "rpmio/rpmlog.c",
+            "rpmlogSetMask",
+            "int rpmlogSetMask (int mask) /* <=== rpmlogSetMask */ \n{\n    rpmlogCtx ctx = rpmlogCtxAcquire(mask ? 1 : 0);\n\n    int omask = -1;\n    if (ctx) {\n\tomask = ctx->mask;\n\tif (mask)\n\t    ctx->mask = mask;\n    }\n\n    rpmlogCtxRelease(ctx);\n    return omask;\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <netinet/in.h>",
+        "#include <pthread.h>",
+        "#include <rpm/rpmlib.h>",
+        "#include \"debug.h\"",
+        "#include \"lib/header_internal.h\"",
+        "#include <rpm/rpmts.h>",
+        "#include <rpm/rpmstring.h>",
+        "#include \"lib/rpmlead.h\"",
+        "#include \"rpmio/rpmio_internal.h\"",
+        "#include <rpm/rpmkeyring.h>",
+        "#include \"system.h\"",
+        "#include <rpm/rpmlog.h>",
+        "#include \"lib/rpmvs.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct hdrblob_s * hdrblob;",
+            "hdrblob"
+        ],
+        [
+            "struct pkgdata_s {\n    hdrvsmsg msgfunc;\n    const char *fn;\n    char *msg;\n    rpmRC rc;\n}",
+            "pkgdata_s"
+        ],
+        [
+            "typedef struct pkgdata_s",
+            "pkgdata_s"
+        ],
+        [
+            "struct rpmvs_s {\n    struct rpmsinfo_s *sigs;\n    int nsigs;\n    int nalloced;\n    rpmVSFlags vsflags;\n    rpmDigestBundle bundle;\n    rpmKeyring keyring;\n    int vfylevel;\n}",
+            "rpmvs_s"
+        ]
+    ],
+    "visitedLines_after": {
+        "lib/package.c": [
+            334,
+            336,
+            337,
+            338,
+            339,
+            340,
+            341,
+            342,
+            343,
+            344,
+            347,
+            349,
+            350,
+            351,
+            352,
+            353,
+            354,
+            355,
+            356,
+            357,
+            360,
+            361,
+            363,
+            364,
+            366,
+            368,
+            369,
+            370,
+            372,
+            375,
+            376,
+            377,
+            378,
+            379,
+            381,
+            382,
+            385,
+            386,
+            388,
+            389,
+            390,
+            393,
+            395,
+            402,
+            403
+        ]
+    },
+    "visitedLines_before": {
+        "lib/package.c": [
+            334,
+            336,
+            337,
+            338,
+            339,
+            340,
+            341,
+            342,
+            343,
+            344,
+            347,
+            349,
+            350,
+            351,
+            352,
+            353,
+            354,
+            355,
+            356,
+            357,
+            360,
+            361,
+            363,
+            364,
+            366,
+            368,
+            369,
+            370,
+            373,
+            374,
+            375,
+            376,
+            377,
+            379,
+            380,
+            383,
+            384,
+            385,
+            387,
+            388,
+            389,
+            392,
+            394,
+            401,
+            402
+        ]
+    },
+    "visitedParams": {
+        "lib/package.c": [
+            [
+                "rpmts ts",
+                "rpmReadPackageFile"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "lib/package.c",
+            "rpmReadPackageFile",
+            "rpmRC rpmReadPackageFile(rpmts ts, FD_t fd, const char * fn, Header * hdrp) /* <=== rpmReadPackageFile */ \n{\n    char *msg = NULL;\n    Header h = NULL;\n    Header sigh = NULL;\n    hdrblob blob = NULL;\n    hdrblob sigblob = NULL;\n    rpmVSFlags vsflags = rpmtsVSFlags(ts) | RPMVSF_NEEDPAYLOAD;\n    rpmKeyring keyring = rpmtsGetKeyring(ts, 1);\n    struct rpmvs_s *vs = rpmvsCreate(0, vsflags, keyring);\n    struct pkgdata_s pkgdata = {\n\t.msgfunc = loghdrmsg,\n\t.fn = fn ? fn : Fdescr(fd),\n\t.msg = NULL,\n\t.rc = RPMRC_OK,\n    };\n\n    /* XXX: lots of 3rd party software relies on the behavior */\n    if (hdrp)\n\t*hdrp = NULL;\n\n    rpmRC rc = rpmpkgRead(vs, fd, &sigblob, &blob, &msg);\n    if (rc)\n\tgoto exit;\n\n    /* Actually all verify discovered signatures and digests */\n    rc = RPMRC_FAIL;\n    if (!rpmvsVerify(vs, RPMSIG_VERIFIABLE_TYPE, handleHdrVS, &pkgdata)) {\n\t/* Finally import the headers and do whatever required retrofits etc */\n\tif (hdrp) {\n\t    if (hdrblobImport(sigblob, 0, &sigh, &msg))\n\t\tgoto exit;\n\t    if (hdrblobImport(blob, 0, &h, &msg))\n\t\tgoto exit;\n\n\t    /* Append (and remap) signature tags to the metadata. */\n\t    if (headerMergeLegacySigs(h, sigh, &msg))\n\t\tgoto exit;\n\t    applyRetrofits(h);\n\n\t    /* Bump reference count for return. */\n\t    *hdrp = headerLink(h);\n\t}\n\trc = RPMRC_OK;\n    }\n\n    /* If there was a \"substatus\" (NOKEY in practise), return that instead */\n    if (rc == RPMRC_OK && pkgdata.rc)\n\trc = pkgdata.rc;\n\nexit:\n    if (rc && msg)\n\trpmlog(RPMLOG_ERR, \"%s: %s\\n\", Fdescr(fd), msg);\n    hdrblobFree(sigblob);\n    hdrblobFree(blob);\n    headerFree(sigh);\n    headerFree(h);\n    rpmKeyringFree(keyring);\n    rpmvsFree(vs);\n    free(msg);\n\n    return rc;\n}",
+            334
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "lib/package.c",
+            "rpmReadPackageFile",
+            "rpmRC rpmReadPackageFile(rpmts ts, FD_t fd, const char * fn, Header * hdrp) /* <=== rpmReadPackageFile */ \n{\n    char *msg = NULL;\n    Header h = NULL;\n    Header sigh = NULL;\n    hdrblob blob = NULL;\n    hdrblob sigblob = NULL;\n    rpmVSFlags vsflags = rpmtsVSFlags(ts) | RPMVSF_NEEDPAYLOAD;\n    rpmKeyring keyring = rpmtsGetKeyring(ts, 1);\n    struct rpmvs_s *vs = rpmvsCreate(0, vsflags, keyring);\n    struct pkgdata_s pkgdata = {\n\t.msgfunc = loghdrmsg,\n\t.fn = fn ? fn : Fdescr(fd),\n\t.msg = NULL,\n\t.rc = RPMRC_OK,\n    };\n\n    /* XXX: lots of 3rd party software relies on the behavior */\n    if (hdrp)\n\t*hdrp = NULL;\n\n    rpmRC rc = rpmpkgRead(vs, fd, &sigblob, &blob, &msg);\n    if (rc)\n\tgoto exit;\n\n    /* Actually all verify discovered signatures and digests */\n    rc = RPMRC_FAIL;\n    if (!rpmvsVerify(vs, RPMSIG_VERIFIABLE_TYPE, handleHdrVS, &pkgdata)) {\n\t/* Finally import the headers and do whatever required retrofits etc */\n\tif (hdrp) {\n\t    if (hdrblobImport(sigblob, 0, &sigh, &msg))\n\t\tgoto exit;\n\t    if (hdrblobImport(blob, 0, &h, &msg))\n\t\tgoto exit;\n\n\t    /* Append (and remap) signature tags to the metadata. */\n\t    headerMergeLegacySigs(h, sigh);\n\t    applyRetrofits(h);\n\n\t    /* Bump reference count for return. */\n\t    *hdrp = headerLink(h);\n\t}\n\trc = RPMRC_OK;\n    }\n\n    /* If there was a \"substatus\" (NOKEY in practise), return that instead */\n    if (rc == RPMRC_OK && pkgdata.rc)\n\trc = pkgdata.rc;\n\nexit:\n    if (rc && msg)\n\trpmlog(RPMLOG_ERR, \"%s: %s\\n\", Fdescr(fd), msg);\n    hdrblobFree(sigblob);\n    hdrblobFree(blob);\n    headerFree(sigh);\n    headerFree(h);\n    rpmKeyringFree(keyring);\n    rpmvsFree(vs);\n    free(msg);\n\n    return rc;\n}",
+            347
+        ]
+    ]
+}

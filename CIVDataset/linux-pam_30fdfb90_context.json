@@ -1,0 +1,220 @@
+{
+    "calleeMethods": [
+        [
+            "modules/pam_unix/passverify.c",
+            "get_pwd_hash",
+            "PAMH_ARG_DECL(int get_pwd_hash, /* <=== get_pwd_hash */ \n\tconst char *name, struct passwd **pwd, char **hash)\n{\n\tint retval;\n\tstruct spwd *spwdent = NULL;\n\n\tretval = get_account_info(PAMH_ARG(name, pwd, &spwdent));\n\tif (retval != PAM_SUCCESS) {\n\t\treturn retval;\n\t}\n\n\tif (spwdent)\n\t\t*hash = x_strdup(spwdent->sp_pwdp);\n\telse\n\t\t*hash = x_strdup((*pwd)->pw_passwd);\n\tif (*hash == NULL)\n\t\treturn PAM_BUF_ERR;\n\n\treturn PAM_SUCCESS;\n}",
+            1
+        ],
+        [
+            "modules/pam_unix/support.h",
+            "off",
+            "#define off(x,ctrl) (!on(x,ctrl)) /* <=== modules/pam_unix/support.h:40:40:off:2 */ ",
+            2
+        ],
+        [
+            "modules/pam_unix/passverify.c",
+            "is_pwd_shadowed",
+            "int /* <=== is_pwd_shadowed */ \nis_pwd_shadowed(const struct passwd *pwd)\n{\n\tif (pwd != NULL) {\n\t\tif (strcmp(pwd->pw_passwd, \"x\") == 0) {\n\t\t\treturn 1;\n\t\t}\n\t\tif ((pwd->pw_passwd[0] == '#') &&\n\t\t    (pwd->pw_passwd[1] == '#') &&\n\t\t    (strcmp(pwd->pw_name, pwd->pw_passwd + 2) == 0)) {\n\t\t\treturn 1;\n\t\t}\n\t}\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "modules/pam_unix/support.c",
+            "_unix_run_helper_binary",
+            "static int _unix_run_helper_binary(pam_handle_t *pamh, const char *passwd, /* <=== _unix_run_helper_binary */ \n\t\t\t\t   unsigned long long ctrl, const char *user)\n{\n    int retval, child, fds[2];\n    struct sigaction newsa, oldsa;\n\n    D((\"called.\"));\n    /* create a pipe for the password */\n    if (pipe(fds) != 0) {\n\tD((\"could not make pipe\"));\n\treturn PAM_AUTH_ERR;\n    }\n\n    if (off(UNIX_NOREAP, ctrl)) {\n\t/*\n\t * This code arranges that the demise of the child does not cause\n\t * the application to receive a signal it is not expecting - which\n\t * may kill the application or worse.\n\t *\n\t * The \"noreap\" module argument is provided so that the admin can\n\t * override this behavior.\n\t */\n        memset(&newsa, '\\0', sizeof(newsa));\n\tnewsa.sa_handler = SIG_DFL;\n\tsigaction(SIGCHLD, &newsa, &oldsa);\n    }\n\n    /* fork */\n    child = fork();\n    if (child == 0) {\n\tstatic char *envp[] = { NULL };\n\tconst char *args[] = { NULL, NULL, NULL, NULL };\n\n\t/* XXX - should really tidy up PAM here too */\n\n\t/* reopen stdin as pipe */\n\tif (dup2(fds[0], STDIN_FILENO) != STDIN_FILENO) {\n\t\tpam_syslog(pamh, LOG_ERR, \"dup2 of %s failed: %m\", \"stdin\");\n\t\t_exit(PAM_AUTHINFO_UNAVAIL);\n\t}\n\n\tif (pam_modutil_sanitize_helper_fds(pamh, PAM_MODUTIL_IGNORE_FD,\n\t\t\t\t\t    PAM_MODUTIL_PIPE_FD,\n\t\t\t\t\t    PAM_MODUTIL_PIPE_FD) < 0) {\n\t\t_exit(PAM_AUTHINFO_UNAVAIL);\n\t}\n\n\tif (geteuid() == 0) {\n          /* must set the real uid to 0 so the helper will not error\n\t     out if pam is called from setuid binary (su, sudo...) */\n\t  if (setuid(0) == -1) {\n             D((\"setuid failed\"));\n\t     _exit(PAM_AUTHINFO_UNAVAIL);\n          }\n\t}\n\n\t/* exec binary helper */\n\targs[0] = CHKPWD_HELPER;\n\targs[1] = user;\n\tif (off(UNIX__NONULL, ctrl)) {\t/* this means we've succeeded */\n\t  args[2]=\"nullok\";\n\t} else {\n\t  args[2]=\"nonull\";\n\t}\n\n\tDIAG_PUSH_IGNORE_CAST_QUAL;\n\texecve(CHKPWD_HELPER, (char *const *) args, envp);\n\tDIAG_POP_IGNORE_CAST_QUAL;\n\n\t/* should not get here: exit with error */\n\tD((\"helper binary is not available\"));\n\t_exit(PAM_AUTHINFO_UNAVAIL);\n    } else if (child > 0) {\n\t/* wait for child */\n\t/* if the stored password is NULL */\n        int rc=0;\n\tif (passwd != NULL) {            /* send the password to the child */\n\t    int len = strlen(passwd);\n\n\t    if (len > PAM_MAX_RESP_SIZE)\n\t      len = PAM_MAX_RESP_SIZE;\n\t    if (write(fds[1], passwd, len) == -1 ||\n\t        write(fds[1], \"\", 1) == -1) {\n\t      pam_syslog (pamh, LOG_ERR, \"Cannot send password to helper: %m\");\n\t      retval = PAM_AUTH_ERR;\n\t    }\n\t    passwd = NULL;\n\t} else {                         /* blank password */\n\t    if (write(fds[1], \"\", 1) == -1) {\n\t      pam_syslog (pamh, LOG_ERR, \"Cannot send password to helper: %m\");\n\t      retval = PAM_AUTH_ERR;\n\t    }\n\t}\n\tclose(fds[0]);       /* close here to avoid possible SIGPIPE above */\n\tclose(fds[1]);\n\t/* wait for helper to complete: */\n\twhile ((rc=waitpid(child, &retval, 0)) < 0 && errno == EINTR);\n\tif (rc<0) {\n\t  pam_syslog(pamh, LOG_ERR, \"unix_chkpwd waitpid returned %d: %m\", rc);\n\t  retval = PAM_AUTH_ERR;\n\t} else if (!WIFEXITED(retval)) {\n\t  pam_syslog(pamh, LOG_ERR, \"unix_chkpwd abnormal exit: %d\", retval);\n\t  retval = PAM_AUTH_ERR;\n\t} else {\n\t  retval = WEXITSTATUS(retval);\n\t}\n    } else {\n\tD((\"fork failed\"));\n\tclose(fds[0]);\n\tclose(fds[1]);\n\tretval = PAM_AUTH_ERR;\n    }\n\n    if (off(UNIX_NOREAP, ctrl)) {\n        sigaction(SIGCHLD, &oldsa, NULL);   /* restore old signal handler */\n    }\n\n    D((\"returning %d\", retval));\n    return retval;\n}",
+            1
+        ],
+        [
+            "modules/pam_unix/support.c",
+            "_unix_verify_user",
+            "int /* <=== _unix_verify_user */ \n_unix_verify_user(pam_handle_t *pamh,\n                  unsigned long long ctrl,\n                  const char *name,\n                  int *daysleft)\n{\n    int retval;\n    struct spwd *spent;\n    struct passwd *pwent;\n\n    retval = get_account_info(pamh, name, &pwent, &spent);\n    if (retval == PAM_USER_UNKNOWN) {\n        pam_syslog(pamh, LOG_ERR,\n             \"could not identify user (from getpwnam(%s))\",\n             name);\n        return retval;\n    }\n\n    if (retval == PAM_SUCCESS && spent == NULL)\n        return PAM_SUCCESS;\n\n    if (retval == PAM_UNIX_RUN_HELPER) {\n        retval = _unix_run_verify_binary(pamh, ctrl, name, daysleft);\n        if (retval == PAM_AUTHINFO_UNAVAIL &&\n            on(UNIX_BROKEN_SHADOW, ctrl))\n            return PAM_SUCCESS;\n    } else if (retval != PAM_SUCCESS) {\n        if (on(UNIX_BROKEN_SHADOW,ctrl))\n            return PAM_SUCCESS;\n        else\n            return retval;\n    } else\n        retval = check_shadow_expiry(pamh, spent, daysleft);\n\n    return retval;\n}",
+            1
+        ],
+        [
+            "modules/pam_unix/passverify.c",
+            "check_shadow_expiry",
+            "PAMH_ARG_DECL(int check_shadow_expiry, /* <=== check_shadow_expiry */ \n\tstruct spwd *spent, int *daysleft)\n{\n\tlong int curdays;\n\t*daysleft = -1;\n\tcurdays = (long int)(time(NULL) / (60 * 60 * 24));\n\tD((\"today is %d, last change %d\", curdays, spent->sp_lstchg));\n\tif ((curdays >= spent->sp_expire) && (spent->sp_expire != -1)) {\n\t\tD((\"account expired\"));\n\t\treturn PAM_ACCT_EXPIRED;\n\t}\n#if defined(CRYPT_CHECKSALT_AVAILABLE) && CRYPT_CHECKSALT_AVAILABLE\n\tif (spent->sp_lstchg == 0 ||\n\t    crypt_checksalt(spent->sp_pwdp) == CRYPT_SALT_METHOD_LEGACY ||\n\t    crypt_checksalt(spent->sp_pwdp) == CRYPT_SALT_TOO_CHEAP) {\n#else\n\tif (spent->sp_lstchg == 0) {\n#endif\n\t\tD((\"need a new password\"));\n\t\t*daysleft = 0;\n\t\treturn PAM_NEW_AUTHTOK_REQD;\n\t}\n\tif (curdays < spent->sp_lstchg) {\n\t\tpam_syslog(pamh, LOG_DEBUG,\n\t\t\t \"account %s has password changed in future\",\n\t\t\t spent->sp_namp);\n\t\treturn PAM_SUCCESS;\n\t}\n\tif ((curdays - spent->sp_lstchg > spent->sp_max)\n\t    && (curdays - spent->sp_lstchg > spent->sp_inact)\n\t    && (curdays - spent->sp_lstchg > spent->sp_max + spent->sp_inact)\n\t    && (spent->sp_max != -1) && (spent->sp_inact != -1)) {\n\t\t*daysleft = (int)((spent->sp_lstchg + spent->sp_max) - curdays);\n\t\tD((\"authtok expired\"));\n\t\treturn PAM_AUTHTOK_EXPIRED;\n\t}\n\tif ((curdays - spent->sp_lstchg > spent->sp_max) && (spent->sp_max != -1)) {\n\t\tD((\"need a new password 2\"));\n\t\treturn PAM_NEW_AUTHTOK_REQD;\n\t}\n\tif ((curdays - spent->sp_lstchg > spent->sp_max - spent->sp_warn)\n\t    && (spent->sp_max != -1) && (spent->sp_warn != -1)) {\n\t\t*daysleft = (int)((spent->sp_lstchg + spent->sp_max) - curdays);\n\t\tD((\"warn before expiry\"));\n\t}\n\tif ((curdays - spent->sp_lstchg < spent->sp_min)\n\t    && (spent->sp_min != -1)) {\n\t\t/*\n\t\t * The last password change was too recent. This error will be ignored\n\t\t * if no password change is attempted.\n\t\t */\n\t\tD((\"password change too recent\"));\n\t\treturn PAM_AUTHTOK_ERR;\n\t}\n\treturn PAM_SUCCESS;\n}",
+            2
+        ],
+        [
+            "modules/pam_unix/support.h",
+            "_unix_run_verify_binary",
+            "extern int _unix_run_verify_binary(pam_handle_t *pamh, /* <=== _unix_run_verify_binary */ \n\t\t\t\t   unsigned long long ctrl,\n\t\t\t\t   const char *user, int *daysleft);",
+            2
+        ],
+        [
+            "modules/pam_unix/passverify.h",
+            "PAM_UNIX_RUN_HELPER",
+            "#define PAM_UNIX_RUN_HELPER PAM_CRED_INSUFFICIENT /* <=== modules/pam_unix/passverify.h:9:9:PAM_UNIX_RUN_HELPER:0 */ ",
+            1
+        ],
+        [
+            "modules/pam_unix/support.h",
+            "on",
+            "#define on(x,ctrl)  (unix_args[x].flag & ctrl) /* <=== modules/pam_unix/support.h:34:34:on:2 */ ",
+            1
+        ],
+        [
+            "modules/pam_unix/passverify.c",
+            "get_account_info",
+            "PAMH_ARG_DECL(int get_account_info, /* <=== get_account_info */ \n\tconst char *name, struct passwd **pwd, struct spwd **spwdent)\n{\n\t/* UNIX passwords area */\n\t*pwd = pam_modutil_getpwnam(pamh, name);\t/* Get password file entry... */\n\t*spwdent = NULL;\n\n\tif (*pwd != NULL) {\n\t\tif (strcmp((*pwd)->pw_passwd, \"*NP*\") == 0)\n\t\t{ /* NIS+ */\n#ifdef HELPER_COMPILE\n\t\t\tuid_t save_euid, save_uid;\n\n\t\t\tsave_euid = geteuid();\n\t\t\tsave_uid = getuid();\n\t\t\tif (save_uid == (*pwd)->pw_uid) {\n\t\t\t\tif (setreuid(save_euid, save_uid))\n\t\t\t\t\treturn PAM_CRED_INSUFFICIENT;\n\t\t\t} else  {\n\t\t\t\tif (setreuid(0, -1))\n\t\t\t\t\treturn PAM_CRED_INSUFFICIENT;\n\t\t\t\tif (setreuid(-1, (*pwd)->pw_uid)) {\n\t\t\t\t\tif (setreuid(-1, 0)\n\t\t\t\t\t    || setreuid(0, -1)\n\t\t\t\t\t    || setreuid(-1, (*pwd)->pw_uid)) {\n\t\t\t\t\t\treturn PAM_CRED_INSUFFICIENT;\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\n\t\t\t*spwdent = pam_modutil_getspnam(pamh, name);\n\t\t\tif (save_uid == (*pwd)->pw_uid) {\n\t\t\t\tif (setreuid(save_uid, save_euid))\n\t\t\t\t\treturn PAM_CRED_INSUFFICIENT;\n\t\t\t} else {\n\t\t\t\tif (setreuid(-1, 0)\n\t\t\t\t    || setreuid(save_uid, -1)\n\t\t\t\t    || setreuid(-1, save_euid))\n\t\t\t\t\treturn PAM_CRED_INSUFFICIENT;\n\t\t\t}\n\n\t\t\tif (*spwdent == NULL || (*spwdent)->sp_pwdp == NULL)\n\t\t\t\treturn PAM_AUTHINFO_UNAVAIL;\n#else\n\t\t\t/* we must run helper for NIS+ passwords */\n\t\t\treturn PAM_UNIX_RUN_HELPER;\n#endif\n\t\t} else if (is_pwd_shadowed(*pwd)) {\n\t\t\t/*\n\t\t\t * ...and shadow password file entry for this user,\n\t\t\t * if shadowing is enabled\n\t\t\t */\n#ifndef HELPER_COMPILE\n\t\t\tif (geteuid() || SELINUX_ENABLED)\n\t\t\t\treturn PAM_UNIX_RUN_HELPER;\n#endif\n\t\t\t*spwdent = pam_modutil_getspnam(pamh, name);\n\t\t\tif (*spwdent == NULL || (*spwdent)->sp_pwdp == NULL)\n\t\t\t\treturn PAM_AUTHINFO_UNAVAIL;\n\t\t}\n\t} else {\n\t\treturn PAM_USER_UNKNOWN;\n\t}\n\treturn PAM_SUCCESS;\n}",
+            2
+        ],
+        [
+            "modules/pam_unix/passverify.c",
+            "SELINUX_ENABLED",
+            "#define SELINUX_ENABLED 0 /* <=== modules/pam_unix/passverify.c:38:38:SELINUX_ENABLED:0 */ ",
+            3
+        ],
+        [
+            "modules/pam_unix/support.h",
+            "set",
+            "#define set(x,ctrl)   (ctrl = ((ctrl)&unix_args[x].mask)|unix_args[x].flag) /* <=== modules/pam_unix/support.h:46:46:set:2 */ ",
+            1
+        ],
+        [
+            "modules/pam_unix/passverify.h",
+            "PAMH_ARG",
+            "#define PAMH_ARG(...)\t\t\tpamh, __VA_ARGS__ /* <=== modules/pam_unix/passverify.h:58:58:PAMH_ARG:1 */ ",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"config.h\"",
+        "#include <shadow.h>",
+        "#include <syslog.h>",
+        "#include <limits.h>",
+        "#include <stdarg.h>",
+        "#include <pwd.h>",
+        "#include <sys/wait.h>",
+        "#include <stdlib.h>",
+        "#include <signal.h>",
+        "#include <security/_pam_macros.h>",
+        "#include \"pam_cc_compat.h\"",
+        "#include <unistd.h>",
+        "#include \"support.h\"",
+        "#include <utmp.h>",
+        "#include <sys/types.h>",
+        "#include \"passverify.h\"",
+        "#include <malloc.h>",
+        "#include \"pam_inline.h\"",
+        "#include <stdio.h>",
+        "#include <security/pam_modules.h>",
+        "#include <rpcsvc/ypclnt.h>",
+        "#include <errno.h>",
+        "#include <security/pam_ext.h>",
+        "#include <string.h>",
+        "#include <ctype.h>",
+        "#include <sys/resource.h>",
+        "#include <security/pam_modutil.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct pam_handle pam_handle_t;",
+            "pam_handle_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "modules/pam_unix/support.c": [
+            597,
+            598,
+            600,
+            601,
+            604,
+            605,
+            606,
+            616,
+            617,
+            618,
+            620,
+            621,
+            625,
+            636,
+            637,
+            639,
+            640,
+            641,
+            642,
+            643,
+            644,
+            646,
+            647,
+            648,
+            650,
+            656,
+            657,
+            658
+        ]
+    },
+    "visitedLines_before": {
+        "modules/pam_unix/support.c": [
+            597,
+            598,
+            600,
+            601,
+            604,
+            605,
+            615,
+            616,
+            617,
+            619,
+            620,
+            624,
+            635,
+            636,
+            638,
+            639,
+            640,
+            641,
+            643,
+            644,
+            645,
+            647,
+            648,
+            649,
+            650,
+            652,
+            657,
+            658,
+            660,
+            661,
+            663,
+            668,
+            669,
+            671
+        ]
+    },
+    "visitedParams": {
+        "modules/pam_unix/support.c": [
+            [
+                "const char *name",
+                "_unix_blankpasswd"
+            ],
+            [
+                "pam_handle_t *pamh",
+                "_unix_blankpasswd"
+            ],
+            [
+                "unsigned long long ctrl",
+                "_unix_blankpasswd"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "modules/pam_unix/support.c",
+            "_unix_blankpasswd",
+            "int /* <=== _unix_blankpasswd */ \n_unix_blankpasswd (pam_handle_t *pamh, unsigned long long ctrl, const char *name)\n{\n\tstruct passwd *pwd = NULL;\n\tchar *salt = NULL;\n\tint daysleft;\n\tint retval;\n\tint blank = 0;\n\tint execloop;\n\tint nonexistent_check = 1;\n\n\tD((\"called\"));\n\n\t/*\n\t * This function does not have to be too smart if something goes\n\t * wrong, return FALSE and let this case to be treated somewhere\n\t * else (CG)\n\t */\n\n\tif (on(UNIX_NULLRESETOK, ctrl)) {\n\t    retval = _unix_verify_user(pamh, ctrl, name, &daysleft);\n\t    if (retval == PAM_NEW_AUTHTOK_REQD) {\n\t        /* password reset is enforced, allow authentication with empty password */\n\t        pam_syslog(pamh, LOG_DEBUG, \"user [%s] has expired blank password, enabling nullok\", name);\n\t        set(UNIX__NULLOK, ctrl);\n\t    }\n\t}\n\n\tif (on(UNIX__NONULL, ctrl))\n\t\treturn 0;\t/* will fail but don't let on yet */\n\n\t/* UNIX passwords area */\n\n\t/*\n\t * Execute this loop twice: one checking the password hash of an existing\n\t * user and another one for a non-existing user. This way the runtimes\n\t * are equal, making it more difficult to differentiate existing from\n\t * non-existing users.\n\t */\n\tfor (execloop = 0; execloop < 2; ++execloop) {\n\t\tretval = get_pwd_hash(pamh, name, &pwd, &salt);\n\n\t\tif (retval == PAM_UNIX_RUN_HELPER) {\n\t\t\tif (_unix_run_helper_binary(pamh, NULL, ctrl, name) == PAM_SUCCESS)\n\t\t\t\tblank = nonexistent_check;\n\t\t} else if (retval == PAM_USER_UNKNOWN) {\n\t\t\tname = \"root\";\n\t\t\tnonexistent_check = 0;\n\t\t\tcontinue;\n\t\t} else if (salt != NULL) {\n\t\t\tif (strlen(salt) == 0)\n\t\t\t\tblank = nonexistent_check;\n\t\t}\n\t\tname = \"pam_unix_non_existent:\";\n\t\t/* non-existent user check will not affect the blank value */\n\t}\n\n\t/* tidy up */\n\tif (salt)\n\t\t_pam_delete(salt);\n\n\treturn blank;\n}",
+            597
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "modules/pam_unix/support.c",
+            "_unix_blankpasswd",
+            "int /* <=== _unix_blankpasswd */ \n_unix_blankpasswd (pam_handle_t *pamh, unsigned long long ctrl, const char *name)\n{\n\tstruct passwd *pwd = NULL;\n\tchar *salt = NULL;\n\tint daysleft;\n\tint retval;\n\tint execloop = 1;\n\tint nonexistent = 1;\n\n\tD((\"called\"));\n\n\t/*\n\t * This function does not have to be too smart if something goes\n\t * wrong, return FALSE and let this case to be treated somewhere\n\t * else (CG)\n\t */\n\n\tif (on(UNIX_NULLRESETOK, ctrl)) {\n\t    retval = _unix_verify_user(pamh, ctrl, name, &daysleft);\n\t    if (retval == PAM_NEW_AUTHTOK_REQD) {\n\t        /* password reset is enforced, allow authentication with empty password */\n\t        pam_syslog(pamh, LOG_DEBUG, \"user [%s] has expired blank password, enabling nullok\", name);\n\t        set(UNIX__NULLOK, ctrl);\n\t    }\n\t}\n\n\tif (on(UNIX__NONULL, ctrl))\n\t\treturn 0;\t/* will fail but don't let on yet */\n\n\t/* UNIX passwords area */\n\n\t/*\n\t * Execute this loop twice: one checking the password hash of an existing\n\t * user and another one for a non-existing user. This way the runtimes\n\t * are equal, making it more difficult to differentiate existing from\n\t * non-existing users.\n\t */\n\twhile (execloop) {\n\t\tretval = get_pwd_hash(pamh, name, &pwd, &salt);\n\n\t\tif (retval == PAM_UNIX_RUN_HELPER) {\n\t\t\texecloop = 0;\n\t\t\tif(nonexistent) {\n\t\t\t\tget_pwd_hash(pamh, \"pam_unix_non_existent:\", &pwd, &salt);\n\t\t\t}\n\t\t\t/* salt will not be set here so we can return immediately */\n\t\t\tif (_unix_run_helper_binary(pamh, NULL, ctrl, name) == PAM_SUCCESS)\n\t\t\t\treturn 1;\n\t\t\telse\n\t\t\t\treturn 0;\n\t\t} else if (retval == PAM_USER_UNKNOWN) {\n\t\t\tname = \"root\";\n\t\t\tnonexistent = 0;\n\t\t} else {\n\t\t\texecloop = 0;\n\t\t}\n\t}\n\n\t/* Does this user have a password? */\n\tif (salt == NULL) {\n\t\tretval = 0;\n\t} else {\n\t\tif (strlen(salt) == 0)\n\t\t\tretval = 1;\n\t\telse\n\t\t\tretval = 0;\n\t}\n\n\t/* tidy up */\n\n\tif (salt)\n\t\t_pam_delete(salt);\n\n\treturn retval;\n}",
+            597
+        ]
+    ]
+}

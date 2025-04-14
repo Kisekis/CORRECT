@@ -1,0 +1,236 @@
+{
+    "calleeMethods": [
+        [
+            "magick/memory.c",
+            "RelinquishMagickMemory",
+            "MagickExport void *RelinquishMagickMemory(void *memory) /* <=== RelinquishMagickMemory */ \n{\n  if (memory == (void *) NULL)\n    return((void *) NULL);\n#if !defined(MAGICKCORE_ANONYMOUS_MEMORY_SUPPORT)\n  memory_methods.destroy_memory_handler(memory);\n#else\n  LockSemaphoreInfo(memory_semaphore);\n  assert((SizeOfBlock(memory) % (4*sizeof(size_t))) == 0);\n  assert((*BlockHeader(NextBlock(memory)) & PreviousBlockBit) != 0);\n  if ((*BlockHeader(memory) & PreviousBlockBit) == 0)\n    {\n      void\n        *previous;\n\n      /*\n        Coalesce with previous adjacent block.\n      */\n      previous=PreviousBlock(memory);\n      RemoveFreeBlock(previous,AllocationPolicy(SizeOfBlock(previous)));\n      *BlockHeader(previous)=(SizeOfBlock(previous)+SizeOfBlock(memory)) |\n        (*BlockHeader(previous) & ~SizeMask);\n      memory=previous;\n    }\n  if ((*BlockHeader(NextBlock(NextBlock(memory))) & PreviousBlockBit) == 0)\n    {\n      void\n        *next;\n\n      /*\n        Coalesce with next adjacent block.\n      */\n      next=NextBlock(memory);\n      RemoveFreeBlock(next,AllocationPolicy(SizeOfBlock(next)));\n      *BlockHeader(memory)=(SizeOfBlock(memory)+SizeOfBlock(next)) |\n        (*BlockHeader(memory) & ~SizeMask);\n    }\n  *BlockFooter(memory,SizeOfBlock(memory))=SizeOfBlock(memory);\n  *BlockHeader(NextBlock(memory))&=(~PreviousBlockBit);\n  InsertFreeBlock(memory,AllocationPolicy(SizeOfBlock(memory)));\n  UnlockSemaphoreInfo(memory_semaphore);\n#endif\n  return((void *) NULL);\n}",
+            2
+        ],
+        [
+            "magick/method-attribute.h",
+            "MagickCoreSignature",
+            "#define MagickCoreSignature  0xabacadabUL /* <=== magick/method-attribute.h:86:86:MagickCoreSignature:0 */ ",
+            3
+        ],
+        [
+            "magick/semaphore.c",
+            "UnlockSemaphoreInfo",
+            "MagickExport void UnlockSemaphoreInfo(SemaphoreInfo *semaphore_info) /* <=== UnlockSemaphoreInfo */ \n{\n  assert(semaphore_info != (SemaphoreInfo *) NULL);\n  assert(semaphore_info->signature == MagickCoreSignature);\n#if defined(MAGICKCORE_DEBUG)\n  assert(IsMagickThreadEqual(semaphore_info->id) != MagickFalse);\n  if (semaphore_info->reference_count == 0)\n    {\n      (void) FormatLocaleFile(stderr,\n        \"Warning: semaphore lock already unlocked!\\n\");\n      (void) fflush(stderr);\n      return;\n    }\n  semaphore_info->reference_count--;\n#endif\n#if defined(MAGICKCORE_OPENMP_SUPPORT)\n  omp_unset_lock((omp_lock_t *) &semaphore_info->mutex);\n#elif defined(MAGICKCORE_THREAD_SUPPORT)\n  {\n    int\n      status;\n\n    status=pthread_mutex_unlock(&semaphore_info->mutex);\n    if (status != 0)\n      {\n        errno=status;\n        perror(\"unable to unlock mutex\");\n        _exit(1);\n      }\n  }\n#elif defined(MAGICKCORE_WINDOWS_SUPPORT)\n  LeaveCriticalSection(&semaphore_info->mutex);\n#endif\n}",
+            2
+        ],
+        [
+            "magick/semaphore.c",
+            "AllocateSemaphoreInfo",
+            "MagickExport SemaphoreInfo *AllocateSemaphoreInfo(void) /* <=== AllocateSemaphoreInfo */ \n{\n  SemaphoreInfo\n    *semaphore_info;\n\n  /*\n    Allocate semaphore.\n  */\n  semaphore_info=(SemaphoreInfo *) AcquireSemaphoreMemory(1,\n    sizeof(*semaphore_info));\n  if (semaphore_info == (SemaphoreInfo *) NULL)\n    ThrowFatalException(ResourceLimitFatalError,\"MemoryAllocationFailed\");\n  (void) memset(semaphore_info,0,sizeof(SemaphoreInfo));\n  /*\n    Initialize the semaphore.\n  */\n#if defined(MAGICKCORE_OPENMP_SUPPORT)\n  omp_init_lock((omp_lock_t *) &semaphore_info->mutex);\n#elif defined(MAGICKCORE_THREAD_SUPPORT)\n  {\n    int\n      status;\n\n    pthread_mutexattr_t\n      mutex_info;\n\n    status=pthread_mutexattr_init(&mutex_info);\n    if (status != 0)\n      {\n        errno=status;\n        perror(\"unable to initialize mutex attributes\");\n        _exit(1);\n      }\n#if defined(MAGICKCORE_DEBUG)\n#if defined(PTHREAD_MUTEX_ERRORCHECK)\n    status=pthread_mutex_settype(&mutex_info,PTHREAD_MUTEX_ERRORCHECK);\n    if (status != 0)\n      {\n        errno=status;\n        perror(\"unable to set mutex type\");\n        _exit(1);\n      }\n#endif\n#endif\n    status=pthread_mutex_init(&semaphore_info->mutex,&mutex_info);\n    if (status != 0)\n      {\n        errno=status;\n        perror(\"unable to initialize mutex\");\n        _exit(1);\n      }\n    status=pthread_mutexattr_destroy(&mutex_info);\n    if (status != 0)\n      {\n        errno=status;\n        perror(\"unable to destroy mutex attributes\");\n        _exit(1);\n      }\n  }\n#elif defined(MAGICKCORE_WINDOWS_SUPPORT)\n  {\n    int\n      status;\n\n    status=InitializeCriticalSectionAndSpinCount(&semaphore_info->mutex,0x0400);\n    if (status == 0)\n      {\n        errno=status;\n        perror(\"unable to initialize critical section\");\n        _exit(1);\n      }\n  }\n#endif\n  semaphore_info->id=GetMagickThreadId();\n  semaphore_info->reference_count=0;\n  semaphore_info->signature=MagickCoreSignature;\n  return(semaphore_info);\n}",
+            3
+        ],
+        [
+            "magick/resource.c",
+            "GetMagickResourceLimit",
+            "MagickExport MagickSizeType GetMagickResourceLimit(const ResourceType type) /* <=== GetMagickResourceLimit */ \n{\n  MagickSizeType\n    resource;\n\n  resource=0;\n  if (resource_semaphore[type] == (SemaphoreInfo *) NULL)\n    ActivateSemaphoreInfo(&resource_semaphore[type]);\n  LockSemaphoreInfo(resource_semaphore[type]);\n  switch (type)\n  {\n    case AreaResource:\n    {\n      resource=resource_info.area_limit;\n      break;\n    }\n    case DiskResource:\n    {\n      resource=resource_info.disk_limit;\n      break;\n    }\n    case FileResource:\n    {\n      resource=resource_info.file_limit;\n      break;\n    }\n    case HeightResource:\n    {\n      resource=resource_info.height_limit;\n      break;\n    }\n    case ListLengthResource:\n    {\n      resource=resource_info.list_length_limit;\n      break;\n    }\n    case MemoryResource:\n    {\n      resource=resource_info.memory_limit;\n      break;\n    }\n    case MapResource:\n    {\n      resource=resource_info.map_limit;\n      break;\n    }\n    case ThreadResource:\n    {\n      resource=resource_info.thread_limit;\n      break;\n    }\n    case ThrottleResource:\n    {\n      resource=resource_info.throttle_limit;\n      break;\n    }\n    case TimeResource:\n    {\n      resource=resource_info.time_limit;\n      break;\n    }\n    case WidthResource:\n    {\n      resource=resource_info.width_limit;\n      break;\n    }\n    default:\n      break;\n  }\n  UnlockSemaphoreInfo(resource_semaphore[type]);\n  return(resource);\n}",
+            1
+        ],
+        [
+            "magick/semaphore.c",
+            "LockSemaphoreInfo",
+            "MagickExport void LockSemaphoreInfo(SemaphoreInfo *semaphore_info) /* <=== LockSemaphoreInfo */ \n{\n  assert(semaphore_info != (SemaphoreInfo *) NULL);\n  assert(semaphore_info->signature == MagickCoreSignature);\n#if defined(MAGICKCORE_DEBUG)\n  if ((semaphore_info->reference_count > 0) &&\n      (IsMagickThreadEqual(semaphore_info->id) != MagickFalse))\n    {\n      (void) FormatLocaleFile(stderr,\"Warning: unexpected recursive lock!\\n\");\n      (void) fflush(stderr);\n    }\n#endif\n#if defined(MAGICKCORE_OPENMP_SUPPORT)\n  omp_set_lock((omp_lock_t *) &semaphore_info->mutex);\n#elif defined(MAGICKCORE_THREAD_SUPPORT)\n  {\n    int\n      status;\n\n    status=pthread_mutex_lock(&semaphore_info->mutex);\n    if (status != 0)\n      {\n        errno=status;\n        perror(\"unable to lock mutex\");\n        _exit(1);\n      }\n  }\n#elif defined(MAGICKCORE_WINDOWS_SUPPORT)\n  EnterCriticalSection(&semaphore_info->mutex);\n#endif\n#if defined(MAGICKCORE_DEBUG)\n  semaphore_info->id=GetMagickThreadId();\n  semaphore_info->reference_count++;\n#endif\n}",
+            2
+        ],
+        [
+            "magick/semaphore-private.h",
+            "LockMagickMutex",
+            "static inline void LockMagickMutex(void) /* <=== LockMagickMutex */ \n{\n#if defined(MAGICKCORE_OPENMP_SUPPORT)\n  omp_set_lock(&semaphore_mutex);\n#elif defined(MAGICKCORE_THREAD_SUPPORT)\n  {\n    int\n      status;\n\n    status=pthread_mutex_lock(&semaphore_mutex);\n    if (status != 0)\n      {\n        errno=status;\n        ThrowFatalException(ResourceLimitFatalError,\"UnableToLockSemaphore\");\n      }\n  }\n#elif defined(MAGICKCORE_WINDOWS_SUPPORT)\n  while (InterlockedCompareExchange(&semaphore_mutex,1L,0L) != 0)\n    Sleep(10);\n#endif\n}",
+            3
+        ],
+        [
+            "magick/semaphore-private.h",
+            "InitializeMagickMutex",
+            "static inline void InitializeMagickMutex(void) /* <=== InitializeMagickMutex */ \n{\n#if defined(MAGICKCORE_OPENMP_SUPPORT)\n  if (active_mutex == MagickFalse)\n    omp_init_lock(&semaphore_mutex);\n#endif\n  active_mutex=MagickTrue;\n}",
+            3
+        ],
+        [
+            "magick/statistic.c",
+            "DestroyPixelThreadSet",
+            "static MagickPixelPacket **DestroyPixelThreadSet(MagickPixelPacket **pixels) /* <=== DestroyPixelThreadSet */ \n{\n  register ssize_t\n    i;\n\n  assert(pixels != (MagickPixelPacket **) NULL);\n  for (i=0; i < (ssize_t) GetMagickResourceLimit(ThreadResource); i++)\n    if (pixels[i] != (MagickPixelPacket *) NULL)\n      pixels[i]=(MagickPixelPacket *) RelinquishMagickMemory(pixels[i]);\n  pixels=(MagickPixelPacket **) RelinquishMagickMemory(pixels);\n  return(pixels);\n}",
+            1
+        ],
+        [
+            "magick/image-private.h",
+            "MagickMax",
+            "#define MagickMax(x,y)  (((x) > (y)) ? (x) : (y)) /* <=== magick/image-private.h:26:26:MagickMax:2 */ ",
+            1
+        ],
+        [
+            "magick/memory.c",
+            "HeapOverflowSanityCheck",
+            "MagickExport MagickBooleanType HeapOverflowSanityCheck(const size_t count, /* <=== HeapOverflowSanityCheck */ \n  const size_t quantum)\n{\n  size_t\n    size;\n\n  size=count*quantum;\n  if ((count == 0) || (quantum != (size/count)))\n    {\n      errno=ENOMEM;\n      return(MagickTrue);\n    }\n  return(MagickFalse);\n}",
+            2
+        ],
+        [
+            "magick/memory.c",
+            "AcquireMagickMemory",
+            "MagickExport void *AcquireMagickMemory(const size_t size) /* <=== AcquireMagickMemory */ \n{\n  register void\n    *memory;\n\n#if !defined(MAGICKCORE_ANONYMOUS_MEMORY_SUPPORT)\n  memory=memory_methods.acquire_memory_handler(size == 0 ? 1UL : size);\n#else\n  if (memory_semaphore == (SemaphoreInfo *) NULL)\n    ActivateSemaphoreInfo(&memory_semaphore);\n  if (free_segments == (DataSegmentInfo *) NULL)\n    {\n      LockSemaphoreInfo(memory_semaphore);\n      if (free_segments == (DataSegmentInfo *) NULL)\n        {\n          register ssize_t\n            i;\n\n          assert(2*sizeof(size_t) > (size_t) (~SizeMask));\n          (void) memset(&memory_pool,0,sizeof(memory_pool));\n          memory_pool.allocation=SegmentSize;\n          memory_pool.blocks[MaxBlocks]=(void *) (-1);\n          for (i=0; i < MaxSegments; i++)\n          {\n            if (i != 0)\n              memory_pool.segment_pool[i].previous=\n                (&memory_pool.segment_pool[i-1]);\n            if (i != (MaxSegments-1))\n              memory_pool.segment_pool[i].next=(&memory_pool.segment_pool[i+1]);\n          }\n          free_segments=(&memory_pool.segment_pool[0]);\n        }\n      UnlockSemaphoreInfo(memory_semaphore);\n    }\n  LockSemaphoreInfo(memory_semaphore);\n  memory=AcquireBlock(size == 0 ? 1UL : size);\n  if (memory == (void *) NULL)\n    {\n      if (ExpandHeap(size == 0 ? 1UL : size) != MagickFalse)\n        memory=AcquireBlock(size == 0 ? 1UL : size);\n    }\n  UnlockSemaphoreInfo(memory_semaphore);\n#endif\n  return(memory);\n}",
+            2
+        ],
+        [
+            "magick/memory.c",
+            "AcquireQuantumMemory",
+            "MagickExport void *AcquireQuantumMemory(const size_t count,const size_t quantum) /* <=== AcquireQuantumMemory */ \n{\n  size_t\n    extent;\n\n  if (HeapOverflowSanityCheck(count,quantum) != MagickFalse)\n    return((void *) NULL);\n  extent=count*quantum;\n  return(AcquireMagickMemory(extent));\n}",
+            1
+        ],
+        [
+            "magick/quantize.c",
+            "DestroyPixelThreadSet",
+            "static DoublePixelPacket **DestroyPixelThreadSet(DoublePixelPacket **pixels) /* <=== DestroyPixelThreadSet */ \n{\n  register ssize_t\n    i;\n\n  assert(pixels != (DoublePixelPacket **) NULL);\n  for (i=0; i < (ssize_t) GetMagickResourceLimit(ThreadResource); i++)\n    if (pixels[i] != (DoublePixelPacket *) NULL)\n      pixels[i]=(DoublePixelPacket *) RelinquishMagickMemory(pixels[i]);\n  pixels=(DoublePixelPacket **) RelinquishMagickMemory(pixels);\n  return(pixels);\n}",
+            1
+        ],
+        [
+            "magick/semaphore.c",
+            "ActivateSemaphoreInfo",
+            "MagickExport void ActivateSemaphoreInfo(SemaphoreInfo **semaphore_info) /* <=== ActivateSemaphoreInfo */ \n{\n  assert(semaphore_info != (SemaphoreInfo **) NULL);\n  if (*semaphore_info == (SemaphoreInfo *) NULL)\n    {\n      InitializeMagickMutex();\n      LockMagickMutex();\n      if (*semaphore_info == (SemaphoreInfo *) NULL)\n        *semaphore_info=AllocateSemaphoreInfo();\n      UnlockMagickMutex();\n    }\n}",
+            2
+        ],
+        [
+            "magick/semaphore-private.h",
+            "UnlockMagickMutex",
+            "static inline void UnlockMagickMutex(void) /* <=== UnlockMagickMutex */ \n{\n#if defined(MAGICKCORE_OPENMP_SUPPORT)\n  omp_unset_lock(&semaphore_mutex);\n#elif defined(MAGICKCORE_THREAD_SUPPORT)\n  {\n    int\n      status;\n\n    status=pthread_mutex_unlock(&semaphore_mutex);\n    if (status != 0)\n      {\n        errno=status;\n        ThrowFatalException(ResourceLimitFatalError,\"UnableToUnlockSemaphore\");\n      }\n  }\n#elif defined(MAGICKCORE_WINDOWS_SUPPORT)\n  InterlockedExchange(&semaphore_mutex,0L);\n#endif\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"magick/paint.h\"",
+        "#include \"magick/cache.h\"",
+        "#include \"magick/monitor.h\"",
+        "#include \"magick/enhance.h\"",
+        "#include \"magick/composite.h\"",
+        "#include \"magick/string_.h\"",
+        "#include \"magick/segment.h\"",
+        "#include \"magick/magick.h\"",
+        "#include \"magick/colorspace.h\"",
+        "#include \"magick/signature-private.h\"",
+        "#include \"magick/colorspace-private.h\"",
+        "#include \"magick/geometry.h\"",
+        "#include \"magick/resource_.h\"",
+        "#include \"magick/draw.h\"",
+        "#include \"magick/gem.h\"",
+        "#include \"magick/animate.h\"",
+        "#include \"magick/cache-private.h\"",
+        "#include \"magick/composite-private.h\"",
+        "#include \"magick/color-private.h\"",
+        "#include \"magick/client.h\"",
+        "#include \"magick/list.h\"",
+        "#include \"magick/display.h\"",
+        "#include \"magick/option.h\"",
+        "#include \"magick/random-private.h\"",
+        "#include \"magick/constitute.h\"",
+        "#include \"magick/blob-private.h\"",
+        "#include \"magick/property.h\"",
+        "#include \"magick/compress.h\"",
+        "#include \"magick/cache-view.h\"",
+        "#include \"magick/timer.h\"",
+        "#include \"magick/module.h\"",
+        "#include \"magick/accelerate-private.h\"",
+        "#include \"magick/random_.h\"",
+        "#include \"magick/profile.h\"",
+        "#include \"magick/deprecate.h\"",
+        "#include \"magick/studio.h\"",
+        "#include \"magick/image-private.h\"",
+        "#include \"magick/color.h\"",
+        "#include \"magick/version.h\"",
+        "#include \"magick/exception.h\"",
+        "#include \"magick/magic.h\"",
+        "#include \"magick/semaphore.h\"",
+        "#include \"magick/exception-private.h\"",
+        "#include \"magick/pixel-private.h\"",
+        "#include \"magick/memory_.h\"",
+        "#include \"magick/quantize.h\"",
+        "#include \"magick/thread-private.h\"",
+        "#include \"magick/utility.h\"",
+        "#include \"magick/blob.h\"",
+        "#include \"magick/monitor-private.h\"",
+        "#include \"magick/statistic.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct _MagickPixelPacket\n{\n  ClassType\n    storage_class;\n\n  ColorspaceType\n    colorspace;\n\n  MagickBooleanType\n    matte;\n\n  double\n    fuzz;\n\n  size_t\n    depth;\n\n  MagickRealType\n    red,\n    green,\n    blue,\n    opacity,\n    index;\n}",
+            "_MagickPixelPacket"
+        ],
+        [
+            "typedef struct _MagickPixelPacket\n{\n  ClassType\n    storage_class;\n\n  ColorspaceType\n    colorspace;\n\n  MagickBooleanType\n    matte;\n\n  double\n    fuzz;\n\n  size_t\n    depth;\n\n  MagickRealType\n    red,\n    green,\n    blue,\n    opacity,\n    index;\n} MagickPixelPacket;",
+            "MagickPixelPacket"
+        ]
+    ],
+    "visitedLines_after": {
+        "magick/statistic.c": [
+            152,
+            155,
+            165,
+            167,
+            168,
+            169,
+            170,
+            171,
+            172,
+            173,
+            174,
+            175,
+            176,
+            177,
+            179,
+            180,
+            181,
+            182,
+            183,
+            184,
+            186
+        ]
+    },
+    "visitedLines_before": {
+        "magick/statistic.c": [
+            152,
+            164,
+            165,
+            166,
+            167,
+            168,
+            169,
+            170,
+            172,
+            173,
+            174,
+            175,
+            176,
+            177,
+            179
+        ]
+    },
+    "visitedParams": {
+        "magick/statistic.c": [
+            [
+                "const Image *image",
+                "AcquirePixelThreadSet"
+            ],
+            [
+                "const Image *images",
+                "AcquirePixelThreadSet"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "magick/statistic.c",
+            "AcquirePixelThreadSet",
+            "static MagickPixelPacket **AcquirePixelThreadSet(const Image *images) /* <=== AcquirePixelThreadSet */ \n{\n  const Image\n    *next;\n\n  MagickPixelPacket\n    **pixels;\n\n  register ssize_t\n    i,\n    j;\n\n  size_t\n    columns,\n    number_threads;\n\n  number_threads=(size_t) GetMagickResourceLimit(ThreadResource);\n  pixels=(MagickPixelPacket **) AcquireQuantumMemory(number_threads,\n    sizeof(*pixels));\n  if (pixels == (MagickPixelPacket **) NULL)\n    return((MagickPixelPacket **) NULL);\n  (void) memset(pixels,0,number_threads*sizeof(*pixels));\n  columns=images->columns;\n  for (next=images; next != (Image *) NULL; next=next->next)\n    columns=MagickMax(next->columns,columns);\n  for (i=0; i < (ssize_t) number_threads; i++)\n  {\n    pixels[i]=(MagickPixelPacket *) AcquireQuantumMemory(columns,\n      sizeof(**pixels));\n    if (pixels[i] == (MagickPixelPacket *) NULL)\n      return(DestroyPixelThreadSet(pixels));\n    for (j=0; j < (ssize_t) columns; j++)\n      GetMagickPixelPacket(images,&pixels[i][j]);\n  }\n  return(pixels);\n}",
+            152
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "magick/statistic.c",
+            "AcquirePixelThreadSet",
+            "static MagickPixelPacket **AcquirePixelThreadSet(const Image *image) /* <=== AcquirePixelThreadSet */ \n{\n  MagickPixelPacket\n    **pixels;\n\n  register ssize_t\n    i,\n    j;\n\n  size_t\n    number_threads;\n\n  number_threads=(size_t) GetMagickResourceLimit(ThreadResource);\n  pixels=(MagickPixelPacket **) AcquireQuantumMemory(number_threads,\n    sizeof(*pixels));\n  if (pixels == (MagickPixelPacket **) NULL)\n    return((MagickPixelPacket **) NULL);\n  (void) memset(pixels,0,number_threads*sizeof(*pixels));\n  for (i=0; i < (ssize_t) number_threads; i++)\n  {\n    pixels[i]=(MagickPixelPacket *) AcquireQuantumMemory(image->columns,\n      sizeof(**pixels));\n    if (pixels[i] == (MagickPixelPacket *) NULL)\n      return(DestroyPixelThreadSet(pixels));\n    for (j=0; j < (ssize_t) image->columns; j++)\n      GetMagickPixelPacket(image,&pixels[i][j]);\n  }\n  return(pixels);\n}",
+            152
+        ]
+    ]
+}

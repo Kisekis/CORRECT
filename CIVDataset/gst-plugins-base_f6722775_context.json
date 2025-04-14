@@ -1,0 +1,222 @@
+{
+    "calleeMethods": [
+        [
+            "gst-libs/gst/rtsp/gstrtspconnection.c",
+            "read_bytes",
+            "static GstRTSPResult /* <=== read_bytes */ \nread_bytes (GstRTSPConnection * conn, guint8 * buffer, guint * idx, guint size,\n    gboolean block)\n{\n  guint left;\n  gint r;\n  GError *err = NULL;\n\n  if (G_UNLIKELY (*idx > size))\n    return GST_RTSP_ERROR;\n\n  left = size - *idx;\n\n  while (left) {\n    r = fill_bytes (conn, &buffer[*idx], left, block, &err);\n    if (G_UNLIKELY (r <= 0))\n      goto error;\n\n    left -= r;\n    *idx += r;\n  }\n  return GST_RTSP_OK;\n\n  /* ERRORS */\nerror:\n  {\n    if (G_UNLIKELY (r == 0))\n      return GST_RTSP_EEOF;\n\n    GST_DEBUG (\"%s\", err->message);\n    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {\n      g_clear_error (&err);\n      return GST_RTSP_EINTR;\n    } else if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK)) {\n      g_clear_error (&err);\n      return GST_RTSP_EINTR;\n    } else if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_TIMED_OUT)) {\n      g_clear_error (&err);\n      return GST_RTSP_ETIMEOUT;\n    }\n    g_clear_error (&err);\n    return GST_RTSP_ESYS;\n  }\n}",
+            1
+        ],
+        [
+            "gst-libs/gst/rtsp/gstrtspmessage.c",
+            "gst_rtsp_message_get_header",
+            "GstRTSPResult /* <=== gst_rtsp_message_get_header */ \ngst_rtsp_message_get_header (const GstRTSPMessage * msg,\n    GstRTSPHeaderField field, gchar ** value, gint indx)\n{\n  guint i;\n  gint cnt = 0;\n\n  g_return_val_if_fail (msg != NULL, GST_RTSP_EINVAL);\n\n  /* no header initialized, there are no headers */\n  if (msg->hdr_fields == NULL)\n    return GST_RTSP_ENOTIMPL;\n\n  for (i = 0; i < msg->hdr_fields->len; i++) {\n    RTSPKeyValue *key_value = &g_array_index (msg->hdr_fields, RTSPKeyValue, i);\n\n    if (key_value->field == field && cnt++ == indx) {\n      if (value)\n        *value = key_value->value;\n      return GST_RTSP_OK;\n    }\n  }\n\n  return GST_RTSP_ENOTIMPL;\n}",
+            1
+        ],
+        [
+            "gst-libs/gst/rtsp/gstrtspconnection.c",
+            "fill_raw_bytes",
+            "static gint /* <=== fill_raw_bytes */ \nfill_raw_bytes (GstRTSPConnection * conn, guint8 * buffer, guint size,\n    gboolean block, GError ** err)\n{\n  gint out = 0;\n\n  if (G_UNLIKELY (conn->initial_buffer != NULL)) {\n    gsize left = strlen (&conn->initial_buffer[conn->initial_buffer_offset]);\n\n    out = MIN (left, size);\n    memcpy (buffer, &conn->initial_buffer[conn->initial_buffer_offset], out);\n\n    if (left == (gsize) out) {\n      g_free (conn->initial_buffer);\n      conn->initial_buffer = NULL;\n      conn->initial_buffer_offset = 0;\n    } else\n      conn->initial_buffer_offset += out;\n  }\n\n  if (G_LIKELY (size > (guint) out)) {\n    gssize r;\n    gsize count = size - out;\n    if (block)\n      r = g_input_stream_read (conn->input_stream, (gchar *) & buffer[out],\n          count, conn->may_cancel ? conn->cancellable : NULL, err);\n    else\n      r = g_pollable_input_stream_read_nonblocking (G_POLLABLE_INPUT_STREAM\n          (conn->input_stream), (gchar *) & buffer[out], count,\n          conn->may_cancel ? conn->cancellable : NULL, err);\n\n    if (G_UNLIKELY (r < 0)) {\n      if (out == 0) {\n        /* propagate the error */\n        out = r;\n      } else {\n        /* we have some data ignore error */\n        g_clear_error (err);\n      }\n    } else\n      out += r;\n  }\n\n  return out;\n}",
+            3
+        ],
+        [
+            "gst-libs/gst/rtsp/gstrtspconnection.c",
+            "fill_bytes",
+            "static gint /* <=== fill_bytes */ \nfill_bytes (GstRTSPConnection * conn, guint8 * buffer, guint size,\n    gboolean block, GError ** err)\n{\n  DecodeCtx *ctx = conn->ctxp;\n  gint out = 0;\n\n  if (ctx) {\n    while (size > 0) {\n      guint8 in[sizeof (ctx->out) * 4 / 3];\n      gint r;\n\n      while (size > 0 && ctx->cout < ctx->coutl) {\n        /* we have some leftover bytes */\n        *buffer++ = ctx->out[ctx->cout++];\n        size--;\n        out++;\n      }\n\n      /* got what we needed? */\n      if (size == 0)\n        break;\n\n      /* try to read more bytes */\n      r = fill_raw_bytes (conn, in, sizeof (in), block, err);\n      if (r <= 0) {\n        if (out == 0) {\n          out = r;\n        } else {\n          /* we have some data ignore error */\n          g_clear_error (err);\n        }\n        break;\n      }\n\n      ctx->cout = 0;\n      ctx->coutl =\n          g_base64_decode_step ((gchar *) in, r, ctx->out, &ctx->state,\n          &ctx->save);\n    }\n  } else {\n    out = fill_raw_bytes (conn, buffer, size, block, err);\n  }\n\n  return out;\n}",
+            2
+        ],
+        [
+            "gst-libs/gst/rtsp/gstrtspconnection.c",
+            "read_line",
+            "static GstRTSPResult /* <=== read_line */ \nread_line (GstRTSPConnection * conn, guint8 * buffer, guint * idx, guint size,\n    gboolean block)\n{\n  GstRTSPResult res;\n\n  while (TRUE) {\n    guint8 c;\n    guint i;\n\n    if (conn->read_ahead == READ_AHEAD_EOH) {\n      /* the last call to read_line() already determined that we have reached\n       * the end of the headers, so convey that information now */\n      conn->read_ahead = 0;\n      break;\n    } else if (conn->read_ahead == READ_AHEAD_CRLF) {\n      /* the last call to read_line() left off after having read \\r\\n */\n      c = '\\n';\n    } else if (conn->read_ahead == READ_AHEAD_CRLFCR) {\n      /* the last call to read_line() left off after having read \\r\\n\\r */\n      c = '\\r';\n    } else if (conn->read_ahead != 0) {\n      /* the last call to read_line() left us with a character to start with */\n      c = (guint8) conn->read_ahead;\n      conn->read_ahead = 0;\n    } else {\n      /* read the next character */\n      i = 0;\n      res = read_bytes (conn, &c, &i, 1, block);\n      if (G_UNLIKELY (res != GST_RTSP_OK))\n        return res;\n    }\n\n    /* special treatment of line endings */\n    if (c == '\\r' || c == '\\n') {\n      guint8 read_ahead;\n\n    retry:\n      /* need to read ahead one more character to know what to do... */\n      i = 0;\n      res = read_bytes (conn, &read_ahead, &i, 1, block);\n      if (G_UNLIKELY (res != GST_RTSP_OK))\n        return res;\n\n      if (read_ahead == ' ' || read_ahead == '\\t') {\n        if (conn->read_ahead == READ_AHEAD_CRLFCR) {\n          /* got \\r\\n\\r followed by whitespace, treat it as a normal line\n           * followed by one starting with LWS */\n          conn->read_ahead = read_ahead;\n          break;\n        } else {\n          /* got LWS, change the line ending to a space and continue */\n          c = ' ';\n          conn->read_ahead = read_ahead;\n        }\n      } else if (conn->read_ahead == READ_AHEAD_CRLFCR) {\n        if (read_ahead == '\\r' || read_ahead == '\\n') {\n          /* got \\r\\n\\r\\r or \\r\\n\\r\\n, treat it as the end of the headers */\n          conn->read_ahead = READ_AHEAD_EOH;\n          break;\n        } else {\n          /* got \\r\\n\\r followed by something else, this is not really\n           * supported since we have probably just eaten the first character\n           * of the body or the next message, so just ignore the second \\r\n           * and live with it... */\n          conn->read_ahead = read_ahead;\n          break;\n        }\n      } else if (conn->read_ahead == READ_AHEAD_CRLF) {\n        if (read_ahead == '\\r') {\n          /* got \\r\\n\\r so far, need one more character... */\n          conn->read_ahead = READ_AHEAD_CRLFCR;\n          goto retry;\n        } else if (read_ahead == '\\n') {\n          /* got \\r\\n\\n, treat it as the end of the headers */\n          conn->read_ahead = READ_AHEAD_EOH;\n          break;\n        } else {\n          /* found the end of a line, keep read_ahead for the next line */\n          conn->read_ahead = read_ahead;\n          break;\n        }\n      } else if (c == read_ahead) {\n        /* got double \\r or \\n, treat it as the end of the headers */\n        conn->read_ahead = READ_AHEAD_EOH;\n        break;\n      } else if (c == '\\r' && read_ahead == '\\n') {\n        /* got \\r\\n so far, still need more to know what to do... */\n        conn->read_ahead = READ_AHEAD_CRLF;\n        goto retry;\n      } else {\n        /* found the end of a line, keep read_ahead for the next line */\n        conn->read_ahead = read_ahead;\n        break;\n      }\n    }\n\n    if (G_LIKELY (*idx < size - 1))\n      buffer[(*idx)++] = c;\n  }\n  buffer[*idx] = '\\0';\n\n  return GST_RTSP_OK;\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <errno.h>",
+        "#include <stdlib.h>",
+        "#include <time.h>",
+        "#include <stdio.h>",
+        "#include <gst/gst.h>",
+        "#include <glib.h>",
+        "#include \"gstrtspconnection.h\"",
+        "#include <gst/base/base.h>",
+        "#  include <config.h>",
+        "#include <gio/gnetworking.h>",
+        "#include <string.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct\n{\n  gint state;\n  GstRTSPResult status;\n  guint8 buffer[4096];\n  guint offset;\n\n  guint line;\n  guint8 *body_data;\n  glong body_len;\n}",
+            "GstRTSPBuilder"
+        ],
+        [
+            "typedef struct _GstRTSPConnection GstRTSPConnection;",
+            "GstRTSPConnection"
+        ],
+        [
+            "typedef enum {\n  GST_RTSP_OK          =  0,\n  /* errors */\n  GST_RTSP_ERROR       = -1,\n  GST_RTSP_EINVAL      = -2,\n  GST_RTSP_EINTR       = -3,\n  GST_RTSP_ENOMEM      = -4,\n  GST_RTSP_ERESOLV     = -5,\n  GST_RTSP_ENOTIMPL    = -6,\n  GST_RTSP_ESYS        = -7,\n  GST_RTSP_EPARSE      = -8,\n  GST_RTSP_EWSASTART   = -9,\n  GST_RTSP_EWSAVERSION = -10,\n  GST_RTSP_EEOF        = -11,\n  GST_RTSP_ENET        = -12,\n  GST_RTSP_ENOTIP      = -13,\n  GST_RTSP_ETIMEOUT    = -14,\n  GST_RTSP_ETGET       = -15,\n  GST_RTSP_ETPOST      = -16,\n\n  GST_RTSP_ELAST       = -17\n}",
+            "GstRTSPResult"
+        ],
+        [
+            "typedef struct _GstRTSPMessage GstRTSPMessage;",
+            "GstRTSPMessage"
+        ]
+    ],
+    "visitedLines_after": {
+        "gst-libs/gst/rtsp/gstrtspconnection.c": [
+            2301,
+            2302,
+            2303,
+            2307,
+            2308,
+            2313,
+            2314,
+            2315,
+            2316,
+            2317,
+            2340,
+            2341,
+            2342,
+            2343,
+            2357,
+            2358,
+            2359,
+            2360,
+            2375,
+            2376,
+            2377,
+            2381,
+            2387,
+            2388,
+            2389,
+            2390,
+            2391,
+            2392,
+            2394,
+            2395,
+            2399,
+            2436,
+            2438,
+            2445,
+            2446,
+            2447,
+            2448,
+            2449,
+            2450,
+            2452,
+            2456,
+            2457,
+            2458,
+            2461,
+            2464,
+            2465,
+            2466,
+            2469,
+            2470,
+            2471,
+            2475,
+            2476,
+            2483,
+            2484,
+            2485,
+            2497
+        ]
+    },
+    "visitedLines_before": {
+        "gst-libs/gst/rtsp/gstrtspconnection.c": [
+            2301,
+            2302,
+            2303,
+            2307,
+            2308,
+            2313,
+            2314,
+            2315,
+            2316,
+            2317,
+            2340,
+            2341,
+            2342,
+            2343,
+            2357,
+            2358,
+            2359,
+            2360,
+            2375,
+            2376,
+            2377,
+            2381,
+            2387,
+            2388,
+            2389,
+            2390,
+            2391,
+            2392,
+            2394,
+            2395,
+            2399,
+            2436,
+            2438,
+            2445,
+            2446,
+            2447,
+            2448,
+            2449,
+            2450,
+            2452,
+            2456,
+            2457,
+            2458,
+            2461,
+            2464,
+            2465,
+            2466,
+            2469,
+            2470,
+            2471,
+            2475,
+            2476,
+            2483,
+            2484,
+            2485,
+            2497
+        ]
+    },
+    "visitedParams": {
+        "gst-libs/gst/rtsp/gstrtspconnection.c": [
+            [
+                "GstRTSPBuilder * builder",
+                "build_next"
+            ],
+            [
+                "GstRTSPConnection * conn",
+                "build_next"
+            ],
+            [
+                "GstRTSPMessage * message",
+                "build_next"
+            ],
+            [
+                "gboolean block",
+                "build_next"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "gst-libs/gst/rtsp/gstrtspconnection.c",
+            "build_next",
+            "static GstRTSPResult /* <=== build_next */ \nbuild_next (GstRTSPBuilder * builder, GstRTSPMessage * message,\n    GstRTSPConnection * conn, gboolean block)\n{\n  GstRTSPResult res;\n\n  while (TRUE) {\n    switch (builder->state) {\n      case STATE_START:\n      {\n        guint8 c;\n\n        builder->offset = 0;\n        res =\n            read_bytes (conn, (guint8 *) builder->buffer, &builder->offset, 1,\n            block);\n        if (res != GST_RTSP_OK)\n          goto done;\n\n        c = builder->buffer[0];\n\n        /* we have 1 bytes now and we can see if this is a data message or\n         * not */\n        if (c == '$') {\n          /* data message, prepare for the header */\n          builder->state = STATE_DATA_HEADER;\n          conn->may_cancel = FALSE;\n        } else if (c == '\\n' || c == '\\r') {\n          /* skip \\n and \\r */\n          builder->offset = 0;\n        } else {\n          builder->line = 0;\n          builder->state = STATE_READ_LINES;\n          conn->may_cancel = FALSE;\n        }\n        break;\n      }\n      case STATE_DATA_HEADER:\n      {\n        res =\n            read_bytes (conn, (guint8 *) builder->buffer, &builder->offset, 4,\n            block);\n        if (res != GST_RTSP_OK)\n          goto done;\n\n        gst_rtsp_message_init_data (message, builder->buffer[1]);\n\n        builder->body_len = (builder->buffer[2] << 8) | builder->buffer[3];\n        builder->body_data = g_malloc (builder->body_len + 1);\n        builder->body_data[builder->body_len] = '\\0';\n        builder->offset = 0;\n        builder->state = STATE_DATA_BODY;\n        break;\n      }\n      case STATE_DATA_BODY:\n      {\n        res =\n            read_bytes (conn, builder->body_data, &builder->offset,\n            builder->body_len, block);\n        if (res != GST_RTSP_OK)\n          goto done;\n\n        /* we have the complete body now, store in the message adjusting the\n         * length to include the trailing '\\0' */\n        gst_rtsp_message_take_body (message,\n            (guint8 *) builder->body_data, builder->body_len + 1);\n        builder->body_data = NULL;\n        builder->body_len = 0;\n\n        builder->state = STATE_END;\n        break;\n      }\n      case STATE_READ_LINES:\n      {\n        res = read_line (conn, builder->buffer, &builder->offset,\n            sizeof (builder->buffer), block);\n        if (res != GST_RTSP_OK)\n          goto done;\n\n        /* we have a regular response */\n        if (builder->buffer[0] == '\\0') {\n          gchar *hdrval;\n\n          /* empty line, end of message header */\n          /* see if there is a Content-Length header, but ignore it if this\n           * is a POST request with an x-sessioncookie header */\n          if (gst_rtsp_message_get_header (message,\n                  GST_RTSP_HDR_CONTENT_LENGTH, &hdrval, 0) == GST_RTSP_OK &&\n              (message->type != GST_RTSP_MESSAGE_HTTP_REQUEST ||\n                  message->type_data.request.method != GST_RTSP_POST ||\n                  gst_rtsp_message_get_header (message,\n                      GST_RTSP_HDR_X_SESSIONCOOKIE, NULL, 0) != GST_RTSP_OK)) {\n            /* there is, prepare to read the body */\n            builder->body_len = atol (hdrval);\n            builder->body_data = g_try_malloc (builder->body_len + 1);\n            /* we can't do much here, we need the length to know how many bytes\n             * we need to read next and when allocation fails, something is\n             * probably wrong with the length. */\n            if (builder->body_data == NULL)\n              goto invalid_body_len;\n\n            builder->body_data[builder->body_len] = '\\0';\n            builder->offset = 0;\n            builder->state = STATE_DATA_BODY;\n          } else {\n            builder->state = STATE_END;\n          }\n          break;\n        }\n\n        /* we have a line */\n        normalize_line (builder->buffer);\n        if (builder->line == 0) {\n          /* first line, check for response status */\n          if (memcmp (builder->buffer, \"RTSP\", 4) == 0 ||\n              memcmp (builder->buffer, \"HTTP\", 4) == 0) {\n            builder->status = parse_response_status (builder->buffer, message);\n          } else {\n            builder->status = parse_request_line (builder->buffer, message);\n          }\n        } else {\n          /* else just parse the line */\n          res = parse_line (builder->buffer, message);\n          if (res != GST_RTSP_OK)\n            builder->status = res;\n        }\n        builder->line++;\n        builder->offset = 0;\n        break;\n      }\n      case STATE_END:\n      {\n        gchar *session_cookie;\n        gchar *session_id;\n\n        conn->may_cancel = TRUE;\n\n        if (message->type == GST_RTSP_MESSAGE_DATA) {\n          /* data messages don't have headers */\n          res = GST_RTSP_OK;\n          goto done;\n        }\n\n        /* save the tunnel session in the connection */\n        if (message->type == GST_RTSP_MESSAGE_HTTP_REQUEST &&\n            !conn->manual_http &&\n            conn->tstate == TUNNEL_STATE_NONE &&\n            gst_rtsp_message_get_header (message, GST_RTSP_HDR_X_SESSIONCOOKIE,\n                &session_cookie, 0) == GST_RTSP_OK) {\n          strncpy (conn->tunnelid, session_cookie, TUNNELID_LEN);\n          conn->tunnelid[TUNNELID_LEN - 1] = '\\0';\n          conn->tunneled = TRUE;\n        }\n\n        /* save session id in the connection for further use */\n        if (message->type == GST_RTSP_MESSAGE_RESPONSE &&\n            gst_rtsp_message_get_header (message, GST_RTSP_HDR_SESSION,\n                &session_id, 0) == GST_RTSP_OK) {\n          gint maxlen, i;\n\n          maxlen = sizeof (conn->session_id) - 1;\n          /* the sessionid can have attributes marked with ;\n           * Make sure we strip them */\n          for (i = 0; i < maxlen && session_id[i] != '\\0'; i++) {\n            if (session_id[i] == ';') {\n              maxlen = i;\n              /* parse timeout */\n              do {\n                i++;\n              } while (g_ascii_isspace (session_id[i]));\n              if (g_str_has_prefix (&session_id[i], \"timeout=\")) {\n                gint to;\n\n                /* if we parsed something valid, configure */\n                if ((to = atoi (&session_id[i + 8])) > 0)\n                  conn->timeout = to;\n              }\n              break;\n            }\n          }\n\n          /* make sure to not overflow */\n          if (conn->remember_session_id) {\n            strncpy (conn->session_id, session_id, maxlen);\n            conn->session_id[maxlen] = '\\0';\n          }\n        }\n        res = builder->status;\n        goto done;\n      }\n      default:\n        res = GST_RTSP_ERROR;\n        goto done;\n    }\n  }\ndone:\n  conn->may_cancel = TRUE;\n  return res;\n\n  /* ERRORS */\ninvalid_body_len:\n  {\n    conn->may_cancel = TRUE;\n    GST_DEBUG (\"could not allocate body\");\n    return GST_RTSP_ERROR;\n  }\n}",
+            2301
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "gst-libs/gst/rtsp/gstrtspconnection.c",
+            "build_next",
+            "static GstRTSPResult /* <=== build_next */ \nbuild_next (GstRTSPBuilder * builder, GstRTSPMessage * message,\n    GstRTSPConnection * conn, gboolean block)\n{\n  GstRTSPResult res;\n\n  while (TRUE) {\n    switch (builder->state) {\n      case STATE_START:\n      {\n        guint8 c;\n\n        builder->offset = 0;\n        res =\n            read_bytes (conn, (guint8 *) builder->buffer, &builder->offset, 1,\n            block);\n        if (res != GST_RTSP_OK)\n          goto done;\n\n        c = builder->buffer[0];\n\n        /* we have 1 bytes now and we can see if this is a data message or\n         * not */\n        if (c == '$') {\n          /* data message, prepare for the header */\n          builder->state = STATE_DATA_HEADER;\n          conn->may_cancel = FALSE;\n        } else if (c == '\\n' || c == '\\r') {\n          /* skip \\n and \\r */\n          builder->offset = 0;\n        } else {\n          builder->line = 0;\n          builder->state = STATE_READ_LINES;\n          conn->may_cancel = FALSE;\n        }\n        break;\n      }\n      case STATE_DATA_HEADER:\n      {\n        res =\n            read_bytes (conn, (guint8 *) builder->buffer, &builder->offset, 4,\n            block);\n        if (res != GST_RTSP_OK)\n          goto done;\n\n        gst_rtsp_message_init_data (message, builder->buffer[1]);\n\n        builder->body_len = (builder->buffer[2] << 8) | builder->buffer[3];\n        builder->body_data = g_malloc (builder->body_len + 1);\n        builder->body_data[builder->body_len] = '\\0';\n        builder->offset = 0;\n        builder->state = STATE_DATA_BODY;\n        break;\n      }\n      case STATE_DATA_BODY:\n      {\n        res =\n            read_bytes (conn, builder->body_data, &builder->offset,\n            builder->body_len, block);\n        if (res != GST_RTSP_OK)\n          goto done;\n\n        /* we have the complete body now, store in the message adjusting the\n         * length to include the trailing '\\0' */\n        gst_rtsp_message_take_body (message,\n            (guint8 *) builder->body_data, builder->body_len + 1);\n        builder->body_data = NULL;\n        builder->body_len = 0;\n\n        builder->state = STATE_END;\n        break;\n      }\n      case STATE_READ_LINES:\n      {\n        res = read_line (conn, builder->buffer, &builder->offset,\n            sizeof (builder->buffer), block);\n        if (res != GST_RTSP_OK)\n          goto done;\n\n        /* we have a regular response */\n        if (builder->buffer[0] == '\\0') {\n          gchar *hdrval;\n\n          /* empty line, end of message header */\n          /* see if there is a Content-Length header, but ignore it if this\n           * is a POST request with an x-sessioncookie header */\n          if (gst_rtsp_message_get_header (message,\n                  GST_RTSP_HDR_CONTENT_LENGTH, &hdrval, 0) == GST_RTSP_OK &&\n              (message->type != GST_RTSP_MESSAGE_HTTP_REQUEST ||\n                  message->type_data.request.method != GST_RTSP_POST ||\n                  gst_rtsp_message_get_header (message,\n                      GST_RTSP_HDR_X_SESSIONCOOKIE, NULL, 0) != GST_RTSP_OK)) {\n            /* there is, prepare to read the body */\n            builder->body_len = atol (hdrval);\n            builder->body_data = g_try_malloc (builder->body_len + 1);\n            /* we can't do much here, we need the length to know how many bytes\n             * we need to read next and when allocation fails, something is\n             * probably wrong with the length. */\n            if (builder->body_data == NULL)\n              goto invalid_body_len;\n\n            builder->body_data[builder->body_len] = '\\0';\n            builder->offset = 0;\n            builder->state = STATE_DATA_BODY;\n          } else {\n            builder->state = STATE_END;\n          }\n          break;\n        }\n\n        /* we have a line */\n        normalize_line (builder->buffer);\n        if (builder->line == 0) {\n          /* first line, check for response status */\n          if (memcmp (builder->buffer, \"RTSP\", 4) == 0 ||\n              memcmp (builder->buffer, \"HTTP\", 4) == 0) {\n            builder->status = parse_response_status (builder->buffer, message);\n          } else {\n            builder->status = parse_request_line (builder->buffer, message);\n          }\n        } else {\n          /* else just parse the line */\n          res = parse_line (builder->buffer, message);\n          if (res != GST_RTSP_OK)\n            builder->status = res;\n        }\n        builder->line++;\n        builder->offset = 0;\n        break;\n      }\n      case STATE_END:\n      {\n        gchar *session_cookie;\n        gchar *session_id;\n\n        conn->may_cancel = TRUE;\n\n        if (message->type == GST_RTSP_MESSAGE_DATA) {\n          /* data messages don't have headers */\n          res = GST_RTSP_OK;\n          goto done;\n        }\n\n        /* save the tunnel session in the connection */\n        if (message->type == GST_RTSP_MESSAGE_HTTP_REQUEST &&\n            !conn->manual_http &&\n            conn->tstate == TUNNEL_STATE_NONE &&\n            gst_rtsp_message_get_header (message, GST_RTSP_HDR_X_SESSIONCOOKIE,\n                &session_cookie, 0) == GST_RTSP_OK) {\n          strncpy (conn->tunnelid, session_cookie, TUNNELID_LEN);\n          conn->tunnelid[TUNNELID_LEN - 1] = '\\0';\n          conn->tunneled = TRUE;\n        }\n\n        /* save session id in the connection for further use */\n        if (message->type == GST_RTSP_MESSAGE_RESPONSE &&\n            gst_rtsp_message_get_header (message, GST_RTSP_HDR_SESSION,\n                &session_id, 0) == GST_RTSP_OK) {\n          gint maxlen, i;\n\n          maxlen = sizeof (conn->session_id) - 1;\n          /* the sessionid can have attributes marked with ;\n           * Make sure we strip them */\n          for (i = 0; session_id[i] != '\\0'; i++) {\n            if (session_id[i] == ';') {\n              maxlen = i;\n              /* parse timeout */\n              do {\n                i++;\n              } while (g_ascii_isspace (session_id[i]));\n              if (g_str_has_prefix (&session_id[i], \"timeout=\")) {\n                gint to;\n\n                /* if we parsed something valid, configure */\n                if ((to = atoi (&session_id[i + 8])) > 0)\n                  conn->timeout = to;\n              }\n              break;\n            }\n          }\n\n          /* make sure to not overflow */\n          if (conn->remember_session_id) {\n            strncpy (conn->session_id, session_id, maxlen);\n            conn->session_id[maxlen] = '\\0';\n          }\n        }\n        res = builder->status;\n        goto done;\n      }\n      default:\n        res = GST_RTSP_ERROR;\n        goto done;\n    }\n  }\ndone:\n  conn->may_cancel = TRUE;\n  return res;\n\n  /* ERRORS */\ninvalid_body_len:\n  {\n    conn->may_cancel = TRUE;\n    GST_DEBUG (\"could not allocate body\");\n    return GST_RTSP_ERROR;\n  }\n}",
+            2301
+        ]
+    ]
+}

@@ -1,0 +1,279 @@
+{
+    "calleeMethods": [
+        [
+            "tools/virtio/linux/kernel.h",
+            "kmalloc",
+            "static inline void *kmalloc(size_t s, gfp_t gfp) /* <=== kmalloc */ \n{\n\tif (__kmalloc_fake)\n\t\treturn __kmalloc_fake;\n\treturn malloc(s);\n}",
+            3
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "usb_disable_interface",
+            "void usb_disable_interface(struct usb_device *dev, struct usb_interface *intf, /* <=== usb_disable_interface */ \n\t\tbool reset_hardware)\n{\n\tstruct usb_host_interface *alt = intf->cur_altsetting;\n\tint i;\n\n\tfor (i = 0; i < alt->desc.bNumEndpoints; ++i) {\n\t\tusb_disable_endpoint(dev,\n\t\t\t\talt->endpoint[i].desc.bEndpointAddress,\n\t\t\t\treset_hardware);\n\t}\n}",
+            2
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "usb_control_msg",
+            "int usb_control_msg(struct usb_device *dev, unsigned int pipe, __u8 request, /* <=== usb_control_msg */ \n\t\t    __u8 requesttype, __u16 value, __u16 index, void *data,\n\t\t    __u16 size, int timeout)\n{\n\tstruct usb_ctrlrequest *dr;\n\tint ret;\n\n\tdr = kmalloc(sizeof(struct usb_ctrlrequest), GFP_NOIO);\n\tif (!dr)\n\t\treturn -ENOMEM;\n\n\tdr->bRequestType = requesttype;\n\tdr->bRequest = request;\n\tdr->wValue = cpu_to_le16(value);\n\tdr->wIndex = cpu_to_le16(index);\n\tdr->wLength = cpu_to_le16(size);\n\n\tret = usb_internal_control_msg(dev, pipe, dr, data, size, timeout);\n\n\tkfree(dr);\n\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_unlock",
+            "extern void mutex_unlock(struct mutex *lock); /* <=== mutex_unlock */ ",
+            2
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kfree",
+            "static inline void kfree(void *p) /* <=== kfree */ \n{\n\tif (p >= __kfree_ignore_start && p < __kfree_ignore_end)\n\t\treturn;\n\tfree(p);\n}",
+            3
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "usb_set_interface",
+            "int usb_set_interface(struct usb_device *dev, int interface, int alternate) /* <=== usb_set_interface */ \n{\n\tstruct usb_interface *iface;\n\tstruct usb_host_interface *alt;\n\tstruct usb_hcd *hcd = bus_to_hcd(dev->bus);\n\tint i, ret, manual = 0;\n\tunsigned int epaddr;\n\tunsigned int pipe;\n\n\tif (dev->state == USB_STATE_SUSPENDED)\n\t\treturn -EHOSTUNREACH;\n\n\tiface = usb_ifnum_to_if(dev, interface);\n\tif (!iface) {\n\t\tdev_dbg(&dev->dev, \"selecting invalid interface %d\\n\",\n\t\t\tinterface);\n\t\treturn -EINVAL;\n\t}\n\tif (iface->unregistering)\n\t\treturn -ENODEV;\n\n\talt = usb_altnum_to_altsetting(iface, alternate);\n\tif (!alt) {\n\t\tdev_warn(&dev->dev, \"selecting invalid altsetting %d\\n\",\n\t\t\t alternate);\n\t\treturn -EINVAL;\n\t}\n\n\t/* Make sure we have enough bandwidth for this alternate interface.\n\t * Remove the current alt setting and add the new alt setting.\n\t */\n\tmutex_lock(hcd->bandwidth_mutex);\n\t/* Disable LPM, and re-enable it once the new alt setting is installed,\n\t * so that the xHCI driver can recalculate the U1/U2 timeouts.\n\t */\n\tif (usb_disable_lpm(dev)) {\n\t\tdev_err(&iface->dev, \"%s Failed to disable LPM\\n.\", __func__);\n\t\tmutex_unlock(hcd->bandwidth_mutex);\n\t\treturn -ENOMEM;\n\t}\n\t/* Changing alt-setting also frees any allocated streams */\n\tfor (i = 0; i < iface->cur_altsetting->desc.bNumEndpoints; i++)\n\t\tiface->cur_altsetting->endpoint[i].streams = 0;\n\n\tret = usb_hcd_alloc_bandwidth(dev, NULL, iface->cur_altsetting, alt);\n\tif (ret < 0) {\n\t\tdev_info(&dev->dev, \"Not enough bandwidth for altsetting %d\\n\",\n\t\t\t\talternate);\n\t\tusb_enable_lpm(dev);\n\t\tmutex_unlock(hcd->bandwidth_mutex);\n\t\treturn ret;\n\t}\n\n\tif (dev->quirks & USB_QUIRK_NO_SET_INTF)\n\t\tret = -EPIPE;\n\telse\n\t\tret = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),\n\t\t\t\t   USB_REQ_SET_INTERFACE, USB_RECIP_INTERFACE,\n\t\t\t\t   alternate, interface, NULL, 0, 5000);\n\n\t/* 9.4.10 says devices don't need this and are free to STALL the\n\t * request if the interface only has one alternate setting.\n\t */\n\tif (ret == -EPIPE && iface->num_altsetting == 1) {\n\t\tdev_dbg(&dev->dev,\n\t\t\t\"manual set_interface for iface %d, alt %d\\n\",\n\t\t\tinterface, alternate);\n\t\tmanual = 1;\n\t} else if (ret < 0) {\n\t\t/* Re-instate the old alt setting */\n\t\tusb_hcd_alloc_bandwidth(dev, NULL, alt, iface->cur_altsetting);\n\t\tusb_enable_lpm(dev);\n\t\tmutex_unlock(hcd->bandwidth_mutex);\n\t\treturn ret;\n\t}\n\tmutex_unlock(hcd->bandwidth_mutex);\n\n\t/* FIXME drivers shouldn't need to replicate/bugfix the logic here\n\t * when they implement async or easily-killable versions of this or\n\t * other \"should-be-internal\" functions (like clear_halt).\n\t * should hcd+usbcore postprocess control requests?\n\t */\n\n\t/* prevent submissions using previous endpoint settings */\n\tif (iface->cur_altsetting != alt) {\n\t\tremove_intf_ep_devs(iface);\n\t\tusb_remove_sysfs_intf_files(iface);\n\t}\n\tusb_disable_interface(dev, iface, true);\n\n\tiface->cur_altsetting = alt;\n\n\t/* Now that the interface is installed, re-enable LPM. */\n\tusb_unlocked_enable_lpm(dev);\n\n\t/* If the interface only has one altsetting and the device didn't\n\t * accept the request, we attempt to carry out the equivalent action\n\t * by manually clearing the HALT feature for each endpoint in the\n\t * new altsetting.\n\t */\n\tif (manual) {\n\t\tfor (i = 0; i < alt->desc.bNumEndpoints; i++) {\n\t\t\tepaddr = alt->endpoint[i].desc.bEndpointAddress;\n\t\t\tpipe = __create_pipe(dev,\n\t\t\t\t\tUSB_ENDPOINT_NUMBER_MASK & epaddr) |\n\t\t\t\t\t(usb_endpoint_out(epaddr) ?\n\t\t\t\t\tUSB_DIR_OUT : USB_DIR_IN);\n\n\t\t\tusb_clear_halt(dev, pipe);\n\t\t}\n\t}\n\n\t/* 9.1.1.5: reset toggles for all endpoints in the new altsetting\n\t *\n\t * Note:\n\t * Despite EP0 is always present in all interfaces/AS, the list of\n\t * endpoints from the descriptor does not contain EP0. Due to its\n\t * omnipresence one might expect EP0 being considered \"affected\" by\n\t * any SetInterface request and hence assume toggles need to be reset.\n\t * However, EP0 toggles are re-synced for every individual transfer\n\t * during the SETUP stage - hence EP0 toggles are \"don't care\" here.\n\t * (Likewise, EP0 never \"halts\" on well designed devices.)\n\t */\n\tusb_enable_interface(dev, iface, true);\n\tif (device_is_registered(&iface->dev)) {\n\t\tusb_create_sysfs_intf_files(iface);\n\t\tcreate_intf_ep_devs(iface);\n\t}\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_lock",
+            "extern void mutex_lock(struct mutex *lock); /* <=== mutex_lock */ ",
+            2
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "usb_disable_endpoint",
+            "void usb_disable_endpoint(struct usb_device *dev, unsigned int epaddr, /* <=== usb_disable_endpoint */ \n\t\tbool reset_hardware)\n{\n\tunsigned int epnum = epaddr & USB_ENDPOINT_NUMBER_MASK;\n\tstruct usb_host_endpoint *ep;\n\n\tif (!dev)\n\t\treturn;\n\n\tif (usb_endpoint_out(epaddr)) {\n\t\tep = dev->ep_out[epnum];\n\t\tif (reset_hardware)\n\t\t\tdev->ep_out[epnum] = NULL;\n\t} else {\n\t\tep = dev->ep_in[epnum];\n\t\tif (reset_hardware)\n\t\t\tdev->ep_in[epnum] = NULL;\n\t}\n\tif (ep) {\n\t\tep->enabled = 0;\n\t\tusb_hcd_flush_endpoint(dev, ep);\n\t\tif (reset_hardware)\n\t\t\tusb_hcd_disable_endpoint(dev, ep);\n\t}\n}",
+            3
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "remove_intf_ep_devs",
+            "static void remove_intf_ep_devs(struct usb_interface *intf) /* <=== remove_intf_ep_devs */ \n{\n\tstruct usb_host_interface *alt = intf->cur_altsetting;\n\tint i;\n\n\tif (!intf->ep_devs_created)\n\t\treturn;\n\n\tfor (i = 0; i < alt->desc.bNumEndpoints; ++i)\n\t\tusb_remove_ep_devs(&alt->endpoint[i]);\n\tintf->ep_devs_created = 0;\n}",
+            2
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "usb_reset_endpoint",
+            "void usb_reset_endpoint(struct usb_device *dev, unsigned int epaddr) /* <=== usb_reset_endpoint */ \n{\n\tunsigned int epnum = epaddr & USB_ENDPOINT_NUMBER_MASK;\n\tstruct usb_host_endpoint *ep;\n\n\tif (usb_endpoint_out(epaddr))\n\t\tep = dev->ep_out[epnum];\n\telse\n\t\tep = dev->ep_in[epnum];\n\tif (ep)\n\t\tusb_hcd_reset_endpoint(dev, ep);\n}",
+            3
+        ],
+        [
+            "drivers/usb/misc/usbtest.c",
+            "testdev_to_usbdev",
+            "static struct usb_device *testdev_to_usbdev(struct usbtest_dev *test) /* <=== testdev_to_usbdev */ \n{\n\treturn interface_to_usbdev(test->intf);\n}",
+            1
+        ],
+        [
+            "include/linux/device.h",
+            "device_is_registered",
+            "static inline int device_is_registered(struct device *dev) /* <=== device_is_registered */ \n{\n\treturn dev->kobj.state_in_sysfs;\n}",
+            2
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "create_intf_ep_devs",
+            "static int create_intf_ep_devs(struct usb_interface *intf) /* <=== create_intf_ep_devs */ \n{\n\tstruct usb_device *udev = interface_to_usbdev(intf);\n\tstruct usb_host_interface *alt = intf->cur_altsetting;\n\tint i;\n\n\tif (intf->ep_devs_created || intf->unregistering)\n\t\treturn 0;\n\n\tfor (i = 0; i < alt->desc.bNumEndpoints; ++i)\n\t\t(void) usb_create_ep_devs(&intf->dev, &alt->endpoint[i], udev);\n\tintf->ep_devs_created = 1;\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "usb_clear_halt",
+            "int usb_clear_halt(struct usb_device *dev, int pipe) /* <=== usb_clear_halt */ \n{\n\tint result;\n\tint endp = usb_pipeendpoint(pipe);\n\n\tif (usb_pipein(pipe))\n\t\tendp |= USB_DIR_IN;\n\n\t/* we don't care if it wasn't halted first. in fact some devices\n\t * (like some ibmcam model 1 units) seem to expect hosts to make\n\t * this request for iso endpoints, which can't halt!\n\t */\n\tresult = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),\n\t\tUSB_REQ_CLEAR_FEATURE, USB_RECIP_ENDPOINT,\n\t\tUSB_ENDPOINT_HALT, endp, NULL, 0,\n\t\tUSB_CTRL_SET_TIMEOUT);\n\n\t/* don't un-halt or force to DATA0 except on success */\n\tif (result < 0)\n\t\treturn result;\n\n\t/* NOTE:  seems like Microsoft and Apple don't bother verifying\n\t * the clear \"took\", so some devices could lock up if you check...\n\t * such as the Hagiwara FlashGate DUAL.  So we won't bother.\n\t *\n\t * NOTE:  make sure the logic here doesn't diverge much from\n\t * the copy in usb-storage, for as long as we need two copies.\n\t */\n\n\tusb_reset_endpoint(dev, endp);\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "usb_endpoint_type",
+            "static inline int usb_endpoint_type(const struct usb_endpoint_descriptor *epd) /* <=== usb_endpoint_type */ \n{\n\treturn epd->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK;\n}",
+            1
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "usb_enable_endpoint",
+            "void usb_enable_endpoint(struct usb_device *dev, struct usb_host_endpoint *ep, /* <=== usb_enable_endpoint */ \n\t\tbool reset_ep)\n{\n\tint epnum = usb_endpoint_num(&ep->desc);\n\tint is_out = usb_endpoint_dir_out(&ep->desc);\n\tint is_control = usb_endpoint_xfer_control(&ep->desc);\n\n\tif (reset_ep)\n\t\tusb_hcd_reset_endpoint(dev, ep);\n\tif (is_out || is_control)\n\t\tdev->ep_out[epnum] = ep;\n\tif (!is_out || is_control)\n\t\tdev->ep_in[epnum] = ep;\n\tep->enabled = 1;\n}",
+            3
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "usb_enable_interface",
+            "void usb_enable_interface(struct usb_device *dev, /* <=== usb_enable_interface */ \n\t\tstruct usb_interface *intf, bool reset_eps)\n{\n\tstruct usb_host_interface *alt = intf->cur_altsetting;\n\tint i;\n\n\tfor (i = 0; i < alt->desc.bNumEndpoints; ++i)\n\t\tusb_enable_endpoint(dev, &alt->endpoint[i], reset_eps);\n}",
+            2
+        ],
+        [
+            "drivers/usb/core/message.c",
+            "usb_internal_control_msg",
+            "static int usb_internal_control_msg(struct usb_device *usb_dev, /* <=== usb_internal_control_msg */ \n\t\t\t\t    unsigned int pipe,\n\t\t\t\t    struct usb_ctrlrequest *cmd,\n\t\t\t\t    void *data, int len, int timeout)\n{\n\tstruct urb *urb;\n\tint retv;\n\tint length;\n\n\turb = usb_alloc_urb(0, GFP_NOIO);\n\tif (!urb)\n\t\treturn -ENOMEM;\n\n\tusb_fill_control_urb(urb, usb_dev, pipe, (unsigned char *)cmd, data,\n\t\t\t     len, usb_api_blocking_completion, NULL);\n\n\tretv = usb_start_wait_urb(urb, timeout, &length);\n\tif (retv < 0)\n\t\treturn retv;\n\telse\n\t\treturn length;\n}",
+            3
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "USB_ENDPOINT_XFERTYPE_MASK",
+            "#define USB_ENDPOINT_XFERTYPE_MASK\t0x03\t/* in bmAttributes */ /* <=== include/uapi/linux/usb/ch9.h:420:420:USB_ENDPOINT_XFERTYPE_MASK:0 */ ",
+            2
+        ]
+    ],
+    "globalVars": [
+        "static int override_alt"
+    ],
+    "importContext": [
+        "#include <linux/scatterlist.h>",
+        "#include <linux/timer.h>",
+        "#include <linux/kernel.h>",
+        "#include <linux/moduleparam.h>",
+        "#include <linux/errno.h>",
+        "#include <linux/mutex.h>",
+        "#include <linux/init.h>",
+        "#include <linux/module.h>",
+        "#include <linux/usb.h>",
+        "#include <linux/mm.h>",
+        "#include <linux/slab.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct usb_device",
+            "usb_device"
+        ],
+        [
+            "struct usb_interface",
+            "usb_interface"
+        ],
+        [
+            "struct usbtest_dev {\n\tstruct usb_interface\t*intf;\n\tstruct usbtest_info\t*info;\n\tint\t\t\tin_pipe;\n\tint\t\t\tout_pipe;\n\tint\t\t\tin_iso_pipe;\n\tint\t\t\tout_iso_pipe;\n\tint\t\t\tin_int_pipe;\n\tint\t\t\tout_int_pipe;\n\tstruct usb_endpoint_descriptor\t*iso_in, *iso_out;\n\tstruct usb_endpoint_descriptor\t*int_in, *int_out;\n\tstruct mutex\t\tlock;\n\n#define TBUF_SIZE\t256\n\tu8\t\t\t*buf;\n}",
+            "usbtest_dev"
+        ]
+    ],
+    "visitedLines_after": {
+        "drivers/usb/misc/usbtest.c": [
+            141,
+            142,
+            151,
+            154,
+            155,
+            156,
+            157,
+            159,
+            160,
+            166,
+            170,
+            171,
+            173,
+            175,
+            178,
+            179,
+            182,
+            183,
+            189,
+            195,
+            196,
+            197,
+            198,
+            199,
+            200,
+            201,
+            205,
+            206,
+            207,
+            208,
+            209,
+            210,
+            213,
+            214,
+            215,
+            216,
+            220,
+            221,
+            222,
+            223,
+            227,
+            228,
+            229,
+            230,
+            234,
+            235,
+            236,
+            237
+        ]
+    },
+    "visitedLines_before": {
+        "drivers/usb/misc/usbtest.c": [
+            141,
+            142,
+            151,
+            154,
+            155,
+            156,
+            157,
+            159,
+            160,
+            166,
+            170,
+            171,
+            173,
+            175,
+            178,
+            179,
+            182,
+            183,
+            189,
+            195,
+            196,
+            197,
+            198,
+            199,
+            200,
+            201,
+            205,
+            206,
+            207,
+            208,
+            209,
+            212,
+            213,
+            214,
+            215,
+            219,
+            220,
+            221,
+            222,
+            226,
+            227,
+            228,
+            229,
+            233,
+            234,
+            235,
+            236
+        ]
+    },
+    "visitedParams": {
+        "drivers/usb/misc/usbtest.c": [
+            [
+                "struct usb_interface *intf",
+                "get_endpoints"
+            ],
+            [
+                "struct usbtest_dev *dev",
+                "get_endpoints"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "drivers/usb/misc/usbtest.c",
+            "get_endpoints",
+            "static int /* <=== get_endpoints */ \nget_endpoints(struct usbtest_dev *dev, struct usb_interface *intf)\n{\n\tint\t\t\t\ttmp;\n\tstruct usb_host_interface\t*alt;\n\tstruct usb_host_endpoint\t*in, *out;\n\tstruct usb_host_endpoint\t*iso_in, *iso_out;\n\tstruct usb_host_endpoint\t*int_in, *int_out;\n\tstruct usb_device\t\t*udev;\n\n\tfor (tmp = 0; tmp < intf->num_altsetting; tmp++) {\n\t\tunsigned\tep;\n\n\t\tin = out = NULL;\n\t\tiso_in = iso_out = NULL;\n\t\tint_in = int_out = NULL;\n\t\talt = intf->altsetting + tmp;\n\n\t\tif (override_alt >= 0 &&\n\t\t\t\toverride_alt != alt->desc.bAlternateSetting)\n\t\t\tcontinue;\n\n\t\t/* take the first altsetting with in-bulk + out-bulk;\n\t\t * ignore other endpoints and altsettings.\n\t\t */\n\t\tfor (ep = 0; ep < alt->desc.bNumEndpoints; ep++) {\n\t\t\tstruct usb_host_endpoint\t*e;\n\t\t\tint edi;\n\n\t\t\te = alt->endpoint + ep;\n\t\t\tedi = usb_endpoint_dir_in(&e->desc);\n\n\t\t\tswitch (usb_endpoint_type(&e->desc)) {\n\t\t\tcase USB_ENDPOINT_XFER_BULK:\n\t\t\t\tendpoint_update(edi, &in, &out, e);\n\t\t\t\tcontinue;\n\t\t\tcase USB_ENDPOINT_XFER_INT:\n\t\t\t\tif (dev->info->intr)\n\t\t\t\t\tendpoint_update(edi, &int_in, &int_out, e);\n\t\t\t\tcontinue;\n\t\t\tcase USB_ENDPOINT_XFER_ISOC:\n\t\t\t\tif (dev->info->iso)\n\t\t\t\t\tendpoint_update(edi, &iso_in, &iso_out, e);\n\t\t\t\t/* FALLTHROUGH */\n\t\t\tdefault:\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t}\n\t\tif ((in && out)  ||  iso_in || iso_out || int_in || int_out)\n\t\t\tgoto found;\n\t}\n\treturn -EINVAL;\n\nfound:\n\tudev = testdev_to_usbdev(dev);\n\tdev->info->alt = alt->desc.bAlternateSetting;\n\tif (alt->desc.bAlternateSetting != 0) {\n\t\ttmp = usb_set_interface(udev,\n\t\t\t\talt->desc.bInterfaceNumber,\n\t\t\t\talt->desc.bAlternateSetting);\n\t\tif (tmp < 0)\n\t\t\treturn tmp;\n\t}\n\n\tif (in)\n\t\tdev->in_pipe = usb_rcvbulkpipe(udev,\n\t\t\tin->desc.bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);\n\tif (out)\n\t\tdev->out_pipe = usb_sndbulkpipe(udev,\n\t\t\tout->desc.bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);\n\n\tif (iso_in) {\n\t\tdev->iso_in = &iso_in->desc;\n\t\tdev->in_iso_pipe = usb_rcvisocpipe(udev,\n\t\t\t\tiso_in->desc.bEndpointAddress\n\t\t\t\t\t& USB_ENDPOINT_NUMBER_MASK);\n\t}\n\n\tif (iso_out) {\n\t\tdev->iso_out = &iso_out->desc;\n\t\tdev->out_iso_pipe = usb_sndisocpipe(udev,\n\t\t\t\tiso_out->desc.bEndpointAddress\n\t\t\t\t\t& USB_ENDPOINT_NUMBER_MASK);\n\t}\n\n\tif (int_in) {\n\t\tdev->int_in = &int_in->desc;\n\t\tdev->in_int_pipe = usb_rcvintpipe(udev,\n\t\t\t\tint_in->desc.bEndpointAddress\n\t\t\t\t\t& USB_ENDPOINT_NUMBER_MASK);\n\t}\n\n\tif (int_out) {\n\t\tdev->int_out = &int_out->desc;\n\t\tdev->out_int_pipe = usb_sndintpipe(udev,\n\t\t\t\tint_out->desc.bEndpointAddress\n\t\t\t\t\t& USB_ENDPOINT_NUMBER_MASK);\n\t}\n\treturn 0;\n}",
+            141
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "drivers/usb/misc/usbtest.c",
+            "get_endpoints",
+            "static int /* <=== get_endpoints */ \nget_endpoints(struct usbtest_dev *dev, struct usb_interface *intf)\n{\n\tint\t\t\t\ttmp;\n\tstruct usb_host_interface\t*alt;\n\tstruct usb_host_endpoint\t*in, *out;\n\tstruct usb_host_endpoint\t*iso_in, *iso_out;\n\tstruct usb_host_endpoint\t*int_in, *int_out;\n\tstruct usb_device\t\t*udev;\n\n\tfor (tmp = 0; tmp < intf->num_altsetting; tmp++) {\n\t\tunsigned\tep;\n\n\t\tin = out = NULL;\n\t\tiso_in = iso_out = NULL;\n\t\tint_in = int_out = NULL;\n\t\talt = intf->altsetting + tmp;\n\n\t\tif (override_alt >= 0 &&\n\t\t\t\toverride_alt != alt->desc.bAlternateSetting)\n\t\t\tcontinue;\n\n\t\t/* take the first altsetting with in-bulk + out-bulk;\n\t\t * ignore other endpoints and altsettings.\n\t\t */\n\t\tfor (ep = 0; ep < alt->desc.bNumEndpoints; ep++) {\n\t\t\tstruct usb_host_endpoint\t*e;\n\t\t\tint edi;\n\n\t\t\te = alt->endpoint + ep;\n\t\t\tedi = usb_endpoint_dir_in(&e->desc);\n\n\t\t\tswitch (usb_endpoint_type(&e->desc)) {\n\t\t\tcase USB_ENDPOINT_XFER_BULK:\n\t\t\t\tendpoint_update(edi, &in, &out, e);\n\t\t\t\tcontinue;\n\t\t\tcase USB_ENDPOINT_XFER_INT:\n\t\t\t\tif (dev->info->intr)\n\t\t\t\t\tendpoint_update(edi, &int_in, &int_out, e);\n\t\t\t\tcontinue;\n\t\t\tcase USB_ENDPOINT_XFER_ISOC:\n\t\t\t\tif (dev->info->iso)\n\t\t\t\t\tendpoint_update(edi, &iso_in, &iso_out, e);\n\t\t\t\t/* FALLTHROUGH */\n\t\t\tdefault:\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t}\n\t\tif ((in && out)  ||  iso_in || iso_out || int_in || int_out)\n\t\t\tgoto found;\n\t}\n\treturn -EINVAL;\n\nfound:\n\tudev = testdev_to_usbdev(dev);\n\tdev->info->alt = alt->desc.bAlternateSetting;\n\tif (alt->desc.bAlternateSetting != 0) {\n\t\ttmp = usb_set_interface(udev,\n\t\t\t\talt->desc.bInterfaceNumber,\n\t\t\t\talt->desc.bAlternateSetting);\n\t\tif (tmp < 0)\n\t\t\treturn tmp;\n\t}\n\n\tif (in) {\n\t\tdev->in_pipe = usb_rcvbulkpipe(udev,\n\t\t\tin->desc.bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);\n\t\tdev->out_pipe = usb_sndbulkpipe(udev,\n\t\t\tout->desc.bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);\n\t}\n\tif (iso_in) {\n\t\tdev->iso_in = &iso_in->desc;\n\t\tdev->in_iso_pipe = usb_rcvisocpipe(udev,\n\t\t\t\tiso_in->desc.bEndpointAddress\n\t\t\t\t\t& USB_ENDPOINT_NUMBER_MASK);\n\t}\n\n\tif (iso_out) {\n\t\tdev->iso_out = &iso_out->desc;\n\t\tdev->out_iso_pipe = usb_sndisocpipe(udev,\n\t\t\t\tiso_out->desc.bEndpointAddress\n\t\t\t\t\t& USB_ENDPOINT_NUMBER_MASK);\n\t}\n\n\tif (int_in) {\n\t\tdev->int_in = &int_in->desc;\n\t\tdev->in_int_pipe = usb_rcvintpipe(udev,\n\t\t\t\tint_in->desc.bEndpointAddress\n\t\t\t\t\t& USB_ENDPOINT_NUMBER_MASK);\n\t}\n\n\tif (int_out) {\n\t\tdev->int_out = &int_out->desc;\n\t\tdev->out_int_pipe = usb_sndintpipe(udev,\n\t\t\t\tint_out->desc.bEndpointAddress\n\t\t\t\t\t& USB_ENDPOINT_NUMBER_MASK);\n\t}\n\treturn 0;\n}",
+            141
+        ]
+    ]
+}

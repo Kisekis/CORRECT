@@ -1,0 +1,482 @@
+{
+    "calleeMethods": [
+        [
+            "src/shared/queue.c",
+            "queue_get_entries",
+            "const struct queue_entry *queue_get_entries(struct queue *queue) /* <=== queue_get_entries */ \n{\n\tif (!queue)\n\t\treturn NULL;\n\n\treturn queue->head;\n}",
+            3
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_ref",
+            "static struct queue *queue_ref(struct queue *queue) /* <=== queue_ref */ \n{\n\tif (!queue)\n\t\treturn NULL;\n\n\t__sync_fetch_and_add(&queue->ref_count, 1);\n\n\treturn queue;\n}",
+            3
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_cancel_all",
+            "bool bt_att_cancel_all(struct bt_att *att) /* <=== bt_att_cancel_all */ \n{\n\tconst struct queue_entry *entry;\n\n\tif (!att)\n\t\treturn false;\n\n\tqueue_remove_all(att->req_queue, NULL, NULL, destroy_att_send_op);\n\tqueue_remove_all(att->ind_queue, NULL, NULL, destroy_att_send_op);\n\tqueue_remove_all(att->write_queue, NULL, NULL, destroy_att_send_op);\n\n\tfor (entry = queue_get_entries(att->chans); entry;\n\t\t\t\t\t\tentry = entry->next) {\n\t\tstruct bt_att_chan *chan = entry->data;\n\n\t\tif (chan->pending_req)\n\t\t\t/* Don't cancel the pending request; remove it's\n\t\t\t * handlers\n\t\t\t */\n\t\t\tcancel_att_send_op(chan->pending_req);\n\n\t\tif (chan->pending_ind)\n\t\t\t/* Don't cancel the pending request; remove it's\n\t\t\t * handlers\n\t\t\t */\n\t\t\tcancel_att_send_op(chan->pending_ind);\n\t}\n\n\treturn true;\n}",
+            2
+        ],
+        [
+            "src/shared/io.h",
+            "io_destroy",
+            "void io_destroy(struct io *io); /* <=== io_destroy */ ",
+            2
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_destroy",
+            "void queue_destroy(struct queue *queue, queue_destroy_func_t destroy) /* <=== queue_destroy */ \n{\n\tif (!queue)\n\t\treturn;\n\n\tqueue_remove_all(queue, NULL, NULL, destroy);\n\n\tqueue_unref(queue);\n}",
+            3
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_unref",
+            "void bt_att_unref(struct bt_att *att) /* <=== bt_att_unref */ \n{\n\tif (!att)\n\t\treturn;\n\n\tif (__sync_sub_and_fetch(&att->ref_count, 1))\n\t\treturn;\n\n\tbt_att_unregister_all(att);\n\tbt_att_cancel_all(att);\n\n\tbt_att_free(att);\n}",
+            1
+        ],
+        [
+            "src/shared/timeout.h",
+            "timeout_remove",
+            "void timeout_remove(unsigned int id); /* <=== timeout_remove */ ",
+            3
+        ],
+        [
+            "src/shared/att.c",
+            "destroy_att_send_op",
+            "static void destroy_att_send_op(void *data) /* <=== destroy_att_send_op */ \n{\n\tstruct att_send_op *op = data;\n\n\tif (op->timeout_id)\n\t\ttimeout_remove(op->timeout_id);\n\n\tif (op->destroy)\n\t\top->destroy(op->user_data);\n\n\tfree(op->pdu);\n\tfree(op);\n}",
+            1
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_foreach",
+            "void queue_foreach(struct queue *queue, queue_foreach_func_t function, /* <=== queue_foreach */ \n\t\t\t\t\t\t\tvoid *user_data)\n{\n\tstruct queue_entry *entry;\n\n\tif (!queue || !function)\n\t\treturn;\n\n\tentry = queue->head;\n\tif (!entry)\n\t\treturn;\n\n\tqueue_ref(queue);\n\twhile (entry && queue->head && queue->ref_count > 1) {\n\t\tstruct queue_entry *next;\n\n\t\tnext = entry->next;\n\t\tfunction(entry->data, user_data);\n\t\tentry = next;\n\t}\n\tqueue_unref(queue);\n}",
+            1
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_free",
+            "static void bt_att_free(struct bt_att *att) /* <=== bt_att_free */ \n{\n\tbt_crypto_unref(att->crypto);\n\n\tif (att->timeout_destroy)\n\t\tatt->timeout_destroy(att->timeout_data);\n\n\tif (att->debug_destroy)\n\t\tatt->debug_destroy(att->debug_data);\n\n\tfree(att->local_sign);\n\tfree(att->remote_sign);\n\n\tqueue_destroy(att->req_queue, NULL);\n\tqueue_destroy(att->ind_queue, NULL);\n\tqueue_destroy(att->write_queue, NULL);\n\tqueue_destroy(att->notify_list, NULL);\n\tqueue_destroy(att->disconn_list, NULL);\n\tqueue_destroy(att->chans, bt_att_chan_free);\n\n\tfree(att);\n}",
+            2
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_remove_if",
+            "void *queue_remove_if(struct queue *queue, queue_match_func_t function, /* <=== queue_remove_if */ \n\t\t\t\t\t\t\tvoid *user_data)\n{\n\tstruct queue_entry *entry, *prev = NULL;\n\n\tif (!queue)\n\t\treturn NULL;\n\n\tif (!function)\n\t\tfunction = direct_match;\n\n\tentry = queue->head;\n\n\twhile (entry) {\n\t\tif (function(entry->data, user_data)) {\n\t\t\tvoid *data;\n\n\t\t\tif (prev)\n\t\t\t\tprev->next = entry->next;\n\t\t\telse\n\t\t\t\tqueue->head = entry->next;\n\n\t\t\tif (!entry->next)\n\t\t\t\tqueue->tail = prev;\n\n\t\t\tdata = entry->data;\n\n\t\t\tfree(entry);\n\t\t\tqueue->entries--;\n\n\t\t\treturn data;\n\t\t} else {\n\t\t\tprev = entry;\n\t\t\tentry = entry->next;\n\t\t}\n\t}\n\n\treturn NULL;\n}",
+            2
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_unregister_all",
+            "bool bt_att_unregister_all(struct bt_att *att) /* <=== bt_att_unregister_all */ \n{\n\tif (!att)\n\t\treturn false;\n\n\tqueue_remove_all(att->notify_list, NULL, NULL, destroy_att_notify);\n\tqueue_remove_all(att->disconn_list, NULL, NULL, destroy_att_disconn);\n\n\treturn true;\n}",
+            1
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_chan_free",
+            "static void bt_att_chan_free(void *data) /* <=== bt_att_chan_free */ \n{\n\tstruct bt_att_chan *chan = data;\n\n\tif (chan->pending_req)\n\t\tdestroy_att_send_op(chan->pending_req);\n\n\tif (chan->pending_ind)\n\t\tdestroy_att_send_op(chan->pending_ind);\n\n\tqueue_destroy(chan->queue, destroy_att_send_op);\n\n\tio_destroy(chan->io);\n\n\tfree(chan->buf);\n\tfree(chan);\n}",
+            1
+        ],
+        [
+            "src/shared/crypto.c",
+            "bt_crypto_unref",
+            "void bt_crypto_unref(struct bt_crypto *crypto) /* <=== bt_crypto_unref */ \n{\n\tif (!crypto)\n\t\treturn;\n\n\tif (__sync_sub_and_fetch(&crypto->ref_count, 1))\n\t\treturn;\n\n\tclose(crypto->urandom);\n\tclose(crypto->ecb_aes);\n\tclose(crypto->cmac_aes);\n\n\tfree(crypto);\n}",
+            3
+        ],
+        [
+            "src/shared/util.h",
+            "UINT_TO_PTR",
+            "#define UINT_TO_PTR(u) ((void *) ((uintptr_t) (u))) /* <=== src/shared/util.h:79:79:UINT_TO_PTR:1 */ ",
+            1
+        ],
+        [
+            "src/shared/att.c",
+            "wakeup_chan_writer",
+            "static void wakeup_chan_writer(void *data, void *user_data) /* <=== wakeup_chan_writer */ \n{\n\tstruct bt_att_chan *chan = data;\n\tstruct bt_att *att = chan->att;\n\n\tif (chan->writer_active)\n\t\treturn;\n\n\t/* Set the write handler only if there is anything that can be sent\n\t * at all.\n\t */\n\tif (queue_isempty(chan->queue) && queue_isempty(att->write_queue)) {\n\t\tif ((chan->pending_req || queue_isempty(att->req_queue)) &&\n\t\t\t(chan->pending_ind || queue_isempty(att->ind_queue)))\n\t\t\treturn;\n\t}\n\n\tif (!io_set_write_handler(chan->io, can_write_data, chan,\n\t\t\t\t\t\t\twrite_watch_destroy))\n\t\treturn;\n\n\tchan->writer_active = true;\n}",
+            2
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_remove_all",
+            "unsigned int queue_remove_all(struct queue *queue, queue_match_func_t function, /* <=== queue_remove_all */ \n\t\t\t\tvoid *user_data, queue_destroy_func_t destroy)\n{\n\tstruct queue_entry *entry;\n\tunsigned int count = 0;\n\n\tif (!queue)\n\t\treturn 0;\n\n\tentry = queue->head;\n\n\tif (function) {\n\t\twhile (entry) {\n\t\t\tvoid *data;\n\t\t\tunsigned int entries = queue->entries;\n\n\t\t\tdata = queue_remove_if(queue, function, user_data);\n\t\t\tif (entries == queue->entries)\n\t\t\t\tbreak;\n\n\t\t\tif (destroy)\n\t\t\t\tdestroy(data);\n\n\t\t\tcount++;\n\t\t}\n\t} else {\n\t\tqueue->head = NULL;\n\t\tqueue->tail = NULL;\n\t\tqueue->entries = 0;\n\n\t\twhile (entry) {\n\t\t\tstruct queue_entry *tmp = entry;\n\n\t\t\tentry = entry->next;\n\n\t\t\tif (destroy)\n\t\t\t\tdestroy(tmp->data);\n\n\t\t\tfree(tmp);\n\t\t\tcount++;\n\t\t}\n\t}\n\n\treturn count;\n}",
+            1
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_destroy",
+            "void queue_destroy(struct queue *queue, queue_destroy_func_t destroy) /* <=== queue_destroy */ \n{\n\tif (!queue)\n\t\treturn;\n\n\tqueue_remove_all(queue, NULL, NULL, destroy);\n\n\tqueue_unref(queue);\n}",
+            2
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_ref",
+            "static struct queue *queue_ref(struct queue *queue) /* <=== queue_ref */ \n{\n\tif (!queue)\n\t\treturn NULL;\n\n\t__sync_fetch_and_add(&queue->ref_count, 1);\n\n\treturn queue;\n}",
+            2
+        ],
+        [
+            "src/shared/timeout.h",
+            "timeout_remove",
+            "void timeout_remove(unsigned int id); /* <=== timeout_remove */ ",
+            2
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_isempty",
+            "bool queue_isempty(struct queue *queue) /* <=== queue_isempty */ \n{\n\tif (!queue)\n\t\treturn true;\n\n\treturn queue->entries == 0;\n}",
+            1
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_ref",
+            "struct bt_att *bt_att_ref(struct bt_att *att) /* <=== bt_att_ref */ \n{\n\tif (!att)\n\t\treturn NULL;\n\n\t__sync_fetch_and_add(&att->ref_count, 1);\n\n\treturn att;\n}",
+            1
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_unref",
+            "static void queue_unref(struct queue *queue) /* <=== queue_unref */ \n{\n\tif (__sync_sub_and_fetch(&queue->ref_count, 1))\n\t\treturn;\n\n\tfree(queue);\n}",
+            3
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_remove_if",
+            "void *queue_remove_if(struct queue *queue, queue_match_func_t function, /* <=== queue_remove_if */ \n\t\t\t\t\t\t\tvoid *user_data)\n{\n\tstruct queue_entry *entry, *prev = NULL;\n\n\tif (!queue)\n\t\treturn NULL;\n\n\tif (!function)\n\t\tfunction = direct_match;\n\n\tentry = queue->head;\n\n\twhile (entry) {\n\t\tif (function(entry->data, user_data)) {\n\t\t\tvoid *data;\n\n\t\t\tif (prev)\n\t\t\t\tprev->next = entry->next;\n\t\t\telse\n\t\t\t\tqueue->head = entry->next;\n\n\t\t\tif (!entry->next)\n\t\t\t\tqueue->tail = prev;\n\n\t\t\tdata = entry->data;\n\n\t\t\tfree(entry);\n\t\t\tqueue->entries--;\n\n\t\t\treturn data;\n\t\t} else {\n\t\t\tprev = entry;\n\t\t\tentry = entry->next;\n\t\t}\n\t}\n\n\treturn NULL;\n}",
+            1
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_find",
+            "void *queue_find(struct queue *queue, queue_match_func_t function, /* <=== queue_find */ \n\t\t\t\t\t\t\tconst void *match_data)\n{\n\tstruct queue_entry *entry;\n\n\tif (!queue)\n\t\treturn NULL;\n\n\tif (!function)\n\t\tfunction = direct_match;\n\n\tfor (entry = queue->head; entry; entry = entry->next)\n\t\tif (function(entry->data, match_data))\n\t\t\treturn entry->data;\n\n\treturn NULL;\n}",
+            1
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_foreach",
+            "void queue_foreach(struct queue *queue, queue_foreach_func_t function, /* <=== queue_foreach */ \n\t\t\t\t\t\t\tvoid *user_data)\n{\n\tstruct queue_entry *entry;\n\n\tif (!queue || !function)\n\t\treturn;\n\n\tentry = queue->head;\n\tif (!entry)\n\t\treturn;\n\n\tqueue_ref(queue);\n\twhile (entry && queue->head && queue->ref_count > 1) {\n\t\tstruct queue_entry *next;\n\n\t\tnext = entry->next;\n\t\tfunction(entry->data, user_data);\n\t\tentry = next;\n\t}\n\tqueue_unref(queue);\n}",
+            2
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_get_entries",
+            "const struct queue_entry *queue_get_entries(struct queue *queue) /* <=== queue_get_entries */ \n{\n\tif (!queue)\n\t\treturn NULL;\n\n\treturn queue->head;\n}",
+            1
+        ],
+        [
+            "src/shared/hci.c",
+            "wakeup_writer",
+            "static void wakeup_writer(struct bt_hci *hci) /* <=== wakeup_writer */ \n{\n\tif (hci->writer_active)\n\t\treturn;\n\n\tif (hci->num_cmds < 1)\n\t\treturn;\n\n\tif (queue_isempty(hci->cmd_queue))\n\t\treturn;\n\n\tif (!io_set_write_handler(hci->io, io_write_callback, hci, NULL))\n\t\treturn;\n\n\thci->writer_active = true;\n}",
+            1
+        ],
+        [
+            "src/shared/io.h",
+            "io_set_write_handler",
+            "bool io_set_write_handler(struct io *io, io_callback_func_t callback, /* <=== io_set_write_handler */ \n\t\t\t\tvoid *user_data, io_destroy_func_t destroy);",
+            2
+        ],
+        [
+            "src/shared/att.c",
+            "destroy_att_send_op",
+            "static void destroy_att_send_op(void *data) /* <=== destroy_att_send_op */ \n{\n\tstruct att_send_op *op = data;\n\n\tif (op->timeout_id)\n\t\ttimeout_remove(op->timeout_id);\n\n\tif (op->destroy)\n\t\top->destroy(op->user_data);\n\n\tfree(op->pdu);\n\tfree(op);\n}",
+            2
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_chan_cancel",
+            "bool bt_att_chan_cancel(struct bt_att_chan *chan, unsigned int id) /* <=== bt_att_chan_cancel */ \n{\n\tstruct att_send_op *op;\n\n\tif (chan->pending_req && chan->pending_req->id == id) {\n\t\t/* Don't cancel the pending request; remove it's handlers */\n\t\tcancel_att_send_op(chan->pending_req);\n\t\treturn true;\n\t}\n\n\tif (chan->pending_ind && chan->pending_ind->id == id) {\n\t\t/* Don't cancel the pending indication; remove it's handlers. */\n\t\tcancel_att_send_op(chan->pending_ind);\n\t\treturn true;\n\t}\n\n\top = queue_remove_if(chan->queue, match_op_id, UINT_TO_PTR(id));\n\tif (!op)\n\t\treturn false;\n\n\tdestroy_att_send_op(op);\n\n\twakeup_chan_writer(chan, NULL);\n\n\treturn true;\n}",
+            1
+        ],
+        [
+            "src/shared/queue.c",
+            "queue_unref",
+            "static void queue_unref(struct queue *queue) /* <=== queue_unref */ \n{\n\tif (__sync_sub_and_fetch(&queue->ref_count, 1))\n\t\treturn;\n\n\tfree(queue);\n}",
+            2
+        ],
+        [
+            "src/shared/mgmt.c",
+            "wakeup_writer",
+            "static void wakeup_writer(struct mgmt *mgmt) /* <=== wakeup_writer */ \n{\n\tif (!queue_isempty(mgmt->pending_list)) {\n\t\t/* only queued reply commands trigger wakeup */\n\t\tif (queue_isempty(mgmt->reply_queue))\n\t\t\treturn;\n\t}\n\n\tif (mgmt->writer_active)\n\t\treturn;\n\n\tmgmt->writer_active = true;\n\n\tio_set_write_handler(mgmt->io, can_write_data, mgmt,\n\t\t\t\t\t\twrite_watch_destroy);\n}",
+            1
+        ],
+        [
+            "src/shared/att.c",
+            "wakeup_writer",
+            "static void wakeup_writer(struct bt_att *att) /* <=== wakeup_writer */ \n{\n\tqueue_foreach(att->chans, wakeup_chan_writer, NULL);\n}",
+            1
+        ],
+        [
+            "src/shared/hfp.c",
+            "wakeup_writer",
+            "static void wakeup_writer(struct hfp_gw *hfp) /* <=== wakeup_writer */ \n{\n\tif (hfp->writer_active)\n\t\treturn;\n\n\tif (!ringbuf_len(hfp->write_buf))\n\t\treturn;\n\n\tif (!io_set_write_handler(hfp->io, can_write_data,\n\t\t\t\t\thfp, write_watch_destroy))\n\t\treturn;\n\n\thfp->writer_active = true;\n}",
+            1
+        ],
+        [
+            "src/shared/util.h",
+            "INT_TO_PTR",
+            "#define INT_TO_PTR(u) ((void *) ((intptr_t) (u))) /* <=== src/shared/util.h:82:82:INT_TO_PTR:1 */ ",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"src/shared/util.h\"",
+        "#include \"lib/l2cap.h\"",
+        "#include \"src/shared/att.h\"",
+        "#include \"lib/uuid.h\"",
+        "#include \"src/shared/io.h\"",
+        "#include <stdlib.h>",
+        "#include <unistd.h>",
+        "#include \"src/shared/queue.h\"",
+        "#include \"src/shared/crypto.h\"",
+        "#include <errno.h>",
+        "#include <config.h>",
+        "#include \"src/shared/timeout.h\"",
+        "#include \"lib/bluetooth.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct bt_att {\n\tint ref_count;\n\tbool close_on_unref;\n\tstruct queue *chans;\n\tuint8_t enc_size;\n\tuint16_t mtu;\t\t\t/* Biggest possible MTU */\n\n\tstruct queue *notify_list;\t/* List of registered callbacks */\n\tstruct queue *disconn_list;\t/* List of disconnect handlers */\n\n\tunsigned int next_send_id;\t/* IDs for \"send\" ops */\n\tunsigned int next_reg_id;\t/* IDs for registered callbacks */\n\n\tstruct queue *req_queue;\t/* Queued ATT protocol requests */\n\tstruct queue *ind_queue;\t/* Queued ATT protocol indications */\n\tstruct queue *write_queue;\t/* Queue of PDUs ready to send */\n\tbool in_disc;\t\t\t/* Cleanup queues on disconnect_cb */\n\n\tbt_att_timeout_func_t timeout_callback;\n\tbt_att_destroy_func_t timeout_destroy;\n\tvoid *timeout_data;\n\n\tbt_att_debug_func_t debug_callback;\n\tbt_att_destroy_func_t debug_destroy;\n\tvoid *debug_data;\n\n\tstruct bt_crypto *crypto;\n\n\tstruct sign_info *local_sign;\n\tstruct sign_info *remote_sign;\n}",
+            "bt_att"
+        ],
+        [
+            "struct att_send_op",
+            "att_send_op"
+        ],
+        [
+            "struct bt_att {\n\tint ref_count;\n\tbool close_on_unref;\n\tstruct queue *chans;\n\tuint8_t enc_size;\n\tuint16_t mtu;\t\t\t/* Biggest possible MTU */\n\n\tstruct queue *notify_list;\t/* List of registered callbacks */\n\tstruct queue *disconn_list;\t/* List of disconnect handlers */\n\n\tunsigned int next_send_id;\t/* IDs for \"send\" ops */\n\tunsigned int next_reg_id;\t/* IDs for registered callbacks */\n\n\tstruct queue *req_queue;\t/* Queued ATT protocol requests */\n\tstruct queue *ind_queue;\t/* Queued ATT protocol indications */\n\tstruct queue *write_queue;\t/* Queue of PDUs ready to send */\n\n\tbt_att_timeout_func_t timeout_callback;\n\tbt_att_destroy_func_t timeout_destroy;\n\tvoid *timeout_data;\n\n\tbt_att_debug_func_t debug_callback;\n\tbt_att_destroy_func_t debug_destroy;\n\tvoid *debug_data;\n\n\tstruct bt_crypto *crypto;\n\n\tstruct sign_info *local_sign;\n\tstruct sign_info *remote_sign;\n}",
+            "bt_att"
+        ],
+        [
+            "struct bt_att_chan {\n\tstruct bt_att *att;\n\tint fd;\n\tstruct io *io;\n\tuint8_t type;\n\tint sec_level;\t\t\t/* Only used for non-L2CAP */\n\n\tstruct queue *queue;\t\t/* Channel dedicated queue */\n\n\tstruct att_send_op *pending_req;\n\tstruct att_send_op *pending_ind;\n\tbool writer_active;\n\n\tbool in_req;\t\t\t/* There's a pending incoming request */\n\n\tuint8_t *buf;\n\tuint16_t mtu;\n}",
+            "bt_att_chan"
+        ],
+        [
+            "struct att_send_op {\n\tunsigned int id;\n\tunsigned int timeout_id;\n\tenum att_op_type type;\n\tuint8_t opcode;\n\tvoid *pdu;\n\tuint16_t len;\n\tbt_att_response_func_t callback;\n\tbt_att_destroy_func_t destroy;\n\tvoid *user_data;\n}",
+            "att_send_op"
+        ],
+        [
+            "struct queue_entry",
+            "queue_entry"
+        ],
+        [
+            "struct bt_att",
+            "bt_att"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/shared/att.c": [
+            226,
+            227,
+            228,
+            230,
+            231,
+            232,
+            233,
+            234,
+            235,
+            613,
+            614,
+            615,
+            616,
+            617,
+            621,
+            623,
+            626,
+            632,
+            634,
+            635,
+            637,
+            638,
+            639,
+            641,
+            642,
+            643,
+            644,
+            646,
+            649,
+            650,
+            652,
+            653,
+            655,
+            656,
+            658,
+            659,
+            660,
+            662,
+            664,
+            666,
+            667,
+            669,
+            1584,
+            1586,
+            1588,
+            1589,
+            1592,
+            1593,
+            1596,
+            1599,
+            1600,
+            1603,
+            1605,
+            1608,
+            1613,
+            1617,
+            1618,
+            1619,
+            1621,
+            1625,
+            1626,
+            1628,
+            1629,
+            1632,
+            1633,
+            1636,
+            1637,
+            1640,
+            1641,
+            1644,
+            1646,
+            1648
+        ]
+    },
+    "visitedLines_before": {
+        "src/shared/att.c": [
+            225,
+            227,
+            228,
+            229,
+            230,
+            231,
+            232,
+            233,
+            611,
+            612,
+            613,
+            614,
+            615,
+            619,
+            621,
+            624,
+            630,
+            632,
+            634,
+            635,
+            636,
+            637,
+            638,
+            640,
+            641,
+            642,
+            644,
+            645,
+            646,
+            647,
+            649,
+            652,
+            653,
+            655,
+            656,
+            657,
+            658,
+            659,
+            660,
+            661,
+            663,
+            1578,
+            1583,
+            1587,
+            1588,
+            1589,
+            1591,
+            1595,
+            1596,
+            1599,
+            1600,
+            1603,
+            1604,
+            1607,
+            1608,
+            1611,
+            1613,
+            1615
+        ]
+    },
+    "visitedParams": {
+        "src/shared/att.c": [
+            [
+                "struct att_send_op *op",
+                "cancel_att_send_op"
+            ],
+            [
+                "struct bt_att *att",
+                "bt_att_cancel"
+            ],
+            [
+                "struct bt_att *att",
+                "bt_att_disc_cancel"
+            ],
+            [
+                "unsigned int id",
+                "bt_att_cancel"
+            ],
+            [
+                "unsigned int id",
+                "bt_att_disc_cancel"
+            ],
+            [
+                "void *data",
+                "cancel_att_send_op"
+            ],
+            [
+                "void *user_data",
+                "disconnect_cb"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/shared/att.c",
+            "cancel_att_send_op",
+            "static void cancel_att_send_op(void *data) /* <=== cancel_att_send_op */ \n{\n\tstruct att_send_op *op = data;\n\n\tif (op->destroy)\n\t\top->destroy(op->user_data);\n\n\top->user_data = NULL;\n\top->callback = NULL;\n\top->destroy = NULL;\n}",
+            226
+        ],
+        [
+            "src/shared/att.c",
+            "disconnect_cb",
+            "static bool disconnect_cb(struct io *io, void *user_data) /* <=== disconnect_cb */ \n{\n\tstruct bt_att_chan *chan = user_data;\n\tstruct bt_att *att = chan->att;\n\tint err;\n\tsocklen_t len;\n\n\tlen = sizeof(err);\n\n\tif (getsockopt(chan->fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) {\n\t\tutil_debug(chan->att->debug_callback, chan->att->debug_data,\n\t\t\t\t\t\"(chan %p) Failed to obtain disconnect\"\n\t\t\t\t\t\" error: %s\", chan, strerror(errno));\n\t\terr = 0;\n\t}\n\n\tutil_debug(chan->att->debug_callback, chan->att->debug_data,\n\t\t\t\t\t\"Channel %p disconnected: %s\",\n\t\t\t\t\tchan, strerror(err));\n\n\t/* Dettach channel */\n\tqueue_remove(att->chans, chan);\n\n\tif (chan->pending_req) {\n\t\tdisc_att_send_op(chan->pending_req);\n\t\tchan->pending_req = NULL;\n\t}\n\n\tif (chan->pending_ind) {\n\t\tdisc_att_send_op(chan->pending_ind);\n\t\tchan->pending_ind = NULL;\n\t}\n\n\tbt_att_chan_free(chan);\n\n\t/* Don't run disconnect callback if there are channels left */\n\tif (!queue_isempty(att->chans))\n\t\treturn false;\n\n\tbt_att_ref(att);\n\n\tatt->in_disc = true;\n\n\t/* Notify request callbacks */\n\tqueue_remove_all(att->req_queue, NULL, NULL, disc_att_send_op);\n\tqueue_remove_all(att->ind_queue, NULL, NULL, disc_att_send_op);\n\tqueue_remove_all(att->write_queue, NULL, NULL, disc_att_send_op);\n\n\tatt->in_disc = false;\n\n\tqueue_foreach(att->disconn_list, disconn_handler, INT_TO_PTR(err));\n\n\tbt_att_unregister_all(att);\n\tbt_att_unref(att);\n\n\treturn false;\n}",
+            614
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_disc_cancel",
+            "static bool bt_att_disc_cancel(struct bt_att *att, unsigned int id) /* <=== bt_att_disc_cancel */ \n{\n\tstruct att_send_op *op;\n\n\top = queue_find(att->req_queue, match_op_id, UINT_TO_PTR(id));\n\tif (op)\n\t\tgoto done;\n\n\top = queue_find(att->ind_queue, match_op_id, UINT_TO_PTR(id));\n\tif (op)\n\t\tgoto done;\n\n\top = queue_find(att->write_queue, match_op_id, UINT_TO_PTR(id));\n\ndone:\n\tif (!op)\n\t\treturn false;\n\n\t/* Just cancel since disconnect_cb will be cleaning up */\n\tcancel_att_send_op(op);\n\n\treturn true;\n}",
+            1584
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_cancel",
+            "bool bt_att_cancel(struct bt_att *att, unsigned int id) /* <=== bt_att_cancel */ \n{\n\tconst struct queue_entry *entry;\n\tstruct att_send_op *op;\n\n\tif (!att || !id)\n\t\treturn false;\n\n\t/* Lookuo request on each channel first */\n\tfor (entry = queue_get_entries(att->chans); entry;\n\t\t\t\t\t\tentry = entry->next) {\n\t\tstruct bt_att_chan *chan = entry->data;\n\n\t\tif (bt_att_chan_cancel(chan, id))\n\t\t\treturn true;\n\t}\n\n\tif (att->in_disc)\n\t\treturn bt_att_disc_cancel(att, id);\n\n\top = queue_remove_if(att->req_queue, match_op_id, UINT_TO_PTR(id));\n\tif (op)\n\t\tgoto done;\n\n\top = queue_remove_if(att->ind_queue, match_op_id, UINT_TO_PTR(id));\n\tif (op)\n\t\tgoto done;\n\n\top = queue_remove_if(att->write_queue, match_op_id, UINT_TO_PTR(id));\n\tif (op)\n\t\tgoto done;\n\n\tif (!op)\n\t\treturn false;\n\ndone:\n\tdestroy_att_send_op(op);\n\n\twakeup_writer(att);\n\n\treturn true;\n}",
+            1608
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/shared/att.c",
+            "cancel_att_send_op",
+            "static void cancel_att_send_op(struct att_send_op *op) /* <=== cancel_att_send_op */ \n{\n\tif (op->destroy)\n\t\top->destroy(op->user_data);\n\n\top->user_data = NULL;\n\top->callback = NULL;\n\top->destroy = NULL;\n}",
+            225
+        ],
+        [
+            "src/shared/att.c",
+            "disconnect_cb",
+            "static bool disconnect_cb(struct io *io, void *user_data) /* <=== disconnect_cb */ \n{\n\tstruct bt_att_chan *chan = user_data;\n\tstruct bt_att *att = chan->att;\n\tint err;\n\tsocklen_t len;\n\n\tlen = sizeof(err);\n\n\tif (getsockopt(chan->fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) {\n\t\tutil_debug(chan->att->debug_callback, chan->att->debug_data,\n\t\t\t\t\t\"(chan %p) Failed to obtain disconnect\"\n\t\t\t\t\t\" error: %s\", chan, strerror(errno));\n\t\terr = 0;\n\t}\n\n\tutil_debug(chan->att->debug_callback, chan->att->debug_data,\n\t\t\t\t\t\"Channel %p disconnected: %s\",\n\t\t\t\t\tchan, strerror(err));\n\n\t/* Dettach channel */\n\tqueue_remove(att->chans, chan);\n\n\t/* Notify request callbacks */\n\tqueue_remove_all(att->req_queue, NULL, NULL, disc_att_send_op);\n\tqueue_remove_all(att->ind_queue, NULL, NULL, disc_att_send_op);\n\tqueue_remove_all(att->write_queue, NULL, NULL, disc_att_send_op);\n\n\tif (chan->pending_req) {\n\t\tdisc_att_send_op(chan->pending_req);\n\t\tchan->pending_req = NULL;\n\t}\n\n\tif (chan->pending_ind) {\n\t\tdisc_att_send_op(chan->pending_ind);\n\t\tchan->pending_ind = NULL;\n\t}\n\n\tbt_att_chan_free(chan);\n\n\t/* Don't run disconnect callback if there are channels left */\n\tif (!queue_isempty(att->chans))\n\t\treturn false;\n\n\tbt_att_ref(att);\n\n\tqueue_foreach(att->disconn_list, disconn_handler, INT_TO_PTR(err));\n\n\tbt_att_unregister_all(att);\n\tbt_att_unref(att);\n\n\treturn false;\n}",
+            611
+        ],
+        [
+            "src/shared/att.c",
+            "bt_att_cancel",
+            "bool bt_att_cancel(struct bt_att *att, unsigned int id) /* <=== bt_att_cancel */ \n{\n\tconst struct queue_entry *entry;\n\tstruct att_send_op *op;\n\n\tif (!att || !id)\n\t\treturn false;\n\n\t/* Lookuo request on each channel first */\n\tfor (entry = queue_get_entries(att->chans); entry;\n\t\t\t\t\t\tentry = entry->next) {\n\t\tstruct bt_att_chan *chan = entry->data;\n\n\t\tif (bt_att_chan_cancel(chan, id))\n\t\t\treturn true;\n\t}\n\n\top = queue_remove_if(att->req_queue, match_op_id, UINT_TO_PTR(id));\n\tif (op)\n\t\tgoto done;\n\n\top = queue_remove_if(att->ind_queue, match_op_id, UINT_TO_PTR(id));\n\tif (op)\n\t\tgoto done;\n\n\top = queue_remove_if(att->write_queue, match_op_id, UINT_TO_PTR(id));\n\tif (op)\n\t\tgoto done;\n\n\tif (!op)\n\t\treturn false;\n\ndone:\n\tdestroy_att_send_op(op);\n\n\twakeup_writer(att);\n\n\treturn true;\n}",
+            1577
+        ]
+    ]
+}

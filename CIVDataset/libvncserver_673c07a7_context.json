@@ -1,0 +1,196 @@
+{
+    "calleeMethods": [
+        [
+            "libvncserver/main.c",
+            "rfbLogPerror",
+            "void rfbLogPerror(const char *str) /* <=== rfbLogPerror */ \n{\n#ifdef WIN32\n    wchar_t *s = NULL;\n    FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, \n                   NULL, errno, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),\n                   (LPWSTR)&s, 0, NULL);\n    rfbErr(\"%s: %S\\n\", str, s);\n    LocalFree(s);\n#else\n    rfbErr(\"%s: %s\\n\", str, strerror(errno));\n#endif\n}",
+            2
+        ],
+        [
+            "libvncserver/sockets.c",
+            "rfbWriteExact",
+            "int /* <=== rfbWriteExact */ \nrfbWriteExact(rfbClientPtr cl,\n              const char *buf,\n              int len)\n{\n    rfbSocket sock = cl->sock;\n    int n;\n    fd_set fds;\n    struct timeval tv;\n    int totalTimeWaited = 0;\n    const int timeout = (cl->screen && cl->screen->maxClientWait) ? cl->screen->maxClientWait : rfbMaxClientWait;\n\n#undef DEBUG_WRITE_EXACT\n#ifdef DEBUG_WRITE_EXACT\n    rfbLog(\"WriteExact %d bytes\\n\",len);\n    for(n=0;n<len;n++)\n\t    fprintf(stderr,\"%02x \",(unsigned char)buf[n]);\n    fprintf(stderr,\"\\n\");\n#endif\n\n#ifdef LIBVNCSERVER_WITH_WEBSOCKETS\n    if (cl->wsctx) {\n        char *tmp = NULL;\n        if ((len = webSocketsEncode(cl, buf, len, &tmp)) < 0) {\n            rfbErr(\"WriteExact: WebSockets encode error\\n\");\n            return -1;\n        }\n        buf = tmp;\n    }\n#endif\n\n    LOCK(cl->outputMutex);\n    while (len > 0) {\n#ifdef LIBVNCSERVER_WITH_WEBSOCKETS\n        if (cl->sslctx)\n\t    n = rfbssl_write(cl, buf, len);\n\telse\n#endif\n\t    n = write(sock, buf, len);\n\n        if (n > 0) {\n\n            buf += n;\n            len -= n;\n\n        } else if (n == 0) {\n\n            rfbErr(\"WriteExact: write returned 0?\\n\");\n            return 0;\n\n        } else {\n#ifdef WIN32\n\t\t\terrno = WSAGetLastError();\n#endif\n\t    if (errno == EINTR)\n\t\tcontinue;\n\n            if (errno != EWOULDBLOCK && errno != EAGAIN) {\n\t        UNLOCK(cl->outputMutex);\n                return n;\n            }\n\n            /* Retry every 5 seconds until we exceed timeout.  We\n               need to do this because select doesn't necessarily return\n               immediately when the other end has gone away */\n\n            FD_ZERO(&fds);\n            FD_SET(sock, &fds);\n            tv.tv_sec = 5;\n            tv.tv_usec = 0;\n            n = select(sock+1, NULL, &fds, NULL /* &fds */, &tv);\n\t    if (n < 0) {\n#ifdef WIN32\n                errno=WSAGetLastError();\n#endif\n       \t        if(errno==EINTR)\n\t\t    continue;\n                rfbLogPerror(\"WriteExact: select\");\n                UNLOCK(cl->outputMutex);\n                return n;\n            }\n            if (n == 0) {\n                totalTimeWaited += 5000;\n                if (totalTimeWaited >= timeout) {\n                    errno = ETIMEDOUT;\n                    UNLOCK(cl->outputMutex);\n                    return -1;\n                }\n            } else {\n                totalTimeWaited = 0;\n            }\n        }\n    }\n    UNLOCK(cl->outputMutex);\n    return 1;\n}",
+            2
+        ],
+        [
+            "libvncserver/rfbserver.c",
+            "rfbSendUpdateBuf",
+            "rfbBool /* <=== rfbSendUpdateBuf */ \nrfbSendUpdateBuf(rfbClientPtr cl)\n{\n    if(cl->sock<0)\n      return FALSE;\n\n    if (rfbWriteExact(cl, cl->updateBuf, cl->ublen) < 0) {\n        rfbLogPerror(\"rfbSendUpdateBuf: write\");\n        rfbCloseClient(cl);\n        return FALSE;\n    }\n\n    cl->ublen = 0;\n    return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncserver/stats.c",
+            "rfbStatRecordEncodingSent",
+            "void  rfbStatRecordEncodingSent(rfbClientPtr cl, uint32_t type, int byteCount, int byteIfRaw) /* <=== rfbStatRecordEncodingSent */ \n{\n    rfbStatList *ptr;\n\n    ptr = rfbStatLookupEncoding(cl, type);\n    if (ptr!=NULL)\n    {\n        ptr->sentCount++;\n        ptr->bytesSent      += byteCount;\n        ptr->bytesSentIfRaw += byteIfRaw;\n    }\n}",
+            1
+        ],
+        [
+            "libvncserver/sockets.c",
+            "rfbCloseClient",
+            "void /* <=== rfbCloseClient */ \nrfbCloseClient(rfbClientPtr cl)\n{\n    rfbExtensionData* extension;\n\n    for(extension=cl->extensions; extension; extension=extension->next)\n\tif(extension->extension->close)\n\t    extension->extension->close(cl, extension->data);\n\n    LOCK(cl->updateMutex);\n#if defined(LIBVNCSERVER_HAVE_LIBPTHREAD) || defined(LIBVNCSERVER_HAVE_WIN32THREADS)\n    if (cl->sock != RFB_INVALID_SOCKET)\n#endif\n      {\n\tFD_CLR(cl->sock,&(cl->screen->allFds));\n\tif(cl->sock==cl->screen->maxFd)\n\t  while(cl->screen->maxFd>0\n\t\t&& !FD_ISSET(cl->screen->maxFd,&(cl->screen->allFds)))\n\t    cl->screen->maxFd--;\n#ifdef LIBVNCSERVER_WITH_WEBSOCKETS\n\tif (cl->sslctx)\n\t    rfbssl_destroy(cl);\n\tfree(cl->wspath);\n#endif\n#ifndef __MINGW32__\n\tshutdown(cl->sock,SHUT_RDWR);\n#endif\n\trfbCloseSocket(cl->sock);\n\tcl->sock = RFB_INVALID_SOCKET;\n      }\n    TSIGNAL(cl->updateCond);\n    UNLOCK(cl->updateMutex);\n}",
+            1
+        ],
+        [
+            "libvncserver/stats.c",
+            "rfbStatLookupEncoding",
+            "rfbStatList *rfbStatLookupEncoding(rfbClientPtr cl, uint32_t type) /* <=== rfbStatLookupEncoding */ \n{\n    rfbStatList *ptr;\n    if (cl==NULL) return NULL;\n    for (ptr = cl->statEncList; ptr!=NULL; ptr=ptr->Next)\n    {\n        if (ptr->type==type) return ptr;\n    }\n    /* Well, we are here... need to *CREATE* an entry */\n    ptr = (rfbStatList *)malloc(sizeof(rfbStatList));\n    if (ptr!=NULL)\n    {\n        memset((char *)ptr, 0, sizeof(rfbStatList));\n        ptr->type = type;\n        /* add to the top of the list */\n        ptr->Next = cl->statEncList;\n        cl->statEncList = ptr;\n    }\n    return ptr;\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <time.h>",
+        "#include <dirent.h>",
+        "#include \"private.h\"",
+        "#include <unistd.h>",
+        "#include \"rfb/rfbconfig.h\"",
+        "#include <rfb/rfb.h>",
+        "#include <pwd.h>",
+        "#include <stdarg.h>",
+        "#include <limits.h>",
+        "#include <sys/types.h>",
+        "#include <rfb/rfbregion.h>",
+        "#include <stdio.h>",
+        "#include <sys/stat.h>",
+        "#include \"sockets.h\"",
+        "#include <string.h>",
+        "#include <errno.h>",
+        "#include <direct.h>",
+        "#include <io.h>",
+        "#include \"scale.h\"",
+        "#include <fcntl.h>",
+        "#include \"rfbssl.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef int8_t rfbBool;",
+            "rfbBool"
+        ],
+        [
+            "typedef struct {\n    rfbRectangle r;\n    uint32_t encoding;\t/* one of the encoding types rfbEncoding... */\n}",
+            "rfbFramebufferUpdateRectHeader"
+        ],
+        [
+            "typedef struct _rfbClientRec {\n\n    /** back pointer to the screen */\n    rfbScreenInfoPtr screen;\n\n     /** points to a scaled version of the screen buffer in cl->scaledScreenList */\n     rfbScreenInfoPtr scaledScreen;\n     /** how did the client tell us it wanted the screen changed?  Ultra style or palm style? */\n     rfbBool PalmVNC;\n\n\n    /** private data. You should put any application client specific data\n     * into a struct and let clientData point to it. Don't forget to\n     * free the struct via clientGoneHook!\n     *\n     * This is useful if the IO functions have to behave client specific.\n     */\n    void* clientData;\n    ClientGoneHookPtr clientGoneHook;\n\n    rfbSocket sock;\n    char *host;\n\n    /* RFB protocol minor version number */\n    int protocolMajorVersion;\n    int protocolMinorVersion;\n\n#ifdef LIBVNCSERVER_HAVE_LIBPTHREAD\n    pthread_t client_thread;\n#elif defined(LIBVNCSERVER_HAVE_WIN32THREADS)\n    uintptr_t client_thread;\n#endif\n\n    /* Note that the RFB_INITIALISATION_SHARED state is provided to support\n       clients that under some circumstances do not send a ClientInit message.\n       In particular the Mac OS X built-in VNC client (with protocolMinorVersion\n       == 889) is one of those.  However, it only requires this support under\n       special circumstances that can only be determined during the initial\n       authentication.  If the right conditions are met this state will be\n       set (see the auth.c file) when rfbProcessClientInitMessage is called.\n\n       If the state is RFB_INITIALISATION_SHARED we should not expect to receive\n       any ClientInit message, but instead should proceed to the next stage\n       of initialisation as though an implicit ClientInit message was received\n       with a shared-flag of true.  (There is currently no corresponding\n       RFB_INITIALISATION_NOTSHARED state to represent an implicit ClientInit\n       message with a shared-flag of false because no known existing client\n       requires such support at this time.)\n\n       Note that software using LibVNCServer to provide a VNC server will only\n       ever have a chance to see the state field set to\n       RFB_INITIALISATION_SHARED if the software is multi-threaded and manages\n       to examine the state field during the extremely brief window after the\n       'None' authentication type selection has been received from the built-in\n       OS X VNC client and before the rfbProcessClientInitMessage function is\n       called -- control cannot return to the caller during this brief window\n       while the state field is set to RFB_INITIALISATION_SHARED. */\n\n                                /** Possible client states: */\n    enum {\n        RFB_PROTOCOL_VERSION,   /**< establishing protocol version */\n\tRFB_SECURITY_TYPE,      /**< negotiating security (RFB v.3.7) */\n        RFB_AUTHENTICATION,     /**< authenticating */\n        RFB_INITIALISATION,     /**< sending initialisation messages */\n        RFB_NORMAL,             /**< normal protocol messages */\n\n        /* Ephemeral internal-use states that will never be seen by software\n         * using LibVNCServer to provide services: */\n\n        RFB_INITIALISATION_SHARED /**< sending initialisation messages with implicit shared-flag already true */\n    } state;\n\n    rfbBool reverseConnection;\n    rfbBool onHold;\n    rfbBool readyForSetColourMapEntries;\n    rfbBool useCopyRect;\n    int preferredEncoding;\n    int correMaxWidth, correMaxHeight;\n\n    rfbBool viewOnly;\n\n    /* The following member is only used during VNC authentication */\n    uint8_t authChallenge[CHALLENGESIZE];\n\n    /* The following members represent the update needed to get the client's\n       framebuffer from its present state to the current state of our\n       framebuffer.\n\n       If the client does not accept CopyRect encoding then the update is\n       simply represented as the region of the screen which has been modified\n       (modifiedRegion).\n\n       If the client does accept CopyRect encoding, then the update consists of\n       two parts.  First we have a single copy from one region of the screen to\n       another (the destination of the copy is copyRegion), and second we have\n       the region of the screen which has been modified in some other way\n       (modifiedRegion).\n\n       Although the copy is of a single region, this region may have many\n       rectangles.  When sending an update, the copyRegion is always sent\n       before the modifiedRegion.  This is because the modifiedRegion may\n       overlap parts of the screen which are in the source of the copy.\n\n       In fact during normal processing, the modifiedRegion may even overlap\n       the destination copyRegion.  Just before an update is sent we remove\n       from the copyRegion anything in the modifiedRegion. */\n\n    sraRegionPtr copyRegion;\t/**< the destination region of the copy */\n    int copyDX, copyDY;\t\t/**< the translation by which the copy happens */\n\n    sraRegionPtr modifiedRegion;\n\n    /** As part of the FramebufferUpdateRequest, a client can express interest\n       in a subrectangle of the whole framebuffer.  This is stored in the\n       requestedRegion member.  In the normal case this is the whole\n       framebuffer if the client is ready, empty if it's not. */\n\n    sraRegionPtr requestedRegion;\n\n    /** The following member represents the state of the \"deferred update\" timer\n       - when the framebuffer is modified and the client is ready, in most\n       cases it is more efficient to defer sending the update by a few\n       milliseconds so that several changes to the framebuffer can be combined\n       into a single update. */\n\n      struct timeval startDeferring;\n      struct timeval startPtrDeferring;\n      int lastPtrX;\n      int lastPtrY;\n      int lastPtrButtons;\n\n    /** translateFn points to the translation function which is used to copy\n       and translate a rectangle from the framebuffer to an output buffer. */\n\n    rfbTranslateFnType translateFn;\n    char *translateLookupTable;\n    rfbPixelFormat format;\n\n    /**\n     * UPDATE_BUF_SIZE must be big enough to send at least one whole line of the\n     * framebuffer.  So for a max screen width of say 2K with 32-bit pixels this\n     * means 8K minimum.\n     */\n\n#define UPDATE_BUF_SIZE 30000\n\n    char updateBuf[UPDATE_BUF_SIZE];\n    int ublen;\n\n    /* statistics */\n    struct _rfbStatList *statEncList;\n    struct _rfbStatList *statMsgList;\n    int rawBytesEquivalent;\n    int bytesSent;\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n    /* zlib encoding -- necessary compression state info per client */\n\n    struct z_stream_s compStream;\n    rfbBool compStreamInited;\n    uint32_t zlibCompressLevel;\n#endif\n#if defined(LIBVNCSERVER_HAVE_LIBZ) || defined(LIBVNCSERVER_HAVE_LIBPNG)\n    /** the quality level is also used by ZYWRLE and TightPng */\n    int tightQualityLevel;\n\n#ifdef LIBVNCSERVER_HAVE_LIBJPEG\n    /* tight encoding -- preserve zlib streams' state for each client */\n    z_stream zsStruct[4];\n    rfbBool zsActive[4];\n    int zsLevel[4];\n    int tightCompressLevel;\n#endif\n#endif\n\n    /* Ultra Encoding support */\n    rfbBool compStreamInitedLZO;\n    char *lzoWrkMem;\n\n    rfbFileTransferData fileTransfer;\n\n    int     lastKeyboardLedState;     /**< keep track of last value so we can send *change* events */\n    rfbBool enableSupportedMessages;  /**< client supports SupportedMessages encoding */\n    rfbBool enableSupportedEncodings; /**< client supports SupportedEncodings encoding */\n    rfbBool enableServerIdentity;     /**< client supports ServerIdentity encoding */\n    rfbBool enableKeyboardLedState;   /**< client supports KeyboardState encoding */\n    rfbBool enableLastRectEncoding;   /**< client supports LastRect encoding */\n    rfbBool enableCursorShapeUpdates; /**< client supports cursor shape updates */\n    rfbBool enableCursorPosUpdates;   /**< client supports cursor position updates */\n    rfbBool useRichCursorEncoding;    /**< rfbEncodingRichCursor is preferred */\n    rfbBool cursorWasChanged;         /**< cursor shape update should be sent */\n    rfbBool cursorWasMoved;           /**< cursor position update should be sent */\n    int cursorX,cursorY;\t      /**< the coordinates of the cursor,\n\t\t\t\t\t if enableCursorShapeUpdates = FALSE */\n\n    rfbBool useNewFBSize;             /**< client supports NewFBSize encoding */\n    rfbBool newFBSizePending;         /**< framebuffer size was changed */\n\n    struct _rfbClientRec *prev;\n    struct _rfbClientRec *next;\n\n#if defined(LIBVNCSERVER_HAVE_LIBPTHREAD) || defined(LIBVNCSERVER_HAVE_WIN32THREADS)\n    /** whenever a client is referenced, the refCount has to be incremented\n       and afterwards decremented, so that the client is not cleaned up\n       while being referenced.\n       Use the functions rfbIncrClientRef(cl) and rfbDecrClientRef(cl);\n    */\n    int refCount;\n    MUTEX(refCountMutex);\n    COND(deleteCond);\n\n    MUTEX(outputMutex);\n    MUTEX(updateMutex);\n    COND(updateCond);\n#endif\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n    void* zrleData;\n    int zywrleLevel;\n    int zywrleBuf[rfbZRLETileWidth * rfbZRLETileHeight];\n#endif\n\n    /** if progressive updating is on, this variable holds the current\n     * y coordinate of the progressive slice. */\n    int progressiveSliceY;\n\n    rfbExtensionData* extensions;\n\n    /** for threaded zrle */\n    char *zrleBeforeBuf;\n    void *paletteHelper;\n\n    /** for thread safety for rfbSendFBUpdate() */\n#if defined(LIBVNCSERVER_HAVE_LIBPTHREAD) || defined(LIBVNCSERVER_HAVE_WIN32THREADS)\n#define LIBVNCSERVER_SEND_MUTEX\n    MUTEX(sendMutex);\n#endif\n\n  /* buffers to hold pixel data before and after encoding.\n     per-client for thread safety */\n  char *beforeEncBuf;\n  int beforeEncBufSize;\n  char *afterEncBuf;\n  int afterEncBufSize;\n  int afterEncBufLen;\n#if defined(LIBVNCSERVER_HAVE_LIBZ) || defined(LIBVNCSERVER_HAVE_LIBPNG)\n    uint32_t tightEncoding;  /* rfbEncodingTight or rfbEncodingTightPng */\n#ifdef LIBVNCSERVER_HAVE_LIBJPEG\n    /* TurboVNC Encoding support (extends TightVNC) */\n ...",
+            "rfbClientPtr"
+        ]
+    ],
+    "visitedLines_after": {
+        "libvncserver/rfbserver.c": [
+            3359,
+            3360,
+            3363,
+            3364,
+            3368,
+            3372,
+            3373,
+            3376,
+            3377,
+            3378,
+            3381,
+            3382,
+            3383,
+            3384,
+            3385,
+            3387,
+            3388,
+            3391,
+            3392,
+            3394,
+            3396,
+            3397,
+            3398,
+            3400,
+            3401,
+            3402,
+            3403,
+            3405,
+            3406,
+            3408,
+            3409,
+            3413,
+            3414,
+            3416,
+            3418,
+            3419,
+            3420,
+            3421,
+            3422,
+            3423
+        ]
+    },
+    "visitedLines_before": {
+        "libvncserver/rfbserver.c": [
+            3359,
+            3360,
+            3363,
+            3364,
+            3368,
+            3373,
+            3374,
+            3375,
+            3378,
+            3379,
+            3380,
+            3381,
+            3382,
+            3384,
+            3385,
+            3388,
+            3389,
+            3391,
+            3393,
+            3394,
+            3395,
+            3397,
+            3398,
+            3399,
+            3400,
+            3402,
+            3403,
+            3405,
+            3406,
+            3410,
+            3411,
+            3413,
+            3415,
+            3416,
+            3417,
+            3418,
+            3419,
+            3420
+        ]
+    },
+    "visitedParams": {
+        "libvncserver/rfbserver.c": [
+            [
+                "int h",
+                "rfbSendRectEncodingRaw"
+            ],
+            [
+                "int w",
+                "rfbSendRectEncodingRaw"
+            ],
+            [
+                "rfbClientPtr cl",
+                "rfbSendRectEncodingRaw"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libvncserver/rfbserver.c",
+            "rfbSendRectEncodingRaw",
+            "rfbBool /* <=== rfbSendRectEncodingRaw */ \nrfbSendRectEncodingRaw(rfbClientPtr cl,\n                       int x,\n                       int y,\n                       int w,\n                       int h)\n{\n    rfbFramebufferUpdateRectHeader rect;\n    int nlines;\n    int bytesPerLine = w * (cl->format.bitsPerPixel / 8);\n    char *fbptr = (cl->scaledScreen->frameBuffer + (cl->scaledScreen->paddedWidthInBytes * y)\n                   + (x * (cl->scaledScreen->bitsPerPixel / 8)));\n\n    if(!h || !w)\n\treturn TRUE; /* nothing to send */\n\n    /* Flush the buffer to guarantee correct alignment for translateFn(). */\n    if (cl->ublen > 0) {\n        if (!rfbSendUpdateBuf(cl))\n            return FALSE;\n    }\n\n    rect.r.x = Swap16IfLE(x);\n    rect.r.y = Swap16IfLE(y);\n    rect.r.w = Swap16IfLE(w);\n    rect.r.h = Swap16IfLE(h);\n    rect.encoding = Swap32IfLE(rfbEncodingRaw);\n\n    memcpy(&cl->updateBuf[cl->ublen], (char *)&rect,sz_rfbFramebufferUpdateRectHeader);\n    cl->ublen += sz_rfbFramebufferUpdateRectHeader;\n\n\n    rfbStatRecordEncodingSent(cl, rfbEncodingRaw, sz_rfbFramebufferUpdateRectHeader + bytesPerLine * h,\n        sz_rfbFramebufferUpdateRectHeader + bytesPerLine * h);\n\n    nlines = (UPDATE_BUF_SIZE - cl->ublen) / bytesPerLine;\n\n    while (TRUE) {\n        if (nlines > h)\n            nlines = h;\n\n        (*cl->translateFn)(cl->translateLookupTable,\n\t\t\t   &(cl->screen->serverFormat),\n                           &cl->format, fbptr, &cl->updateBuf[cl->ublen],\n                           cl->scaledScreen->paddedWidthInBytes, w, nlines);\n\n        cl->ublen += nlines * bytesPerLine;\n        h -= nlines;\n\n        if (h == 0)     /* rect fitted in buffer, do next one */\n            return TRUE;\n\n        /* buffer full - flush partial rect and do another nlines */\n\n        if (!rfbSendUpdateBuf(cl))\n            return FALSE;\n\n        fbptr += (cl->scaledScreen->paddedWidthInBytes * nlines);\n\n        nlines = (UPDATE_BUF_SIZE - cl->ublen) / bytesPerLine;\n        if (nlines == 0) {\n            rfbErr(\"rfbSendRectEncodingRaw: send buffer too small for %d \"\n                   \"bytes per line\\n\", bytesPerLine);\n            rfbCloseClient(cl);\n            return FALSE;\n        }\n    }\n}",
+            3359
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libvncserver/rfbserver.c",
+            "rfbSendRectEncodingRaw",
+            "rfbBool /* <=== rfbSendRectEncodingRaw */ \nrfbSendRectEncodingRaw(rfbClientPtr cl,\n                       int x,\n                       int y,\n                       int w,\n                       int h)\n{\n    rfbFramebufferUpdateRectHeader rect;\n    int nlines;\n    int bytesPerLine = w * (cl->format.bitsPerPixel / 8);\n    char *fbptr = (cl->scaledScreen->frameBuffer + (cl->scaledScreen->paddedWidthInBytes * y)\n                   + (x * (cl->scaledScreen->bitsPerPixel / 8)));\n\n    /* Flush the buffer to guarantee correct alignment for translateFn(). */\n    if (cl->ublen > 0) {\n        if (!rfbSendUpdateBuf(cl))\n            return FALSE;\n    }\n\n    rect.r.x = Swap16IfLE(x);\n    rect.r.y = Swap16IfLE(y);\n    rect.r.w = Swap16IfLE(w);\n    rect.r.h = Swap16IfLE(h);\n    rect.encoding = Swap32IfLE(rfbEncodingRaw);\n\n    memcpy(&cl->updateBuf[cl->ublen], (char *)&rect,sz_rfbFramebufferUpdateRectHeader);\n    cl->ublen += sz_rfbFramebufferUpdateRectHeader;\n\n\n    rfbStatRecordEncodingSent(cl, rfbEncodingRaw, sz_rfbFramebufferUpdateRectHeader + bytesPerLine * h,\n        sz_rfbFramebufferUpdateRectHeader + bytesPerLine * h);\n\n    nlines = (UPDATE_BUF_SIZE - cl->ublen) / bytesPerLine;\n\n    while (TRUE) {\n        if (nlines > h)\n            nlines = h;\n\n        (*cl->translateFn)(cl->translateLookupTable,\n\t\t\t   &(cl->screen->serverFormat),\n                           &cl->format, fbptr, &cl->updateBuf[cl->ublen],\n                           cl->scaledScreen->paddedWidthInBytes, w, nlines);\n\n        cl->ublen += nlines * bytesPerLine;\n        h -= nlines;\n\n        if (h == 0)     /* rect fitted in buffer, do next one */\n            return TRUE;\n\n        /* buffer full - flush partial rect and do another nlines */\n\n        if (!rfbSendUpdateBuf(cl))\n            return FALSE;\n\n        fbptr += (cl->scaledScreen->paddedWidthInBytes * nlines);\n\n        nlines = (UPDATE_BUF_SIZE - cl->ublen) / bytesPerLine;\n        if (nlines == 0) {\n            rfbErr(\"rfbSendRectEncodingRaw: send buffer too small for %d \"\n                   \"bytes per line\\n\", bytesPerLine);\n            rfbCloseClient(cl);\n            return FALSE;\n        }\n    }\n}",
+            3359
+        ]
+    ]
+}

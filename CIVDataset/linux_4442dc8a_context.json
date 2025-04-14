@@ -1,0 +1,713 @@
+{
+    "calleeMethods": [
+        [
+            "arch/mips/mm/highmem.c",
+            "kmap",
+            "void *kmap(struct page *page) /* <=== kmap */ \n{\n\tvoid *addr;\n\n\tmight_sleep();\n\tif (!PageHighMem(page))\n\t\treturn page_address(page);\n\taddr = kmap_high(page);\n\tflush_tlb_one((unsigned long)addr);\n\n\treturn addr;\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "__cache_free",
+            "static inline void __cache_free(struct kmem_cache *cachep, void *objp, /* <=== __cache_free */ \n\t\t\t\tunsigned long caller)\n{\n\tstruct array_cache *ac = cpu_cache_get(cachep);\n\n\tcheck_irq_off();\n\tkmemleak_free_recursive(objp, cachep->flags);\n\tobjp = cache_free_debugcheck(cachep, objp, caller);\n\n\tkmemcheck_slab_free(cachep, objp, cachep->object_size);\n\n\t/*\n\t * Skip calling cache_free_alien() when the platform is not numa.\n\t * This will avoid cache misses that happen while accessing slabp (which\n\t * is per page memory  reference) to get nodeid. Instead use a global\n\t * variable to skip the call, which is mostly likely to be present in\n\t * the cache.\n\t */\n\tif (nr_online_nodes > 1 && cache_free_alien(cachep, objp))\n\t\treturn;\n\n\tif (likely(ac->avail < ac->limit)) {\n\t\tSTATS_INC_FREEHIT(cachep);\n\t} else {\n\t\tSTATS_INC_FREEMISS(cachep);\n\t\tcache_flusharray(cachep, ac);\n\t}\n\n\tac_put_obj(cachep, ac, objp);\n}",
+            2
+        ],
+        [
+            "arch/x86/mm/highmem_32.c",
+            "kmap",
+            "void *kmap(struct page *page) /* <=== kmap */ \n{\n\tmight_sleep();\n\tif (!PageHighMem(page))\n\t\treturn page_address(page);\n\treturn kmap_high(page);\n}",
+            1
+        ],
+        [
+            "include/linux/scatterlist.h",
+            "sg_assign_page",
+            "static inline void sg_assign_page(struct scatterlist *sg, struct page *page) /* <=== sg_assign_page */ \n{\n\tunsigned long page_link = sg->page_link & 0x3;\n\n\t/*\n\t * In order for the low bit stealing approach to work, pages\n\t * must be aligned at a 32-bit boundary as a minimum.\n\t */\n\tBUG_ON((unsigned long) page & 0x03);\n#ifdef CONFIG_DEBUG_SG\n\tBUG_ON(sg->sg_magic != SG_MAGIC);\n\tBUG_ON(sg_is_chain(sg));\n#endif\n\tsg->page_link = page_link | (unsigned long) page;\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/scatterlist.h",
+            "sg_init_table",
+            "static inline void sg_init_table(struct scatterlist *sgl, unsigned int nents) /* <=== sg_init_table */ \n{\n\tmemset(sgl, 0, sizeof(*sgl) * nents);\n#ifdef CONFIG_DEBUG_SG\n\t{\n\t\tunsigned int i;\n\t\tfor (i = 0; i < nents; i++)\n\t\t\tsgl[i].sg_magic = SG_MAGIC;\n\t}\n#endif\n\tsg_mark_end(&sgl[nents - 1]);\n}",
+            1
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "memset",
+            "void *memset(void *s, int c, size_t n) /* <=== memset */ \n{\n\tuint64_t *out64;\n\tint n64, to_align64;\n\tuint64_t v64;\n\tuint8_t *out8 = s;\n\n\t/* Experimentation shows that a trivial tight loop is a win up until\n\t * around a size of 20, where writing a word at a time starts to win.\n\t */\n#define BYTE_CUTOFF 20\n\n#if BYTE_CUTOFF < 7\n\t/* This must be at least at least this big, or some code later\n\t * on doesn't work.\n\t */\n#error \"BYTE_CUTOFF is too small\"\n#endif\n\n\tif (n < BYTE_CUTOFF) {\n\t\t/* Strangely, this turns out to be the tightest way to\n\t\t * write this loop.\n\t\t */\n\t\tif (n != 0) {\n\t\t\tdo {\n\t\t\t\t/* Strangely, combining these into one line\n\t\t\t\t * performs worse.\n\t\t\t\t */\n\t\t\t\t*out8 = c;\n\t\t\t\tout8++;\n\t\t\t} while (--n != 0);\n\t\t}\n\n\t\treturn s;\n\t}\n\n\t/* Align 'out8'. We know n >= 7 so this won't write past the end. */\n\twhile (((uintptr_t) out8 & 7) != 0) {\n\t\t*out8++ = c;\n\t\t--n;\n\t}\n\n\t/* Align 'n'. */\n\twhile (n & 7)\n\t\tout8[--n] = c;\n\n\tout64 = (uint64_t *) out8;\n\tn64 = n >> 3;\n\n\t/* Tile input byte out to 64 bits. */\n\tv64 = copy_byte(c);\n\n\t/* This must be at least 8 or the following loop doesn't work. */\n#define CACHE_LINE_SIZE_IN_DOUBLEWORDS (CHIP_L2_LINE_SIZE() / 8)\n\n\t/* Determine how many words we need to emit before the 'out32'\n\t * pointer becomes aligned modulo the cache line size.\n\t */\n\tto_align64 = (-((uintptr_t)out64 >> 3)) &\n\t\t(CACHE_LINE_SIZE_IN_DOUBLEWORDS - 1);\n\n\t/* Only bother aligning and using wh64 if there is at least\n\t * one full cache line to process.  This check also prevents\n\t * overrunning the end of the buffer with alignment words.\n\t */\n\tif (to_align64 <= n64 - CACHE_LINE_SIZE_IN_DOUBLEWORDS) {\n\t\tint lines_left;\n\n\t\t/* Align out64 mod the cache line size so we can use wh64. */\n\t\tn64 -= to_align64;\n\t\tfor (; to_align64 != 0; to_align64--) {\n\t\t\t*out64 = v64;\n\t\t\tout64++;\n\t\t}\n\n\t\t/* Use unsigned divide to turn this into a right shift. */\n\t\tlines_left = (unsigned)n64 / CACHE_LINE_SIZE_IN_DOUBLEWORDS;\n\n\t\tdo {\n\t\t\t/* Only wh64 a few lines at a time, so we don't\n\t\t\t * exceed the maximum number of victim lines.\n\t\t\t */\n\t\t\tint x = ((lines_left < CHIP_MAX_OUTSTANDING_VICTIMS())\n\t\t\t\t  ? lines_left\n\t\t\t\t  : CHIP_MAX_OUTSTANDING_VICTIMS());\n\t\t\tuint64_t *wh = out64;\n\t\t\tint i = x;\n\t\t\tint j;\n\n\t\t\tlines_left -= x;\n\n\t\t\tdo {\n\t\t\t\t__insn_wh64(wh);\n\t\t\t\twh += CACHE_LINE_SIZE_IN_DOUBLEWORDS;\n\t\t\t} while (--i);\n\n\t\t\tfor (j = x * (CACHE_LINE_SIZE_IN_DOUBLEWORDS / 4);\n\t\t\t     j != 0; j--) {\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t}\n\t\t} while (lines_left != 0);\n\n\t\t/* We processed all full lines above, so only this many\n\t\t * words remain to be processed.\n\t\t */\n\t\tn64 &= CACHE_LINE_SIZE_IN_DOUBLEWORDS - 1;\n\t}\n\n\t/* Now handle any leftover values. */\n\tif (n64 != 0) {\n\t\tdo {\n\t\t\t*out64 = v64;\n\t\t\tout64++;\n\t\t} while (--n64 != 0);\n\t}\n\n\treturn s;\n}",
+            1
+        ],
+        [
+            "arch/mips/mm/highmem.c",
+            "kunmap",
+            "void kunmap(struct page *page) /* <=== kunmap */ \n{\n\tBUG_ON(in_interrupt());\n\tif (!PageHighMem(page))\n\t\treturn;\n\tkunmap_high(page);\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kfree",
+            "static inline void kfree(void *p) /* <=== kfree */ \n{\n\tif (p >= __kfree_ignore_start && p < __kfree_ignore_end)\n\t\treturn;\n\tfree(p);\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "ac_put_obj",
+            "static inline void ac_put_obj(struct kmem_cache *cachep, struct array_cache *ac, /* <=== ac_put_obj */ \n\t\t\t\t\t\t\t\tvoid *objp)\n{\n\tif (unlikely(sk_memalloc_socks()))\n\t\tobjp = __ac_put_obj(cachep, ac, objp);\n\n\tac->entry[ac->avail++] = objp;\n}",
+            3
+        ],
+        [
+            "arch/metag/mm/highmem.c",
+            "kunmap",
+            "void kunmap(struct page *page) /* <=== kunmap */ \n{\n\tBUG_ON(in_interrupt());\n\tif (!PageHighMem(page))\n\t\treturn;\n\tkunmap_high(page);\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/scatterlist.h",
+            "sg_page",
+            "static inline struct page *sg_page(struct scatterlist *sg) /* <=== sg_page */ \n{\n#ifdef CONFIG_DEBUG_SG\n\tBUG_ON(sg->sg_magic != SG_MAGIC);\n\tBUG_ON(sg_is_chain(sg));\n#endif\n\treturn (struct page *)((sg)->page_link & ~0x3);\n}",
+            1
+        ],
+        [
+            "include/linux/highmem.h",
+            "kmap",
+            "static inline void *kmap(struct page *page) /* <=== kmap */ \n{\n\tmight_sleep();\n\treturn page_address(page);\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "slob_free_pages",
+            "static void slob_free_pages(void *b, int order) /* <=== slob_free_pages */ \n{\n\tif (current->reclaim_state)\n\t\tcurrent->reclaim_state->reclaimed_slab += 1 << order;\n\tfree_pages((unsigned long)b, order);\n}",
+            3
+        ],
+        [
+            "include/linux/slab.h",
+            "kzalloc",
+            "static inline void *kzalloc(size_t size, gfp_t flags) /* <=== kzalloc */ \n{\n\treturn kmalloc(size, flags | __GFP_ZERO);\n}",
+            1
+        ],
+        [
+            "arch/metag/mm/highmem.c",
+            "kmap",
+            "void *kmap(struct page *page) /* <=== kmap */ \n{\n\tmight_sleep();\n\tif (!PageHighMem(page))\n\t\treturn page_address(page);\n\treturn kmap_high(page);\n}",
+            1
+        ],
+        [
+            "arch/tile/mm/highmem.c",
+            "kunmap",
+            "void kunmap(struct page *page) /* <=== kunmap */ \n{\n\tif (in_interrupt())\n\t\tBUG();\n\tif (!PageHighMem(page))\n\t\treturn;\n\tkunmap_high(page);\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "STATS_INC_FREEHIT",
+            "#define STATS_INC_FREEHIT(x)\tdo { } while (0) /* <=== mm/slab.c:321:321:STATS_INC_FREEHIT:1 */ ",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "kfree_debugcheck",
+            "#define kfree_debugcheck(x) do { } while(0) /* <=== mm/slab.c:2817:2817:kfree_debugcheck:1 */ ",
+            2
+        ],
+        [
+            "arch/tile/lib/memset_32.c",
+            "BYTE_CUTOFF",
+            "#define BYTE_CUTOFF 20 /* <=== arch/tile/lib/memset_32.c:31:31:BYTE_CUTOFF:0 */ ",
+            2
+        ],
+        [
+            "lib/scatterlist.c",
+            "sg_init_table",
+            "void sg_init_table(struct scatterlist *sgl, unsigned int nents) /* <=== sg_init_table */ \n{\n\tmemset(sgl, 0, sizeof(*sgl) * nents);\n#ifdef CONFIG_DEBUG_SG\n\t{\n\t\tunsigned int i;\n\t\tfor (i = 0; i < nents; i++)\n\t\t\tsgl[i].sg_magic = SG_MAGIC;\n\t}\n#endif\n\tsg_mark_end(&sgl[nents - 1]);\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kmalloc",
+            "static inline void *kmalloc(size_t s, gfp_t gfp) /* <=== kmalloc */ \n{\n\tif (__kmalloc_fake)\n\t\treturn __kmalloc_fake;\n\treturn malloc(s);\n}",
+            2
+        ],
+        [
+            "include/linux/kmemleak.h",
+            "kmemleak_free_recursive",
+            "static inline void kmemleak_free_recursive(const void *ptr, unsigned long flags) /* <=== kmemleak_free_recursive */ \n{\n}",
+            3
+        ],
+        [
+            "drivers/target/target_core_rd.h",
+            "RD_MAX_ALLOCATION_SIZE",
+            "#define RD_MAX_ALLOCATION_SIZE\t65536 /* <=== drivers/target/target_core_rd.h:8:8:RD_MAX_ALLOCATION_SIZE:0 */ ",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_UNITS",
+            "#define SLOB_UNITS(size) DIV_ROUND_UP(size, SLOB_UNIT) /* <=== mm/slob.c:125:125:SLOB_UNITS:1 */ ",
+            3
+        ],
+        [
+            "include/linux/gfp.h",
+            "__free_memcg_kmem_pages",
+            "extern void __free_memcg_kmem_pages(struct page *page, unsigned int order); /* <=== __free_memcg_kmem_pages */ ",
+            2
+        ],
+        [
+            "include/linux/scatterlist.h",
+            "sg_mark_end",
+            "static inline void sg_mark_end(struct scatterlist *sg) /* <=== sg_mark_end */ \n{\n#ifdef CONFIG_DEBUG_SG\n\tBUG_ON(sg->sg_magic != SG_MAGIC);\n#endif\n\t/*\n\t * Set termination bit, clear potential chain bit\n\t */\n\tsg->page_link |= 0x02;\n\tsg->page_link &= ~0x01;\n}",
+            2
+        ],
+        [
+            "arch/frv/mm/highmem.c",
+            "kmap",
+            "void *kmap(struct page *page) /* <=== kmap */ \n{\n\tmight_sleep();\n\tif (!PageHighMem(page))\n\t\treturn page_address(page);\n\treturn kmap_high(page);\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "cpu_cache_get",
+            "static inline struct array_cache *cpu_cache_get(struct kmem_cache *cachep) /* <=== cpu_cache_get */ \n{\n\treturn cachep->array[smp_processor_id()];\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "slob_page_free",
+            "static inline int slob_page_free(struct page *sp) /* <=== slob_page_free */ \n{\n\treturn PageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "include/linux/highmem.h",
+            "kunmap",
+            "static inline void kunmap(struct page *page) /* <=== kunmap */ \n{\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/scatterlist.h",
+            "sg_mark_end",
+            "static inline void sg_mark_end(struct scatterlist *sg) /* <=== sg_mark_end */ \n{\n#ifdef CONFIG_DEBUG_SG\n\tBUG_ON(sg->sg_magic != SG_MAGIC);\n#endif\n\t/*\n\t * Set termination bit, clear potential chain bit\n\t */\n\tsg->page_link |= 0x02;\n\tsg->page_link &= ~0x01;\n}",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "cache_free_alien",
+            "static inline int cache_free_alien(struct kmem_cache *cachep, void *objp) /* <=== cache_free_alien */ \n{\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "cache_flusharray",
+            "static void cache_flusharray(struct kmem_cache *cachep, struct array_cache *ac) /* <=== cache_flusharray */ \n{\n\tint batchcount;\n\tstruct kmem_cache_node *n;\n\tint node = numa_mem_id();\n\n\tbatchcount = ac->batchcount;\n#if DEBUG\n\tBUG_ON(!batchcount || batchcount > ac->avail);\n#endif\n\tcheck_irq_off();\n\tn = cachep->node[node];\n\tspin_lock(&n->list_lock);\n\tif (n->shared) {\n\t\tstruct array_cache *shared_array = n->shared;\n\t\tint max = shared_array->limit - shared_array->avail;\n\t\tif (max) {\n\t\t\tif (batchcount > max)\n\t\t\t\tbatchcount = max;\n\t\t\tmemcpy(&(shared_array->entry[shared_array->avail]),\n\t\t\t       ac->entry, sizeof(void *) * batchcount);\n\t\t\tshared_array->avail += batchcount;\n\t\t\tgoto free_done;\n\t\t}\n\t}\n\n\tfree_block(cachep, ac->entry, batchcount, node);\nfree_done:\n#if STATS\n\t{\n\t\tint i = 0;\n\t\tstruct list_head *p;\n\n\t\tp = n->slabs_free.next;\n\t\twhile (p != &(n->slabs_free)) {\n\t\t\tstruct page *page;\n\n\t\t\tpage = list_entry(p, struct page, lru);\n\t\t\tBUG_ON(page->active);\n\n\t\t\ti++;\n\t\t\tp = p->next;\n\t\t}\n\t\tSTATS_SET_FREEABLE(cachep, i);\n\t}\n#endif\n\tspin_unlock(&n->list_lock);\n\tac->avail -= batchcount;\n\tmemmove(ac->entry, &(ac->entry[batchcount]), sizeof(void *)*ac->avail);\n}",
+            3
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "CACHE_LINE_SIZE_IN_DOUBLEWORDS",
+            "#define CACHE_LINE_SIZE_IN_DOUBLEWORDS (CHIP_L2_LINE_SIZE() / 8) /* <=== arch/tile/lib/memset_64.c:74:74:CACHE_LINE_SIZE_IN_DOUBLEWORDS:0 */ ",
+            2
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "BYTE_CUTOFF",
+            "#define BYTE_CUTOFF 20 /* <=== arch/tile/lib/memset_64.c:31:31:BYTE_CUTOFF:0 */ ",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "set_slob",
+            "static void set_slob(slob_t *s, slobidx_t size, slob_t *next) /* <=== set_slob */ \n{\n\tslob_t *base = (slob_t *)((unsigned long)s & PAGE_MASK);\n\tslobidx_t offset = next - base;\n\n\tif (size > 1) {\n\t\ts[0].units = size;\n\t\ts[1].units = offset;\n\t} else\n\t\ts[0].units = -offset;\n}",
+            3
+        ],
+        [
+            "arch/cris/include/asm/string.h",
+            "memset",
+            "extern void *memset(void *, int, size_t); /* <=== memset */ ",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "cache_free_debugcheck",
+            "#define cache_free_debugcheck(x,objp,z) (objp) /* <=== mm/slab.c:2818:2818:cache_free_debugcheck:3 */ ",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "kfree",
+            "void kfree(const void *block) /* <=== kfree */ \n{\n\tstruct page *sp;\n\n\ttrace_kfree(_RET_IP_, block);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(block)))\n\t\treturn;\n\tkmemleak_free(block);\n\n\tsp = virt_to_page(block);\n\tif (PageSlab(sp)) {\n\t\tint align = max_t(size_t, ARCH_KMALLOC_MINALIGN, ARCH_SLAB_MINALIGN);\n\t\tunsigned int *m = (unsigned int *)(block - align);\n\t\tslob_free(m, *m + align);\n\t} else\n\t\t__free_pages(sp, compound_order(sp));\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "slob_units",
+            "static slobidx_t slob_units(slob_t *s) /* <=== slob_units */ \n{\n\tif (s->units > 0)\n\t\treturn s->units;\n\treturn 1;\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "virt_to_cache",
+            "static inline struct kmem_cache *virt_to_cache(const void *obj) /* <=== virt_to_cache */ \n{\n\tstruct page *page = virt_to_head_page(obj);\n\treturn page->slab_cache;\n}",
+            2
+        ],
+        [
+            "include/linux/spinlock.h",
+            "spin_unlock_irqrestore",
+            "static inline void spin_unlock_irqrestore(spinlock_t *lock, unsigned long flags) /* <=== spin_unlock_irqrestore */ \n{\n\traw_spin_unlock_irqrestore(&lock->rlock, flags);\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "slob_next",
+            "static slob_t *slob_next(slob_t *s) /* <=== slob_next */ \n{\n\tslob_t *base = (slob_t *)((unsigned long)s & PAGE_MASK);\n\tslobidx_t next;\n\n\tif (s[0].units < 0)\n\t\tnext = -s[0].units;\n\telse\n\t\tnext = s[1].units;\n\treturn base+next;\n}",
+            3
+        ],
+        [
+            "include/linux/gfp.h",
+            "__free_pages",
+            "extern void __free_pages(struct page *page, unsigned int order); /* <=== __free_pages */ ",
+            2
+        ],
+        [
+            "include/linux/kmemleak.h",
+            "kmemleak_free",
+            "static inline void kmemleak_free(const void *ptr) /* <=== kmemleak_free */ \n{\n}",
+            2
+        ],
+        [
+            "arch/tile/lib/memset_32.c",
+            "memset",
+            "void *memset(void *s, int c, size_t n) /* <=== memset */ \n{\n\tuint32_t *out32;\n\tint n32;\n\tuint32_t v16, v32;\n\tuint8_t *out8 = s;\n\tint to_align32;\n\n\t/* Experimentation shows that a trivial tight loop is a win up until\n\t * around a size of 20, where writing a word at a time starts to win.\n\t */\n#define BYTE_CUTOFF 20\n\n#if BYTE_CUTOFF < 3\n\t/* This must be at least at least this big, or some code later\n\t * on doesn't work.\n\t */\n#error \"BYTE_CUTOFF is too small\"\n#endif\n\n\tif (n < BYTE_CUTOFF) {\n\t\t/* Strangely, this turns out to be the tightest way to\n\t\t * write this loop.\n\t\t */\n\t\tif (n != 0) {\n\t\t\tdo {\n\t\t\t\t/* Strangely, combining these into one line\n\t\t\t\t * performs worse.\n\t\t\t\t */\n\t\t\t\t*out8 = c;\n\t\t\t\tout8++;\n\t\t\t} while (--n != 0);\n\t\t}\n\n\t\treturn s;\n\t}\n\n\t/* Align 'out8'. We know n >= 3 so this won't write past the end. */\n\twhile (((uintptr_t) out8 & 3) != 0) {\n\t\t*out8++ = c;\n\t\t--n;\n\t}\n\n\t/* Align 'n'. */\n\twhile (n & 3)\n\t\tout8[--n] = c;\n\n\tout32 = (uint32_t *) out8;\n\tn32 = n >> 2;\n\n\t/* Tile input byte out to 32 bits. */\n\tv16 = __insn_intlb(c, c);\n\tv32 = __insn_intlh(v16, v16);\n\n\t/* This must be at least 8 or the following loop doesn't work. */\n#define CACHE_LINE_SIZE_IN_WORDS (CHIP_L2_LINE_SIZE() / 4)\n\n\t/* Determine how many words we need to emit before the 'out32'\n\t * pointer becomes aligned modulo the cache line size.\n\t */\n\tto_align32 =\n\t\t(-((uintptr_t)out32 >> 2)) & (CACHE_LINE_SIZE_IN_WORDS - 1);\n\n\t/* Only bother aligning and using wh64 if there is at least\n\t * one full cache line to process.  This check also prevents\n\t * overrunning the end of the buffer with alignment words.\n\t */\n\tif (to_align32 <= n32 - CACHE_LINE_SIZE_IN_WORDS) {\n\t\tint lines_left;\n\n\t\t/* Align out32 mod the cache line size so we can use wh64. */\n\t\tn32 -= to_align32;\n\t\tfor (; to_align32 != 0; to_align32--) {\n\t\t\t*out32 = v32;\n\t\t\tout32++;\n\t\t}\n\n\t\t/* Use unsigned divide to turn this into a right shift. */\n\t\tlines_left = (unsigned)n32 / CACHE_LINE_SIZE_IN_WORDS;\n\n\t\tdo {\n\t\t\t/* Only wh64 a few lines at a time, so we don't\n\t\t\t * exceed the maximum number of victim lines.\n\t\t\t */\n\t\t\tint x = ((lines_left < CHIP_MAX_OUTSTANDING_VICTIMS())\n\t\t\t\t  ? lines_left\n\t\t\t\t  : CHIP_MAX_OUTSTANDING_VICTIMS());\n\t\t\tuint32_t *wh = out32;\n\t\t\tint i = x;\n\t\t\tint j;\n\n\t\t\tlines_left -= x;\n\n\t\t\tdo {\n\t\t\t\t__insn_wh64(wh);\n\t\t\t\twh += CACHE_LINE_SIZE_IN_WORDS;\n\t\t\t} while (--i);\n\n\t\t\tfor (j = x * (CACHE_LINE_SIZE_IN_WORDS / 4);\n\t\t\t     j != 0; j--) {\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t}\n\t\t} while (lines_left != 0);\n\n\t\t/* We processed all full lines above, so only this many\n\t\t * words remain to be processed.\n\t\t */\n\t\tn32 &= CACHE_LINE_SIZE_IN_WORDS - 1;\n\t}\n\n\t/* Now handle any leftover values. */\n\tif (n32 != 0) {\n\t\tdo {\n\t\t\t*out32 = v32;\n\t\t\tout32++;\n\t\t} while (--n32 != 0);\n\t}\n\n\treturn s;\n}",
+            1
+        ],
+        [
+            "arch/x86/mm/highmem_32.c",
+            "kunmap",
+            "void kunmap(struct page *page) /* <=== kunmap */ \n{\n\tif (in_interrupt())\n\t\tBUG();\n\tif (!PageHighMem(page))\n\t\treturn;\n\tkunmap_high(page);\n}",
+            1
+        ],
+        [
+            "arch/tile/mm/highmem.c",
+            "kmap",
+            "void *kmap(struct page *page) /* <=== kmap */ \n{\n\tvoid *kva;\n\tunsigned long flags;\n\tpte_t *ptep;\n\n\tmight_sleep();\n\tif (!PageHighMem(page))\n\t\treturn page_address(page);\n\tkva = kmap_high(page);\n\n\t/*\n\t * Rewrite the PTE under the lock.  This ensures that the page\n\t * is not currently migrating.\n\t */\n\tptep = kmap_get_pte((unsigned long)kva);\n\tflags = homecache_kpte_lock();\n\tset_pte_at(&init_mm, kva, ptep, mk_pte(page, page_to_kpgprot(page)));\n\thomecache_kpte_unlock(flags);\n\n\treturn kva;\n}",
+            1
+        ],
+        [
+            "arch/tile/lib/memset_32.c",
+            "CACHE_LINE_SIZE_IN_WORDS",
+            "#define CACHE_LINE_SIZE_IN_WORDS (CHIP_L2_LINE_SIZE() / 4) /* <=== arch/tile/lib/memset_32.c:75:75:CACHE_LINE_SIZE_IN_WORDS:0 */ ",
+            2
+        ],
+        [
+            "arch/arm/mm/highmem.c",
+            "kunmap",
+            "void kunmap(struct page *page) /* <=== kunmap */ \n{\n\tBUG_ON(in_interrupt());\n\tif (!PageHighMem(page))\n\t\treturn;\n\tkunmap_high(page);\n}",
+            1
+        ],
+        [
+            "arch/frv/mm/highmem.c",
+            "kunmap",
+            "void kunmap(struct page *page) /* <=== kunmap */ \n{\n\tif (in_interrupt())\n\t\tBUG();\n\tif (!PageHighMem(page))\n\t\treturn;\n\tkunmap_high(page);\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "STATS_INC_FREEMISS",
+            "#define STATS_INC_FREEMISS(x)\tdo { } while (0) /* <=== mm/slab.c:322:322:STATS_INC_FREEMISS:1 */ ",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "clear_slob_page_free",
+            "static inline void clear_slob_page_free(struct page *sp) /* <=== clear_slob_page_free */ \n{\n\tlist_del(&sp->list);\n\t__ClearPageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "slob_free",
+            "static void slob_free(void *block, int size) /* <=== slob_free */ \n{\n\tstruct page *sp;\n\tslob_t *prev, *next, *b = (slob_t *)block;\n\tslobidx_t units;\n\tunsigned long flags;\n\tstruct list_head *slob_list;\n\n\tif (unlikely(ZERO_OR_NULL_PTR(block)))\n\t\treturn;\n\tBUG_ON(!size);\n\n\tsp = virt_to_page(block);\n\tunits = SLOB_UNITS(size);\n\n\tspin_lock_irqsave(&slob_lock, flags);\n\n\tif (sp->units + units == SLOB_UNITS(PAGE_SIZE)) {\n\t\t/* Go directly to page allocator. Do not pass slob allocator */\n\t\tif (slob_page_free(sp))\n\t\t\tclear_slob_page_free(sp);\n\t\tspin_unlock_irqrestore(&slob_lock, flags);\n\t\t__ClearPageSlab(sp);\n\t\tpage_mapcount_reset(sp);\n\t\tslob_free_pages(b, 0);\n\t\treturn;\n\t}\n\n\tif (!slob_page_free(sp)) {\n\t\t/* This slob page is about to become partially free. Easy! */\n\t\tsp->units = units;\n\t\tsp->freelist = b;\n\t\tset_slob(b, units,\n\t\t\t(void *)((unsigned long)(b +\n\t\t\t\t\tSLOB_UNITS(PAGE_SIZE)) & PAGE_MASK));\n\t\tif (size < SLOB_BREAK1)\n\t\t\tslob_list = &free_slob_small;\n\t\telse if (size < SLOB_BREAK2)\n\t\t\tslob_list = &free_slob_medium;\n\t\telse\n\t\t\tslob_list = &free_slob_large;\n\t\tset_slob_page_free(sp, slob_list);\n\t\tgoto out;\n\t}\n\n\t/*\n\t * Otherwise the page is already partially free, so find reinsertion\n\t * point.\n\t */\n\tsp->units += units;\n\n\tif (b < (slob_t *)sp->freelist) {\n\t\tif (b + units == sp->freelist) {\n\t\t\tunits += slob_units(sp->freelist);\n\t\t\tsp->freelist = slob_next(sp->freelist);\n\t\t}\n\t\tset_slob(b, units, sp->freelist);\n\t\tsp->freelist = b;\n\t} else {\n\t\tprev = sp->freelist;\n\t\tnext = slob_next(prev);\n\t\twhile (b > next) {\n\t\t\tprev = next;\n\t\t\tnext = slob_next(prev);\n\t\t}\n\n\t\tif (!slob_last(prev) && b + units == next) {\n\t\t\tunits += slob_units(next);\n\t\t\tset_slob(b, units, slob_next(next));\n\t\t} else\n\t\t\tset_slob(b, units, next);\n\n\t\tif (prev + slob_units(prev) == b) {\n\t\t\tunits = slob_units(b) + slob_units(prev);\n\t\t\tset_slob(prev, units, slob_next(b));\n\t\t} else\n\t\t\tset_slob(prev, slob_units(prev), b);\n\t}\nout:\n\tspin_unlock_irqrestore(&slob_lock, flags);\n}",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "kfree",
+            "void kfree(const void *objp) /* <=== kfree */ \n{\n\tstruct kmem_cache *c;\n\tunsigned long flags;\n\n\ttrace_kfree(_RET_IP_, objp);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(objp)))\n\t\treturn;\n\tlocal_irq_save(flags);\n\tkfree_debugcheck(objp);\n\tc = virt_to_cache(objp);\n\tdebug_check_no_locks_freed(objp, c->object_size);\n\n\tdebug_check_no_obj_freed(objp, c->object_size);\n\t__cache_free(c, (void *)objp, _RET_IP_);\n\tlocal_irq_restore(flags);\n}",
+            1
+        ],
+        [
+            "arch/tile/mm/highmem.c",
+            "kmap_get_pte",
+            "#define kmap_get_pte(vaddr) \\ /* <=== arch/tile/mm/highmem.c:20:22:kmap_get_pte:1 */ \n\tpte_offset_kernel(pmd_offset(pud_offset(pgd_offset_k(vaddr), (vaddr)),\\\n\t\t(vaddr)), (vaddr))",
+            2
+        ],
+        [
+            "mm/slub.c",
+            "kfree_hook",
+            "static inline void kfree_hook(const void *x) /* <=== kfree_hook */ \n{\n\tkmemleak_free(x);\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_last",
+            "static int slob_last(slob_t *s) /* <=== slob_last */ \n{\n\treturn !((unsigned long)slob_next(s) & ~PAGE_MASK);\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "check_irq_off",
+            "#define check_irq_off()\tdo { } while(0) /* <=== mm/slab.c:2360:2360:check_irq_off:0 */ ",
+            3
+        ],
+        [
+            "include/linux/debugobjects.h",
+            "debug_check_no_obj_freed",
+            "static inline void /* <=== debug_check_no_obj_freed */ \ndebug_check_no_obj_freed(const void *address, unsigned long size) { }",
+            2
+        ],
+        [
+            "mm/slub.c",
+            "kfree",
+            "void kfree(const void *x) /* <=== kfree */ \n{\n\tstruct page *page;\n\tvoid *object = (void *)x;\n\n\ttrace_kfree(_RET_IP_, x);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(x)))\n\t\treturn;\n\n\tpage = virt_to_head_page(x);\n\tif (unlikely(!PageSlab(page))) {\n\t\tBUG_ON(!PageCompound(page));\n\t\tkfree_hook(x);\n\t\t__free_memcg_kmem_pages(page, compound_order(page));\n\t\treturn;\n\t}\n\tslab_free(page->slab_cache, page, object, _RET_IP_);\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/scatterlist.h",
+            "sg_assign_page",
+            "static inline void sg_assign_page(struct scatterlist *sg, struct page *page) /* <=== sg_assign_page */ \n{\n\tunsigned long page_link = sg->page_link & 0x3;\n\n\t/*\n\t * In order for the low bit stealing approach to work, pages\n\t * must be aligned at a 32-bit boundary as a minimum.\n\t */\n\tBUG_ON((unsigned long) page & 0x03);\n#ifdef CONFIG_DEBUG_SG\n\tBUG_ON(sg->sg_magic != SG_MAGIC);\n\tBUG_ON(sg_is_chain(sg));\n#endif\n\tsg->page_link = page_link | (unsigned long) page;\n}",
+            1
+        ],
+        [
+            "drivers/target/target_core_rd.h",
+            "RDF_NULLIO",
+            "#define RDF_NULLIO\t\t0x02 /* <=== drivers/target/target_core_rd.h:25:25:RDF_NULLIO:0 */ ",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_BREAK2",
+            "#define SLOB_BREAK2 1024 /* <=== mm/slob.c:99:99:SLOB_BREAK2:0 */ ",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "set_slob_page_free",
+            "static void set_slob_page_free(struct page *sp, struct list_head *list) /* <=== set_slob_page_free */ \n{\n\tlist_add(&sp->list, list);\n\t__SetPageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "include/linux/scatterlist.h",
+            "sg_page",
+            "static inline struct page *sg_page(struct scatterlist *sg) /* <=== sg_page */ \n{\n#ifdef CONFIG_DEBUG_SG\n\tBUG_ON(sg->sg_magic != SG_MAGIC);\n\tBUG_ON(sg_is_chain(sg));\n#endif\n\treturn (struct page *)((sg)->page_link & ~0x3);\n}",
+            1
+        ],
+        [
+            "arch/arm/mm/highmem.c",
+            "kmap",
+            "void *kmap(struct page *page) /* <=== kmap */ \n{\n\tmight_sleep();\n\tif (!PageHighMem(page))\n\t\treturn page_address(page);\n\treturn kmap_high(page);\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_BREAK1",
+            "#define SLOB_BREAK1 256 /* <=== mm/slob.c:98:98:SLOB_BREAK1:0 */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/parser.h>",
+        "#include <target/target_core_backend.h>",
+        "#include <scsi/scsi.h>",
+        "#include <target/target_core_base.h>",
+        "#include <scsi/scsi_host.h>",
+        "#include <linux/string.h>",
+        "#include <linux/spinlock.h>",
+        "#include <linux/slab.h>",
+        "#include \"target_core_rd.h\"",
+        "#include <linux/timer.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef uint32_t u32;",
+            "u32"
+        ],
+        [
+            "struct page",
+            "page"
+        ],
+        [
+            "struct scatterlist {\n\tunsigned long\tpage_link;\n\tunsigned int\toffset;\n\tunsigned int\tlength;\n\tdma_addr_t\tdma_address;\n}",
+            "scatterlist"
+        ],
+        [
+            "struct page {\n\tunsigned long long dummy;\n}",
+            "page"
+        ],
+        [
+            "struct rd_dev_sg_table {\n\tu32\t\tpage_start_offset;\n\tu32\t\tpage_end_offset;\n\tu32\t\trd_sg_count;\n\tstruct scatterlist *sg_table;\n}",
+            "rd_dev_sg_table"
+        ],
+        [
+            "struct scatterlist",
+            "scatterlist"
+        ],
+        [
+            "struct rd_dev {\n\tstruct se_device dev;\n\tu32\t\trd_flags;\n\t/* Unique Ramdisk Device ID in Ramdisk HBA */\n\tu32\t\trd_dev_id;\n\t/* Total page count for ramdisk device */\n\tu32\t\trd_page_count;\n\t/* Number of SG tables in sg_table_array */\n\tu32\t\tsg_table_count;\n\t/* Array of rd_dev_sg_table_t containing scatterlists */\n\tstruct rd_dev_sg_table *sg_table_array;\n\t/* Ramdisk HBA device is connected to */\n\tstruct rd_host *rd_host;\n}",
+            "rd_dev"
+        ]
+    ],
+    "visitedLines_after": {
+        "drivers/target/target_core_rd.c": [
+            81,
+            82,
+            86,
+            88,
+            89,
+            90,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            99,
+            102,
+            103,
+            106,
+            108,
+            110,
+            112,
+            113,
+            114,
+            116,
+            118,
+            119,
+            121,
+            122,
+            130,
+            131,
+            133,
+            134,
+            135,
+            138,
+            140,
+            141,
+            142,
+            144,
+            145,
+            146,
+            147,
+            149,
+            152,
+            154,
+            155,
+            156,
+            157,
+            158,
+            159,
+            160,
+            161,
+            162,
+            163,
+            165,
+            167,
+            168,
+            169,
+            170,
+            171,
+            172,
+            175,
+            176,
+            179,
+            181,
+            182,
+            184,
+            185,
+            186,
+            187,
+            188,
+            189,
+            190,
+            191,
+            192,
+            193,
+            195,
+            197,
+            198,
+            200,
+            202,
+            204,
+            205,
+            206,
+            208,
+            211,
+            212,
+            214,
+            215,
+            216,
+            218,
+            219,
+            220,
+            221,
+            223
+        ]
+    },
+    "visitedLines_before": {
+        "drivers/target/target_core_rd.c": [
+            85,
+            87,
+            88,
+            92,
+            93,
+            95,
+            97,
+            98,
+            99,
+            101,
+            102,
+            103,
+            104,
+            105,
+            108,
+            109,
+            112,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            127,
+            129,
+            130,
+            131,
+            132,
+            136,
+            137,
+            138,
+            139,
+            141,
+            143,
+            144,
+            145,
+            146,
+            148,
+            149,
+            150,
+            151,
+            152,
+            153,
+            154,
+            155,
+            157,
+            158,
+            159,
+            160,
+            161,
+            162,
+            164,
+            165,
+            166,
+            167,
+            169,
+            171,
+            172,
+            173,
+            174,
+            175,
+            176,
+            177,
+            178,
+            180,
+            181,
+            182,
+            183,
+            185,
+            187,
+            188,
+            191,
+            192,
+            195,
+            196,
+            197,
+            198,
+            200
+        ]
+    },
+    "visitedParams": {
+        "drivers/target/target_core_rd.c": [
+            [
+                "struct rd_dev *rd_dev",
+                "rd_allocate_sgl_table"
+            ],
+            [
+                "struct rd_dev *rd_dev",
+                "rd_build_device_space"
+            ],
+            [
+                "struct rd_dev *rd_dev",
+                "rd_release_device_space"
+            ],
+            [
+                "struct rd_dev *rd_dev",
+                "rd_release_sgl_table"
+            ],
+            [
+                "struct rd_dev_sg_table *sg_table",
+                "rd_allocate_sgl_table"
+            ],
+            [
+                "struct rd_dev_sg_table *sg_table",
+                "rd_release_sgl_table"
+            ],
+            [
+                "u32 sg_table_count",
+                "rd_release_sgl_table"
+            ],
+            [
+                "u32 total_sg_needed",
+                "rd_allocate_sgl_table"
+            ],
+            [
+                "unsigned char init_payload",
+                "rd_allocate_sgl_table"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "drivers/target/target_core_rd.c",
+            "rd_release_sgl_table",
+            "static u32 rd_release_sgl_table(struct rd_dev *rd_dev, struct rd_dev_sg_table *sg_table, /* <=== rd_release_sgl_table */ \n\t\t\t\t u32 sg_table_count)\n{\n\tstruct page *pg;\n\tstruct scatterlist *sg;\n\tu32 i, j, page_count = 0, sg_per_table;\n\n\tfor (i = 0; i < sg_table_count; i++) {\n\t\tsg = sg_table[i].sg_table;\n\t\tsg_per_table = sg_table[i].rd_sg_count;\n\n\t\tfor (j = 0; j < sg_per_table; j++) {\n\t\t\tpg = sg_page(&sg[j]);\n\t\t\tif (pg) {\n\t\t\t\t__free_page(pg);\n\t\t\t\tpage_count++;\n\t\t\t}\n\t\t}\n\t\tkfree(sg);\n\t}\n\n\tkfree(sg_table);\n\treturn page_count;\n}",
+            81
+        ],
+        [
+            "drivers/target/target_core_rd.c",
+            "rd_release_device_space",
+            "static void rd_release_device_space(struct rd_dev *rd_dev) /* <=== rd_release_device_space */ \n{\n\tu32 page_count;\n\n\tif (!rd_dev->sg_table_array || !rd_dev->sg_table_count)\n\t\treturn;\n\n\tpage_count = rd_release_sgl_table(rd_dev, rd_dev->sg_table_array,\n\t\t\t\t\t  rd_dev->sg_table_count);\n\n\tpr_debug(\"CORE_RD[%u] - Released device space for Ramdisk\"\n\t\t\" Device ID: %u, pages %u in %u tables total bytes %lu\\n\",\n\t\trd_dev->rd_host->rd_host_id, rd_dev->rd_dev_id, page_count,\n\t\trd_dev->sg_table_count, (unsigned long)page_count * PAGE_SIZE);\n\n\trd_dev->sg_table_array = NULL;\n\trd_dev->sg_table_count = 0;\n}",
+            106
+        ],
+        [
+            "drivers/target/target_core_rd.c",
+            "rd_allocate_sgl_table",
+            "static int rd_allocate_sgl_table(struct rd_dev *rd_dev, struct rd_dev_sg_table *sg_table, /* <=== rd_allocate_sgl_table */ \n\t\t\t\t u32 total_sg_needed, unsigned char init_payload)\n{\n\tu32 i = 0, j, page_offset = 0, sg_per_table;\n\tu32 max_sg_per_table = (RD_MAX_ALLOCATION_SIZE /\n\t\t\t\tsizeof(struct scatterlist));\n\tstruct page *pg;\n\tstruct scatterlist *sg;\n\tunsigned char *p;\n\n\twhile (total_sg_needed) {\n\t\tsg_per_table = (total_sg_needed > max_sg_per_table) ?\n\t\t\tmax_sg_per_table : total_sg_needed;\n\n\t\tsg = kzalloc(sg_per_table * sizeof(struct scatterlist),\n\t\t\t\tGFP_KERNEL);\n\t\tif (!sg) {\n\t\t\tpr_err(\"Unable to allocate scatterlist array\"\n\t\t\t\t\" for struct rd_dev\\n\");\n\t\t\treturn -ENOMEM;\n\t\t}\n\n\t\tsg_init_table(sg, sg_per_table);\n\n\t\tsg_table[i].sg_table = sg;\n\t\tsg_table[i].rd_sg_count = sg_per_table;\n\t\tsg_table[i].page_start_offset = page_offset;\n\t\tsg_table[i++].page_end_offset = (page_offset + sg_per_table)\n\t\t\t\t\t\t- 1;\n\n\t\tfor (j = 0; j < sg_per_table; j++) {\n\t\t\tpg = alloc_pages(GFP_KERNEL, 0);\n\t\t\tif (!pg) {\n\t\t\t\tpr_err(\"Unable to allocate scatterlist\"\n\t\t\t\t\t\" pages for struct rd_dev_sg_table\\n\");\n\t\t\t\treturn -ENOMEM;\n\t\t\t}\n\t\t\tsg_assign_page(&sg[j], pg);\n\t\t\tsg[j].length = PAGE_SIZE;\n\n\t\t\tp = kmap(pg);\n\t\t\tmemset(p, init_payload, PAGE_SIZE);\n\t\t\tkunmap(pg);\n\t\t}\n\n\t\tpage_offset += sg_per_table;\n\t\ttotal_sg_needed -= sg_per_table;\n\t}\n\n\treturn 0;\n}",
+            130
+        ],
+        [
+            "drivers/target/target_core_rd.c",
+            "rd_build_device_space",
+            "static int rd_build_device_space(struct rd_dev *rd_dev) /* <=== rd_build_device_space */ \n{\n\tstruct rd_dev_sg_table *sg_table;\n\tu32 sg_tables, total_sg_needed;\n\tu32 max_sg_per_table = (RD_MAX_ALLOCATION_SIZE /\n\t\t\t\tsizeof(struct scatterlist));\n\tint rc;\n\n\tif (rd_dev->rd_page_count <= 0) {\n\t\tpr_err(\"Illegal page count: %u for Ramdisk device\\n\",\n\t\t       rd_dev->rd_page_count);\n\t\treturn -EINVAL;\n\t}\n\n\t/* Don't need backing pages for NULLIO */\n\tif (rd_dev->rd_flags & RDF_NULLIO)\n\t\treturn 0;\n\n\ttotal_sg_needed = rd_dev->rd_page_count;\n\n\tsg_tables = (total_sg_needed / max_sg_per_table) + 1;\n\n\tsg_table = kzalloc(sg_tables * sizeof(struct rd_dev_sg_table), GFP_KERNEL);\n\tif (!sg_table) {\n\t\tpr_err(\"Unable to allocate memory for Ramdisk\"\n\t\t       \" scatterlist tables\\n\");\n\t\treturn -ENOMEM;\n\t}\n\n\trd_dev->sg_table_array = sg_table;\n\trd_dev->sg_table_count = sg_tables;\n\n\trc = rd_allocate_sgl_table(rd_dev, sg_table, total_sg_needed, 0x00);\n\tif (rc)\n\t\treturn rc;\n\n\tpr_debug(\"CORE_RD[%u] - Built Ramdisk Device ID: %u space of\"\n\t\t \" %u pages in %u tables\\n\", rd_dev->rd_host->rd_host_id,\n\t\t rd_dev->rd_dev_id, rd_dev->rd_page_count,\n\t\t rd_dev->sg_table_count);\n\n\treturn 0;\n}",
+            182
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "drivers/target/target_core_rd.c",
+            "rd_release_device_space",
+            "static void rd_release_device_space(struct rd_dev *rd_dev) /* <=== rd_release_device_space */ \n{\n\tu32 i, j, page_count = 0, sg_per_table;\n\tstruct rd_dev_sg_table *sg_table;\n\tstruct page *pg;\n\tstruct scatterlist *sg;\n\n\tif (!rd_dev->sg_table_array || !rd_dev->sg_table_count)\n\t\treturn;\n\n\tsg_table = rd_dev->sg_table_array;\n\n\tfor (i = 0; i < rd_dev->sg_table_count; i++) {\n\t\tsg = sg_table[i].sg_table;\n\t\tsg_per_table = sg_table[i].rd_sg_count;\n\n\t\tfor (j = 0; j < sg_per_table; j++) {\n\t\t\tpg = sg_page(&sg[j]);\n\t\t\tif (pg) {\n\t\t\t\t__free_page(pg);\n\t\t\t\tpage_count++;\n\t\t\t}\n\t\t}\n\n\t\tkfree(sg);\n\t}\n\n\tpr_debug(\"CORE_RD[%u] - Released device space for Ramdisk\"\n\t\t\" Device ID: %u, pages %u in %u tables total bytes %lu\\n\",\n\t\trd_dev->rd_host->rd_host_id, rd_dev->rd_dev_id, page_count,\n\t\trd_dev->sg_table_count, (unsigned long)page_count * PAGE_SIZE);\n\n\tkfree(sg_table);\n\trd_dev->sg_table_array = NULL;\n\trd_dev->sg_table_count = 0;\n}",
+            85
+        ],
+        [
+            "drivers/target/target_core_rd.c",
+            "rd_build_device_space",
+            "static int rd_build_device_space(struct rd_dev *rd_dev) /* <=== rd_build_device_space */ \n{\n\tu32 i = 0, j, page_offset = 0, sg_per_table, sg_tables, total_sg_needed;\n\tu32 max_sg_per_table = (RD_MAX_ALLOCATION_SIZE /\n\t\t\t\tsizeof(struct scatterlist));\n\tstruct rd_dev_sg_table *sg_table;\n\tstruct page *pg;\n\tstruct scatterlist *sg;\n\n\tif (rd_dev->rd_page_count <= 0) {\n\t\tpr_err(\"Illegal page count: %u for Ramdisk device\\n\",\n\t\t\trd_dev->rd_page_count);\n\t\treturn -EINVAL;\n\t}\n\n\t/* Don't need backing pages for NULLIO */\n\tif (rd_dev->rd_flags & RDF_NULLIO)\n\t\treturn 0;\n\n\ttotal_sg_needed = rd_dev->rd_page_count;\n\n\tsg_tables = (total_sg_needed / max_sg_per_table) + 1;\n\n\tsg_table = kzalloc(sg_tables * sizeof(struct rd_dev_sg_table), GFP_KERNEL);\n\tif (!sg_table) {\n\t\tpr_err(\"Unable to allocate memory for Ramdisk\"\n\t\t\t\" scatterlist tables\\n\");\n\t\treturn -ENOMEM;\n\t}\n\n\trd_dev->sg_table_array = sg_table;\n\trd_dev->sg_table_count = sg_tables;\n\n\twhile (total_sg_needed) {\n\t\tsg_per_table = (total_sg_needed > max_sg_per_table) ?\n\t\t\tmax_sg_per_table : total_sg_needed;\n\n\t\tsg = kzalloc(sg_per_table * sizeof(struct scatterlist),\n\t\t\t\tGFP_KERNEL);\n\t\tif (!sg) {\n\t\t\tpr_err(\"Unable to allocate scatterlist array\"\n\t\t\t\t\" for struct rd_dev\\n\");\n\t\t\treturn -ENOMEM;\n\t\t}\n\n\t\tsg_init_table(sg, sg_per_table);\n\n\t\tsg_table[i].sg_table = sg;\n\t\tsg_table[i].rd_sg_count = sg_per_table;\n\t\tsg_table[i].page_start_offset = page_offset;\n\t\tsg_table[i++].page_end_offset = (page_offset + sg_per_table)\n\t\t\t\t\t\t- 1;\n\n\t\tfor (j = 0; j < sg_per_table; j++) {\n\t\t\tpg = alloc_pages(GFP_KERNEL, 0);\n\t\t\tif (!pg) {\n\t\t\t\tpr_err(\"Unable to allocate scatterlist\"\n\t\t\t\t\t\" pages for struct rd_dev_sg_table\\n\");\n\t\t\t\treturn -ENOMEM;\n\t\t\t}\n\t\t\tsg_assign_page(&sg[j], pg);\n\t\t\tsg[j].length = PAGE_SIZE;\n\t\t}\n\n\t\tpage_offset += sg_per_table;\n\t\ttotal_sg_needed -= sg_per_table;\n\t}\n\n\tpr_debug(\"CORE_RD[%u] - Built Ramdisk Device ID: %u space of\"\n\t\t\" %u pages in %u tables\\n\", rd_dev->rd_host->rd_host_id,\n\t\trd_dev->rd_dev_id, rd_dev->rd_page_count,\n\t\trd_dev->sg_table_count);\n\n\treturn 0;\n}",
+            127
+        ]
+    ]
+}

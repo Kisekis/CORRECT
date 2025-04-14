@@ -1,0 +1,270 @@
+{
+    "calleeMethods": [
+        [
+            "src/irc/core/irc.c",
+            "strip_params_colon",
+            "static void strip_params_colon(char *const params) /* <=== strip_params_colon */ \n{\n\tchar *s;\n\n\tif (params == NULL) {\n\t\treturn;\n\t}\n\n\ts = params;\n\twhile (*s != '\\0') {\n\t\tif (*s == ':') {\n\t\t\tmemmove(s, s+1, strlen(s+1)+1);\n\t\t\treturn;\n\t\t}\n\n\t\ts = strchr(s, ' ');\n\t\tif (s == NULL) {\n\t\t\treturn;\n\t\t}\n\n\t\twhile (*s == ' ') {\n\t\t\ts++;\n\t\t}\n\t}\n}",
+            2
+        ],
+        [
+            "src/core/rawlog.h",
+            "rawlog_output",
+            "void rawlog_output(RAWLOG_REC *rawlog, const char *str); /* <=== rawlog_output */ ",
+            3
+        ],
+        [
+            "src/core/signals.c",
+            "signal_emit",
+            "int signal_emit(const char *signal, int params, ...) /* <=== signal_emit */ \n{\n\tSignal *rec;\n\tva_list va;\n\tint signal_id;\n\n\tg_return_val_if_fail(params >= 0 && params <= SIGNAL_MAX_ARGUMENTS, FALSE);\n\n\tsignal_id = signal_get_uniq_id(signal);\n\n\trec = g_hash_table_lookup(signals, GINT_TO_POINTER(signal_id));\n\tif (rec != NULL) {\n\t\tva_start(va, params);\n\t\tsignal_emit_real(rec, params, va, rec->hooks);\n\t\tva_end(va);\n\t}\n\n\treturn rec != NULL;\n}",
+            1
+        ],
+        [
+            "src/irc/core/irc.c",
+            "event_get_params",
+            "char *event_get_params(const char *data, int count, ...) /* <=== event_get_params */ \n{\n\tchar **str, *tmp, *duprec, *datad;\n\tgboolean rest;\n\tva_list args;\n\n\tg_return_val_if_fail(data != NULL, NULL);\n\n\tva_start(args, count);\n\tduprec = datad = g_strdup(data);\n\n\trest = count & PARAM_FLAG_GETREST;\n\tcount = PARAM_WITHOUT_FLAGS(count);\n\n\twhile (count-- > 0) {\n\t\tstr = (char **) va_arg(args, char **);\n\t\tif (count == 0 && rest) {\n\t\t\t/* Put the rest into the last parameter. */\n\t\t\tstrip_params_colon(datad);\n\t\t\ttmp = datad;\n\t\t} else {\n\t\t\ttmp = event_get_param(&datad);\n\t\t}\n\t\tif (str != NULL) *str = tmp;\n\t}\n\tva_end(args);\n\n\treturn duprec;\n}",
+            1
+        ],
+        [
+            "src/irc/core/irc.c",
+            "irc_send_cmd_now",
+            "void irc_send_cmd_now(IRC_SERVER_REC *server, const char *cmd) /* <=== irc_send_cmd_now */ \n{\n\tg_return_if_fail(cmd != NULL);\n\n        irc_send_cmd_full(server, cmd, TRUE, TRUE, FALSE);\n}",
+            1
+        ],
+        [
+            "src/irc/core/irc-servers.c",
+            "irc_servers_start_cmd_timeout",
+            "void irc_servers_start_cmd_timeout(void) /* <=== irc_servers_start_cmd_timeout */ \n{\n\tif (cmd_tag == -1)\n\t\tcmd_tag = g_timeout_add(500, (GSourceFunc) servers_cmd_timeout, NULL);\n}",
+            3
+        ],
+        [
+            "src/irc/core/irc.c",
+            "irc_send_cmd_full",
+            "void irc_send_cmd_full(IRC_SERVER_REC *server, const char *cmd, /* <=== irc_send_cmd_full */ \n\t\t       int send_now, int immediate, int raw)\n{\n\tGString *str;\n\tint len;\n\tgboolean server_supports_tag;\n\n\tg_return_if_fail(server != NULL);\n\tg_return_if_fail(cmd != NULL);\n\n\tif (server->connection_lost)\n\t\treturn;\n\n\tstr = g_string_sized_new(MAX_IRC_USER_TAGS_LEN + 2 /* `@'+SPACE */ +\n\t\t\t\t server->max_message_len + 2 /* CR+LF */ + 1 /* `\\0' */);\n\n\tif (server->cmdcount == 0)\n\t\tirc_servers_start_cmd_timeout();\n\tserver->cmdcount++;\n\n\tif (!raw) {\n\t\tconst char *tmp = cmd;\n\n\t\tserver_supports_tag = server->cap_supported != NULL &&\n\t\t\tg_hash_table_lookup_extended(server->cap_supported, CAP_MESSAGE_TAGS, NULL, NULL);\n\n\t\tif (*cmd == '@' && server_supports_tag) {\n\t\t\tconst char *end;\n\n\t\t\twhile (*tmp != ' ' && *tmp != '\\0')\n\t\t\t\ttmp++;\n\n\t\t\tend = tmp;\n\n\t\t\tif (tmp - cmd > MAX_IRC_USER_TAGS_LEN) {\n\t\t\t\tg_warning(\"irc_send_cmd_full(); tags too long(%ld)\", tmp - cmd);\n\t\t\t\twhile (tmp - cmd > MAX_IRC_USER_TAGS_LEN && cmd != tmp - 1) tmp--;\n\t\t\t\twhile (*tmp != ',' && cmd != tmp - 1) tmp--;\n\t\t\t}\n\t\t\tif (cmd != tmp)\n\t\t\t\tg_string_append_len(str, cmd, tmp - cmd);\n\n\t\t\ttmp = end;\n\t\t\twhile (*tmp == ' ') tmp++;\n\n\t\t\tif (*tmp != '\\0' && str->len > 0)\n\t\t\t\tg_string_append_c(str, ' ');\n\t\t}\n\t\tlen = strlen(tmp);\n\n\t\t/* check that we don't send any longer commands\n\t\t   than 510 bytes (2 bytes for CR+LF) */\n\t\tg_string_append_len(str, tmp, len > server->max_message_len ?\n\t\t\t\t    server->max_message_len : len);\n\t} else {\n\t\tg_string_append(str, cmd);\n\t}\n\n\tif (send_now) {\n\t\trawlog_output(server->rawlog, str->str);\n\t\tserver_redirect_command(server, str->str, server->redirect_next);\n                server->redirect_next = NULL;\n\t}\n\n\tif (!raw) {\n                /* Add CR+LF to command */\n\t\tg_string_append_c(str, 13);\n\t\tg_string_append_c(str, 10);\n\t}\n\n\tif (send_now) {\n                irc_server_send_data(server, str->str, str->len);\n\t\tg_string_free(str, TRUE);\n\t} else {\n\n\t\t/* add to queue */\n\t\tif (immediate) {\n\t\t\tserver->cmdqueue = g_slist_prepend(server->cmdqueue,\n\t\t\t\t\t\t\t   server->redirect_next);\n\t\t\tserver->cmdqueue = g_slist_prepend(server->cmdqueue,\n\t\t\t\t\t\t\t   g_string_free(str, FALSE));\n\t\t} else {\n\t\t\tserver->cmdqueue = g_slist_append(server->cmdqueue,\n\t\t\t\t\t\t\t  g_string_free(str, FALSE));\n\t\t\tserver->cmdqueue = g_slist_append(server->cmdqueue,\n\t\t\t\t\t\t\t  server->redirect_next);\n\t\t}\n\t}\n        server->redirect_next = NULL;\n}",
+            2
+        ],
+        [
+            "src/irc/core/irc.c",
+            "event_get_param",
+            "char *event_get_param(char **data) /* <=== event_get_param */ \n{\n\tchar *pos;\n\n\tg_return_val_if_fail(data != NULL, NULL);\n\tg_return_val_if_fail(*data != NULL, NULL);\n\n\tif (**data == ':') {\n\t\t/* last parameter */\n\t\tpos = *data;\n\t\t*data += strlen(*data);\n\t\treturn pos+1;\n\t}\n\n\tpos = *data;\n\twhile (**data != '\\0' && **data != ' ') (*data)++;\n\tif (**data == ' ') *(*data)++ = '\\0';\n\n\treturn pos;\n}",
+            2
+        ],
+        [
+            "src/core/misc.c",
+            "gslist_free_full",
+            "void gslist_free_full (GSList *list, GDestroyNotify free_func) /* <=== gslist_free_full */ \n{\n\tGSList *tmp;\n\n\tif (list == NULL)\n\t\treturn;\n\n\tfor (tmp = list; tmp != NULL; tmp = tmp->next)\n\t\tfree_func(tmp->data);\n\n\tg_slist_free(list);\n}",
+            1
+        ],
+        [
+            "src/irc/core/irc-cap.c",
+            "parse_cap_name",
+            "static gboolean parse_cap_name(char *name, char **key, char **val) /* <=== parse_cap_name */ \n{\n\tconst char *eq;\n\n\tg_return_val_if_fail(name != NULL, FALSE);\n\tg_return_val_if_fail(name[0] != '\\0', FALSE);\n\n\teq = strchr(name, '=');\n\t/* KEY only value */\n\tif (eq == NULL) {\n\t\t*key = g_strdup(name);\n\t\t*val = NULL;\n\t/* Some values are in a KEY=VALUE form, parse them */\n\t} else {\n\t\t*key = g_strndup(name, (gsize)(eq - name));\n\t\t*val = g_strdup(eq + 1);\n\t}\n\n\treturn TRUE;\n}",
+            1
+        ],
+        [
+            "src/irc/core/irc-cap.c",
+            "irc_cap_finish_negotiation",
+            "void irc_cap_finish_negotiation (IRC_SERVER_REC *server) /* <=== irc_cap_finish_negotiation */ \n{\n\tif (server->cap_complete)\n\t\treturn;\n\n\tserver->cap_complete = TRUE;\n\tirc_send_cmd_now(server, \"CAP END\");\n\n\tsignal_emit(\"server cap end\", 1, server);\n}",
+            1
+        ],
+        [
+            "src/core/signals.c",
+            "signal_ref",
+            "#define signal_ref(signal) ++(signal)->refcount /* <=== src/core/signals.c:52:52:signal_ref:1 */ ",
+            3
+        ],
+        [
+            "src/core/signals.c",
+            "signal_hooks_clean",
+            "static void signal_hooks_clean(Signal *rec) /* <=== signal_hooks_clean */ \n{\n\tSignalHook **hook, **next;\n        int count;\n\n        count = rec->remove_count;\n        rec->remove_count = 0;\n\n\tfor (hook = &rec->hooks; *hook != NULL; hook = next) {\n\t\tnext = &(*hook)->next;\n\n\t\tif ((*hook)->func == NULL) {\n                        next = hook;\n\t\t\tsignal_remove_hook(rec, hook);\n\n\t\t\tif (--count == 0)\n                                break;\n\t\t}\n\t}\n}",
+            3
+        ],
+        [
+            "src/irc/core/irc-servers.c",
+            "irc_server_send_data",
+            "void irc_server_send_data(IRC_SERVER_REC *server, const char *data, int len) /* <=== irc_server_send_data */ \n{\n\tif (net_sendbuffer_send(server->handle, data, len) == -1) {\n\t\t/* something bad happened */\n\t\tserver->connection_lost = TRUE;\n\t\treturn;\n\t}\n\n\tg_get_current_time(&server->last_cmd);\n\n\t/* A bit kludgy way to do the flood protection. In ircnet, there\n\t   actually is 1sec / 100 bytes penalty, but we rather want to deal\n\t   with the max. 1000 bytes input buffer problem. If we send more\n\t   than that with the burst, we'll get excess flooded. */\n\tif (len < 100 || server->cmd_queue_speed <= 10)\n\t\tserver->wait_cmd.tv_sec = 0;\n\telse {\n\t\tmemcpy(&server->wait_cmd, &server->last_cmd, sizeof(GTimeVal));\n\t\tg_time_val_add(&server->wait_cmd, (2 + len/100) * G_USEC_PER_SEC);\n\t}\n}",
+            3
+        ],
+        [
+            "src/core/signals.c",
+            "signal_unref_full",
+            "static int signal_unref_full(Signal *rec, int remove) /* <=== signal_unref_full */ \n{\n        g_assert(rec->refcount > 0);\n\n\tif (--rec->refcount != 0)\n\t\treturn TRUE;\n\n\t/* remove whole signal from memory */\n\tif (rec->hooks != NULL) {\n\t\tg_error(\"signal_unref(%s) : BUG - hook list wasn't empty\",\n\t\t\tsignal_get_id_str(rec->id));\n\t}\n\n\tif (remove)\n\t\tg_hash_table_remove(signals, GINT_TO_POINTER(rec->id));\n        g_free(rec);\n\n\treturn FALSE;\n}",
+            3
+        ],
+        [
+            "src/irc/core/servers-redirect.h",
+            "server_redirect_command",
+            "void server_redirect_command(IRC_SERVER_REC *server, const char *command, /* <=== server_redirect_command */ \n\t\t\t     REDIRECT_REC *redirect);",
+            3
+        ],
+        [
+            "src/core/signals.c",
+            "signal_emit_real",
+            "static int signal_emit_real(Signal *rec, int params, va_list va, /* <=== signal_emit_real */ \n\t\t\t    SignalHook *first_hook)\n{\n\tconst void *arglist[SIGNAL_MAX_ARGUMENTS];\n\tSignal *prev_emitted_signal;\n        SignalHook *hook, *prev_emitted_hook;\n\tint i, stopped, stop_emit_count, continue_emit_count;\n\n\tfor (i = 0; i < SIGNAL_MAX_ARGUMENTS; i++)\n\t\targlist[i] = i >= params ? NULL : va_arg(va, const void *);\n\n\t/* signal_stop_by_name(\"signal\"); signal_emit(\"signal\", ...);\n\t   fails if we compare rec->stop_emit against 0. */\n\tstop_emit_count = rec->stop_emit;\n\tcontinue_emit_count = rec->continue_emit;\n\n        signal_ref(rec);\n\n\tstopped = FALSE;\n\trec->emitting++;\n\n\tprev_emitted_signal = current_emitted_signal;\n\tprev_emitted_hook = current_emitted_hook;\n\tcurrent_emitted_signal = rec;\n\n\tfor (hook = first_hook; hook != NULL; hook = hook->next) {\n\t\tif (hook->func == NULL)\n\t\t\tcontinue; /* removed */\n\n\t\tcurrent_emitted_hook = hook;\n#if SIGNAL_MAX_ARGUMENTS != 6\n#  error SIGNAL_MAX_ARGUMENTS changed - update code\n#endif\n                signal_user_data = hook->user_data;\n\t\thook->func(arglist[0], arglist[1], arglist[2], arglist[3],\n\t\t\t   arglist[4], arglist[5]);\n\n\t\tif (rec->continue_emit != continue_emit_count)\n\t\t\trec->continue_emit--;\n\n\t\tif (rec->stop_emit != stop_emit_count) {\n\t\t\tstopped = TRUE;\n\t\t\trec->stop_emit--;\n\t\t\tbreak;\n\t\t}\n\t}\n\n\tcurrent_emitted_signal = prev_emitted_signal;\n\tcurrent_emitted_hook = prev_emitted_hook;\n\n\trec->emitting--;\n\tsignal_user_data = NULL;\n\n\tif (!rec->emitting) {\n\t\tg_assert(rec->stop_emit == 0);\n\t\tg_assert(rec->continue_emit == 0);\n\n                if (rec->remove_count > 0)\n\t\t\tsignal_hooks_clean(rec);\n\t}\n\n        signal_unref(rec);\n\treturn stopped;\n}",
+            2
+        ],
+        [
+            "src/core/signals.c",
+            "signal_unref",
+            "#define signal_unref(signal) (signal_unref_full(signal, TRUE)) /* <=== src/core/signals.c:53:53:signal_unref:1 */ ",
+            3
+        ],
+        [
+            "src/irc/core/irc-cap.c",
+            "cap_emit_signal",
+            "static void cap_emit_signal (IRC_SERVER_REC *server, char *cmd, char *args) /* <=== cap_emit_signal */ \n{\n\tchar *signal_name;\n\n\tsignal_name = g_strdup_printf(\"server cap %s %s\", cmd, args? args: \"\");\n\tsignal_emit(signal_name, 1, server);\n\tg_free(signal_name);\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <irssi/src/core/signals.h>",
+        "#include <irssi/src/irc/core/irc-cap.h>",
+        "#include \"module.h\"",
+        "#include <irssi/src/irc/core/irc-servers.h>",
+        "#include <irssi/src/core/misc.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct _IRC_SERVER_REC IRC_SERVER_REC;",
+            "IRC_SERVER_REC"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/irc/core/irc-cap.c": [
+            109,
+            116,
+            117,
+            122,
+            123,
+            127,
+            128,
+            129,
+            139,
+            140,
+            141,
+            142,
+            147,
+            148,
+            150,
+            151,
+            153,
+            156,
+            159,
+            162,
+            163,
+            167,
+            170,
+            172,
+            179,
+            180,
+            183,
+            185,
+            188,
+            191,
+            192,
+            193,
+            194,
+            195,
+            197,
+            202,
+            203,
+            206,
+            207,
+            208,
+            210,
+            213,
+            217,
+            241,
+            249,
+            250,
+            253,
+            254,
+            258,
+            259,
+            289
+        ]
+    },
+    "visitedLines_before": {
+        "src/irc/core/irc-cap.c": [
+            109,
+            116,
+            117,
+            122,
+            123,
+            127,
+            128,
+            129,
+            139,
+            140,
+            141,
+            142,
+            147,
+            148,
+            150,
+            151,
+            153,
+            156,
+            159,
+            162,
+            163,
+            167,
+            170,
+            172,
+            179,
+            180,
+            183,
+            185,
+            188,
+            191,
+            192,
+            193,
+            194,
+            195,
+            197,
+            202,
+            203,
+            206,
+            207,
+            208,
+            210,
+            213,
+            217,
+            241,
+            249,
+            250,
+            253,
+            254,
+            258,
+            259,
+            289
+        ]
+    },
+    "visitedParams": {
+        "src/irc/core/irc-cap.c": [
+            [
+                "IRC_SERVER_REC *server",
+                "event_cap"
+            ],
+            [
+                "char *args",
+                "event_cap"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/irc/core/irc-cap.c",
+            "event_cap",
+            "static void event_cap (IRC_SERVER_REC *server, char *args, char *nick, char *address) /* <=== event_cap */ \n{\n\tGSList *tmp;\n\tGString *cmd;\n\tchar *params, *evt, *list, *star, **caps;\n\tint i, caps_length, disable, avail_caps, multiline;\n\n\tparams = event_get_params(args, 4, NULL, &evt, &star, &list);\n\tif (params == NULL)\n\t\treturn;\n\n\t/* Multiline responses have an additional parameter and we have to do\n\t * this stupid dance to parse them */\n\tif (!g_ascii_strcasecmp(evt, \"LS\") && !strcmp(star, \"*\")) {\n\t\tmultiline = TRUE;\n\t}\n\t/* This branch covers the '*' parameter isn't present, adjust the\n\t * parameter pointer to compensate for this */\n\telse if (list[0] == '\\0') {\n\t\tmultiline = FALSE;\n\t\tlist = star;\n\t}\n\t/* Malformed request, terminate the negotiation */\n\telse {\n\t\tirc_cap_finish_negotiation(server);\n\t\tg_warn_if_reached();\n\t\treturn;\n\t}\n\n\t/* The table is created only when needed */\n\tif (server->cap_supported == NULL) {\n\t\tserver->cap_supported = g_hash_table_new_full(g_str_hash,\n\t\t\t\t\t\t\t      g_str_equal,\n\t\t\t\t\t\t\t      g_free, g_free);\n\t}\n\n\t/* Strip the trailing whitespaces before splitting the string, some servers send responses with\n\t * superfluous whitespaces that g_strsplit the interprets as tokens */\n\tcaps = g_strsplit(g_strchomp(list), \" \", -1);\n\tcaps_length = g_strv_length(caps);\n\n\tif (!g_ascii_strcasecmp(evt, \"LS\")) {\n\t\tif (!server->cap_in_multiline) {\n\t\t\t/* Throw away everything and start from scratch */\n\t\t\tg_hash_table_remove_all(server->cap_supported);\n\t\t}\n\n\t\tserver->cap_in_multiline = multiline;\n\n\t\t/* Create a list of the supported caps */\n\t\tfor (i = 0; i < caps_length; i++) {\n\t\t\tchar *key, *val;\n\n\t\t\tif (!parse_cap_name(caps[i], &key, &val)) {\n\t\t\t\tg_warning(\"Invalid CAP %s key/value pair\", evt);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tif (g_hash_table_lookup_extended(server->cap_supported, key, NULL, NULL)) {\n\t\t\t\t/* The specification doesn't say anything about\n\t\t\t\t * duplicated values, let's just warn the user */\n\t\t\t\tg_warning(\"The server sent the %s capability twice\", key);\n\t\t\t}\n\t\t\tg_hash_table_replace(server->cap_supported, key, val);\n\t\t}\n\n\t\t/* A multiline response is always terminated by a normal one,\n\t\t * wait until we receive that one to require any CAP */\n\t\tif (multiline == FALSE) {\n\t\t\t/* No CAP has been requested */\n\t\t\tif (server->cap_queue == NULL) {\n\t\t\t\tirc_cap_finish_negotiation(server);\n\t\t\t}\n\t\t\telse {\n\t\t\t\tcmd = g_string_new(\"CAP REQ :\");\n\n\t\t\t\tavail_caps = 0;\n\n\t\t\t\t/* To process the queue in order, we need to reverse the stack once */\n\t\t\t\tserver->cap_queue = g_slist_reverse(server->cap_queue);\n\n\t\t\t\t/* Check whether the cap is supported by the server */\n\t\t\t\tfor (tmp = server->cap_queue; tmp != NULL; tmp = tmp->next) {\n\t\t\t\t\tif (g_hash_table_lookup_extended(server->cap_supported, tmp->data, NULL, NULL)) {\n\t\t\t\t\t\tif (avail_caps > 0)\n\t\t\t\t\t\t\tg_string_append_c(cmd, ' ');\n\t\t\t\t\t\tg_string_append(cmd, tmp->data);\n\n\t\t\t\t\t\tavail_caps++;\n\t\t\t\t\t}\n\t\t\t\t}\n\n\t\t\t\t/* Clear the queue here */\n\t\t\t\tgslist_free_full(server->cap_queue, (GDestroyNotify) g_free);\n\t\t\t\tserver->cap_queue = NULL;\n\n\t\t\t\t/* If the server doesn't support any cap we requested close the negotiation here */\n\t\t\t\tif (avail_caps > 0) {\n\t\t\t\t\tsignal_emit(\"server cap req\", 2, server, cmd->str + sizeof(\"CAP REQ :\") - 1);\n\t\t\t\t\tirc_send_cmd_now(server, cmd->str);\n\t\t\t\t} else {\n\t\t\t\t\tirc_cap_finish_negotiation(server);\n\t\t\t\t}\n\n\t\t\t\tg_string_free(cmd, TRUE);\n\t\t\t}\n\t\t}\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"ACK\")) {\n\t\tint got_sasl = FALSE;\n\n\t\t/* Emit a signal for every ack'd cap */\n\t\tfor (i = 0; i < caps_length; i++) {\n\t\t\tdisable = (*caps[i] == '-');\n\n\t\t\tif (disable)\n\t\t\t\tserver->cap_active = gslist_delete_string(server->cap_active, caps[i] + 1, g_free);\n\t\t\telse\n\t\t\t\tserver->cap_active = g_slist_prepend(server->cap_active, g_strdup(caps[i]));\n\n\t\t\tif (!strcmp(caps[i], \"sasl\"))\n\t\t\t\tgot_sasl = TRUE;\n\n\t\t\tcap_emit_signal(server, \"ack\", caps[i]);\n\t\t}\n\n\t\t/* Hopefully the server has ack'd all the caps requested and we're ready to terminate the\n\t\t * negotiation, unless sasl was requested. In this case we must not terminate the negotiation\n\t\t * until the sasl handshake is over. */\n\t\tif (got_sasl == FALSE)\n\t\t\tirc_cap_finish_negotiation(server);\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"NAK\")) {\n\t\tg_warning(\"The server answered with a NAK to our CAP request, this should not happen\");\n\n\t\t/* A NAK'd request means that a required cap can't be enabled or disabled, don't update the\n\t\t * list of active caps and notify the listeners. */\n\t\tfor (i = 0; i < caps_length; i++)\n\t\t\tcap_emit_signal(server, \"nak\", caps[i]);\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"NEW\")) {\n\t\tfor (i = 0; i < caps_length; i++) {\n\t\t\tchar *key, *val;\n\n\t\t\tif (!parse_cap_name(caps[i], &key, &val)) {\n\t\t\t\tg_warning(\"Invalid CAP %s key/value pair\", evt);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tg_hash_table_replace(server->cap_supported, key, val);\n\t\t\tcap_emit_signal(server, \"new\", key);\n\t\t}\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"DEL\")) {\n\t\tfor (i = 0; i < caps_length; i++) {\n\t\t\tchar *key, *val;\n\n\t\t\tif (!parse_cap_name(caps[i], &key, &val)) {\n\t\t\t\tg_warning(\"Invalid CAP %s key/value pair\", evt);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tg_hash_table_remove(server->cap_supported, key);\n\t\t\tcap_emit_signal(server, \"delete\", key);\n\t\t\t/* The server removed this CAP, remove it from the list\n\t\t\t * of the active ones if we had requested it */\n\t\t\tserver->cap_active = gslist_delete_string(server->cap_active, key, g_free);\n\t\t\t/* We don't transfer the ownership of those two\n\t\t\t * variables this time, just free them when we're done. */\n\t\t\tg_free(key);\n\t\t\tg_free(val);\n\t\t}\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"LIST\")) {\n\t\t/* do nothing, fe-cap will handle it */\n\t}\n\telse {\n\t\tg_warning(\"Unhandled CAP subcommand %s\", evt);\n\t}\n\n\tg_strfreev(caps);\n\tg_free(params);\n}",
+            109
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/irc/core/irc-cap.c",
+            "event_cap",
+            "static void event_cap (IRC_SERVER_REC *server, char *args, char *nick, char *address) /* <=== event_cap */ \n{\n\tGSList *tmp;\n\tGString *cmd;\n\tchar *params, *evt, *list, *star, **caps;\n\tint i, caps_length, disable, avail_caps, multiline;\n\n\tparams = event_get_params(args, 4, NULL, &evt, &star, &list);\n\tif (params == NULL)\n\t\treturn;\n\n\t/* Multiline responses have an additional parameter and we have to do\n\t * this stupid dance to parse them */\n\tif (!g_ascii_strcasecmp(evt, \"LS\") && !strcmp(star, \"*\")) {\n\t\tmultiline = TRUE;\n\t}\n\t/* This branch covers the '*' parameter isn't present, adjust the\n\t * parameter pointer to compensate for this */\n\telse if (list[0] == '\\0') {\n\t\tmultiline = FALSE;\n\t\tlist = star;\n\t}\n\t/* Malformed request, terminate the negotiation */\n\telse {\n\t\tirc_cap_finish_negotiation(server);\n\t\tg_warn_if_reached();\n\t\treturn;\n\t}\n\n\t/* The table is created only when needed */\n\tif (server->cap_supported == NULL) {\n\t\tserver->cap_supported = g_hash_table_new_full(g_str_hash,\n\t\t\t\t\t\t\t      g_str_equal,\n\t\t\t\t\t\t\t      g_free, g_free);\n\t}\n\n\t/* Strip the trailing whitespaces before splitting the string, some servers send responses with\n\t * superfluous whitespaces that g_strsplit the interprets as tokens */\n\tcaps = g_strsplit(g_strchomp(list), \" \", -1);\n\tcaps_length = g_strv_length(caps);\n\n\tif (!g_ascii_strcasecmp(evt, \"LS\")) {\n\t\tif (!server->cap_in_multiline) {\n\t\t\t/* Throw away everything and start from scratch */\n\t\t\tg_hash_table_remove_all(server->cap_supported);\n\t\t}\n\n\t\tserver->cap_in_multiline = multiline;\n\n\t\t/* Create a list of the supported caps */\n\t\tfor (i = 0; i < caps_length; i++) {\n\t\t\tchar *key, *val;\n\n\t\t\tif (!parse_cap_name(caps[i], &key, &val)) {\n\t\t\t\tg_warning(\"Invalid CAP %s key/value pair\", evt);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tif (g_hash_table_lookup_extended(server->cap_supported, key, NULL, NULL)) {\n\t\t\t\t/* The specification doesn't say anything about\n\t\t\t\t * duplicated values, let's just warn the user */\n\t\t\t\tg_warning(\"The server sent the %s capability twice\", key);\n\t\t\t}\n\t\t\tg_hash_table_insert(server->cap_supported, key, val);\n\t\t}\n\n\t\t/* A multiline response is always terminated by a normal one,\n\t\t * wait until we receive that one to require any CAP */\n\t\tif (multiline == FALSE) {\n\t\t\t/* No CAP has been requested */\n\t\t\tif (server->cap_queue == NULL) {\n\t\t\t\tirc_cap_finish_negotiation(server);\n\t\t\t}\n\t\t\telse {\n\t\t\t\tcmd = g_string_new(\"CAP REQ :\");\n\n\t\t\t\tavail_caps = 0;\n\n\t\t\t\t/* To process the queue in order, we need to reverse the stack once */\n\t\t\t\tserver->cap_queue = g_slist_reverse(server->cap_queue);\n\n\t\t\t\t/* Check whether the cap is supported by the server */\n\t\t\t\tfor (tmp = server->cap_queue; tmp != NULL; tmp = tmp->next) {\n\t\t\t\t\tif (g_hash_table_lookup_extended(server->cap_supported, tmp->data, NULL, NULL)) {\n\t\t\t\t\t\tif (avail_caps > 0)\n\t\t\t\t\t\t\tg_string_append_c(cmd, ' ');\n\t\t\t\t\t\tg_string_append(cmd, tmp->data);\n\n\t\t\t\t\t\tavail_caps++;\n\t\t\t\t\t}\n\t\t\t\t}\n\n\t\t\t\t/* Clear the queue here */\n\t\t\t\tgslist_free_full(server->cap_queue, (GDestroyNotify) g_free);\n\t\t\t\tserver->cap_queue = NULL;\n\n\t\t\t\t/* If the server doesn't support any cap we requested close the negotiation here */\n\t\t\t\tif (avail_caps > 0) {\n\t\t\t\t\tsignal_emit(\"server cap req\", 2, server, cmd->str + sizeof(\"CAP REQ :\") - 1);\n\t\t\t\t\tirc_send_cmd_now(server, cmd->str);\n\t\t\t\t} else {\n\t\t\t\t\tirc_cap_finish_negotiation(server);\n\t\t\t\t}\n\n\t\t\t\tg_string_free(cmd, TRUE);\n\t\t\t}\n\t\t}\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"ACK\")) {\n\t\tint got_sasl = FALSE;\n\n\t\t/* Emit a signal for every ack'd cap */\n\t\tfor (i = 0; i < caps_length; i++) {\n\t\t\tdisable = (*caps[i] == '-');\n\n\t\t\tif (disable)\n\t\t\t\tserver->cap_active = gslist_delete_string(server->cap_active, caps[i] + 1, g_free);\n\t\t\telse\n\t\t\t\tserver->cap_active = g_slist_prepend(server->cap_active, g_strdup(caps[i]));\n\n\t\t\tif (!strcmp(caps[i], \"sasl\"))\n\t\t\t\tgot_sasl = TRUE;\n\n\t\t\tcap_emit_signal(server, \"ack\", caps[i]);\n\t\t}\n\n\t\t/* Hopefully the server has ack'd all the caps requested and we're ready to terminate the\n\t\t * negotiation, unless sasl was requested. In this case we must not terminate the negotiation\n\t\t * until the sasl handshake is over. */\n\t\tif (got_sasl == FALSE)\n\t\t\tirc_cap_finish_negotiation(server);\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"NAK\")) {\n\t\tg_warning(\"The server answered with a NAK to our CAP request, this should not happen\");\n\n\t\t/* A NAK'd request means that a required cap can't be enabled or disabled, don't update the\n\t\t * list of active caps and notify the listeners. */\n\t\tfor (i = 0; i < caps_length; i++)\n\t\t\tcap_emit_signal(server, \"nak\", caps[i]);\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"NEW\")) {\n\t\tfor (i = 0; i < caps_length; i++) {\n\t\t\tchar *key, *val;\n\n\t\t\tif (!parse_cap_name(caps[i], &key, &val)) {\n\t\t\t\tg_warning(\"Invalid CAP %s key/value pair\", evt);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tg_hash_table_insert(server->cap_supported, key, val);\n\t\t\tcap_emit_signal(server, \"new\", key);\n\t\t}\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"DEL\")) {\n\t\tfor (i = 0; i < caps_length; i++) {\n\t\t\tchar *key, *val;\n\n\t\t\tif (!parse_cap_name(caps[i], &key, &val)) {\n\t\t\t\tg_warning(\"Invalid CAP %s key/value pair\", evt);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tg_hash_table_remove(server->cap_supported, key);\n\t\t\tcap_emit_signal(server, \"delete\", key);\n\t\t\t/* The server removed this CAP, remove it from the list\n\t\t\t * of the active ones if we had requested it */\n\t\t\tserver->cap_active = gslist_delete_string(server->cap_active, key, g_free);\n\t\t\t/* We don't transfer the ownership of those two\n\t\t\t * variables this time, just free them when we're done. */\n\t\t\tg_free(key);\n\t\t\tg_free(val);\n\t\t}\n\t}\n\telse if (!g_ascii_strcasecmp(evt, \"LIST\")) {\n\t\t/* do nothing, fe-cap will handle it */\n\t}\n\telse {\n\t\tg_warning(\"Unhandled CAP subcommand %s\", evt);\n\t}\n\n\tg_strfreev(caps);\n\tg_free(params);\n}",
+            109
+        ]
+    ]
+}

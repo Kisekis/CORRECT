@@ -1,0 +1,447 @@
+{
+    "calleeMethods": [
+        [
+            "src/include/k5-platform.h",
+            "zap",
+            "# define zap(ptr, len) krb5int_zap(ptr, len) /* <=== src/include/k5-platform.h:1048:1048:zap:2 */ ",
+            3
+        ],
+        [
+            "src/include/k5-int.h",
+            "k5memdup0",
+            "static inline void * /* <=== k5memdup0 */ \nk5memdup0(const void *in, size_t len, krb5_error_code *code)\n{\n    void *ptr = k5alloc(len + 1, code);\n\n    if (ptr != NULL && len > 0)\n        memcpy(ptr, in, len);\n    return ptr;\n}",
+            1
+        ],
+        [
+            "src/include/k5-int.h",
+            "ts_after",
+            "static inline krb5_boolean /* <=== ts_after */ \nts_after(krb5_timestamp a, krb5_timestamp b)\n{\n    return (uint32_t)a > (uint32_t)b;\n}",
+            3
+        ],
+        [
+            "src/util/profile/prof_get.c",
+            "profile_iterator",
+            "errcode_t KRB5_CALLCONV /* <=== profile_iterator */ \nprofile_iterator(void **iter_p, char **ret_name, char **ret_value)\n{\n    char *name, *value;\n    errcode_t       retval;\n    struct profile_iterator *iter = *iter_p;\n    profile_t profile;\n\n    if (ret_name)\n        *ret_name = NULL;\n    if (ret_value)\n        *ret_value = NULL;\n    if (iter == NULL || iter->magic != PROF_MAGIC_ITERATOR)\n        return PROF_MAGIC_ITERATOR;\n    profile = iter->profile;\n\n    if (profile->vt) {\n        retval = profile->vt->iterator(profile->cbdata, iter->idata, &name,\n                                       &value);\n        if (retval)\n            return retval;\n        if (name == NULL) {\n            profile->vt->iterator_free(profile->cbdata, iter->idata);\n            free(iter);\n            *iter_p = NULL;\n        }\n        retval = set_results(name, value, ret_name, ret_value);\n        if (name)\n            profile->vt->free_string(profile->cbdata, name);\n        if (value)\n            profile->vt->free_string(profile->cbdata, value);\n        return retval;\n    }\n\n    retval = profile_node_iterator(&iter->idata, 0, &name, &value);\n    if (iter->idata == NULL) {\n        free(iter);\n        *iter_p = NULL;\n    }\n    if (retval)\n        return retval;\n    return set_results(name, value, ret_name, ret_value);\n}",
+            3
+        ],
+        [
+            "src/lib/crypto/krb/decrypt.c",
+            "krb5_k_decrypt",
+            "krb5_k_decrypt(krb5_context context, krb5_key key, /* <=== krb5_k_decrypt */ \n               krb5_keyusage usage, const krb5_data *cipher_state,\n               const krb5_enc_data *input, krb5_data *output)\n{\n    const struct krb5_keytypes *ktp;\n    krb5_crypto_iov iov[4];\n    krb5_error_code ret;\n    unsigned int header_len, trailer_len, plain_len;\n    char *scratch = NULL;\n\n    ktp = find_enctype(key->keyblock.enctype);\n    if (ktp == NULL)\n        return KRB5_BAD_ENCTYPE;\n\n    if (input->enctype != ENCTYPE_UNKNOWN && ktp->etype != input->enctype)\n        return KRB5_BAD_ENCTYPE;\n\n    /* Verify the input and output lengths. */\n    header_len = ktp->crypto_length(ktp, KRB5_CRYPTO_TYPE_HEADER);\n    trailer_len = ktp->crypto_length(ktp, KRB5_CRYPTO_TYPE_TRAILER);\n    if (input->ciphertext.length < header_len + trailer_len)\n        return KRB5_BAD_MSIZE;\n    plain_len = input->ciphertext.length - header_len - trailer_len;\n    if (output->length < plain_len)\n        return KRB5_BAD_MSIZE;\n\n    scratch = k5alloc(header_len + trailer_len, &ret);\n    if (scratch == NULL)\n        return ret;\n\n    iov[0].flags = KRB5_CRYPTO_TYPE_HEADER;\n    iov[0].data = make_data(scratch, header_len);\n    memcpy(iov[0].data.data, input->ciphertext.data, header_len);\n\n    iov[1].flags = KRB5_CRYPTO_TYPE_DATA;\n    iov[1].data = make_data(output->data, plain_len);\n    memcpy(iov[1].data.data, input->ciphertext.data + header_len, plain_len);\n\n    /* Use empty padding since tokens don't indicate the padding length. */\n    iov[2].flags = KRB5_CRYPTO_TYPE_PADDING;\n    iov[2].data = empty_data();\n\n    iov[3].flags = KRB5_CRYPTO_TYPE_TRAILER;\n    iov[3].data = make_data(scratch + header_len, trailer_len);\n    memcpy(iov[3].data.data, input->ciphertext.data + header_len + plain_len,\n           trailer_len);\n\n    ret = ktp->decrypt(ktp, key, usage, cipher_state, iov, 4);\n    if (ret != 0)\n        zap(output->data, plain_len);\n    else\n        output->length = plain_len;\n    zapfree(scratch, header_len + trailer_len);\n    return ret;\n}",
+            2
+        ],
+        [
+            "src/lib/crypto/krb/cf2.c",
+            "krb5_c_fx_cf2_simple",
+            "krb5_c_fx_cf2_simple(krb5_context context, /* <=== krb5_c_fx_cf2_simple */ \n                     const krb5_keyblock *k1, const char *pepper1,\n                     const krb5_keyblock *k2, const char *pepper2,\n                     krb5_keyblock **out)\n{\n    krb5_error_code ret;\n    const struct krb5_keytypes *ktp = NULL;\n    const krb5_data pepper1_data = string2data((char *)pepper1);\n    const krb5_data pepper2_data = string2data((char *)pepper2);\n    krb5_data prf1 = empty_data(), prf2 = empty_data();\n    unsigned int i;\n    krb5_keyblock *kb = NULL;\n\n    *out = NULL;\n\n    ktp = find_enctype(k1->enctype);\n    if (ktp == NULL)\n        return KRB5_BAD_ENCTYPE;\n\n    /* Generate PRF+(k1, pepper1) and PRF+(k2, kepper2). */\n    ret = alloc_data(&prf1, ktp->enc->keybytes);\n    if (ret)\n        goto cleanup;\n    ret = krb5_c_prfplus(context, k1, &pepper1_data, &prf1);\n    if (ret)\n        goto cleanup;\n    ret = alloc_data(&prf2, ktp->enc->keybytes);\n    if (ret)\n        goto cleanup;\n    ret = krb5_c_prfplus(context, k2, &pepper2_data, &prf2);\n    if (ret)\n        goto cleanup;\n\n    /* Compute the XOR of the two PRF+ values and generate a key. */\n    for (i = 0; i < prf1.length; i++)\n        prf1.data[i] ^= prf2.data[i];\n    ret = krb5int_c_init_keyblock(context, ktp->etype, ktp->enc->keylength,\n                                  &kb);\n    if (ret)\n        goto cleanup;\n    ret = (*ktp->rand2key)(&prf1, kb);\n    if (ret)\n        goto cleanup;\n\n    *out = kb;\n    kb = NULL;\n\ncleanup:\n    zapfree(prf2.data, prf2.length);\n    zapfree(prf1.data, prf1.length);\n    krb5int_c_free_keyblock(context, kb);\n    return ret;\n}",
+            1
+        ],
+        [
+            "src/include/k5-int.h",
+            "k5alloc",
+            "static inline void * /* <=== k5alloc */ \nk5alloc(size_t size, krb5_error_code *code)\n{\n    return k5calloc(1, size, code);\n}",
+            2
+        ],
+        [
+            "src/include/k5-int.h",
+            "ts_within",
+            "static inline krb5_boolean /* <=== ts_within */ \nts_within(krb5_timestamp a, krb5_timestamp b, krb5_deltat d)\n{\n    return !ts_after(a, ts_incr(b, d)) && !ts_after(b, ts_incr(a, d));\n}",
+            2
+        ],
+        [
+            "src/include/k5-int.h",
+            "make_data",
+            "static inline krb5_data /* <=== make_data */ \nmake_data(void *data, unsigned int len)\n{\n    krb5_data d;\n\n    d.magic = KV5M_DATA;\n    d.data = (char *) data;\n    d.length = len;\n    return d;\n}",
+            3
+        ],
+        [
+            "src/lib/crypto/krb/cf2.c",
+            "krb5_c_prfplus",
+            "krb5_c_prfplus(krb5_context context, const krb5_keyblock *k, /* <=== krb5_c_prfplus */ \n               const krb5_data *input, krb5_data *output)\n{\n    krb5_error_code ret;\n    krb5_data prf_in = empty_data(), prf_out = empty_data();\n    size_t prflen, nblocks, i;\n\n    /* Calculate the number of PRF invocations we will need. */\n    ret = krb5_c_prf_length(context, k->enctype, &prflen);\n    if (ret)\n        return ret;\n    nblocks = (output->length + prflen - 1)/ prflen;\n    if (nblocks > 255)\n        return E2BIG;\n\n    /* Allocate PRF input and output buffers. */\n    ret = alloc_data(&prf_in, input->length + 1);\n    if (ret)\n        goto cleanup;\n    ret = alloc_data(&prf_out, prflen);\n    if (ret)\n        goto cleanup;\n\n    /* Concatenate PRF(k, 1||input) || PRF(k, 2||input) || ... to produce the\n     * desired number of bytes. */\n    memcpy(&prf_in.data[1], input->data, input->length);\n    for (i = 0; i < nblocks; i++) {\n        prf_in.data[0] = i + 1;\n        ret = krb5_c_prf(context, k, &prf_in, &prf_out);\n        if (ret)\n            goto cleanup;\n\n        memcpy(&output->data[i * prflen], prf_out.data,\n               MIN(prflen, output->length - i * prflen));\n    }\n\ncleanup:\n    zapfree(prf_out.data, prf_out.length);\n    zapfree(prf_in.data, prf_in.length);\n    return ret;\n}",
+            2
+        ],
+        [
+            "src/lib/krb5/os/timeofday.c",
+            "krb5_check_clockskew",
+            "krb5_error_code KRB5_CALLCONV /* <=== krb5_check_clockskew */ \nkrb5_check_clockskew(krb5_context context, krb5_timestamp date)\n{\n    krb5_timestamp currenttime;\n    krb5_error_code retval;\n\n    retval = krb5_timeofday(context, &currenttime);\n    if (retval)\n        return retval;\n    if (!ts_within(date, currenttime, context->clockskew))\n        return KRB5KRB_AP_ERR_SKEW;\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "src/lib/crypto/krb/decrypt.c",
+            "krb5_c_decrypt",
+            "krb5_c_decrypt(krb5_context context, const krb5_keyblock *keyblock, /* <=== krb5_c_decrypt */ \n               krb5_keyusage usage, const krb5_data *cipher_state,\n               const krb5_enc_data *input, krb5_data *output)\n{\n    krb5_key key;\n    krb5_error_code ret;\n\n    ret = krb5_k_create_key(context, keyblock, &key);\n    if (ret != 0)\n        return ret;\n    ret = krb5_k_decrypt(context, key, usage, cipher_state, input, output);\n    krb5_k_free_key(context, key);\n    return ret;\n}",
+            1
+        ],
+        [
+            "src/include/k5-int.h",
+            "k5calloc",
+            "static inline void * /* <=== k5calloc */ \nk5calloc(size_t nmemb, size_t size, krb5_error_code *code)\n{\n    void *ptr;\n\n    /* Allocate at least one byte since zero-byte allocs may return NULL. */\n    ptr = calloc(nmemb ? nmemb : 1, size ? size : 1);\n    *code = (ptr == NULL) ? ENOMEM : 0;\n    return ptr;\n}",
+            3
+        ],
+        [
+            "src/include/k5-int.h",
+            "decode_krb5_enc_data",
+            "decode_krb5_enc_data(const krb5_data *output, krb5_enc_data **rep); /* <=== decode_krb5_enc_data */ ",
+            1
+        ],
+        [
+            "src/util/profile/prof_get.c",
+            "get_value_vt",
+            "static errcode_t /* <=== get_value_vt */ \nget_value_vt(profile_t profile, const char *const *names, char **ret_value)\n{\n    errcode_t               retval;\n    char                    **vtvalues;\n\n    retval = profile->vt->get_values(profile->cbdata, names, &vtvalues);\n    if (retval)\n        return retval;\n    *ret_value = strdup(*vtvalues);\n    if (*ret_value == NULL)\n        retval = ENOMEM;\n    profile->vt->free_values(profile->cbdata, vtvalues);\n    return retval;\n}",
+            3
+        ],
+        [
+            "src/include/k5-int.h",
+            "decode_krb5_pa_enc_ts",
+            "decode_krb5_pa_enc_ts(const krb5_data *output, krb5_pa_enc_ts **rep); /* <=== decode_krb5_pa_enc_ts */ ",
+            1
+        ],
+        [
+            "src/lib/krb5/os/timeofday.c",
+            "krb5_timeofday",
+            "krb5_error_code KRB5_CALLCONV /* <=== krb5_timeofday */ \nkrb5_timeofday(krb5_context context, krb5_timestamp *timeret)\n{\n    krb5_os_context os_ctx;\n    time_t tval;\n\n    if (context == NULL)\n        return EINVAL;\n\n    os_ctx = &context->os_context;\n    if (os_ctx->os_flags & KRB5_OS_TOFFSET_TIME) {\n        *timeret = os_ctx->time_offset;\n        return 0;\n    }\n    tval = time(0);\n    if (tval == (time_t) -1)\n        return (krb5_error_code) errno;\n    if (os_ctx->os_flags & KRB5_OS_TOFFSET_VALID)\n        tval += os_ctx->time_offset;\n    *timeret = tval;\n    return 0;\n}",
+            2
+        ],
+        [
+            "src/util/profile/prof_get.c",
+            "profile_get_string",
+            "errcode_t KRB5_CALLCONV /* <=== profile_get_string */ \nprofile_get_string(profile_t profile, const char *name, const char *subname,\n                   const char *subsubname, const char *def_val,\n                   char **ret_string)\n{\n    char            *value;\n    errcode_t       retval;\n    const char      *names[4];\n\n    if (profile) {\n        names[0] = name;\n        names[1] = subname;\n        names[2] = subsubname;\n        names[3] = 0;\n        retval = profile_get_value(profile, names, &value);\n        if (retval == 0) {\n            *ret_string = value;\n            return 0;\n        } else if (retval != PROF_NO_SECTION && retval != PROF_NO_RELATION)\n            return retval;\n    }\n\n    if (def_val) {\n        *ret_string = strdup(def_val);\n        if (*ret_string == NULL)\n            return ENOMEM;\n    } else\n        *ret_string = NULL;\n    return 0;\n}",
+            1
+        ],
+        [
+            "src/include/k5-int.h",
+            "alloc_data",
+            "static inline krb5_error_code /* <=== alloc_data */ \nalloc_data(krb5_data *data, unsigned int len)\n{\n    /* Allocate at least one byte since zero-byte allocs may return NULL. */\n    char *ptr = (char *) calloc((len > 0) ? len : 1, 1);\n\n    if (ptr == NULL)\n        return ENOMEM;\n    data->magic = KV5M_DATA;\n    data->data = ptr;\n    data->length = len;\n    return 0;\n}",
+            2
+        ],
+        [
+            "src/include/k5-int.h",
+            "strdup",
+            "extern char *strdup (const char *); /* <=== strdup */ ",
+            2
+        ],
+        [
+            "src/lib/crypto/krb/cf2.c",
+            "MIN",
+            "#define MIN(a,b) ((a) < (b) ? (a) : (b)) /* <=== src/lib/crypto/krb/cf2.c:35:35:MIN:2 */ ",
+            3
+        ],
+        [
+            "src/include/k5-int.h",
+            "KRB5_OS_TOFFSET_VALID",
+            "#define KRB5_OS_TOFFSET_VALID   1 /* <=== src/include/k5-int.h:724:724:KRB5_OS_TOFFSET_VALID:0 */ ",
+            3
+        ],
+        [
+            "src/include/k5-int.h",
+            "zapfree",
+            "static inline void /* <=== zapfree */ \nzapfree(void *ptr, size_t len)\n{\n    if (ptr != NULL) {\n        zap(ptr, len);\n        free(ptr);\n    }\n}",
+            2
+        ],
+        [
+            "src/lib/krb5/krb/kfree.c",
+            "krb5_free_pa_enc_ts",
+            "void KRB5_CALLCONV /* <=== krb5_free_pa_enc_ts */ \nkrb5_free_pa_enc_ts(krb5_context ctx, krb5_pa_enc_ts *pa_enc_ts)\n{\n    if (!pa_enc_ts)\n        return;\n    free(pa_enc_ts);\n}",
+            1
+        ],
+        [
+            "src/include/k5-int.h",
+            "krb5int_c_init_keyblock",
+            "krb5_error_code krb5int_c_init_keyblock(krb5_context, krb5_enctype enctype, /* <=== krb5int_c_init_keyblock */ \n                                        size_t length, krb5_keyblock **out);",
+            2
+        ],
+        [
+            "src/include/k5-int.h",
+            "string2data",
+            "static inline krb5_data /* <=== string2data */ \nstring2data(char *str)\n{\n    return make_data(str, strlen(str));\n}",
+            2
+        ],
+        [
+            "src/include/k5-int.h",
+            "krb5int_c_free_keyblock",
+            "void krb5int_c_free_keyblock(krb5_context, krb5_keyblock *key); /* <=== krb5int_c_free_keyblock */ ",
+            2
+        ],
+        [
+            "src/util/profile/prof_get.c",
+            "profile_iterator_free",
+            "void KRB5_CALLCONV /* <=== profile_iterator_free */ \nprofile_iterator_free(void **iter_p)\n{\n    struct profile_iterator *iter;\n    profile_t profile;\n\n    if (!iter_p)\n        return;\n    iter = *iter_p;\n    if (!iter || iter->magic != PROF_MAGIC_ITERATOR)\n        return;\n    profile = iter->profile;\n    if (profile->vt)\n        profile->vt->iterator_free(profile->cbdata, iter->idata);\n    else\n        profile_node_iterator_free(&iter->idata);\n    free(iter);\n    *iter_p = NULL;\n}",
+            3
+        ],
+        [
+            "src/lib/krb5/krb/kfree.c",
+            "krb5_free_data_contents",
+            "void KRB5_CALLCONV /* <=== krb5_free_data_contents */ \nkrb5_free_data_contents(krb5_context context, krb5_data *val)\n{\n    if (val == NULL)\n        return;\n    free(val->data);\n    val->data = NULL;\n    val->length = 0;\n}",
+            2
+        ],
+        [
+            "src/util/profile/prof_int.h",
+            "PROFILE_ITER_RELATIONS_ONLY",
+            "#define PROFILE_ITER_RELATIONS_ONLY\t0x0004 /* <=== src/util/profile/prof_int.h:108:108:PROFILE_ITER_RELATIONS_ONLY:0 */ ",
+            3
+        ],
+        [
+            "src/include/k5-int.h",
+            "empty_data",
+            "static inline krb5_data /* <=== empty_data */ \nempty_data()\n{\n    return make_data(NULL, 0);\n}",
+            2
+        ],
+        [
+            "src/util/profile/prof_get.c",
+            "profile_get_value",
+            "errcode_t profile_get_value(profile_t profile, const char **names, /* <=== profile_get_value */ \n                            char **ret_value)\n{\n    errcode_t               retval;\n    void                    *state;\n    char                    *value;\n\n    *ret_value = NULL;\n    if (!profile)\n        return PROF_NO_PROFILE;\n    if (profile->vt)\n        return get_value_vt(profile, names, ret_value);\n\n    retval = profile_iterator_create(profile, names,\n                                     PROFILE_ITER_RELATIONS_ONLY, &state);\n    if (retval)\n        return retval;\n\n    retval = profile_iterator(&state, NULL, &value);\n    if (retval)\n        goto cleanup;\n\n    if (value)\n        *ret_value = value;\n    else\n        retval = PROF_NO_RELATION;\n\ncleanup:\n    profile_iterator_free(&state);\n    return retval;\n}",
+            2
+        ],
+        [
+            "src/include/k5-int.h",
+            "ts_incr",
+            "static inline krb5_timestamp /* <=== ts_incr */ \nts_incr(krb5_timestamp ts, krb5_deltat delta)\n{\n    return (krb5_timestamp)((uint32_t)ts + (uint32_t)delta);\n}",
+            3
+        ],
+        [
+            "src/lib/krb5/krb/kfree.c",
+            "krb5_free_enc_data",
+            "void KRB5_CALLCONV /* <=== krb5_free_enc_data */ \nkrb5_free_enc_data(krb5_context context, krb5_enc_data *val)\n{\n    if (val == NULL)\n        return;\n    krb5_free_data_contents(context, &val->ciphertext);\n    free(val);\n}",
+            1
+        ],
+        [
+            "src/lib/krb5/krb/kfree.c",
+            "krb5_free_keyblock",
+            "void KRB5_CALLCONV /* <=== krb5_free_keyblock */ \nkrb5_free_keyblock(krb5_context context, krb5_keyblock *val)\n{\n    krb5int_c_free_keyblock (context, val);\n}",
+            1
+        ],
+        [
+            "src/include/k5-int.h",
+            "KRB5_OS_TOFFSET_TIME",
+            "#define KRB5_OS_TOFFSET_TIME    2 /* <=== src/include/k5-int.h:725:725:KRB5_OS_TOFFSET_TIME:0 */ ",
+            3
+        ],
+        [
+            "src/include/k5-platform.h",
+            "krb5int_zap",
+            "extern void krb5int_zap(void *ptr, size_t len); /* <=== krb5int_zap */ ",
+            3
+        ],
+        [
+            "src/util/profile/prof_get.c",
+            "profile_iterator_create",
+            "errcode_t KRB5_CALLCONV /* <=== profile_iterator_create */ \nprofile_iterator_create(profile_t profile, const char *const *names, int flags,\n                        void **ret_iter)\n{\n    struct profile_iterator *iter;\n    errcode_t retval;\n\n    *ret_iter = NULL;\n    if (!profile)\n        return PROF_NO_PROFILE;\n\n    iter = malloc(sizeof(*iter));\n    if (iter == NULL)\n        return ENOMEM;\n    iter->magic = PROF_MAGIC_ITERATOR;\n    iter->profile = profile;\n\n    /* Create the underlying iterator representation using the vtable or the\n     * built-in node iterator. */\n    if (profile->vt) {\n        if (!profile->vt->iterator_create)\n            retval = PROF_UNSUPPORTED;\n        else\n            retval = profile->vt->iterator_create(profile->cbdata, names,\n                                                  flags, &iter->idata);\n    } else {\n        retval = profile_node_iterator_create(profile, names, flags,\n                                              &iter->idata);\n    }\n    if (retval) {\n        free(iter);\n        return retval;\n    }\n\n    *ret_iter = iter;\n    return 0;\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <k5-int.h>",
+        "#include <krb5/kdcpreauth_plugin.h>",
+        "#include \"kdc_util.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct krb5_kdcpreauth_callbacks_st {\n    int vers;\n\n    krb5_deltat (*max_time_skew)(krb5_context context,\n                                 krb5_kdcpreauth_rock rock);\n\n    /*\n     * Get an array of krb5_keyblock structures containing the client keys\n     * matching the request enctypes, terminated by an entry with key type = 0.\n     * Returns ENOENT if no keys are available for the request enctypes.  Free\n     * the resulting object with the free_keys callback.\n     */\n    krb5_error_code (*client_keys)(krb5_context context,\n                                   krb5_kdcpreauth_rock rock,\n                                   krb5_keyblock **keys_out);\n\n    /* Free the result of client_keys. */\n    void (*free_keys)(krb5_context context, krb5_kdcpreauth_rock rock,\n                      krb5_keyblock *keys);\n\n    /*\n     * Get the encoded request body, which is sometimes needed for checksums.\n     * For a FAST request this is the encoded inner request body.  The returned\n     * pointer is an alias and should not be freed.\n     */\n    krb5_data *(*request_body)(krb5_context context,\n                               krb5_kdcpreauth_rock rock);\n\n    /* Get a pointer to the FAST armor key, or NULL if the request did not use\n     * FAST.  The returned pointer is an alias and should not be freed. */\n    krb5_keyblock *(*fast_armor)(krb5_context context,\n                                 krb5_kdcpreauth_rock rock);\n\n    /* Retrieve a string attribute from the client DB entry, or NULL if no such\n     * attribute is set.  Free the result with the free_string callback. */\n    krb5_error_code (*get_string)(krb5_context context,\n                                  krb5_kdcpreauth_rock rock, const char *key,\n                                  char **value_out);\n\n    /* Free the result of get_string. */\n    void (*free_string)(krb5_context context, krb5_kdcpreauth_rock rock,\n                        char *string);\n\n    /* Get a pointer to the client DB entry (returned as a void pointer to\n     * avoid a dependency on a libkdb5 type). */\n    void *(*client_entry)(krb5_context context, krb5_kdcpreauth_rock rock);\n\n    /* Get a pointer to the verto context which should be used by an\n     * asynchronous edata or verify method. */\n    struct verto_ctx *(*event_context)(krb5_context context,\n                                       krb5_kdcpreauth_rock rock);\n\n    /* End of version 1 kdcpreauth callbacks. */\n\n    /* Return true if the client DB entry contains any keys matching the\n     * request enctypes. */\n    krb5_boolean (*have_client_keys)(krb5_context context,\n                                     krb5_kdcpreauth_rock rock);\n\n    /* End of version 2 kdcpreauth callbacks. */\n\n    /*\n     * Get the decrypted client long-term key chosen according to the request\n     * enctype list, or NULL if no matching key was found.  The returned\n     * pointer is an alias and should not be freed.  If invoked from\n     * return_padata, the result will be the same as the encrypting_key\n     * parameter if it is not NULL, and will therefore reflect the modified\n     * reply key if a return_padata handler has replaced the reply key.\n     */\n    const krb5_keyblock *(*client_keyblock)(krb5_context context,\n                                            krb5_kdcpreauth_rock rock);\n\n    /* Assert an authentication indicator in the AS-REP authdata.  Duplicate\n     * indicators will be ignored. */\n    krb5_error_code (*add_auth_indicator)(krb5_context context,\n                                          krb5_kdcpreauth_rock rock,\n                                          const char *indicator);\n\n    /*\n     * Read a data value for pa_type from the request cookie, placing it in\n     * *out.  The value placed there is an alias and must not be freed.\n     * Returns true if a value for pa_type was retrieved, false if not.\n     */\n    krb5_boolean (*get_cookie)(krb5_context context, krb5_kdcpreauth_rock rock,\n                               krb5_preauthtype pa_type, krb5_data *out);\n\n    /*\n     * Set a data value for pa_type to be sent in a secure cookie in the next\n     * error response.  If pa_type is already present, the value is ignored.\n     * If the preauth mechanism has different preauth types for requests and\n     * responses, use the request type.  Secure cookies are encrypted in a key\n     * known only to the KDCs, but can be replayed within a short time window\n     * for requests using the same client principal.\n     */\n    krb5_error_code (*set_cookie)(krb5_context context,\n                                  krb5_kdcpreauth_rock rock,\n                                  krb5_preauthtype pa_type,\n                                  const krb5_data *data);\n\n    /* End of version 3 kdcpreauth callbacks. */\n\n    /*\n     * Return true if princ matches the principal named in the request or the\n     * client principal (possibly canonicalized).  If princ does not match,\n     * attempt a database lookup of princ with aliases allowed and compare the\n     * result to the client principal, returning true if it matches.\n     * Otherwise, return false.\n     */\n    krb5_boolean (*match_client)(krb5_context context,\n                                 krb5_kdcpreauth_rock rock,\n                                 krb5_principal princ);\n\n    /*\n     * Get an alias to the client DB entry principal (possibly canonicalized).\n     */\n    krb5_principal (*client_name)(krb5_context context,\n                                  krb5_kdcpreauth_rock rock);\n\n    /* End of version 4 kdcpreauth callbacks. */\n\n    /*\n     * Instruct the KDC to send a freshness token in the method data\n     * accompanying a PREAUTH_REQUIRED or PREAUTH_FAILED error, if the client\n     * indicated support for freshness tokens.  This callback should only be\n     * invoked from the edata method.\n     */\n    void (*send_freshness_token)(krb5_context context,\n                                 krb5_kdcpreauth_rock rock);\n\n    /* Validate a freshness token sent by the client.  Return 0 on success,\n     * KRB5KDC_ERR_PREAUTH_EXPIRED on error. */\n    krb5_error_code (*check_freshness_token)(krb5_context context,\n                                             krb5_kdcpreauth_rock rock,\n                                             const krb5_data *token);\n\n    /* End of version 5 kdcpreauth callbacks. */\n\n} *krb5_kdcpreauth_callbacks;",
+            "krb5_kdcpreauth_callbacks"
+        ],
+        [
+            "typedef struct krb5_kdcpreauth_modreq_st *krb5_kdcpreauth_modreq;",
+            "krb5_kdcpreauth_modreq"
+        ],
+        [
+            "typedef struct _krb5_pa_enc_ts {\n    krb5_timestamp      patimestamp;\n    krb5_int32          pausec;\n} krb5_pa_enc_ts;",
+            "krb5_pa_enc_ts"
+        ],
+        [
+            "typedef struct krb5_kdcpreauth_rock_st *krb5_kdcpreauth_rock;",
+            "krb5_kdcpreauth_rock"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/kdc/kdc_preauth_ec.c": [
+            51,
+            52,
+            53,
+            54,
+            56,
+            58,
+            59,
+            61,
+            62,
+            63,
+            64,
+            66,
+            68,
+            69,
+            71,
+            73,
+            74,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            116,
+            118,
+            119,
+            120,
+            121,
+            124,
+            125,
+            126,
+            127,
+            128,
+            129,
+            135,
+            136,
+            137,
+            138,
+            139,
+            140,
+            143,
+            144,
+            145,
+            147,
+            149,
+            150,
+            151,
+            153
+        ]
+    },
+    "visitedLines_before": {
+        "src/kdc/kdc_preauth_ec.c": [
+            51,
+            52,
+            53,
+            54,
+            56,
+            58,
+            59,
+            61,
+            62,
+            63,
+            64,
+            66,
+            68,
+            69,
+            71,
+            73,
+            74,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            115,
+            117,
+            118,
+            119,
+            120,
+            123,
+            124,
+            125,
+            126,
+            127,
+            128,
+            134,
+            135,
+            136,
+            137,
+            138,
+            139,
+            142,
+            143,
+            144,
+            146,
+            148,
+            149,
+            150,
+            152
+        ]
+    },
+    "visitedParams": {
+        "src/kdc/kdc_preauth_ec.c": [
+            [
+                "krb5_context context",
+                "ec_verify"
+            ],
+            [
+                "krb5_kdc_req *request",
+                "ec_verify"
+            ],
+            [
+                "krb5_kdcpreauth_rock rock",
+                "ec_verify"
+            ],
+            [
+                "krb5_pa_data *data",
+                "ec_verify"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/kdc/kdc_preauth_ec.c",
+            "ec_verify",
+            "static void /* <=== ec_verify */ \nec_verify(krb5_context context, krb5_data *req_pkt, krb5_kdc_req *request,\n          krb5_enc_tkt_part *enc_tkt_reply, krb5_pa_data *data,\n          krb5_kdcpreauth_callbacks cb, krb5_kdcpreauth_rock rock,\n          krb5_kdcpreauth_moddata moddata,\n          krb5_kdcpreauth_verify_respond_fn respond, void *arg)\n{\n    krb5_error_code retval = 0;\n    krb5_enc_data *enc = NULL;\n    krb5_data scratch, plain;\n    krb5_keyblock *armor_key = cb->fast_armor(context, rock);\n    krb5_pa_enc_ts *ts = NULL;\n    krb5_keyblock *client_keys = NULL;\n    krb5_keyblock *challenge_key = NULL;\n    krb5_keyblock *kdc_challenge_key;\n    krb5_kdcpreauth_modreq modreq = NULL;\n    int i = 0;\n    char *ai = NULL, *realmstr = NULL;\n    krb5_data realm = request->server->realm;\n\n    plain.data = NULL;\n\n    if (armor_key == NULL) {\n        retval = ENOENT;\n        k5_setmsg(context, ENOENT,\n                  _(\"Encrypted Challenge used outside of FAST tunnel\"));\n    }\n    scratch.data = (char *) data->contents;\n    scratch.length = data->length;\n    if (retval == 0)\n        retval = decode_krb5_enc_data(&scratch, &enc);\n    if (retval == 0) {\n        plain.data =  malloc(enc->ciphertext.length);\n        plain.length = enc->ciphertext.length;\n        if (plain.data == NULL)\n            retval = ENOMEM;\n    }\n\n    /* Check for a configured FAST ec auth indicator. */\n    if (retval == 0)\n        realmstr = k5memdup0(realm.data, realm.length, &retval);\n    if (realmstr != NULL)\n        retval = profile_get_string(context->profile, KRB5_CONF_REALMS,\n                                    realmstr,\n                                    KRB5_CONF_ENCRYPTED_CHALLENGE_INDICATOR,\n                                    NULL, &ai);\n\n    if (retval == 0)\n        retval = cb->client_keys(context, rock, &client_keys);\n    if (retval == 0) {\n        for (i = 0; client_keys[i].enctype&& (retval == 0); i++ ) {\n            retval = krb5_c_fx_cf2_simple(context,\n                                          armor_key, \"clientchallengearmor\",\n                                          &client_keys[i], \"challengelongterm\",\n                                          &challenge_key);\n            if (retval == 0)\n                retval  = krb5_c_decrypt(context, challenge_key,\n                                         KRB5_KEYUSAGE_ENC_CHALLENGE_CLIENT,\n                                         NULL, enc, &plain);\n            if (challenge_key)\n                krb5_free_keyblock(context, challenge_key);\n            challenge_key = NULL;\n            if (retval == 0)\n                break;\n            /*We failed to decrypt. Try next key*/\n            retval = 0;\n        }\n        if (client_keys[i].enctype == 0) {\n            retval = KRB5KDC_ERR_PREAUTH_FAILED;\n            k5_setmsg(context, retval,\n                      _(\"Incorrect password in encrypted challenge\"));\n        }\n    }\n    if (retval == 0)\n        retval = decode_krb5_pa_enc_ts(&plain, &ts);\n    if (retval == 0)\n        retval = krb5_check_clockskew(context, ts->patimestamp);\n    if (retval == 0) {\n        enc_tkt_reply->flags |= TKT_FLG_PRE_AUTH;\n        /*\n         * If this fails, we won't generate a reply to the client.  That may\n         * cause the client to fail, but at this point the KDC has considered\n         * this a success, so the return value is ignored.\n         */\n        if (krb5_c_fx_cf2_simple(context, armor_key, \"kdcchallengearmor\",\n                                 &client_keys[i], \"challengelongterm\",\n                                 &kdc_challenge_key) == 0) {\n            modreq = (krb5_kdcpreauth_modreq)kdc_challenge_key;\n            if (ai != NULL)\n                cb->add_auth_indicator(context, rock, ai);\n        }\n    }\n    cb->free_keys(context, rock, client_keys);\n    if (plain.data)\n        free(plain.data);\n    if (enc)\n        krb5_free_enc_data(context, enc);\n    if (ts)\n        krb5_free_pa_enc_ts(context, ts);\n    free(realmstr);\n    free(ai);\n\n    (*respond)(arg, retval, modreq, NULL, NULL);\n}",
+            51
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/kdc/kdc_preauth_ec.c",
+            "ec_verify",
+            "static void /* <=== ec_verify */ \nec_verify(krb5_context context, krb5_data *req_pkt, krb5_kdc_req *request,\n          krb5_enc_tkt_part *enc_tkt_reply, krb5_pa_data *data,\n          krb5_kdcpreauth_callbacks cb, krb5_kdcpreauth_rock rock,\n          krb5_kdcpreauth_moddata moddata,\n          krb5_kdcpreauth_verify_respond_fn respond, void *arg)\n{\n    krb5_error_code retval = 0;\n    krb5_enc_data *enc = NULL;\n    krb5_data scratch, plain;\n    krb5_keyblock *armor_key = cb->fast_armor(context, rock);\n    krb5_pa_enc_ts *ts = NULL;\n    krb5_keyblock *client_keys = NULL;\n    krb5_keyblock *challenge_key = NULL;\n    krb5_keyblock *kdc_challenge_key;\n    krb5_kdcpreauth_modreq modreq = NULL;\n    int i = 0;\n    char *ai = NULL, *realmstr = NULL;\n    krb5_data realm = request->server->realm;\n\n    plain.data = NULL;\n\n    if (armor_key == NULL) {\n        retval = ENOENT;\n        k5_setmsg(context, ENOENT,\n                  _(\"Encrypted Challenge used outside of FAST tunnel\"));\n    }\n    scratch.data = (char *) data->contents;\n    scratch.length = data->length;\n    if (retval == 0)\n        retval = decode_krb5_enc_data(&scratch, &enc);\n    if (retval == 0) {\n        plain.data =  malloc(enc->ciphertext.length);\n        plain.length = enc->ciphertext.length;\n        if (plain.data == NULL)\n            retval = ENOMEM;\n    }\n\n    /* Check for a configured FAST ec auth indicator. */\n    realmstr = k5memdup0(realm.data, realm.length, &retval);\n    if (realmstr != NULL)\n        retval = profile_get_string(context->profile, KRB5_CONF_REALMS,\n                                    realmstr,\n                                    KRB5_CONF_ENCRYPTED_CHALLENGE_INDICATOR,\n                                    NULL, &ai);\n\n    if (retval == 0)\n        retval = cb->client_keys(context, rock, &client_keys);\n    if (retval == 0) {\n        for (i = 0; client_keys[i].enctype&& (retval == 0); i++ ) {\n            retval = krb5_c_fx_cf2_simple(context,\n                                          armor_key, \"clientchallengearmor\",\n                                          &client_keys[i], \"challengelongterm\",\n                                          &challenge_key);\n            if (retval == 0)\n                retval  = krb5_c_decrypt(context, challenge_key,\n                                         KRB5_KEYUSAGE_ENC_CHALLENGE_CLIENT,\n                                         NULL, enc, &plain);\n            if (challenge_key)\n                krb5_free_keyblock(context, challenge_key);\n            challenge_key = NULL;\n            if (retval == 0)\n                break;\n            /*We failed to decrypt. Try next key*/\n            retval = 0;\n        }\n        if (client_keys[i].enctype == 0) {\n            retval = KRB5KDC_ERR_PREAUTH_FAILED;\n            k5_setmsg(context, retval,\n                      _(\"Incorrect password in encrypted challenge\"));\n        }\n    }\n    if (retval == 0)\n        retval = decode_krb5_pa_enc_ts(&plain, &ts);\n    if (retval == 0)\n        retval = krb5_check_clockskew(context, ts->patimestamp);\n    if (retval == 0) {\n        enc_tkt_reply->flags |= TKT_FLG_PRE_AUTH;\n        /*\n         * If this fails, we won't generate a reply to the client.  That may\n         * cause the client to fail, but at this point the KDC has considered\n         * this a success, so the return value is ignored.\n         */\n        if (krb5_c_fx_cf2_simple(context, armor_key, \"kdcchallengearmor\",\n                                 &client_keys[i], \"challengelongterm\",\n                                 &kdc_challenge_key) == 0) {\n            modreq = (krb5_kdcpreauth_modreq)kdc_challenge_key;\n            if (ai != NULL)\n                cb->add_auth_indicator(context, rock, ai);\n        }\n    }\n    cb->free_keys(context, rock, client_keys);\n    if (plain.data)\n        free(plain.data);\n    if (enc)\n        krb5_free_enc_data(context, enc);\n    if (ts)\n        krb5_free_pa_enc_ts(context, ts);\n    free(realmstr);\n    free(ai);\n\n    (*respond)(arg, retval, modreq, NULL, NULL);\n}",
+            51
+        ]
+    ]
+}

@@ -1,0 +1,340 @@
+{
+    "calleeMethods": [
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_alloc_any_port",
+            "static int cma_alloc_any_port(struct idr *ps, struct rdma_id_private *id_priv) /* <=== cma_alloc_any_port */ \n{\n\tstatic unsigned int last_used_port;\n\tint low, high, remaining;\n\tunsigned int rover;\n\n\tinet_get_local_port_range(&init_net, &low, &high);\n\tremaining = (high - low) + 1;\n\trover = net_random() % remaining + low;\nretry:\n\tif (last_used_port != rover &&\n\t    !idr_find(ps, (unsigned short) rover)) {\n\t\tint ret = cma_alloc_port(ps, id_priv, rover);\n\t\t/*\n\t\t * Remember previously used port number in order to avoid\n\t\t * re-using same port immediately after it is closed.\n\t\t */\n\t\tif (!ret)\n\t\t\tlast_used_port = rover;\n\t\tif (ret != -EADDRNOTAVAIL)\n\t\t\treturn ret;\n\t}\n\tif (--remaining) {\n\t\trover++;\n\t\tif ((rover < low) || (rover > high))\n\t\t\trover = low;\n\t\tgoto retry;\n\t}\n\treturn -EADDRNOTAVAIL;\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "rdma_create_id",
+            "struct rdma_cm_id *rdma_create_id(rdma_cm_event_handler event_handler, /* <=== rdma_create_id */ \n\t\t\t\t  void *context, enum rdma_port_space ps,\n\t\t\t\t  enum ib_qp_type qp_type)\n{\n\tstruct rdma_id_private *id_priv;\n\n\tid_priv = kzalloc(sizeof *id_priv, GFP_KERNEL);\n\tif (!id_priv)\n\t\treturn ERR_PTR(-ENOMEM);\n\n\tid_priv->owner = task_pid_nr(current);\n\tid_priv->state = RDMA_CM_IDLE;\n\tid_priv->id.context = context;\n\tid_priv->id.event_handler = event_handler;\n\tid_priv->id.ps = ps;\n\tid_priv->id.qp_type = qp_type;\n\tspin_lock_init(&id_priv->lock);\n\tmutex_init(&id_priv->qp_mutex);\n\tinit_completion(&id_priv->comp);\n\tatomic_set(&id_priv->refcount, 1);\n\tmutex_init(&id_priv->handler_mutex);\n\tINIT_LIST_HEAD(&id_priv->listen_list);\n\tINIT_LIST_HEAD(&id_priv->mc_list);\n\tget_random_bytes(&id_priv->seq_num, sizeof id_priv->seq_num);\n\n\treturn &id_priv->id;\n}",
+            1
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_zero_addr",
+            "static inline int cma_zero_addr(struct sockaddr *addr) /* <=== cma_zero_addr */ \n{\n\tswitch (addr->sa_family) {\n\tcase AF_INET:\n\t\treturn ipv4_is_zeronet(((struct sockaddr_in *)addr)->sin_addr.s_addr);\n\tcase AF_INET6:\n\t\treturn ipv6_addr_any(&((struct sockaddr_in6 *) addr)->sin6_addr);\n\tcase AF_IB:\n\t\treturn ib_addr_any(&((struct sockaddr_ib *) addr)->sib_addr);\n\tdefault:\n\t\treturn 0;\n\t}\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_use_port",
+            "static int cma_use_port(struct idr *ps, struct rdma_id_private *id_priv) /* <=== cma_use_port */ \n{\n\tstruct rdma_bind_list *bind_list;\n\tunsigned short snum;\n\tint ret;\n\n\tsnum = ntohs(cma_port(cma_src_addr(id_priv)));\n\tif (snum < PROT_SOCK && !capable(CAP_NET_BIND_SERVICE))\n\t\treturn -EACCES;\n\n\tbind_list = idr_find(ps, snum);\n\tif (!bind_list) {\n\t\tret = cma_alloc_port(ps, id_priv, snum);\n\t} else {\n\t\tret = cma_check_port(bind_list, id_priv, id_priv->reuseaddr);\n\t\tif (!ret)\n\t\t\tcma_bind_port(bind_list, id_priv);\n\t}\n\treturn ret;\n}",
+            3
+        ],
+        [
+            "arch/mips/include/asm/string.h",
+            "memcpy",
+            "extern void *memcpy(void *__to, __const__ void *__from, size_t __n); /* <=== memcpy */ ",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_cancel_operation",
+            "static void cma_cancel_operation(struct rdma_id_private *id_priv, /* <=== cma_cancel_operation */ \n\t\t\t\t enum rdma_cm_state state)\n{\n\tswitch (state) {\n\tcase RDMA_CM_ADDR_QUERY:\n\t\trdma_addr_cancel(&id_priv->id.route.addr.dev_addr);\n\t\tbreak;\n\tcase RDMA_CM_ROUTE_QUERY:\n\t\tcma_cancel_route(id_priv);\n\t\tbreak;\n\tcase RDMA_CM_LISTEN:\n\t\tif (cma_any_addr(cma_src_addr(id_priv)) && !id_priv->cma_dev)\n\t\t\tcma_cancel_listens(id_priv);\n\t\tbreak;\n\tdefault:\n\t\tbreak;\n\t}\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_get_port",
+            "static int cma_get_port(struct rdma_id_private *id_priv) /* <=== cma_get_port */ \n{\n\tstruct idr *ps;\n\tint ret;\n\n\tif (cma_family(id_priv) != AF_IB)\n\t\tps = cma_select_inet_ps(id_priv);\n\telse\n\t\tps = cma_select_ib_ps(id_priv);\n\tif (!ps)\n\t\treturn -EPROTONOSUPPORT;\n\n\tmutex_lock(&lock);\n\tif (cma_any_port(cma_src_addr(id_priv)))\n\t\tret = cma_alloc_any_port(ps, id_priv);\n\telse\n\t\tret = cma_use_port(ps, id_priv);\n\tmutex_unlock(&lock);\n\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_select_inet_ps",
+            "static struct idr *cma_select_inet_ps(struct rdma_id_private *id_priv) /* <=== cma_select_inet_ps */ \n{\n\tswitch (id_priv->id.ps) {\n\tcase RDMA_PS_TCP:\n\t\treturn &tcp_ps;\n\tcase RDMA_PS_UDP:\n\t\treturn &udp_ps;\n\tcase RDMA_PS_IPOIB:\n\t\treturn &ipoib_ps;\n\tcase RDMA_PS_IB:\n\t\treturn &ib_ps;\n\tdefault:\n\t\treturn NULL;\n\t}\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_attach_to_dev",
+            "static void cma_attach_to_dev(struct rdma_id_private *id_priv, /* <=== cma_attach_to_dev */ \n\t\t\t      struct cma_device *cma_dev)\n{\n\tatomic_inc(&cma_dev->refcount);\n\tid_priv->cma_dev = cma_dev;\n\tid_priv->id.device = cma_dev->device;\n\tid_priv->id.route.addr.dev_addr.transport =\n\t\trdma_node_get_transport(cma_dev->device->node_type);\n\tlist_add_tail(&id_priv->list, &cma_dev->id_list);\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_deref_dev",
+            "static inline void cma_deref_dev(struct cma_device *cma_dev) /* <=== cma_deref_dev */ \n{\n\tif (atomic_dec_and_test(&cma_dev->refcount))\n\t\tcomplete(&cma_dev->comp);\n}",
+            3
+        ],
+        [
+            "include/linux/slab.h",
+            "kzalloc",
+            "static inline void *kzalloc(size_t size, gfp_t flags) /* <=== kzalloc */ \n{\n\treturn kmalloc(size, flags | __GFP_ZERO);\n}",
+            2
+        ],
+        [
+            "include/rdma/ib_verbs.h",
+            "rdma_node_get_transport",
+            "rdma_node_get_transport(enum rdma_node_type node_type) __attribute_const__; /* <=== rdma_node_get_transport */ ",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_cancel_route",
+            "static void cma_cancel_route(struct rdma_id_private *id_priv) /* <=== cma_cancel_route */ \n{\n\tswitch (rdma_port_get_link_layer(id_priv->id.device, id_priv->id.port_num)) {\n\tcase IB_LINK_LAYER_INFINIBAND:\n\t\tif (id_priv->query)\n\t\t\tib_sa_cancel_query(id_priv->query_id, id_priv->query);\n\t\tbreak;\n\tdefault:\n\t\tbreak;\n\t}\n}",
+            3
+        ],
+        [
+            "include/linux/list.h",
+            "list_del",
+            "static inline void list_del(struct list_head *entry) /* <=== list_del */ \n{\n\t__list_del(entry->prev, entry->next);\n\tentry->next = LIST_POISON1;\n\tentry->prev = LIST_POISON2;\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_any_addr",
+            "static inline int cma_any_addr(struct sockaddr *addr) /* <=== cma_any_addr */ \n{\n\treturn cma_zero_addr(addr) || cma_loopback_addr(addr);\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_leave_mc_groups",
+            "static void cma_leave_mc_groups(struct rdma_id_private *id_priv) /* <=== cma_leave_mc_groups */ \n{\n\tstruct cma_multicast *mc;\n\n\twhile (!list_empty(&id_priv->mc_list)) {\n\t\tmc = container_of(id_priv->mc_list.next,\n\t\t\t\t  struct cma_multicast, list);\n\t\tlist_del(&mc->list);\n\t\tswitch (rdma_port_get_link_layer(id_priv->cma_dev->device, id_priv->id.port_num)) {\n\t\tcase IB_LINK_LAYER_INFINIBAND:\n\t\t\tib_sa_free_multicast(mc->multicast.ib);\n\t\t\tkfree(mc);\n\t\t\tbreak;\n\t\tcase IB_LINK_LAYER_ETHERNET:\n\t\t\tkref_put(&mc->mcref, release_mc);\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tbreak;\n\t\t}\n\t}\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "rdma_bind_addr",
+            "int rdma_bind_addr(struct rdma_cm_id *id, struct sockaddr *addr) /* <=== rdma_bind_addr */ \n{\n\tstruct rdma_id_private *id_priv;\n\tint ret;\n\n\tif (addr->sa_family != AF_INET && addr->sa_family != AF_INET6 &&\n\t    addr->sa_family != AF_IB)\n\t\treturn -EAFNOSUPPORT;\n\n\tid_priv = container_of(id, struct rdma_id_private, id);\n\tif (!cma_comp_exch(id_priv, RDMA_CM_IDLE, RDMA_CM_ADDR_BOUND))\n\t\treturn -EINVAL;\n\n\tret = cma_check_linklocal(&id->route.addr.dev_addr, addr);\n\tif (ret)\n\t\tgoto err1;\n\n\tif (!cma_any_addr(addr)) {\n\t\tret = cma_translate_addr(addr, &id->route.addr.dev_addr);\n\t\tif (ret)\n\t\t\tgoto err1;\n\n\t\tret = cma_acquire_dev(id_priv, NULL);\n\t\tif (ret)\n\t\t\tgoto err1;\n\t}\n\n\tmemcpy(cma_src_addr(id_priv), addr, rdma_addr_size(addr));\n\tif (!(id_priv->options & (1 << CMA_OPTION_AFONLY))) {\n\t\tif (addr->sa_family == AF_INET)\n\t\t\tid_priv->afonly = 1;\n#if IS_ENABLED(CONFIG_IPV6)\n\t\telse if (addr->sa_family == AF_INET6)\n\t\t\tid_priv->afonly = init_net.ipv6.sysctl.bindv6only;\n#endif\n\t}\n\tret = cma_get_port(id_priv);\n\tif (ret)\n\t\tgoto err2;\n\n\treturn 0;\nerr2:\n\tif (id_priv->cma_dev)\n\t\tcma_release_dev(id_priv);\nerr1:\n\tcma_comp_exch(id_priv, RDMA_CM_ADDR_BOUND, RDMA_CM_IDLE);\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "include/linux/list.h",
+            "INIT_LIST_HEAD",
+            "static inline void INIT_LIST_HEAD(struct list_head *list) /* <=== INIT_LIST_HEAD */ \n{\n\tlist->next = list;\n\tlist->prev = list;\n}",
+            2
+        ],
+        [
+            "include/linux/list.h",
+            "hlist_del",
+            "static inline void hlist_del(struct hlist_node *n) /* <=== hlist_del */ \n{\n\t__hlist_del(n);\n\tn->next = LIST_POISON1;\n\tn->pprev = LIST_POISON2;\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_select_ib_ps",
+            "static struct idr *cma_select_ib_ps(struct rdma_id_private *id_priv) /* <=== cma_select_ib_ps */ \n{\n\tstruct idr *ps = NULL;\n\tstruct sockaddr_ib *sib;\n\tu64 sid_ps, mask, sid;\n\n\tsib = (struct sockaddr_ib *) cma_src_addr(id_priv);\n\tmask = be64_to_cpu(sib->sib_sid_mask) & RDMA_IB_IP_PS_MASK;\n\tsid = be64_to_cpu(sib->sib_sid) & mask;\n\n\tif ((id_priv->id.ps == RDMA_PS_IB) && (sid == (RDMA_IB_IP_PS_IB & mask))) {\n\t\tsid_ps = RDMA_IB_IP_PS_IB;\n\t\tps = &ib_ps;\n\t} else if (((id_priv->id.ps == RDMA_PS_IB) || (id_priv->id.ps == RDMA_PS_TCP)) &&\n\t\t   (sid == (RDMA_IB_IP_PS_TCP & mask))) {\n\t\tsid_ps = RDMA_IB_IP_PS_TCP;\n\t\tps = &tcp_ps;\n\t} else if (((id_priv->id.ps == RDMA_PS_IB) || (id_priv->id.ps == RDMA_PS_UDP)) &&\n\t\t   (sid == (RDMA_IB_IP_PS_UDP & mask))) {\n\t\tsid_ps = RDMA_IB_IP_PS_UDP;\n\t\tps = &udp_ps;\n\t}\n\n\tif (ps) {\n\t\tsib->sib_sid = cpu_to_be64(sid_ps | ntohs(cma_port((struct sockaddr *) sib)));\n\t\tsib->sib_sid_mask = cpu_to_be64(RDMA_IB_IP_PS_MASK |\n\t\t\t\t\t\tbe64_to_cpu(sib->sib_sid_mask));\n\t}\n\treturn ps;\n}",
+            3
+        ],
+        [
+            "include/linux/list.h",
+            "list_empty",
+            "static inline int list_empty(const struct list_head *head) /* <=== list_empty */ \n{\n\treturn head->next == head;\n}",
+            3
+        ],
+        [
+            "include/linux/list.h",
+            "hlist_empty",
+            "static inline int hlist_empty(const struct hlist_head *h) /* <=== hlist_empty */ \n{\n\treturn !h->first;\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_family",
+            "static inline unsigned short cma_family(struct rdma_id_private *id_priv) /* <=== cma_family */ \n{\n\treturn id_priv->id.route.addr.src_addr.ss_family;\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_exch",
+            "static enum rdma_cm_state cma_exch(struct rdma_id_private *id_priv, /* <=== cma_exch */ \n\t\t\t\t   enum rdma_cm_state exch)\n{\n\tunsigned long flags;\n\tenum rdma_cm_state old;\n\n\tspin_lock_irqsave(&id_priv->lock, flags);\n\told = id_priv->state;\n\tid_priv->state = exch;\n\tspin_unlock_irqrestore(&id_priv->lock, flags);\n\treturn old;\n}",
+            2
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_lock",
+            "extern void mutex_lock(struct mutex *lock); /* <=== mutex_lock */ ",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_cancel_listens",
+            "static void cma_cancel_listens(struct rdma_id_private *id_priv) /* <=== cma_cancel_listens */ \n{\n\tstruct rdma_id_private *dev_id_priv;\n\n\t/*\n\t * Remove from listen_any_list to prevent added devices from spawning\n\t * additional listen requests.\n\t */\n\tmutex_lock(&lock);\n\tlist_del(&id_priv->list);\n\n\twhile (!list_empty(&id_priv->listen_list)) {\n\t\tdev_id_priv = list_entry(id_priv->listen_list.next,\n\t\t\t\t\t struct rdma_id_private, listen_list);\n\t\t/* sync with device removal to avoid duplicate destruction */\n\t\tlist_del_init(&dev_id_priv->list);\n\t\tlist_del(&dev_id_priv->listen_list);\n\t\tmutex_unlock(&lock);\n\n\t\trdma_destroy_id(&dev_id_priv->id);\n\t\tmutex_lock(&lock);\n\t}\n\tmutex_unlock(&lock);\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_translate_ib",
+            "static void cma_translate_ib(struct sockaddr_ib *sib, struct rdma_dev_addr *dev_addr) /* <=== cma_translate_ib */ \n{\n\tdev_addr->dev_type = ARPHRD_INFINIBAND;\n\trdma_addr_set_sgid(dev_addr, (union ib_gid *) &sib->sib_addr);\n\tib_addr_set_pkey(dev_addr, ntohs(sib->sib_pkey));\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_acquire_dev",
+            "static int cma_acquire_dev(struct rdma_id_private *id_priv, /* <=== cma_acquire_dev */ \n\t\t\t   struct rdma_id_private *listen_id_priv)\n{\n\tstruct rdma_dev_addr *dev_addr = &id_priv->id.route.addr.dev_addr;\n\tstruct cma_device *cma_dev;\n\tunion ib_gid gid, iboe_gid;\n\tint ret = -ENODEV;\n\tu8 port, found_port;\n\tenum rdma_link_layer dev_ll = dev_addr->dev_type == ARPHRD_INFINIBAND ?\n\t\tIB_LINK_LAYER_INFINIBAND : IB_LINK_LAYER_ETHERNET;\n\n\tif (dev_ll != IB_LINK_LAYER_INFINIBAND &&\n\t    id_priv->id.ps == RDMA_PS_IPOIB)\n\t\treturn -EINVAL;\n\n\tmutex_lock(&lock);\n\tiboe_addr_get_sgid(dev_addr, &iboe_gid);\n\tmemcpy(&gid, dev_addr->src_dev_addr +\n\t       rdma_addr_gid_offset(dev_addr), sizeof gid);\n\tif (listen_id_priv &&\n\t    rdma_port_get_link_layer(listen_id_priv->id.device,\n\t\t\t\t     listen_id_priv->id.port_num) == dev_ll) {\n\t\tcma_dev = listen_id_priv->cma_dev;\n\t\tport = listen_id_priv->id.port_num;\n\t\tif (rdma_node_get_transport(cma_dev->device->node_type) == RDMA_TRANSPORT_IB &&\n\t\t    rdma_port_get_link_layer(cma_dev->device, port) == IB_LINK_LAYER_ETHERNET)\n\t\t\tret = ib_find_cached_gid(cma_dev->device, &iboe_gid,\n\t\t\t\t\t\t &found_port, NULL);\n\t\telse\n\t\t\tret = ib_find_cached_gid(cma_dev->device, &gid,\n\t\t\t\t\t\t &found_port, NULL);\n\n\t\tif (!ret && (port  == found_port)) {\n\t\t\tid_priv->id.port_num = found_port;\n\t\t\tgoto out;\n\t\t}\n\t}\n\tlist_for_each_entry(cma_dev, &dev_list, list) {\n\t\tfor (port = 1; port <= cma_dev->device->phys_port_cnt; ++port) {\n\t\t\tif (listen_id_priv &&\n\t\t\t    listen_id_priv->cma_dev == cma_dev &&\n\t\t\t    listen_id_priv->id.port_num == port)\n\t\t\t\tcontinue;\n\t\t\tif (rdma_port_get_link_layer(cma_dev->device, port) == dev_ll) {\n\t\t\t\tif (rdma_node_get_transport(cma_dev->device->node_type) == RDMA_TRANSPORT_IB &&\n\t\t\t\t    rdma_port_get_link_layer(cma_dev->device, port) == IB_LINK_LAYER_ETHERNET)\n\t\t\t\t\tret = ib_find_cached_gid(cma_dev->device, &iboe_gid, &found_port, NULL);\n\t\t\t\telse\n\t\t\t\t\tret = ib_find_cached_gid(cma_dev->device, &gid, &found_port, NULL);\n\n\t\t\t\tif (!ret && (port == found_port)) {\n\t\t\t\t\tid_priv->id.port_num = found_port;\n\t\t\t\t\tgoto out;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\nout:\n\tif (!ret)\n\t\tcma_attach_to_dev(id_priv, cma_dev);\n\n\tmutex_unlock(&lock);\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_translate_addr",
+            "static int cma_translate_addr(struct sockaddr *addr, struct rdma_dev_addr *dev_addr) /* <=== cma_translate_addr */ \n{\n\tint ret;\n\n\tif (addr->sa_family != AF_IB) {\n\t\tret = rdma_translate_ip(addr, dev_addr);\n\t} else {\n\t\tcma_translate_ib((struct sockaddr_ib *) addr, dev_addr);\n\t\tret = 0;\n\t}\n\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_check_linklocal",
+            "static int cma_check_linklocal(struct rdma_dev_addr *dev_addr, /* <=== cma_check_linklocal */ \n\t\t\t       struct sockaddr *addr)\n{\n#if IS_ENABLED(CONFIG_IPV6)\n\tstruct sockaddr_in6 *sin6;\n\n\tif (addr->sa_family != AF_INET6)\n\t\treturn 0;\n\n\tsin6 = (struct sockaddr_in6 *) addr;\n\tif ((ipv6_addr_type(&sin6->sin6_addr) & IPV6_ADDR_LINKLOCAL) &&\n\t    !sin6->sin6_scope_id)\n\t\t\treturn -EINVAL;\n\n\tdev_addr->bound_dev_if = sin6->sin6_scope_id;\n#endif\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_src_addr",
+            "static inline struct sockaddr *cma_src_addr(struct rdma_id_private *id_priv) /* <=== cma_src_addr */ \n{\n\treturn (struct sockaddr *) &id_priv->id.route.addr.src_addr;\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_loopback_addr",
+            "static inline int cma_loopback_addr(struct sockaddr *addr) /* <=== cma_loopback_addr */ \n{\n\tswitch (addr->sa_family) {\n\tcase AF_INET:\n\t\treturn ipv4_is_loopback(((struct sockaddr_in *) addr)->sin_addr.s_addr);\n\tcase AF_INET6:\n\t\treturn ipv6_addr_loopback(&((struct sockaddr_in6 *) addr)->sin6_addr);\n\tcase AF_IB:\n\t\treturn ib_addr_loopback(&((struct sockaddr_ib *) addr)->sib_addr);\n\tdefault:\n\t\treturn 0;\n\t}\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_any_port",
+            "static inline int cma_any_port(struct sockaddr *addr) /* <=== cma_any_port */ \n{\n\treturn !cma_port(addr);\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_release_port",
+            "static void cma_release_port(struct rdma_id_private *id_priv) /* <=== cma_release_port */ \n{\n\tstruct rdma_bind_list *bind_list = id_priv->bind_list;\n\n\tif (!bind_list)\n\t\treturn;\n\n\tmutex_lock(&lock);\n\thlist_del(&id_priv->node);\n\tif (hlist_empty(&bind_list->owners)) {\n\t\tidr_remove(bind_list->ps, bind_list->port);\n\t\tkfree(bind_list);\n\t}\n\tmutex_unlock(&lock);\n}",
+            2
+        ],
+        [
+            "arch/arm64/include/asm/string.h",
+            "memcpy",
+            "extern void *memcpy(void *, const void *, __kernel_size_t); /* <=== memcpy */ ",
+            2
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_unlock",
+            "extern void mutex_unlock(struct mutex *lock); /* <=== mutex_unlock */ ",
+            2
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kmalloc",
+            "static inline void *kmalloc(size_t s, gfp_t gfp) /* <=== kmalloc */ \n{\n\tif (__kmalloc_fake)\n\t\treturn __kmalloc_fake;\n\treturn malloc(s);\n}",
+            3
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "rdma_destroy_id",
+            "void rdma_destroy_id(struct rdma_cm_id *id) /* <=== rdma_destroy_id */ \n{\n\tstruct rdma_id_private *id_priv;\n\tenum rdma_cm_state state;\n\n\tid_priv = container_of(id, struct rdma_id_private, id);\n\tstate = cma_exch(id_priv, RDMA_CM_DESTROYING);\n\tcma_cancel_operation(id_priv, state);\n\n\t/*\n\t * Wait for any active callback to finish.  New callbacks will find\n\t * the id_priv state set to destroying and abort.\n\t */\n\tmutex_lock(&id_priv->handler_mutex);\n\tmutex_unlock(&id_priv->handler_mutex);\n\n\tif (id_priv->cma_dev) {\n\t\tswitch (rdma_node_get_transport(id_priv->id.device->node_type)) {\n\t\tcase RDMA_TRANSPORT_IB:\n\t\t\tif (id_priv->cm_id.ib)\n\t\t\t\tib_destroy_cm_id(id_priv->cm_id.ib);\n\t\t\tbreak;\n\t\tcase RDMA_TRANSPORT_IWARP:\n\t\t\tif (id_priv->cm_id.iw)\n\t\t\t\tiw_destroy_cm_id(id_priv->cm_id.iw);\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tbreak;\n\t\t}\n\t\tcma_leave_mc_groups(id_priv);\n\t\tcma_release_dev(id_priv);\n\t}\n\n\tcma_release_port(id_priv);\n\tcma_deref_id(id_priv);\n\twait_for_completion(&id_priv->comp);\n\n\tif (id_priv->internal_id)\n\t\tcma_deref_id(id_priv->id.context);\n\n\tkfree(id_priv->id.route.path_rec);\n\tkfree(id_priv);\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kfree",
+            "static inline void kfree(void *p) /* <=== kfree */ \n{\n\tif (p >= __kfree_ignore_start && p < __kfree_ignore_end)\n\t\treturn;\n\tfree(p);\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_release_dev",
+            "static void cma_release_dev(struct rdma_id_private *id_priv) /* <=== cma_release_dev */ \n{\n\tmutex_lock(&lock);\n\tlist_del(&id_priv->list);\n\tcma_deref_dev(id_priv->cma_dev);\n\tid_priv->cma_dev = NULL;\n\tmutex_unlock(&lock);\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_comp_exch",
+            "static int cma_comp_exch(struct rdma_id_private *id_priv, /* <=== cma_comp_exch */ \n\t\t\t enum rdma_cm_state comp, enum rdma_cm_state exch)\n{\n\tunsigned long flags;\n\tint ret;\n\n\tspin_lock_irqsave(&id_priv->lock, flags);\n\tif ((ret = (id_priv->state == comp)))\n\t\tid_priv->state = exch;\n\tspin_unlock_irqrestore(&id_priv->lock, flags);\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "drivers/infiniband/core/cma.c",
+            "cma_deref_id",
+            "static void cma_deref_id(struct rdma_id_private *id_priv) /* <=== cma_deref_id */ \n{\n\tif (atomic_dec_and_test(&id_priv->refcount))\n\t\tcomplete(&id_priv->comp);\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/if_arp.h>",
+        "#include \"ib.h\"",
+        "#include <linux/inetdevice.h>",
+        "#include <linux/module.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/in.h>",
+        "#include <linux/kernel.h>",
+        "#include <linux/if.h>",
+        "#include <linux/netdevice.h>",
+        "#include <linux/delay.h>",
+        "#include \"rds.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct rdma_cm_id",
+            "rdma_cm_id"
+        ],
+        [
+            "typedef __u32 __bitwise __be32;",
+            "__be32"
+        ],
+        [
+            "struct rdma_cm_id {\n\tstruct ib_device\t*device;\n\tvoid\t\t\t*context;\n\tstruct ib_qp\t\t*qp;\n\trdma_cm_event_handler\t event_handler;\n\tstruct rdma_route\t route;\n\tenum rdma_port_space\t ps;\n\tenum ib_qp_type\t\t qp_type;\n\tu8\t\t\t port_num;\n}",
+            "rdma_cm_id"
+        ],
+        [
+            "struct sockaddr_in {\n  __kernel_sa_family_t\tsin_family;\t/* Address family\t\t*/\n  __be16\t\tsin_port;\t/* Port number\t\t\t*/\n  struct in_addr\tsin_addr;\t/* Internet address\t\t*/\n\n  /* Pad to size of `struct sockaddr'. */\n  unsigned char\t\t__pad[__SOCK_SIZE__ - sizeof(short int) -\n\t\t\tsizeof(unsigned short int) - sizeof(struct in_addr)];\n}",
+            "sockaddr_in"
+        ]
+    ],
+    "visitedLines_after": {
+        "net/rds/ib.c": [
+            320,
+            329,
+            330,
+            333,
+            334,
+            338,
+            341,
+            342,
+            343,
+            345,
+            346,
+            347,
+            349,
+            351
+        ]
+    },
+    "visitedLines_before": {
+        "net/rds/ib.c": [
+            320,
+            329,
+            330,
+            333,
+            334,
+            338,
+            341,
+            342,
+            344,
+            345,
+            346,
+            348,
+            350
+        ]
+    },
+    "visitedParams": {},
+    "vulnerableMethods_after": [
+        [
+            "net/rds/ib.c",
+            "rds_ib_laddr_check",
+            "static int rds_ib_laddr_check(__be32 addr) /* <=== rds_ib_laddr_check */ \n{\n\tint ret;\n\tstruct rdma_cm_id *cm_id;\n\tstruct sockaddr_in sin;\n\n\t/* Create a CMA ID and try to bind it. This catches both\n\t * IB and iWARP capable NICs.\n\t */\n\tcm_id = rdma_create_id(NULL, NULL, RDMA_PS_TCP, IB_QPT_RC);\n\tif (IS_ERR(cm_id))\n\t\treturn PTR_ERR(cm_id);\n\n\tmemset(&sin, 0, sizeof(sin));\n\tsin.sin_family = AF_INET;\n\tsin.sin_addr.s_addr = addr;\n\n\t/* rdma_bind_addr will only succeed for IB & iWARP devices */\n\tret = rdma_bind_addr(cm_id, (struct sockaddr *)&sin);\n\t/* due to this, we will claim to support iWARP devices unless we\n\t   check node_type. */\n\tif (ret || !cm_id->device ||\n\t    cm_id->device->node_type != RDMA_NODE_IB_CA)\n\t\tret = -EADDRNOTAVAIL;\n\n\trdsdebug(\"addr %pI4 ret %d node type %d\\n\",\n\t\t&addr, ret,\n\t\tcm_id->device ? cm_id->device->node_type : -1);\n\n\trdma_destroy_id(cm_id);\n\n\treturn ret;\n}",
+            320
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "net/rds/ib.c",
+            "rds_ib_laddr_check",
+            "static int rds_ib_laddr_check(__be32 addr) /* <=== rds_ib_laddr_check */ \n{\n\tint ret;\n\tstruct rdma_cm_id *cm_id;\n\tstruct sockaddr_in sin;\n\n\t/* Create a CMA ID and try to bind it. This catches both\n\t * IB and iWARP capable NICs.\n\t */\n\tcm_id = rdma_create_id(NULL, NULL, RDMA_PS_TCP, IB_QPT_RC);\n\tif (IS_ERR(cm_id))\n\t\treturn PTR_ERR(cm_id);\n\n\tmemset(&sin, 0, sizeof(sin));\n\tsin.sin_family = AF_INET;\n\tsin.sin_addr.s_addr = addr;\n\n\t/* rdma_bind_addr will only succeed for IB & iWARP devices */\n\tret = rdma_bind_addr(cm_id, (struct sockaddr *)&sin);\n\t/* due to this, we will claim to support iWARP devices unless we\n\t   check node_type. */\n\tif (ret || cm_id->device->node_type != RDMA_NODE_IB_CA)\n\t\tret = -EADDRNOTAVAIL;\n\n\trdsdebug(\"addr %pI4 ret %d node type %d\\n\",\n\t\t&addr, ret,\n\t\tcm_id->device ? cm_id->device->node_type : -1);\n\n\trdma_destroy_id(cm_id);\n\n\treturn ret;\n}",
+            320
+        ]
+    ]
+}

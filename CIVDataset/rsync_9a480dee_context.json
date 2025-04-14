@@ -1,0 +1,71 @@
+{
+    "calleeMethods": [
+        [
+            "t_stub.c",
+            "_exit_cleanup",
+            " void _exit_cleanup(int code, const char *file, int line) /* <=== _exit_cleanup */ \n{\n\tfprintf(stderr, \"exit(%d): %s(%d)\\n\",\n\t\tcode, file, line);\n\texit(code);\n}",
+            1
+        ],
+        [
+            "t_stub.c",
+            "rprintf",
+            " void rprintf(UNUSED(enum logcode code), const char *format, ...) /* <=== rprintf */ \n{\n\tva_list ap;\n\tva_start(ap, format);\n\tvfprintf(stderr, format, ap);\n\tva_end(ap);\n}",
+            1
+        ],
+        [
+            "rsync.h",
+            "exit_cleanup",
+            "#define exit_cleanup(code) _exit_cleanup(code, __FILE__, __LINE__) /* <=== rsync.h:1223:1223:exit_cleanup:1 */ ",
+            1
+        ]
+    ],
+    "globalVars": [
+        "extern int protocol_version"
+    ],
+    "importContext": [
+        "#include \"itypes.h\"",
+        "#include \"rsync.h\""
+    ],
+    "typeDefs": [],
+    "visitedLines_after": {
+        "authenticate.c": [
+            224,
+            227,
+            238,
+            241,
+            242,
+            243
+        ]
+    },
+    "visitedLines_before": {
+        "authenticate.c": [
+            224,
+            227,
+            238
+        ]
+    },
+    "visitedParams": {
+        "authenticate.c": [
+            [
+                "int module",
+                "auth_server"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "authenticate.c",
+            "auth_server",
+            "char *auth_server(int f_in, int f_out, int module, const char *host, /* <=== auth_server */ \n\t\t  const char *addr, const char *leader)\n{\n\tchar *users = lp_auth_users(module);\n\tchar challenge[MAX_DIGEST_LEN*2];\n\tchar line[BIGPATHBUFLEN];\n\tchar **auth_uid_groups = NULL;\n\tint auth_uid_groups_cnt = -1;\n\tconst char *err = NULL;\n\tint group_match = -1;\n\tchar *tok, *pass;\n\tchar opt_ch = '\\0';\n\n\t/* if no auth list then allow anyone in! */\n\tif (!users || !*users)\n\t\treturn \"\";\n\n\tif (protocol_version < 21) { /* Don't allow a weak checksum for the password. */\n\t\trprintf(FERROR, \"ERROR: protocol version is too old!\\n\");\n\t\texit_cleanup(RERR_PROTOCOL);\n\t}\n\n\tgen_challenge(addr, challenge);\n\n\tio_printf(f_out, \"%s%s\\n\", leader, challenge);\n\n\tif (!read_line_old(f_in, line, sizeof line, 0)\n\t || (pass = strchr(line, ' ')) == NULL) {\n\t\trprintf(FLOG, \"auth failed on module %s from %s (%s): \"\n\t\t\t\"invalid challenge response\\n\",\n\t\t\tlp_name(module), host, addr);\n\t\treturn NULL;\n\t}\n\t*pass++ = '\\0';\n\n\tif (!(users = strdup(users)))\n\t\tout_of_memory(\"auth_server\");\n\n\tfor (tok = strtok(users, \" ,\\t\"); tok; tok = strtok(NULL, \" ,\\t\")) {\n\t\tchar *opts;\n\t\t/* See if the user appended :deny, :ro, or :rw. */\n\t\tif ((opts = strchr(tok, ':')) != NULL) {\n\t\t\t*opts++ = '\\0';\n\t\t\topt_ch = isUpper(opts) ? toLower(opts) : *opts;\n\t\t\tif (opt_ch == 'r') { /* handle ro and rw */\n\t\t\t\topt_ch = isUpper(opts+1) ? toLower(opts+1) : opts[1];\n\t\t\t\tif (opt_ch == 'o')\n\t\t\t\t\topt_ch = 'r';\n\t\t\t\telse if (opt_ch != 'w')\n\t\t\t\t\topt_ch = '\\0';\n\t\t\t} else if (opt_ch != 'd') /* if it's not deny, ignore it */\n\t\t\t\topt_ch = '\\0';\n\t\t} else\n\t\t\topt_ch = '\\0';\n\t\tif (*tok != '@') {\n\t\t\t/* Match the username */\n\t\t\tif (wildmatch(tok, line))\n\t\t\t\tbreak;\n\t\t} else {\n#ifdef HAVE_GETGROUPLIST\n\t\t\tint j;\n\t\t\t/* See if authorizing user is a real user, and if so, see\n\t\t\t * if it is in a group that matches tok+1 wildmat. */\n\t\t\tif (auth_uid_groups_cnt < 0) {\n\t\t\t\titem_list gid_list = EMPTY_ITEM_LIST;\n\t\t\t\tuid_t auth_uid;\n\t\t\t\tif (!user_to_uid(line, &auth_uid, False)\n\t\t\t\t || getallgroups(auth_uid, &gid_list) != NULL)\n\t\t\t\t\tauth_uid_groups_cnt = 0;\n\t\t\t\telse {\n\t\t\t\t\tgid_t *gid_array = gid_list.items;\n\t\t\t\t\tauth_uid_groups_cnt = gid_list.count;\n\t\t\t\t\tif ((auth_uid_groups = new_array(char *, auth_uid_groups_cnt)) == NULL)\n\t\t\t\t\t\tout_of_memory(\"auth_server\");\n\t\t\t\t\tfor (j = 0; j < auth_uid_groups_cnt; j++)\n\t\t\t\t\t\tauth_uid_groups[j] = gid_to_group(gid_array[j]);\n\t\t\t\t}\n\t\t\t}\n\t\t\tfor (j = 0; j < auth_uid_groups_cnt; j++) {\n\t\t\t\tif (auth_uid_groups[j] && wildmatch(tok+1, auth_uid_groups[j])) {\n\t\t\t\t\tgroup_match = j;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\t\t\t}\n\t\t\tif (group_match >= 0)\n\t\t\t\tbreak;\n#else\n\t\t\trprintf(FLOG, \"your computer doesn't support getgrouplist(), so no @group authorization is possible.\\n\");\n#endif\n\t\t}\n\t}\n\n\tfree(users);\n\n\tif (!tok)\n\t\terr = \"no matching rule\";\n\telse if (opt_ch == 'd')\n\t\terr = \"denied by rule\";\n\telse {\n\t\tchar *group = group_match >= 0 ? auth_uid_groups[group_match] : NULL;\n\t\terr = check_secret(module, line, group, challenge, pass);\n\t}\n\n\tmemset(challenge, 0, sizeof challenge);\n\tmemset(pass, 0, strlen(pass));\n\n\tif (auth_uid_groups) {\n\t\tint j;\n\t\tfor (j = 0; j < auth_uid_groups_cnt; j++) {\n\t\t\tif (auth_uid_groups[j])\n\t\t\t\tfree(auth_uid_groups[j]);\n\t\t}\n\t\tfree(auth_uid_groups);\n\t}\n\n\tif (err) {\n\t\trprintf(FLOG, \"auth failed on module %s from %s (%s) for %s: %s\\n\",\n\t\t\tlp_name(module), host, addr, line, err);\n\t\treturn NULL;\n\t}\n\n\tif (opt_ch == 'r')\n\t\tread_only = 1;\n\telse if (opt_ch == 'w')\n\t\tread_only = 0;\n\n\treturn strdup(line);\n}",
+            224
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "authenticate.c",
+            "auth_server",
+            "char *auth_server(int f_in, int f_out, int module, const char *host, /* <=== auth_server */ \n\t\t  const char *addr, const char *leader)\n{\n\tchar *users = lp_auth_users(module);\n\tchar challenge[MAX_DIGEST_LEN*2];\n\tchar line[BIGPATHBUFLEN];\n\tchar **auth_uid_groups = NULL;\n\tint auth_uid_groups_cnt = -1;\n\tconst char *err = NULL;\n\tint group_match = -1;\n\tchar *tok, *pass;\n\tchar opt_ch = '\\0';\n\n\t/* if no auth list then allow anyone in! */\n\tif (!users || !*users)\n\t\treturn \"\";\n\n\tgen_challenge(addr, challenge);\n\n\tio_printf(f_out, \"%s%s\\n\", leader, challenge);\n\n\tif (!read_line_old(f_in, line, sizeof line, 0)\n\t || (pass = strchr(line, ' ')) == NULL) {\n\t\trprintf(FLOG, \"auth failed on module %s from %s (%s): \"\n\t\t\t\"invalid challenge response\\n\",\n\t\t\tlp_name(module), host, addr);\n\t\treturn NULL;\n\t}\n\t*pass++ = '\\0';\n\n\tif (!(users = strdup(users)))\n\t\tout_of_memory(\"auth_server\");\n\n\tfor (tok = strtok(users, \" ,\\t\"); tok; tok = strtok(NULL, \" ,\\t\")) {\n\t\tchar *opts;\n\t\t/* See if the user appended :deny, :ro, or :rw. */\n\t\tif ((opts = strchr(tok, ':')) != NULL) {\n\t\t\t*opts++ = '\\0';\n\t\t\topt_ch = isUpper(opts) ? toLower(opts) : *opts;\n\t\t\tif (opt_ch == 'r') { /* handle ro and rw */\n\t\t\t\topt_ch = isUpper(opts+1) ? toLower(opts+1) : opts[1];\n\t\t\t\tif (opt_ch == 'o')\n\t\t\t\t\topt_ch = 'r';\n\t\t\t\telse if (opt_ch != 'w')\n\t\t\t\t\topt_ch = '\\0';\n\t\t\t} else if (opt_ch != 'd') /* if it's not deny, ignore it */\n\t\t\t\topt_ch = '\\0';\n\t\t} else\n\t\t\topt_ch = '\\0';\n\t\tif (*tok != '@') {\n\t\t\t/* Match the username */\n\t\t\tif (wildmatch(tok, line))\n\t\t\t\tbreak;\n\t\t} else {\n#ifdef HAVE_GETGROUPLIST\n\t\t\tint j;\n\t\t\t/* See if authorizing user is a real user, and if so, see\n\t\t\t * if it is in a group that matches tok+1 wildmat. */\n\t\t\tif (auth_uid_groups_cnt < 0) {\n\t\t\t\titem_list gid_list = EMPTY_ITEM_LIST;\n\t\t\t\tuid_t auth_uid;\n\t\t\t\tif (!user_to_uid(line, &auth_uid, False)\n\t\t\t\t || getallgroups(auth_uid, &gid_list) != NULL)\n\t\t\t\t\tauth_uid_groups_cnt = 0;\n\t\t\t\telse {\n\t\t\t\t\tgid_t *gid_array = gid_list.items;\n\t\t\t\t\tauth_uid_groups_cnt = gid_list.count;\n\t\t\t\t\tif ((auth_uid_groups = new_array(char *, auth_uid_groups_cnt)) == NULL)\n\t\t\t\t\t\tout_of_memory(\"auth_server\");\n\t\t\t\t\tfor (j = 0; j < auth_uid_groups_cnt; j++)\n\t\t\t\t\t\tauth_uid_groups[j] = gid_to_group(gid_array[j]);\n\t\t\t\t}\n\t\t\t}\n\t\t\tfor (j = 0; j < auth_uid_groups_cnt; j++) {\n\t\t\t\tif (auth_uid_groups[j] && wildmatch(tok+1, auth_uid_groups[j])) {\n\t\t\t\t\tgroup_match = j;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\t\t\t}\n\t\t\tif (group_match >= 0)\n\t\t\t\tbreak;\n#else\n\t\t\trprintf(FLOG, \"your computer doesn't support getgrouplist(), so no @group authorization is possible.\\n\");\n#endif\n\t\t}\n\t}\n\n\tfree(users);\n\n\tif (!tok)\n\t\terr = \"no matching rule\";\n\telse if (opt_ch == 'd')\n\t\terr = \"denied by rule\";\n\telse {\n\t\tchar *group = group_match >= 0 ? auth_uid_groups[group_match] : NULL;\n\t\terr = check_secret(module, line, group, challenge, pass);\n\t}\n\n\tmemset(challenge, 0, sizeof challenge);\n\tmemset(pass, 0, strlen(pass));\n\n\tif (auth_uid_groups) {\n\t\tint j;\n\t\tfor (j = 0; j < auth_uid_groups_cnt; j++) {\n\t\t\tif (auth_uid_groups[j])\n\t\t\t\tfree(auth_uid_groups[j]);\n\t\t}\n\t\tfree(auth_uid_groups);\n\t}\n\n\tif (err) {\n\t\trprintf(FLOG, \"auth failed on module %s from %s (%s) for %s: %s\\n\",\n\t\t\tlp_name(module), host, addr, line, err);\n\t\treturn NULL;\n\t}\n\n\tif (opt_ch == 'r')\n\t\tread_only = 1;\n\telse if (opt_ch == 'w')\n\t\tread_only = 0;\n\n\treturn strdup(line);\n}",
+            223
+        ]
+    ]
+}

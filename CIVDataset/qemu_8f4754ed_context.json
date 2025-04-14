@@ -1,0 +1,181 @@
+{
+    "calleeMethods": [
+        [
+            "block.c",
+            "bdrv_getlength",
+            "int64_t bdrv_getlength(BlockDriverState *bs) /* <=== bdrv_getlength */ \n{\n    BlockDriver *drv = bs->drv;\n    if (!drv)\n        return -ENOMEDIUM;\n\n    if (drv->has_variable_length) {\n        int ret = refresh_total_sectors(bs, bs->total_sectors);\n        if (ret < 0) {\n            return ret;\n        }\n    }\n    return bs->total_sectors * BDRV_SECTOR_SIZE;\n}",
+            2
+        ],
+        [
+            "include/qemu-common.h",
+            "ENOMEDIUM",
+            "#define ENOMEDIUM ENODEV /* <=== include/qemu-common.h:63:63:ENOMEDIUM:0 */ ",
+            2
+        ],
+        [
+            "block.c",
+            "refresh_total_sectors",
+            "static int refresh_total_sectors(BlockDriverState *bs, int64_t hint) /* <=== refresh_total_sectors */ \n{\n    BlockDriver *drv = bs->drv;\n\n    /* Do not attempt drv->bdrv_getlength() on scsi-generic devices */\n    if (bs->sg)\n        return 0;\n\n    /* query actual device if possible, otherwise just trust the hint */\n    if (drv->bdrv_getlength) {\n        int64_t length = drv->bdrv_getlength(bs);\n        if (length < 0) {\n            return length;\n        }\n        hint = DIV_ROUND_UP(length, BDRV_SECTOR_SIZE);\n    }\n\n    bs->total_sectors = hint;\n    return 0;\n}",
+            3
+        ],
+        [
+            "block.c",
+            "bdrv_is_inserted",
+            "int bdrv_is_inserted(BlockDriverState *bs) /* <=== bdrv_is_inserted */ \n{\n    BlockDriver *drv = bs->drv;\n\n    if (!drv)\n        return 0;\n    if (!drv->bdrv_is_inserted)\n        return 1;\n    return drv->bdrv_is_inserted(bs);\n}",
+            2
+        ],
+        [
+            "block.c",
+            "bdrv_check_byte_request",
+            "static int bdrv_check_byte_request(BlockDriverState *bs, int64_t offset, /* <=== bdrv_check_byte_request */ \n                                   size_t size)\n{\n    int64_t len;\n\n    if (!bdrv_is_inserted(bs))\n        return -ENOMEDIUM;\n\n    if (bs->growable)\n        return 0;\n\n    len = bdrv_getlength(bs);\n\n    if (offset < 0)\n        return -EIO;\n\n    if ((offset > len) || (len - offset < size))\n        return -EIO;\n\n    return 0;\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"qemu/notify.h\"",
+        "#include \"qemu/timer.h\"",
+        "#include <sys/stat.h>",
+        "#include \"block/qapi.h\"",
+        "#include \"block/coroutine.h\"",
+        "#include <sys/types.h>",
+        "#include \"qmp-commands.h\"",
+        "#include <windows.h>",
+        "#include \"block/block_int.h\"",
+        "#include \"sysemu/sysemu.h\"",
+        "#include \"config-host.h\"",
+        "#include <sys/disk.h>",
+        "#include <sys/ioctl.h>",
+        "#include \"monitor/monitor.h\"",
+        "#include \"qapi/qmp/qjson.h\"",
+        "#include \"qemu-common.h\"",
+        "#include \"qemu/module.h\"",
+        "#include \"block/blockjob.h\"",
+        "#include <sys/queue.h>",
+        "#include \"trace.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct BlockDriverState {\n    int64_t total_sectors; /* if we are reading a disk image, give its\n                              size in sectors */\n    int read_only; /* if true, the media is read only */\n    int open_flags; /* flags used to open the file, re-used for re-open */\n    int encrypted; /* if true, the media is encrypted */\n    int valid_key; /* if true, a valid encryption key has been set */\n    int sg;        /* if true, the device is a /dev/sg* */\n    int copy_on_read; /* if true, copy read backing sectors into image\n                         note this is a reference count */\n\n    BlockDriver *drv; /* NULL means no media */\n    void *opaque;\n\n    void *dev;                  /* attached device model, if any */\n    /* TODO change to DeviceState when all users are qdevified */\n    const BlockDevOps *dev_ops;\n    void *dev_opaque;\n\n    char filename[1024];\n    char backing_file[1024]; /* if non zero, the image is a diff of\n                                this file image */\n    char backing_format[16]; /* if non-zero and backing_file exists */\n    int is_temporary;\n\n    BlockDriverState *backing_hd;\n    BlockDriverState *file;\n\n    NotifierList close_notifiers;\n\n    /* Callback before write request is processed */\n    NotifierWithReturnList before_write_notifiers;\n\n    /* number of in-flight serialising requests */\n    unsigned int serialising_in_flight;\n\n    /* I/O throttling */\n    ThrottleState throttle_state;\n    CoQueue      throttled_reqs[2];\n    bool         io_limits_enabled;\n\n    /* I/O stats (display with \"info blockstats\"). */\n    uint64_t nr_bytes[BDRV_MAX_IOTYPE];\n    uint64_t nr_ops[BDRV_MAX_IOTYPE];\n    uint64_t total_time_ns[BDRV_MAX_IOTYPE];\n    uint64_t wr_highest_sector;\n\n    /* I/O Limits */\n    BlockLimits bl;\n\n    /* Whether the disk can expand beyond total_sectors */\n    int growable;\n\n    /* Whether produces zeros when read beyond eof */\n    bool zero_beyond_eof;\n\n    /* Alignment requirement for offset/length of I/O requests */\n    unsigned int request_alignment;\n\n    /* the block size for which the guest device expects atomicity */\n    int guest_block_size;\n\n    /* do we need to tell the quest if we have a volatile write cache? */\n    int enable_write_cache;\n\n    /* NOTE: the following infos are only hints for real hardware\n       drivers. They are not used by the block driver */\n    BlockdevOnError on_read_error, on_write_error;\n    bool iostatus_enabled;\n    BlockDeviceIoStatus iostatus;\n\n    /* the following member gives a name to every node on the bs graph. */\n    char node_name[32];\n    /* element of the list of named nodes building the graph */\n    QTAILQ_ENTRY(BlockDriverState) node_list;\n    /* Device name is the name associated with the \"drive\" the guest sees */\n    char device_name[32];\n    /* element of the list of \"drives\" the guest sees */\n    QTAILQ_ENTRY(BlockDriverState) device_list;\n    QLIST_HEAD(, BdrvDirtyBitmap) dirty_bitmaps;\n    int refcnt;\n    int in_use; /* users other than guest access, eg. block migration */\n\n    QLIST_HEAD(, BdrvTrackedRequest) tracked_requests;\n\n    /* long-running background operation */\n    BlockJob *job;\n\n    QDict *options;\n}",
+            "BlockDriverState"
+        ],
+        [
+            "typedef union {\n    float128 q;\n#if defined(HOST_WORDS_BIGENDIAN)\n    struct {\n        uint32_t upmost;\n        uint32_t upper;\n        uint32_t lower;\n        uint32_t lowest;\n    } l;\n    struct {\n        uint64_t upper;\n        uint64_t lower;\n    } ll;\n#else\n    struct {\n        uint32_t lowest;\n        uint32_t lower;\n        uint32_t upper;\n        uint32_t upmost;\n    } l;\n    struct {\n        uint64_t lower;\n        uint64_t upper;\n    } ll;\n#endif\n}",
+            "ANY"
+        ]
+    ],
+    "visitedLines_after": {
+        "block.c": [
+            2588,
+            2589,
+            2591,
+            2592,
+            2595,
+            2596
+        ]
+    },
+    "visitedLines_before": {
+        "block.c": [
+            2588,
+            2589,
+            2591,
+            2592
+        ]
+    },
+    "visitedParams": {
+        "block.c": [
+            [
+                "int nb_sectors",
+                "bdrv_check_request"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "block.c",
+            "bdrv_create_co_entry",
+            "static void coroutine_fn bdrv_create_co_entry(void *opaque) /* <=== bdrv_create_co_entry */ \n{\n    Error *local_err = NULL;\n    int ret;\n\n    CreateCo *cco = opaque;\n    assert(cco->drv);\n\n    ret = cco->drv->bdrv_create(cco->filename, cco->options, &local_err);\n    if (local_err) {\n        error_propagate(&cco->err, local_err);\n    }\n    cco->ret = ret;\n}",
+            415
+        ],
+        [
+            "block.c",
+            "bdrv_check_request",
+            "static int bdrv_check_request(BlockDriverState *bs, int64_t sector_num, /* <=== bdrv_check_request */ \n                              int nb_sectors)\n{\n    if (nb_sectors > INT_MAX / BDRV_SECTOR_SIZE) {\n        return -EIO;\n    }\n\n    return bdrv_check_byte_request(bs, sector_num * BDRV_SECTOR_SIZE,\n                                   nb_sectors * BDRV_SECTOR_SIZE);\n}",
+            2588
+        ],
+        [
+            "block.c",
+            "bdrv_rw_co_entry",
+            "static void coroutine_fn bdrv_rw_co_entry(void *opaque) /* <=== bdrv_rw_co_entry */ \n{\n    RwCo *rwco = opaque;\n\n    if (!rwco->is_write) {\n        rwco->ret = bdrv_co_do_preadv(rwco->bs, rwco->offset,\n                                      rwco->qiov->size, rwco->qiov,\n                                      rwco->flags);\n    } else {\n        rwco->ret = bdrv_co_do_pwritev(rwco->bs, rwco->offset,\n                                       rwco->qiov->size, rwco->qiov,\n                                       rwco->flags);\n    }\n}",
+            2608
+        ],
+        [
+            "block.c",
+            "bdrv_get_block_status_co_entry",
+            "static void coroutine_fn bdrv_get_block_status_co_entry(void *opaque) /* <=== bdrv_get_block_status_co_entry */ \n{\n    BdrvCoGetBlockStatusData *data = opaque;\n    BlockDriverState *bs = data->bs;\n\n    data->ret = bdrv_co_get_block_status(bs, data->sector_num, data->nb_sectors,\n                                         data->pnum);\n    data->done = true;\n}",
+            3835
+        ],
+        [
+            "block.c",
+            "bdrv_is_allocated",
+            "int coroutine_fn bdrv_is_allocated(BlockDriverState *bs, int64_t sector_num, /* <=== bdrv_is_allocated */ \n                                   int nb_sectors, int *pnum)\n{\n    int64_t ret = bdrv_get_block_status(bs, sector_num, nb_sectors, pnum);\n    if (ret < 0) {\n        return ret;\n    }\n    return\n        (ret & BDRV_BLOCK_DATA) ||\n        ((ret & BDRV_BLOCK_ZERO) && !bdrv_has_zero_init(bs));\n}",
+            3875
+        ],
+        [
+            "block.c",
+            "bdrv_flush_co_entry",
+            "static void coroutine_fn bdrv_flush_co_entry(void *opaque) /* <=== bdrv_flush_co_entry */ \n{\n    RwCo *rwco = opaque;\n\n    rwco->ret = bdrv_co_flush(rwco->bs);\n}",
+            4718
+        ],
+        [
+            "block.c",
+            "bdrv_discard_co_entry",
+            "static void coroutine_fn bdrv_discard_co_entry(void *opaque) /* <=== bdrv_discard_co_entry */ \n{\n    DiscardCo *rwco = opaque;\n\n    rwco->ret = bdrv_co_discard(rwco->bs, rwco->sector_num, rwco->nb_sectors);\n}",
+            4865
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "block.c",
+            "bdrv_create_co_entry",
+            "static void coroutine_fn bdrv_create_co_entry(void *opaque) /* <=== bdrv_create_co_entry */ \n{\n    Error *local_err = NULL;\n    int ret;\n\n    CreateCo *cco = opaque;\n    assert(cco->drv);\n\n    ret = cco->drv->bdrv_create(cco->filename, cco->options, &local_err);\n    if (local_err) {\n        error_propagate(&cco->err, local_err);\n    }\n    cco->ret = ret;\n}",
+            415
+        ],
+        [
+            "block.c",
+            "bdrv_check_request",
+            "static int bdrv_check_request(BlockDriverState *bs, int64_t sector_num, /* <=== bdrv_check_request */ \n                              int nb_sectors)\n{\n    return bdrv_check_byte_request(bs, sector_num * BDRV_SECTOR_SIZE,\n                                   nb_sectors * BDRV_SECTOR_SIZE);\n}",
+            2588
+        ],
+        [
+            "block.c",
+            "bdrv_rw_co_entry",
+            "static void coroutine_fn bdrv_rw_co_entry(void *opaque) /* <=== bdrv_rw_co_entry */ \n{\n    RwCo *rwco = opaque;\n\n    if (!rwco->is_write) {\n        rwco->ret = bdrv_co_do_preadv(rwco->bs, rwco->offset,\n                                      rwco->qiov->size, rwco->qiov,\n                                      rwco->flags);\n    } else {\n        rwco->ret = bdrv_co_do_pwritev(rwco->bs, rwco->offset,\n                                       rwco->qiov->size, rwco->qiov,\n                                       rwco->flags);\n    }\n}",
+            2604
+        ],
+        [
+            "block.c",
+            "bdrv_get_block_status_co_entry",
+            "static void coroutine_fn bdrv_get_block_status_co_entry(void *opaque) /* <=== bdrv_get_block_status_co_entry */ \n{\n    BdrvCoGetBlockStatusData *data = opaque;\n    BlockDriverState *bs = data->bs;\n\n    data->ret = bdrv_co_get_block_status(bs, data->sector_num, data->nb_sectors,\n                                         data->pnum);\n    data->done = true;\n}",
+            3831
+        ],
+        [
+            "block.c",
+            "bdrv_is_allocated",
+            "int coroutine_fn bdrv_is_allocated(BlockDriverState *bs, int64_t sector_num, /* <=== bdrv_is_allocated */ \n                                   int nb_sectors, int *pnum)\n{\n    int64_t ret = bdrv_get_block_status(bs, sector_num, nb_sectors, pnum);\n    if (ret < 0) {\n        return ret;\n    }\n    return\n        (ret & BDRV_BLOCK_DATA) ||\n        ((ret & BDRV_BLOCK_ZERO) && !bdrv_has_zero_init(bs));\n}",
+            3871
+        ],
+        [
+            "block.c",
+            "bdrv_flush_co_entry",
+            "static void coroutine_fn bdrv_flush_co_entry(void *opaque) /* <=== bdrv_flush_co_entry */ \n{\n    RwCo *rwco = opaque;\n\n    rwco->ret = bdrv_co_flush(rwco->bs);\n}",
+            4714
+        ],
+        [
+            "block.c",
+            "bdrv_discard_co_entry",
+            "static void coroutine_fn bdrv_discard_co_entry(void *opaque) /* <=== bdrv_discard_co_entry */ \n{\n    DiscardCo *rwco = opaque;\n\n    rwco->ret = bdrv_co_discard(rwco->bs, rwco->sector_num, rwco->nb_sectors);\n}",
+            4861
+        ]
+    ]
+}

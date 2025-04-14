@@ -1,0 +1,136 @@
+{
+    "calleeMethods": [],
+    "globalVars": [],
+    "importContext": [
+        "#include \"config.h\"",
+        "#include <zlib.h>",
+        "#include <errno.h>",
+        "#include <string.h>",
+        "#include <libgimp/gimp.h>",
+        "#include <libgimpbase/gimpparasiteio.h>",
+        "#include \"libgimp/stdplugins-intl.h\"",
+        "#include <glib/gstdio.h>",
+        "#include <libgimp/gimpui.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct _GimpDrawable    GimpDrawable;",
+            "GimpDrawable"
+        ],
+        [
+            "typedef struct\n{\n  guint32 width, height;\n  gdouble resolution;\n  guchar metric;\n  guint16 compression;\n  guint16 depth;\n  guchar greyscale;\n  guint32 active_layer;\n  guint16 layer_count;\n}",
+            "PSPimage"
+        ]
+    ],
+    "visitedLines_after": {
+        "plug-ins/common/file-psp.c": [
+            1132,
+            1133,
+            1134,
+            1135,
+            1136,
+            1137,
+            1138,
+            1141,
+            1142,
+            1148,
+            1185,
+            1186,
+            1187,
+            1188,
+            1190,
+            1191,
+            1192,
+            1194,
+            1195,
+            1196,
+            1199,
+            1202,
+            1204,
+            1206,
+            1207,
+            1211,
+            1212,
+            1214,
+            1215,
+            1219
+        ]
+    },
+    "visitedLines_before": {
+        "plug-ins/common/file-psp.c": [
+            1132,
+            1133,
+            1134,
+            1135,
+            1136,
+            1137,
+            1138,
+            1141,
+            1142,
+            1148,
+            1185,
+            1186,
+            1187,
+            1188,
+            1190,
+            1191,
+            1192,
+            1194,
+            1195,
+            1196,
+            1199,
+            1200,
+            1202,
+            1203,
+            1207,
+            1208,
+            1210,
+            1211,
+            1215
+        ]
+    },
+    "visitedParams": {
+        "plug-ins/common/file-psp.c": [
+            [
+                "FILE       *f",
+                "read_channel_data"
+            ],
+            [
+                "GimpDrawable  *drawable",
+                "read_channel_data"
+            ],
+            [
+                "PSPimage   *ia",
+                "read_channel_data"
+            ],
+            [
+                "guchar    **pixels",
+                "read_channel_data"
+            ],
+            [
+                "guint       bytespp",
+                "read_channel_data"
+            ],
+            [
+                "guint       offset",
+                "read_channel_data"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "plug-ins/common/file-psp.c",
+            "read_channel_data",
+            "static int /* <=== read_channel_data */ \nread_channel_data (FILE       *f,\n                   PSPimage   *ia,\n                   guchar    **pixels,\n                   guint       bytespp,\n                   guint       offset,\n                   GimpDrawable  *drawable,\n                   guint32     compressed_len)\n{\n  gint i, y, width = drawable->width, height = drawable->height;\n  gint npixels = width * height;\n  guchar *buf, *p, *q, *endq;\n  guchar *buf2 = NULL;  /* please the compiler */\n  guchar runcount, byte;\n  z_stream zstream;\n\n  switch (ia->compression)\n    {\n    case PSP_COMP_NONE:\n      if (bytespp == 1)\n        {\n          if ((width % 4) == 0)\n            fread (pixels[0], height * width, 1, f);\n          else\n            {\n              for (y = 0; y < height; y++)\n                {\n                  fread (pixels[y], width, 1, f);\n                  fseek (f, 4 - (width % 4), SEEK_CUR);\n                }\n            }\n        }\n      else\n        {\n          buf = g_malloc (width);\n          for (y = 0; y < height; y++)\n            {\n              fread (buf, width, 1, f);\n              if (width % 4)\n                fseek (f, 4 - (width % 4), SEEK_CUR);\n              p = buf;\n              q = pixels[y] + offset;\n              for (i = 0; i < width; i++)\n                {\n                  *q = *p++;\n                  q += bytespp;\n                }\n            }\n          g_free (buf);\n        }\n      break;\n\n    case PSP_COMP_RLE:\n      q = pixels[0] + offset;\n      endq = q + npixels * bytespp;\n      buf = g_malloc (127);\n      while (q < endq)\n        {\n          p = buf;\n          fread (&runcount, 1, 1, f);\n          if (runcount > 128)\n            {\n              runcount -= 128;\n              fread (&byte, 1, 1, f);\n              memset (buf, byte, runcount);\n            }\n          else\n            fread (buf, runcount, 1, f);\n\n          /* prevent buffer overflow for bogus data */\n          runcount = MIN (runcount, endq - q);\n\n          if (bytespp == 1)\n            {\n              memmove (q, buf, runcount);\n              q += runcount;\n            }\n          else\n            {\n              p = buf;\n              for (i = 0; i < runcount; i++)\n                {\n                  *q = *p++;\n                  q += bytespp;\n                }\n            }\n        }\n      g_free (buf);\n      break;\n\n    case PSP_COMP_LZ77:\n      buf = g_malloc (compressed_len);\n      fread (buf, compressed_len, 1, f);\n      zstream.next_in = buf;\n      zstream.avail_in = compressed_len;\n      zstream.zalloc = psp_zalloc;\n      zstream.zfree = psp_zfree;\n      zstream.opaque = f;\n      if (inflateInit (&zstream) != Z_OK)\n        {\n          g_message (\"zlib error\");\n          return -1;\n        }\n      if (bytespp == 1)\n        zstream.next_out = pixels[0];\n      else\n        {\n          buf2 = g_malloc (npixels);\n          zstream.next_out = buf2;\n        }\n      zstream.avail_out = npixels;\n      if (inflate (&zstream, Z_FINISH) != Z_STREAM_END)\n        {\n          g_message (\"zlib error\");\n          inflateEnd (&zstream);\n          return -1;\n        }\n      inflateEnd (&zstream);\n      g_free (buf);\n\n      if (bytespp > 1)\n        {\n          p = buf2;\n          q = pixels[0] + offset;\n          for (i = 0; i < npixels; i++)\n            {\n              *q = *p++;\n              q += bytespp;\n            }\n          g_free (buf2);\n        }\n      break;\n    }\n\n  return 0;\n}",
+            1132
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "plug-ins/common/file-psp.c",
+            "read_channel_data",
+            "static int /* <=== read_channel_data */ \nread_channel_data (FILE       *f,\n                   PSPimage   *ia,\n                   guchar    **pixels,\n                   guint       bytespp,\n                   guint       offset,\n                   GimpDrawable  *drawable,\n                   guint32     compressed_len)\n{\n  gint i, y, width = drawable->width, height = drawable->height;\n  gint npixels = width * height;\n  guchar *buf, *p, *q, *endq;\n  guchar *buf2 = NULL;  /* please the compiler */\n  guchar runcount, byte;\n  z_stream zstream;\n\n  switch (ia->compression)\n    {\n    case PSP_COMP_NONE:\n      if (bytespp == 1)\n        {\n          if ((width % 4) == 0)\n            fread (pixels[0], height * width, 1, f);\n          else\n            {\n              for (y = 0; y < height; y++)\n                {\n                  fread (pixels[y], width, 1, f);\n                  fseek (f, 4 - (width % 4), SEEK_CUR);\n                }\n            }\n        }\n      else\n        {\n          buf = g_malloc (width);\n          for (y = 0; y < height; y++)\n            {\n              fread (buf, width, 1, f);\n              if (width % 4)\n                fseek (f, 4 - (width % 4), SEEK_CUR);\n              p = buf;\n              q = pixels[y] + offset;\n              for (i = 0; i < width; i++)\n                {\n                  *q = *p++;\n                  q += bytespp;\n                }\n            }\n          g_free (buf);\n        }\n      break;\n\n    case PSP_COMP_RLE:\n      q = pixels[0] + offset;\n      endq = q + npixels * bytespp;\n      buf = g_malloc (127);\n      while (q < endq)\n        {\n          p = buf;\n          fread (&runcount, 1, 1, f);\n          if (runcount > 128)\n            {\n              runcount -= 128;\n              fread (&byte, 1, 1, f);\n              memset (buf, byte, runcount);\n            }\n          else\n            fread (buf, runcount, 1, f);\n          if (bytespp == 1)\n            {\n              memmove (q, buf, runcount);\n              q += runcount;\n            }\n          else\n            {\n              p = buf;\n              for (i = 0; i < runcount; i++)\n                {\n                  *q = *p++;\n                  q += bytespp;\n                }\n            }\n        }\n      g_free (buf);\n      break;\n\n    case PSP_COMP_LZ77:\n      buf = g_malloc (compressed_len);\n      fread (buf, compressed_len, 1, f);\n      zstream.next_in = buf;\n      zstream.avail_in = compressed_len;\n      zstream.zalloc = psp_zalloc;\n      zstream.zfree = psp_zfree;\n      zstream.opaque = f;\n      if (inflateInit (&zstream) != Z_OK)\n        {\n          g_message (\"zlib error\");\n          return -1;\n        }\n      if (bytespp == 1)\n        zstream.next_out = pixels[0];\n      else\n        {\n          buf2 = g_malloc (npixels);\n          zstream.next_out = buf2;\n        }\n      zstream.avail_out = npixels;\n      if (inflate (&zstream, Z_FINISH) != Z_STREAM_END)\n        {\n          g_message (\"zlib error\");\n          inflateEnd (&zstream);\n          return -1;\n        }\n      inflateEnd (&zstream);\n      g_free (buf);\n\n      if (bytespp > 1)\n        {\n          p = buf2;\n          q = pixels[0] + offset;\n          for (i = 0; i < npixels; i++)\n            {\n              *q = *p++;\n              q += bytespp;\n            }\n          g_free (buf2);\n        }\n      break;\n    }\n\n  return 0;\n}",
+            1132
+        ]
+    ]
+}

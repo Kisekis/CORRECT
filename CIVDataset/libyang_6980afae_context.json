@@ -1,0 +1,217 @@
+{
+    "calleeMethods": [
+        [
+            "src/hash_table.c",
+            "lydict_remove",
+            "API void /* <=== lydict_remove */ \nlydict_remove(struct ly_ctx *ctx, const char *value)\n{\n    FUN_IN;\n\n    size_t len;\n    int ret;\n    uint32_t hash;\n    struct dict_rec rec, *match = NULL;\n    char *val_p;\n\n    if (!value || !ctx) {\n        return;\n    }\n\n    len = strlen(value);\n    hash = dict_hash(value, len);\n\n    /* create record for lyht_find call */\n    rec.value = (char *)value;\n    rec.refcount = 0;\n\n    pthread_mutex_lock(&ctx->dict.lock);\n    /* set len as data for compare callback */\n    lyht_set_cb_data(ctx->dict.hash_tab, (void *)&len);\n    /* check if value is already inserted */\n    ret = lyht_find(ctx->dict.hash_tab, &rec, hash, (void **)&match);\n\n    if (ret == 0) {\n        LY_CHECK_ERR_GOTO(!match, LOGINT(ctx), finish);\n\n        /* if value is already in dictionary, decrement reference counter */\n        match->refcount--;\n        if (match->refcount == 0) {\n            /*\n             * remove record\n             * save pointer to stored string before lyht_remove to\n             * free it after it is removed from hash table\n             */\n            val_p = match->value;\n            ret = lyht_remove(ctx->dict.hash_tab, &rec, hash);\n            free(val_p);\n            LY_CHECK_ERR_GOTO(ret, LOGINT(ctx), finish);\n        }\n    }\n\nfinish:\n    pthread_mutex_unlock(&ctx->dict.lock);\n}",
+            1
+        ],
+        [
+            "src/parser.c",
+            "LOGBUF",
+            "#define LOGBUF(str) LOGERR(ctx, LY_EINVAL, \"Value \\\"%s\\\" is too long.\", str) /* <=== src/parser.c:997:997:LOGBUF:1 */ ",
+            1
+        ],
+        [
+            "src/parser_yang_bis.c",
+            "malloc",
+            "void *malloc (YYSIZE_T); /* INFRINGES ON USER NAME SPACE */ /* <=== malloc */ ",
+            3
+        ],
+        [
+            "src/hash_table.c",
+            "lyht_remove",
+            "int /* <=== lyht_remove */ \nlyht_remove(struct hash_table *ht, void *val_p, uint32_t hash)\n{\n    struct ht_rec *rec, *crec;\n    int32_t i;\n    int first_matched = 0, r, ret;\n\n    lyht_dbgprint_ht(ht, \"before\");\n    lyht_dbgprint_value(val_p, hash, ht->rec_size, \"removing\");\n\n    if (lyht_find_first(ht, hash, &rec)) {\n        /* hash not found */\n        LOGDBG(LY_LDGHASH, \"remove failed\");\n        return 1;\n    }\n    if ((rec->hash == hash) && ht->val_equal(val_p, &rec->val, 1, ht->cb_data)) {\n        /* even the value matches */\n        first_matched = 1;\n    }\n\n    /* we always need to go through collisions */\n    crec = rec;\n    for (i = 1; i < crec->hits; ++i) {\n        r = lyht_find_collision(ht, &rec, crec);\n        assert(!r);\n\n        /* compare values */\n        if (!first_matched && (rec->hash == hash) && ht->val_equal(val_p, &rec->val, 1, ht->cb_data)) {\n            break;\n        }\n    }\n\n    if (i < crec->hits) {\n        /* one of collisions matched, reduce collision count, remove the record */\n        assert(!first_matched);\n        --crec->hits;\n        rec->hits = -1;\n    } else if (first_matched) {\n        /* the first record matches */\n        if (crec != rec) {\n            /* ... and there are some collisions so put the last collision in its place keeping the correct collision count */\n            rec->hits = crec->hits - 1;\n            memcpy(crec, rec, ht->rec_size);\n        }\n\n        /* this matching record was removed and is not valid anymore */\n        rec->hits = -1;\n    } else {\n        /* value not found even in collisions */\n        assert(!first_matched);\n        LOGDBG(LY_LDGHASH, \"remove failed\");\n        return 1;\n    }\n\n    /* check size & shrink if needed */\n    ret = 0;\n    --ht->used;\n    if (ht->resize == 2) {\n        r = (ht->used * 100) / ht->size;\n        if ((r < LYHT_SHRINK_PERCENTAGE) && (ht->size > LYHT_MIN_SIZE)) {\n            /* shrink */\n            ret = lyht_resize(ht, 0);\n        }\n    }\n\n    lyht_dbgprint_ht(ht, \"after\");\n    return ret;\n}",
+            2
+        ],
+        [
+            "src/hash_table.c",
+            "lyht_set_cb_data",
+            "void * /* <=== lyht_set_cb_data */ \nlyht_set_cb_data(struct hash_table *ht, void *new_cb_data)\n{\n    void *prev;\n\n    prev = ht->cb_data;\n    ht->cb_data = new_cb_data;\n    return prev;\n}",
+            2
+        ],
+        [
+            "src/hash_table.h",
+            "LYHT_SHRINK_PERCENTAGE",
+            "#define LYHT_SHRINK_PERCENTAGE 25 /* <=== src/hash_table.h:53:53:LYHT_SHRINK_PERCENTAGE:0 */ ",
+            3
+        ],
+        [
+            "src/hash_table.c",
+            "lyht_dbgprint_ht",
+            "static void /* <=== lyht_dbgprint_ht */ \nlyht_dbgprint_ht(struct hash_table *ht, const char *info)\n{\n    struct ht_rec *rec;\n    uint32_t i, i_len;\n    char *val;\n\n    if (LY_LLDBG > ly_log_level) {\n        return;\n    }\n\n    LOGDBG(LY_LDGHASH, \"\");\n    LOGDBG(LY_LDGHASH, \"hash table %s (used %u, size %u):\", info, ht->used, ht->size);\n\n    val = malloc(11);\n    sprintf(val, \"%u\", ht->size);\n    i_len = strlen(val);\n    free(val);\n\n    for (i = 0; i < ht->size; ++i) {\n        rec = lyht_get_rec(ht->recs, ht->rec_size, i);\n        val = lyht_dbgprint_val2str(&rec->val, rec->hits, ht->rec_size);\n        if (rec->hits > 0) {\n            LOGDBG(LY_LDGHASH, \"[%*u] val  %s  hash  %10u %% %*u  hits  %2d\",\n                   (int)i_len, i, val, rec->hash, (int)i_len, rec->hash & (ht->size - 1), rec->hits);\n        } else {\n            LOGDBG(LY_LDGHASH, \"[%*u] val  %s  hash  %10s %% %*s  hits  %2d\",\n                   (int)i_len, i, val, \"\", (int)i_len, \"\", rec->hits);\n        }\n        free(val);\n    }\n    LOGDBG(LY_LDGHASH, \"\");\n}",
+            3
+        ],
+        [
+            "src/hash_table.c",
+            "dict_hash",
+            "static uint32_t /* <=== dict_hash */ \ndict_hash(const char *key, size_t len)\n{\n    uint32_t hash, i;\n\n    for (hash = i = 0; i < len; ++i) {\n        hash += key[i];\n        hash += (hash << 10);\n        hash ^= (hash >> 6);\n    }\n    hash += (hash << 3);\n    hash ^= (hash >> 11);\n    hash += (hash << 15);\n    return hash;\n}",
+            2
+        ],
+        [
+            "src/hash_table.c",
+            "lyht_resize",
+            "static int /* <=== lyht_resize */ \nlyht_resize(struct hash_table *ht, int enlarge)\n{\n    struct ht_rec *rec;\n    unsigned char *old_recs;\n    uint32_t i, old_size;\n    int ret;\n\n    old_recs = ht->recs;\n    old_size = ht->size;\n\n    if (enlarge) {\n        /* double the size */\n        ht->size <<= 1;\n    } else {\n        /* half the size */\n        ht->size >>= 1;\n    }\n\n    ht->recs = calloc(ht->size, ht->rec_size);\n    LY_CHECK_ERR_RETURN(!ht->recs, LOGMEM(NULL); ht->recs = old_recs; ht->size = old_size, -1);\n\n    /* reset used, it will increase again */\n    ht->used = 0;\n\n    /* add all the old records into the new records array */\n    for (i = 0; i < old_size; ++i) {\n        rec = lyht_get_rec(old_recs, ht->rec_size, i);\n        if (rec->hits > 0) {\n            ret = lyht_insert(ht, rec->val, rec->hash, NULL);\n            assert(!ret);\n            (void)ret;\n        }\n    }\n\n    /* final touches */\n    free(old_recs);\n    return 0;\n}",
+            3
+        ],
+        [
+            "src/hash_table.c",
+            "lyht_find_collision",
+            "static int /* <=== lyht_find_collision */ \nlyht_find_collision(struct hash_table *ht, struct ht_rec **last, struct ht_rec *first)\n{\n    struct ht_rec *inval_rec = NULL;\n    uint32_t i, idx;\n\n    assert(last && *last);\n\n    idx = (*last)->hash & (ht->size - 1);\n    i = (((unsigned char *)*last) - ht->recs) / ht->rec_size;\n\n    do {\n        i = (i + 1) % ht->size;\n        *last = lyht_get_rec(ht->recs, ht->rec_size, i);\n        if (*last == first) {\n            /* we went through all the records (very unlikely, but possible when many records are invalid),\n             * just return an invalid record */\n            assert(inval_rec);\n            *last = inval_rec;\n            return 1;\n        }\n\n        if (((*last)->hits == -1) && !inval_rec) {\n            inval_rec = *last;\n        }\n    } while (((*last)->hits != 0) && (((*last)->hits == -1) || (((*last)->hash & (ht->size - 1)) != idx)));\n\n    if ((*last)->hits > 0) {\n        /* we found a collision, so move it to the first invalid record so the next search is faster */\n        assert((*last)->hits == 1);\n        if (inval_rec) {\n            memcpy(inval_rec, *last, ht->rec_size);\n            (*last)->hits = -1;\n            *last = inval_rec;\n        }\n        return 0;\n    }\n\n    /* no next collision found, return the record where it would be inserted */\n    if (inval_rec) {\n        *last = inval_rec;\n    } /* else (*last)->hits == 0, it is already correct */\n    return 1;\n}",
+            3
+        ],
+        [
+            "src/parser_yang_bis.c",
+            "free",
+            "void free (void *); /* INFRINGES ON USER NAME SPACE */ /* <=== free */ ",
+            2
+        ],
+        [
+            "src/hash_table.c",
+            "lyht_insert",
+            "int /* <=== lyht_insert */ \nlyht_insert(struct hash_table *ht, void *val_p, uint32_t hash, void **match_p)\n{\n    return lyht_insert_with_resize_cb(ht, val_p, hash, NULL, match_p);\n}",
+            3
+        ],
+        [
+            "src/hash_table.c",
+            "lyht_find",
+            "int /* <=== lyht_find */ \nlyht_find(struct hash_table *ht, void *val_p, uint32_t hash, void **match_p)\n{\n    struct ht_rec *rec, *crec;\n    uint32_t i, c;\n    int r;\n\n    if (lyht_find_first(ht, hash, &rec)) {\n        /* not found */\n        return 1;\n    }\n    if ((rec->hash == hash) && ht->val_equal(val_p, &rec->val, 0, ht->cb_data)) {\n        /* even the value matches */\n        if (match_p) {\n            *match_p = rec->val;\n        }\n        return 0;\n    }\n\n    /* some collisions, we need to go through them, too */\n    crec = rec;\n    c = rec->hits;\n    for (i = 1; i < c; ++i) {\n        r = lyht_find_collision(ht, &rec, crec);\n        assert(!r);\n        (void)r;\n\n        /* compare values */\n        if ((rec->hash == hash) && ht->val_equal(val_p, &rec->val, 0, ht->cb_data)) {\n            if (match_p) {\n                *match_p = rec->val;\n            }\n            return 0;\n        }\n    }\n\n    /* not found even in collisions */\n    return 1;\n}",
+            2
+        ],
+        [
+            "src/hash_table.c",
+            "lydict_insert",
+            "API const char * /* <=== lydict_insert */ \nlydict_insert(struct ly_ctx *ctx, const char *value, size_t len)\n{\n    FUN_IN;\n\n    const char *result;\n\n    if (!value) {\n        return NULL;\n    }\n\n    if (!len) {\n        len = strlen(value);\n    }\n\n    pthread_mutex_lock(&ctx->dict.lock);\n    result = dict_insert(ctx, (char *)value, len, 0);\n    pthread_mutex_unlock(&ctx->dict.lock);\n\n    return result;\n}",
+            1
+        ],
+        [
+            "src/hash_table.c",
+            "lyht_find_first",
+            "static int /* <=== lyht_find_first */ \nlyht_find_first(struct hash_table *ht, uint32_t hash, struct ht_rec **rec_p)\n{\n    struct ht_rec *rec, *inval_rec = NULL;\n    uint32_t i, idx;\n\n    if (rec_p) {\n        *rec_p = NULL;\n    }\n\n    idx = i = hash & (ht->size - 1);\n    rec = lyht_get_rec(ht->recs, ht->rec_size, idx);\n\n    /* skip through overflow and deleted records */\n    while ((rec->hits != 0) && ((rec->hits == -1) || ((rec->hash & (ht->size - 1)) != idx))) {\n        if ((rec->hits == -1) && !inval_rec) {\n            /* remember the first invalid record we found while searching for this hash */\n            inval_rec = rec;\n        }\n        i = (i + 1) % ht->size;\n        if (i == idx) {\n            /* we went through all the records (very unlikely, but possible when many records are invalid),\n             * just return not found */\n            assert(inval_rec);\n            if (rec_p) {\n                *rec_p = inval_rec;\n            }\n            return 1;\n        }\n        rec = lyht_get_rec(ht->recs, ht->rec_size, i);\n    }\n\n    if (rec->hits == 0) {\n        /* we could not find the value */\n        if (rec_p) {\n            /* return the first empty (or invalid) record found */\n            *rec_p = inval_rec ? inval_rec : rec;\n        }\n        return 1;\n    }\n\n    /* we have found a record with equal (shortened) hash,\n     * move it to the first invalid record so that the next search is faster */\n    if (inval_rec) {\n        memcpy(inval_rec, rec, ht->rec_size);\n        rec->hits = -1;\n        rec = inval_rec;\n    }\n    if (rec_p) {\n        *rec_p = rec;\n    }\n    return 0;\n}",
+            3
+        ],
+        [
+            "src/hash_table.c",
+            "dict_insert",
+            "static char * /* <=== dict_insert */ \ndict_insert(struct ly_ctx *ctx, char *value, size_t len, int zerocopy)\n{\n    struct dict_rec *match = NULL, rec;\n    int ret = 0;\n    uint32_t hash;\n\n    hash = dict_hash(value, len);\n    /* set len as data for compare callback */\n    lyht_set_cb_data(ctx->dict.hash_tab, (void *)&len);\n    /* create record for lyht_insert */\n    rec.value = value;\n    rec.refcount = 1;\n\n    LOGDBG(LY_LDGDICT, \"inserting \\\"%s\\\"\", rec.value);\n    ret = lyht_insert(ctx->dict.hash_tab, (void *)&rec, hash, (void **)&match);\n    if (ret == 1) {\n        match->refcount++;\n        if (zerocopy) {\n            free(value);\n        }\n    } else if (ret == 0) {\n        if (!zerocopy) {\n            /*\n             * allocate string for new record\n             * record is already inserted in hash table\n             */\n            match->value = malloc(sizeof *match->value * (len + 1));\n            LY_CHECK_ERR_RETURN(!match->value, LOGMEM(ctx), NULL);\n            memcpy(match->value, value, len);\n            match->value[len] = '\\0';\n        }\n    } else {\n        /* lyht_insert returned error */\n        LOGINT(ctx);\n        return NULL;\n    }\n\n    return match->value;\n}",
+            2
+        ],
+        [
+            "src/hash_table.c",
+            "lyht_dbgprint_value",
+            "static void /* <=== lyht_dbgprint_value */ \nlyht_dbgprint_value(void *val_p, uint32_t hash, uint16_t rec_size, const char *operation)\n{\n    if (LY_LLDBG > ly_log_level) {\n        return;\n    }\n\n    char *val = lyht_dbgprint_val2str(val_p, 1, rec_size);\n    LOGDBG(LY_LDGHASH, \"%s value %s with hash %u\", operation, val, hash);\n    free(val);\n}",
+            3
+        ],
+        [
+            "src/hash_table.h",
+            "LYHT_MIN_SIZE",
+            "#define LYHT_MIN_SIZE 8 /* <=== src/hash_table.h:56:56:LYHT_MIN_SIZE:0 */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"parser.h\"",
+        "#include <sys/stat.h>",
+        "#include \"common.h\"",
+        "#include \"context.h\"",
+        "#include \"parser_yang.h\"",
+        "#include <errno.h>",
+        "#include <sys/types.h>",
+        "#include <stdlib.h>",
+        "#include <unistd.h>",
+        "#include <ctype.h>",
+        "#include \"libyang.h\"",
+        "#include <string.h>",
+        "#include \"resolve.h\"",
+        "#include <time.h>",
+        "#include <fcntl.h>",
+        "#include \"xpath.h\"",
+        "#include <inttypes.h>",
+        "#include <assert.h>",
+        "#include <limits.h>",
+        "#include \"tree_internal.h\"",
+        "#include <sys/mman.h>",
+        "#include <pcre.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef union {\n    const char *str;             /**< string value, in case of printing as XML, characters like '<' or '&' are escaped */\n    char *mem;                   /**< raw memory (used for LYB format) */\n    struct lyxml_elem *xml;      /**< xml tree */\n    struct lyd_node *tree;       /**< libyang data tree, does not change the root's parent, so it is not possible\n                                      to get from the data tree into the anydata/anyxml */\n}",
+            "ANY"
+        ],
+        [
+            "struct ly_ctx {\n    struct dict_table dict;\n    struct ly_modules_list models;\n    ly_module_imp_clb imp_clb;\n    void *imp_clb_data;\n    ly_module_data_clb data_clb;\n    void *data_clb_data;\n#ifdef LY_ENABLED_LYD_PRIV\n    void *(*priv_dup_clb)(const void *priv);\n#endif\n    pthread_key_t errlist_key;\n    uint8_t internal_module_count;\n}",
+            "ly_ctx"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/parser.c": [
+            984,
+            985,
+            987,
+            988,
+            999,
+            1021,
+            1023,
+            1024,
+            1025,
+            1027,
+            1028,
+            1148,
+            1149,
+            1150,
+            1151,
+            1154
+        ]
+    },
+    "visitedLines_before": {
+        "src/parser.c": [
+            984,
+            985,
+            987,
+            988,
+            999,
+            1021,
+            1023,
+            1024,
+            1026,
+            1146,
+            1147,
+            1148,
+            1149,
+            1152
+        ]
+    },
+    "visitedParams": {
+        "src/parser.c": [
+            [
+                "const char **value",
+                "make_canonical"
+            ],
+            [
+                "struct ly_ctx *ctx",
+                "make_canonical"
+            ],
+            [
+                "void *data1",
+                "make_canonical"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/parser.c",
+            "make_canonical",
+            "static int /* <=== make_canonical */ \nmake_canonical(struct ly_ctx *ctx, int type, const char **value, void *data1, void *data2)\n{\n    const uint16_t buf_len = 511;\n    char buf[buf_len + 1];\n    struct lys_type_bit **bits = NULL;\n    struct lyxp_expr *exp;\n    const char *module_name, *cur_expr, *end;\n    int i, j, count;\n    int64_t num;\n    uint64_t unum;\n    uint8_t c;\n\n#define LOGBUF(str) LOGERR(ctx, LY_EINVAL, \"Value \\\"%s\\\" is too long.\", str)\n\n    switch (type) {\n    case LY_TYPE_BITS:\n        bits = (struct lys_type_bit **)data1;\n        count = *((int *)data2);\n        /* in canonical form, the bits are ordered by their position */\n        buf[0] = '\\0';\n        for (i = 0; i < count; i++) {\n            if (!bits[i]) {\n                /* bit not set */\n                continue;\n            }\n            if (buf[0]) {\n                LY_CHECK_ERR_RETURN(strlen(buf) + 1 + strlen(bits[i]->name) > buf_len, LOGBUF(bits[i]->name), -1);\n                sprintf(buf + strlen(buf), \" %s\", bits[i]->name);\n            } else {\n                LY_CHECK_ERR_RETURN(strlen(bits[i]->name) > buf_len, LOGBUF(bits[i]->name), -1);\n                strcpy(buf, bits[i]->name);\n            }\n        }\n        break;\n\n    case LY_TYPE_IDENT:\n        module_name = (const char *)data1;\n        /* identity must always have a prefix */\n        if (!strchr(*value, ':')) {\n            LY_CHECK_ERR_RETURN(strlen(module_name) + 1 + strlen(*value) > buf_len, LOGBUF(*value), -1);\n            sprintf(buf, \"%s:%s\", module_name, *value);\n        } else {\n            LY_CHECK_ERR_RETURN(strlen(*value) > buf_len, LOGBUF(*value), -1);\n            strcpy(buf, *value);\n        }\n        break;\n\n    case LY_TYPE_INST:\n        exp = lyxp_parse_expr(ctx, *value);\n        LY_CHECK_ERR_RETURN(!exp, LOGINT(ctx), -1);\n\n        module_name = NULL;\n        count = 0;\n        for (i = 0; (unsigned)i < exp->used; ++i) {\n            cur_expr = &exp->expr[exp->expr_pos[i]];\n\n            /* copy WS */\n            if (i && ((end = exp->expr + exp->expr_pos[i - 1] + exp->tok_len[i - 1]) != cur_expr)) {\n                if (count + (cur_expr - end) > buf_len) {\n                    lyxp_expr_free(exp);\n                    LOGBUF(end);\n                    return -1;\n                }\n                strncpy(&buf[count], end, cur_expr - end);\n                count += cur_expr - end;\n            }\n\n            if ((exp->tokens[i] == LYXP_TOKEN_NAMETEST) && (end = strnchr(cur_expr, ':', exp->tok_len[i]))) {\n                /* get the module name with \":\" */\n                ++end;\n                j = end - cur_expr;\n\n                if (!module_name || strncmp(cur_expr, module_name, j)) {\n                    /* print module name with colon, it does not equal to the parent one */\n                    if (count + j > buf_len) {\n                        lyxp_expr_free(exp);\n                        LOGBUF(cur_expr);\n                        return -1;\n                    }\n                    strncpy(&buf[count], cur_expr, j);\n                    count += j;\n                }\n                module_name = cur_expr;\n\n                /* copy the rest */\n                if (count + (exp->tok_len[i] - j) > buf_len) {\n                    lyxp_expr_free(exp);\n                    LOGBUF(end);\n                    return -1;\n                }\n                strncpy(&buf[count], end, exp->tok_len[i] - j);\n                count += exp->tok_len[i] - j;\n            } else {\n                if (count + exp->tok_len[i] > buf_len) {\n                    lyxp_expr_free(exp);\n                    LOGBUF(&exp->expr[exp->expr_pos[i]]);\n                    return -1;\n                }\n                strncpy(&buf[count], &exp->expr[exp->expr_pos[i]], exp->tok_len[i]);\n                count += exp->tok_len[i];\n            }\n        }\n        if (count > buf_len) {\n            LOGINT(ctx);\n            lyxp_expr_free(exp);\n            return -1;\n        }\n        buf[count] = '\\0';\n\n        lyxp_expr_free(exp);\n        break;\n\n    case LY_TYPE_DEC64:\n        num = *((int64_t *)data1);\n        c = *((uint8_t *)data2);\n        if (num) {\n            count = sprintf(buf, \"%\"PRId64\" \", num);\n            if ( (num > 0 && (count - 1) <= c)\n                 || (count - 2) <= c ) {\n                /* we have 0. value, print the value with the leading zeros\n                 * (one for 0. and also keep the correct with of num according\n                 * to fraction-digits value)\n                 * for (num<0) - extra character for '-' sign */\n                count = sprintf(buf, \"%0*\"PRId64\" \", (num > 0) ? (c + 1) : (c + 2), num);\n            }\n            for (i = c, j = 1; i > 0 ; i--) {\n                if (j && i > 1 && buf[count - 2] == '0') {\n                    /* we have trailing zero to skip */\n                    buf[count - 1] = '\\0';\n                } else {\n                    j = 0;\n                    buf[count - 1] = buf[count - 2];\n                }\n                count--;\n            }\n            buf[count - 1] = '.';\n        } else {\n            /* zero */\n            sprintf(buf, \"0.0\");\n        }\n        break;\n\n    case LY_TYPE_INT8:\n    case LY_TYPE_INT16:\n    case LY_TYPE_INT32:\n    case LY_TYPE_INT64:\n        num = *((int64_t *)data1);\n        sprintf(buf, \"%\"PRId64, num);\n        break;\n\n    case LY_TYPE_UINT8:\n    case LY_TYPE_UINT16:\n    case LY_TYPE_UINT32:\n    case LY_TYPE_UINT64:\n        unum = *((uint64_t *)data1);\n        sprintf(buf, \"%\"PRIu64, unum);\n        break;\n\n    default:\n        /* should not be even called - just do nothing */\n        return 0;\n    }\n\n    if (strcmp(buf, *value)) {\n        lydict_remove(ctx, *value);\n        *value = lydict_insert(ctx, buf, 0);\n        return 1;\n    }\n\n    return 0;\n\n#undef LOGBUF\n}",
+            984
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/parser.c",
+            "make_canonical",
+            "static int /* <=== make_canonical */ \nmake_canonical(struct ly_ctx *ctx, int type, const char **value, void *data1, void *data2)\n{\n    const uint16_t buf_len = 511;\n    char buf[buf_len + 1];\n    struct lys_type_bit **bits = NULL;\n    struct lyxp_expr *exp;\n    const char *module_name, *cur_expr, *end;\n    int i, j, count;\n    int64_t num;\n    uint64_t unum;\n    uint8_t c;\n\n#define LOGBUF(str) LOGERR(ctx, LY_EINVAL, \"Value \\\"%s\\\" is too long.\", str)\n\n    switch (type) {\n    case LY_TYPE_BITS:\n        bits = (struct lys_type_bit **)data1;\n        count = *((int *)data2);\n        /* in canonical form, the bits are ordered by their position */\n        buf[0] = '\\0';\n        for (i = 0; i < count; i++) {\n            if (!bits[i]) {\n                /* bit not set */\n                continue;\n            }\n            if (buf[0]) {\n                LY_CHECK_ERR_RETURN(strlen(buf) + 1 + strlen(bits[i]->name) > buf_len, LOGBUF(bits[i]->name), -1);\n                sprintf(buf + strlen(buf), \" %s\", bits[i]->name);\n            } else {\n                LY_CHECK_ERR_RETURN(strlen(bits[i]->name) > buf_len, LOGBUF(bits[i]->name), -1);\n                strcpy(buf, bits[i]->name);\n            }\n        }\n        break;\n\n    case LY_TYPE_IDENT:\n        module_name = (const char *)data1;\n        /* identity must always have a prefix */\n        if (!strchr(*value, ':')) {\n            sprintf(buf, \"%s:%s\", module_name, *value);\n        } else {\n            strcpy(buf, *value);\n        }\n        break;\n\n    case LY_TYPE_INST:\n        exp = lyxp_parse_expr(ctx, *value);\n        LY_CHECK_ERR_RETURN(!exp, LOGINT(ctx), -1);\n\n        module_name = NULL;\n        count = 0;\n        for (i = 0; (unsigned)i < exp->used; ++i) {\n            cur_expr = &exp->expr[exp->expr_pos[i]];\n\n            /* copy WS */\n            if (i && ((end = exp->expr + exp->expr_pos[i - 1] + exp->tok_len[i - 1]) != cur_expr)) {\n                if (count + (cur_expr - end) > buf_len) {\n                    lyxp_expr_free(exp);\n                    LOGBUF(end);\n                    return -1;\n                }\n                strncpy(&buf[count], end, cur_expr - end);\n                count += cur_expr - end;\n            }\n\n            if ((exp->tokens[i] == LYXP_TOKEN_NAMETEST) && (end = strnchr(cur_expr, ':', exp->tok_len[i]))) {\n                /* get the module name with \":\" */\n                ++end;\n                j = end - cur_expr;\n\n                if (!module_name || strncmp(cur_expr, module_name, j)) {\n                    /* print module name with colon, it does not equal to the parent one */\n                    if (count + j > buf_len) {\n                        lyxp_expr_free(exp);\n                        LOGBUF(cur_expr);\n                        return -1;\n                    }\n                    strncpy(&buf[count], cur_expr, j);\n                    count += j;\n                }\n                module_name = cur_expr;\n\n                /* copy the rest */\n                if (count + (exp->tok_len[i] - j) > buf_len) {\n                    lyxp_expr_free(exp);\n                    LOGBUF(end);\n                    return -1;\n                }\n                strncpy(&buf[count], end, exp->tok_len[i] - j);\n                count += exp->tok_len[i] - j;\n            } else {\n                if (count + exp->tok_len[i] > buf_len) {\n                    lyxp_expr_free(exp);\n                    LOGBUF(&exp->expr[exp->expr_pos[i]]);\n                    return -1;\n                }\n                strncpy(&buf[count], &exp->expr[exp->expr_pos[i]], exp->tok_len[i]);\n                count += exp->tok_len[i];\n            }\n        }\n        if (count > buf_len) {\n            LOGINT(ctx);\n            lyxp_expr_free(exp);\n            return -1;\n        }\n        buf[count] = '\\0';\n\n        lyxp_expr_free(exp);\n        break;\n\n    case LY_TYPE_DEC64:\n        num = *((int64_t *)data1);\n        c = *((uint8_t *)data2);\n        if (num) {\n            count = sprintf(buf, \"%\"PRId64\" \", num);\n            if ( (num > 0 && (count - 1) <= c)\n                 || (count - 2) <= c ) {\n                /* we have 0. value, print the value with the leading zeros\n                 * (one for 0. and also keep the correct with of num according\n                 * to fraction-digits value)\n                 * for (num<0) - extra character for '-' sign */\n                count = sprintf(buf, \"%0*\"PRId64\" \", (num > 0) ? (c + 1) : (c + 2), num);\n            }\n            for (i = c, j = 1; i > 0 ; i--) {\n                if (j && i > 1 && buf[count - 2] == '0') {\n                    /* we have trailing zero to skip */\n                    buf[count - 1] = '\\0';\n                } else {\n                    j = 0;\n                    buf[count - 1] = buf[count - 2];\n                }\n                count--;\n            }\n            buf[count - 1] = '.';\n        } else {\n            /* zero */\n            sprintf(buf, \"0.0\");\n        }\n        break;\n\n    case LY_TYPE_INT8:\n    case LY_TYPE_INT16:\n    case LY_TYPE_INT32:\n    case LY_TYPE_INT64:\n        num = *((int64_t *)data1);\n        sprintf(buf, \"%\"PRId64, num);\n        break;\n\n    case LY_TYPE_UINT8:\n    case LY_TYPE_UINT16:\n    case LY_TYPE_UINT32:\n    case LY_TYPE_UINT64:\n        unum = *((uint64_t *)data1);\n        sprintf(buf, \"%\"PRIu64, unum);\n        break;\n\n    default:\n        /* should not be even called - just do nothing */\n        return 0;\n    }\n\n    if (strcmp(buf, *value)) {\n        lydict_remove(ctx, *value);\n        *value = lydict_insert(ctx, buf, 0);\n        return 1;\n    }\n\n    return 0;\n\n#undef LOGBUF\n}",
+            984
+        ]
+    ]
+}

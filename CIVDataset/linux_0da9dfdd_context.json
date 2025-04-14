@@ -1,0 +1,579 @@
+{
+    "calleeMethods": [
+        [
+            "arch/powerpc/boot/stdio.c",
+            "LARGE",
+            "#define LARGE\t64\t\t/* use 'ABCDEF' instead of 'abcdef' */ /* <=== arch/powerpc/boot/stdio.c:57:57:LARGE:0 */ ",
+            3
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "skip_atoi",
+            "static int skip_atoi(const char **s) /* <=== skip_atoi */ \n{\n\tint i, c;\n\n\tfor (i = 0; '0' <= (c = **s) && c <= '9'; ++*s)\n\t\ti = i*10 + c - '0';\n\treturn i;\n}",
+            3
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "SMALL",
+            "#define SMALL\t32\t\t/* Must be 32 == 0x20 */ /* <=== arch/x86/boot/printf.c:34:34:SMALL:0 */ ",
+            3
+        ],
+        [
+            "include/linux/slab.h",
+            "kmem_cache_free",
+            "void kmem_cache_free(struct kmem_cache *, void *); /* <=== kmem_cache_free */ ",
+            3
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "LEFT",
+            "#define LEFT\t16\t\t/* left justified */ /* <=== arch/x86/boot/printf.c:33:33:LEFT:0 */ ",
+            3
+        ],
+        [
+            "security/keys/key.c",
+            "key_alloc_serial",
+            "static inline void key_alloc_serial(struct key *key) /* <=== key_alloc_serial */ \n{\n\tstruct rb_node *parent, **p;\n\tstruct key *xkey;\n\n\t/* propose a random serial number and look for a hole for it in the\n\t * serial number tree */\n\tdo {\n\t\tget_random_bytes(&key->serial, sizeof(key->serial));\n\n\t\tkey->serial >>= 1; /* negative numbers are not permitted */\n\t} while (key->serial < 3);\n\n\tspin_lock(&key_serial_lock);\n\nattempt_insertion:\n\tparent = NULL;\n\tp = &key_serial_tree.rb_node;\n\n\twhile (*p) {\n\t\tparent = *p;\n\t\txkey = rb_entry(parent, struct key, serial_node);\n\n\t\tif (key->serial < xkey->serial)\n\t\t\tp = &(*p)->rb_left;\n\t\telse if (key->serial > xkey->serial)\n\t\t\tp = &(*p)->rb_right;\n\t\telse\n\t\t\tgoto serial_exists;\n\t}\n\n\t/* we've found a suitable hole - arrange for this key to occupy it */\n\trb_link_node(&key->serial_node, parent, p);\n\trb_insert_color(&key->serial_node, &key_serial_tree);\n\n\tspin_unlock(&key_serial_lock);\n\treturn;\n\n\t/* we found a key with the proposed serial number - walk the tree from\n\t * that point looking for the next unused serial number */\nserial_exists:\n\tfor (;;) {\n\t\tkey->serial++;\n\t\tif (key->serial < 3) {\n\t\t\tkey->serial = 3;\n\t\t\tgoto attempt_insertion;\n\t\t}\n\n\t\tparent = rb_next(parent);\n\t\tif (!parent)\n\t\t\tgoto attempt_insertion;\n\n\t\txkey = rb_entry(parent, struct key, serial_node);\n\t\tif (key->serial < xkey->serial)\n\t\t\tgoto attempt_insertion;\n\t}\n}",
+            3
+        ],
+        [
+            "security/keys/key.c",
+            "key_alloc",
+            "struct key *key_alloc(struct key_type *type, const char *desc, /* <=== key_alloc */ \n\t\t      kuid_t uid, kgid_t gid, const struct cred *cred,\n\t\t      key_perm_t perm, unsigned long flags)\n{\n\tstruct key_user *user = NULL;\n\tstruct key *key;\n\tsize_t desclen, quotalen;\n\tint ret;\n\n\tkey = ERR_PTR(-EINVAL);\n\tif (!desc || !*desc)\n\t\tgoto error;\n\n\tif (type->vet_description) {\n\t\tret = type->vet_description(desc);\n\t\tif (ret < 0) {\n\t\t\tkey = ERR_PTR(ret);\n\t\t\tgoto error;\n\t\t}\n\t}\n\n\tdesclen = strlen(desc) + 1;\n\tquotalen = desclen + type->def_datalen;\n\n\t/* get hold of the key tracking for this user */\n\tuser = key_user_lookup(uid);\n\tif (!user)\n\t\tgoto no_memory_1;\n\n\t/* check that the user's quota permits allocation of another key and\n\t * its description */\n\tif (!(flags & KEY_ALLOC_NOT_IN_QUOTA)) {\n\t\tunsigned maxkeys = uid_eq(uid, GLOBAL_ROOT_UID) ?\n\t\t\tkey_quota_root_maxkeys : key_quota_maxkeys;\n\t\tunsigned maxbytes = uid_eq(uid, GLOBAL_ROOT_UID) ?\n\t\t\tkey_quota_root_maxbytes : key_quota_maxbytes;\n\n\t\tspin_lock(&user->lock);\n\t\tif (!(flags & KEY_ALLOC_QUOTA_OVERRUN)) {\n\t\t\tif (user->qnkeys + 1 >= maxkeys ||\n\t\t\t    user->qnbytes + quotalen >= maxbytes ||\n\t\t\t    user->qnbytes + quotalen < user->qnbytes)\n\t\t\t\tgoto no_quota;\n\t\t}\n\n\t\tuser->qnkeys++;\n\t\tuser->qnbytes += quotalen;\n\t\tspin_unlock(&user->lock);\n\t}\n\n\t/* allocate and initialise the key and its description */\n\tkey = kmem_cache_alloc(key_jar, GFP_KERNEL);\n\tif (!key)\n\t\tgoto no_memory_2;\n\n\tif (desc) {\n\t\tkey->description = kmemdup(desc, desclen, GFP_KERNEL);\n\t\tif (!key->description)\n\t\t\tgoto no_memory_3;\n\t}\n\n\tatomic_set(&key->usage, 1);\n\tinit_rwsem(&key->sem);\n\tlockdep_set_class(&key->sem, &type->lock_class);\n\tkey->type = type;\n\tkey->user = user;\n\tkey->quotalen = quotalen;\n\tkey->datalen = type->def_datalen;\n\tkey->uid = uid;\n\tkey->gid = gid;\n\tkey->perm = perm;\n\tkey->flags = 0;\n\tkey->expiry = 0;\n\tkey->payload.data = NULL;\n\tkey->security = NULL;\n\n\tif (!(flags & KEY_ALLOC_NOT_IN_QUOTA))\n\t\tkey->flags |= 1 << KEY_FLAG_IN_QUOTA;\n\n\tmemset(&key->type_data, 0, sizeof(key->type_data));\n\n#ifdef KEY_DEBUGGING\n\tkey->magic = KEY_DEBUG_MAGIC;\n#endif\n\n\t/* let the security module know about the key */\n\tret = security_key_alloc(key, cred, flags);\n\tif (ret < 0)\n\t\tgoto security_error;\n\n\t/* publish the key by giving it a serial number */\n\tatomic_inc(&user->nkeys);\n\tkey_alloc_serial(key);\n\nerror:\n\treturn key;\n\nsecurity_error:\n\tkfree(key->description);\n\tkmem_cache_free(key_jar, key);\n\tif (!(flags & KEY_ALLOC_NOT_IN_QUOTA)) {\n\t\tspin_lock(&user->lock);\n\t\tuser->qnkeys--;\n\t\tuser->qnbytes -= quotalen;\n\t\tspin_unlock(&user->lock);\n\t}\n\tkey_user_put(user);\n\tkey = ERR_PTR(ret);\n\tgoto error;\n\nno_memory_3:\n\tkmem_cache_free(key_jar, key);\nno_memory_2:\n\tif (!(flags & KEY_ALLOC_NOT_IN_QUOTA)) {\n\t\tspin_lock(&user->lock);\n\t\tuser->qnkeys--;\n\t\tuser->qnbytes -= quotalen;\n\t\tspin_unlock(&user->lock);\n\t}\n\tkey_user_put(user);\nno_memory_1:\n\tkey = ERR_PTR(-ENOMEM);\n\tgoto error;\n\nno_quota:\n\tspin_unlock(&user->lock);\n\tkey_user_put(user);\n\tkey = ERR_PTR(-EDQUOT);\n\tgoto error;\n}",
+            2
+        ],
+        [
+            "security/keys/internal.h",
+            "__key_link_end",
+            "extern void __key_link_end(struct key *keyring, /* <=== __key_link_end */ \n\t\t\t   struct key_type *type,\n\t\t\t   unsigned long prealloc);",
+            2
+        ],
+        [
+            "security/keys/internal.h",
+            "kleave",
+            "#define kleave(FMT, ...) \\ /* <=== security/keys/internal.h:29:30:kleave:2 */ \n\tno_printk(KERN_DEBUG \"<== %s()\"FMT\"\\n\", __func__, ##__VA_ARGS__)",
+            1
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "SPACE",
+            "#define SPACE\t8\t\t/* space if plus */ /* <=== arch/x86/boot/printf.c:32:32:SPACE:0 */ ",
+            3
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "SPACE",
+            "#define SPACE\t8\t\t/* space if plus */ /* <=== arch/powerpc/boot/stdio.c:54:54:SPACE:0 */ ",
+            3
+        ],
+        [
+            "include/linux/string.h",
+            "strlen",
+            "extern __kernel_size_t strlen(const char *); /* <=== strlen */ ",
+            3
+        ],
+        [
+            "lib/vsprintf.c",
+            "skip_atoi",
+            "int skip_atoi(const char **s) /* <=== skip_atoi */ \n{\n\tint i = 0;\n\n\twhile (isdigit(**s))\n\t\ti = i*10 + *((*s)++) - '0';\n\n\treturn i;\n}",
+            3
+        ],
+        [
+            "include/linux/string.h",
+            "memset",
+            "extern void * memset(void *,int,__kernel_size_t); /* <=== memset */ ",
+            3
+        ],
+        [
+            "lib/vsprintf.c",
+            "LEFT",
+            "#define LEFT\t16\t\t/* left justified */ /* <=== lib/vsprintf.c:343:343:LEFT:0 */ ",
+            3
+        ],
+        [
+            "include/linux/spinlock.h",
+            "spin_lock",
+            "static inline void spin_lock(spinlock_t *lock) /* <=== spin_lock */ \n{\n\traw_spin_lock(&lock->rlock);\n}",
+            3
+        ],
+        [
+            "security/keys/internal.h",
+            "__key_link_begin",
+            "extern int __key_link_begin(struct key *keyring, /* <=== __key_link_begin */ \n\t\t\t    const struct key_type *type,\n\t\t\t    const char *description,\n\t\t\t    unsigned long *_prealloc);",
+            2
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "vsprintf",
+            "int vsprintf(char *buf, const char *fmt, va_list args) /* <=== vsprintf */ \n{\n\tint len;\n\tunsigned long long num;\n\tint i, base;\n\tchar * str;\n\tconst char *s;\n\n\tint flags;\t\t/* flags to number() */\n\n\tint field_width;\t/* width of output field */\n\tint precision;\t\t/* min. # of digits for integers; max\n\t\t\t\t   number of chars for from string */\n\tint qualifier;\t\t/* 'h', 'l', or 'L' for integer fields */\n\t                        /* 'z' support added 23/7/1999 S.H.    */\n\t\t\t\t/* 'z' changed to 'Z' --davidm 1/25/99 */\n\n\t\n\tfor (str=buf ; *fmt ; ++fmt) {\n\t\tif (*fmt != '%') {\n\t\t\t*str++ = *fmt;\n\t\t\tcontinue;\n\t\t}\n\t\t\t\n\t\t/* process flags */\n\t\tflags = 0;\n\t\trepeat:\n\t\t\t++fmt;\t\t/* this also skips first '%' */\n\t\t\tswitch (*fmt) {\n\t\t\t\tcase '-': flags |= LEFT; goto repeat;\n\t\t\t\tcase '+': flags |= PLUS; goto repeat;\n\t\t\t\tcase ' ': flags |= SPACE; goto repeat;\n\t\t\t\tcase '#': flags |= SPECIAL; goto repeat;\n\t\t\t\tcase '0': flags |= ZEROPAD; goto repeat;\n\t\t\t\t}\n\t\t\n\t\t/* get field width */\n\t\tfield_width = -1;\n\t\tif ('0' <= *fmt && *fmt <= '9')\n\t\t\tfield_width = skip_atoi(&fmt);\n\t\telse if (*fmt == '*') {\n\t\t\t++fmt;\n\t\t\t/* it's the next argument */\n\t\t\tfield_width = va_arg(args, int);\n\t\t\tif (field_width < 0) {\n\t\t\t\tfield_width = -field_width;\n\t\t\t\tflags |= LEFT;\n\t\t\t}\n\t\t}\n\n\t\t/* get the precision */\n\t\tprecision = -1;\n\t\tif (*fmt == '.') {\n\t\t\t++fmt;\t\n\t\t\tif ('0' <= *fmt && *fmt <= '9')\n\t\t\t\tprecision = skip_atoi(&fmt);\n\t\t\telse if (*fmt == '*') {\n\t\t\t\t++fmt;\n\t\t\t\t/* it's the next argument */\n\t\t\t\tprecision = va_arg(args, int);\n\t\t\t}\n\t\t\tif (precision < 0)\n\t\t\t\tprecision = 0;\n\t\t}\n\n\t\t/* get the conversion qualifier */\n\t\tqualifier = -1;\n\t\tif (*fmt == 'l' && *(fmt + 1) == 'l') {\n\t\t\tqualifier = 'q';\n\t\t\tfmt += 2;\n\t\t} else if (*fmt == 'h' || *fmt == 'l' || *fmt == 'L'\n\t\t\t|| *fmt == 'Z') {\n\t\t\tqualifier = *fmt;\n\t\t\t++fmt;\n\t\t}\n\n\t\t/* default base */\n\t\tbase = 10;\n\n\t\tswitch (*fmt) {\n\t\tcase 'c':\n\t\t\tif (!(flags & LEFT))\n\t\t\t\twhile (--field_width > 0)\n\t\t\t\t\t*str++ = ' ';\n\t\t\t*str++ = (unsigned char) va_arg(args, int);\n\t\t\twhile (--field_width > 0)\n\t\t\t\t*str++ = ' ';\n\t\t\tcontinue;\n\n\t\tcase 's':\n\t\t\ts = va_arg(args, char *);\n\t\t\tif (!s)\n\t\t\t\ts = \"<NULL>\";\n\n\t\t\tlen = strnlen(s, precision);\n\n\t\t\tif (!(flags & LEFT))\n\t\t\t\twhile (len < field_width--)\n\t\t\t\t\t*str++ = ' ';\n\t\t\tfor (i = 0; i < len; ++i)\n\t\t\t\t*str++ = *s++;\n\t\t\twhile (len < field_width--)\n\t\t\t\t*str++ = ' ';\n\t\t\tcontinue;\n\n\t\tcase 'p':\n\t\t\tif (field_width == -1) {\n\t\t\t\tfield_width = 2*sizeof(void *);\n\t\t\t\tflags |= ZEROPAD;\n\t\t\t}\n\t\t\tstr = number(str,\n\t\t\t\t(unsigned long) va_arg(args, void *), 16,\n\t\t\t\tfield_width, precision, flags);\n\t\t\tcontinue;\n\n\n\t\tcase 'n':\n\t\t\tif (qualifier == 'l') {\n\t\t\t\tlong * ip = va_arg(args, long *);\n\t\t\t\t*ip = (str - buf);\n\t\t\t} else if (qualifier == 'Z') {\n\t\t\t\tsize_t * ip = va_arg(args, size_t *);\n\t\t\t\t*ip = (str - buf);\n\t\t\t} else {\n\t\t\t\tint * ip = va_arg(args, int *);\n\t\t\t\t*ip = (str - buf);\n\t\t\t}\n\t\t\tcontinue;\n\n\t\tcase '%':\n\t\t\t*str++ = '%';\n\t\t\tcontinue;\n\n\t\t/* integer number formats - set up the flags and \"break\" */\n\t\tcase 'o':\n\t\t\tbase = 8;\n\t\t\tbreak;\n\n\t\tcase 'X':\n\t\t\tflags |= LARGE;\n\t\tcase 'x':\n\t\t\tbase = 16;\n\t\t\tbreak;\n\n\t\tcase 'd':\n\t\tcase 'i':\n\t\t\tflags |= SIGN;\n\t\tcase 'u':\n\t\t\tbreak;\n\n\t\tdefault:\n\t\t\t*str++ = '%';\n\t\t\tif (*fmt)\n\t\t\t\t*str++ = *fmt;\n\t\t\telse\n\t\t\t\t--fmt;\n\t\t\tcontinue;\n\t\t}\n\t\tif (qualifier == 'l') {\n\t\t\tnum = va_arg(args, unsigned long);\n\t\t\tif (flags & SIGN)\n\t\t\t\tnum = (signed long) num;\n\t\t} else if (qualifier == 'q') {\n\t\t\tnum = va_arg(args, unsigned long long);\n\t\t\tif (flags & SIGN)\n\t\t\t\tnum = (signed long long) num;\n\t\t} else if (qualifier == 'Z') {\n\t\t\tnum = va_arg(args, size_t);\n\t\t} else if (qualifier == 'h') {\n\t\t\tnum = (unsigned short) va_arg(args, int);\n\t\t\tif (flags & SIGN)\n\t\t\t\tnum = (signed short) num;\n\t\t} else {\n\t\t\tnum = va_arg(args, unsigned int);\n\t\t\tif (flags & SIGN)\n\t\t\t\tnum = (signed int) num;\n\t\t}\n\t\tstr = number(str, num, base, field_width, precision, flags);\n\t}\n\t*str = '\\0';\n\treturn str-buf;\n}",
+            2
+        ],
+        [
+            "security/keys/keyring.c",
+            "keyring_alloc",
+            "struct key *keyring_alloc(const char *description, kuid_t uid, kgid_t gid, /* <=== keyring_alloc */ \n\t\t\t  const struct cred *cred, key_perm_t perm,\n\t\t\t  unsigned long flags, struct key *dest)\n{\n\tstruct key *keyring;\n\tint ret;\n\n\tkeyring = key_alloc(&key_type_keyring, description,\n\t\t\t    uid, gid, cred, perm, flags);\n\tif (!IS_ERR(keyring)) {\n\t\tret = key_instantiate_and_link(keyring, NULL, 0, dest, NULL);\n\t\tif (ret < 0) {\n\t\t\tkey_put(keyring);\n\t\t\tkeyring = ERR_PTR(ret);\n\t\t}\n\t}\n\n\treturn keyring;\n}",
+            1
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_lock",
+            "extern void mutex_lock(struct mutex *lock); /* <=== mutex_lock */ ",
+            1
+        ],
+        [
+            "lib/vsprintf.c",
+            "SIGN",
+            "#define SIGN\t2\t\t/* unsigned/signed long */ /* <=== lib/vsprintf.c:340:340:SIGN:0 */ ",
+            3
+        ],
+        [
+            "security/keys/internal.h",
+            "KEY_SEARCH",
+            "#define\tKEY_SEARCH\t0x08\t/* require permission to search (keyring) or find (key) */ /* <=== security/keys/internal.h:175:175:KEY_SEARCH:0 */ ",
+            2
+        ],
+        [
+            "include/linux/string.h",
+            "strcmp",
+            "extern int strcmp(const char *,const char *); /* <=== strcmp */ ",
+            2
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "SPECIAL",
+            "#define SPECIAL\t32\t\t/* 0x */ /* <=== arch/powerpc/boot/stdio.c:56:56:SPECIAL:0 */ ",
+            3
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "sprintf",
+            "int sprintf(char *buf, const char *fmt, ...) /* <=== sprintf */ \n{\n\tva_list args;\n\tint i;\n\n\tva_start(args, fmt);\n\ti = vsprintf(buf, fmt, args);\n\tva_end(args);\n\treturn i;\n}",
+            1
+        ],
+        [
+            "lib/vsprintf.c",
+            "sprintf",
+            "int sprintf(char *buf, const char *fmt, ...) /* <=== sprintf */ \n{\n\tva_list args;\n\tint i;\n\n\tva_start(args, fmt);\n\ti = vsnprintf(buf, INT_MAX, fmt, args);\n\tva_end(args);\n\n\treturn i;\n}",
+            1
+        ],
+        [
+            "include/linux/rwsem.h",
+            "rwsem_is_locked",
+            "static inline int rwsem_is_locked(struct rw_semaphore *sem) /* <=== rwsem_is_locked */ \n{\n\treturn sem->count != 0;\n}",
+            3
+        ],
+        [
+            "include/linux/uidgid.h",
+            "uid_eq",
+            "static inline bool uid_eq(kuid_t left, kuid_t right) /* <=== uid_eq */ \n{\n\treturn __kuid_val(left) == __kuid_val(right);\n}",
+            3
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "sprintf",
+            "int sprintf(char * buf, const char *fmt, ...) /* <=== sprintf */ \n{\n\tva_list args;\n\tint i;\n\n\tva_start(args, fmt);\n\ti=vsprintf(buf,fmt,args);\n\tva_end(args);\n\treturn i;\n}",
+            1
+        ],
+        [
+            "security/keys/keyring.c",
+            "rcu_dereference_locked_keyring",
+            "#define rcu_dereference_locked_keyring(keyring)\t\t\t\t\\ /* <=== security/keys/keyring.c:23:26:rcu_dereference_locked_keyring:1 */ \n\t(rcu_dereference_protected(\t\t\t\t\t\\\n\t\t(keyring)->payload.subscriptions,\t\t\t\\\n\t\trwsem_is_locked((struct rw_semaphore *)&(keyring)->sem)))",
+            3
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "strnlen",
+            "size_t strnlen(const char * s, size_t count) /* <=== strnlen */ \n{\n\tconst char *sc;\n\n\tfor (sc = s; count-- && *sc != '\\0'; ++sc)\n\t\t/* nothing */;\n\treturn sc - s;\n}",
+            3
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "ZEROPAD",
+            "#define ZEROPAD\t1\t\t/* pad with zero */ /* <=== arch/x86/boot/printf.c:29:29:ZEROPAD:0 */ ",
+            3
+        ],
+        [
+            "security/keys/key.c",
+            "key_user_put",
+            "void key_user_put(struct key_user *user) /* <=== key_user_put */ \n{\n\tif (atomic_dec_and_lock(&user->usage, &key_user_lock)) {\n\t\trb_erase(&user->node, &key_user_tree);\n\t\tspin_unlock(&key_user_lock);\n\n\t\tkfree(user);\n\t}\n}",
+            3
+        ],
+        [
+            "security/keys/key.c",
+            "key_instantiate_and_link",
+            "int key_instantiate_and_link(struct key *key, /* <=== key_instantiate_and_link */ \n\t\t\t     const void *data,\n\t\t\t     size_t datalen,\n\t\t\t     struct key *keyring,\n\t\t\t     struct key *authkey)\n{\n\tstruct key_preparsed_payload prep;\n\tunsigned long prealloc;\n\tint ret;\n\n\tmemset(&prep, 0, sizeof(prep));\n\tprep.data = data;\n\tprep.datalen = datalen;\n\tprep.quotalen = key->type->def_datalen;\n\tif (key->type->preparse) {\n\t\tret = key->type->preparse(&prep);\n\t\tif (ret < 0)\n\t\t\tgoto error;\n\t}\n\n\tif (keyring) {\n\t\tret = __key_link_begin(keyring, key->type, key->description,\n\t\t\t\t       &prealloc);\n\t\tif (ret < 0)\n\t\t\tgoto error_free_preparse;\n\t}\n\n\tret = __key_instantiate_and_link(key, &prep, keyring, authkey,\n\t\t\t\t\t &prealloc);\n\n\tif (keyring)\n\t\t__key_link_end(keyring, key->type, prealloc);\n\nerror_free_preparse:\n\tif (key->type->preparse)\n\t\tkey->type->free_preparse(&prep);\nerror:\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "number",
+            "static char *number(char *str, long num, int base, int size, int precision, /* <=== number */ \n\t\t    int type)\n{\n\t/* we are called with base 8, 10 or 16, only, thus don't need \"G...\"  */\n\tstatic const char digits[16] = \"0123456789ABCDEF\"; /* \"GHIJKLMNOPQRSTUVWXYZ\"; */\n\n\tchar tmp[66];\n\tchar c, sign, locase;\n\tint i;\n\n\t/* locase = 0 or 0x20. ORing digits or letters with 'locase'\n\t * produces same digits or (maybe lowercased) letters */\n\tlocase = (type & SMALL);\n\tif (type & LEFT)\n\t\ttype &= ~ZEROPAD;\n\tif (base < 2 || base > 36)\n\t\treturn NULL;\n\tc = (type & ZEROPAD) ? '0' : ' ';\n\tsign = 0;\n\tif (type & SIGN) {\n\t\tif (num < 0) {\n\t\t\tsign = '-';\n\t\t\tnum = -num;\n\t\t\tsize--;\n\t\t} else if (type & PLUS) {\n\t\t\tsign = '+';\n\t\t\tsize--;\n\t\t} else if (type & SPACE) {\n\t\t\tsign = ' ';\n\t\t\tsize--;\n\t\t}\n\t}\n\tif (type & SPECIAL) {\n\t\tif (base == 16)\n\t\t\tsize -= 2;\n\t\telse if (base == 8)\n\t\t\tsize--;\n\t}\n\ti = 0;\n\tif (num == 0)\n\t\ttmp[i++] = '0';\n\telse\n\t\twhile (num != 0)\n\t\t\ttmp[i++] = (digits[__do_div(num, base)] | locase);\n\tif (i > precision)\n\t\tprecision = i;\n\tsize -= precision;\n\tif (!(type & (ZEROPAD + LEFT)))\n\t\twhile (size-- > 0)\n\t\t\t*str++ = ' ';\n\tif (sign)\n\t\t*str++ = sign;\n\tif (type & SPECIAL) {\n\t\tif (base == 8)\n\t\t\t*str++ = '0';\n\t\telse if (base == 16) {\n\t\t\t*str++ = '0';\n\t\t\t*str++ = ('X' | locase);\n\t\t}\n\t}\n\tif (!(type & LEFT))\n\t\twhile (size-- > 0)\n\t\t\t*str++ = c;\n\twhile (i < precision--)\n\t\t*str++ = '0';\n\twhile (i-- > 0)\n\t\t*str++ = tmp[i];\n\twhile (size-- > 0)\n\t\t*str++ = ' ';\n\treturn str;\n}",
+            3
+        ],
+        [
+            "include/linux/uidgid.h",
+            "kuid_has_mapping",
+            "static inline bool kuid_has_mapping(struct user_namespace *ns, kuid_t uid) /* <=== kuid_has_mapping */ \n{\n\treturn true;\n}",
+            2
+        ],
+        [
+            "include/linux/slab.h",
+            "kmem_cache_alloc",
+            "void *kmem_cache_alloc(struct kmem_cache *, gfp_t); /* <=== kmem_cache_alloc */ ",
+            3
+        ],
+        [
+            "lib/vsprintf.c",
+            "number",
+            "char *number(char *buf, char *end, unsigned long long num, /* <=== number */ \n\t     struct printf_spec spec)\n{\n\t/* we are called with base 8, 10 or 16, only, thus don't need \"G...\"  */\n\tstatic const char digits[16] = \"0123456789ABCDEF\"; /* \"GHIJKLMNOPQRSTUVWXYZ\"; */\n\n\tchar tmp[66];\n\tchar sign;\n\tchar locase;\n\tint need_pfx = ((spec.flags & SPECIAL) && spec.base != 10);\n\tint i;\n\tbool is_zero = num == 0LL;\n\n\t/* locase = 0 or 0x20. ORing digits or letters with 'locase'\n\t * produces same digits or (maybe lowercased) letters */\n\tlocase = (spec.flags & SMALL);\n\tif (spec.flags & LEFT)\n\t\tspec.flags &= ~ZEROPAD;\n\tsign = 0;\n\tif (spec.flags & SIGN) {\n\t\tif ((signed long long)num < 0) {\n\t\t\tsign = '-';\n\t\t\tnum = -(signed long long)num;\n\t\t\tspec.field_width--;\n\t\t} else if (spec.flags & PLUS) {\n\t\t\tsign = '+';\n\t\t\tspec.field_width--;\n\t\t} else if (spec.flags & SPACE) {\n\t\t\tsign = ' ';\n\t\t\tspec.field_width--;\n\t\t}\n\t}\n\tif (need_pfx) {\n\t\tif (spec.base == 16)\n\t\t\tspec.field_width -= 2;\n\t\telse if (!is_zero)\n\t\t\tspec.field_width--;\n\t}\n\n\t/* generate full string in tmp[], in reverse order */\n\ti = 0;\n\tif (num < spec.base)\n\t\ttmp[i++] = digits[num] | locase;\n\t/* Generic code, for any base:\n\telse do {\n\t\ttmp[i++] = (digits[do_div(num,base)] | locase);\n\t} while (num != 0);\n\t*/\n\telse if (spec.base != 10) { /* 8 or 16 */\n\t\tint mask = spec.base - 1;\n\t\tint shift = 3;\n\n\t\tif (spec.base == 16)\n\t\t\tshift = 4;\n\t\tdo {\n\t\t\ttmp[i++] = (digits[((unsigned char)num) & mask] | locase);\n\t\t\tnum >>= shift;\n\t\t} while (num);\n\t} else { /* base 10 */\n\t\ti = put_dec(tmp, num) - tmp;\n\t}\n\n\t/* printing 100 using %2d gives \"100\", not \"00\" */\n\tif (i > spec.precision)\n\t\tspec.precision = i;\n\t/* leading space padding */\n\tspec.field_width -= spec.precision;\n\tif (!(spec.flags & (ZEROPAD+LEFT))) {\n\t\twhile (--spec.field_width >= 0) {\n\t\t\tif (buf < end)\n\t\t\t\t*buf = ' ';\n\t\t\t++buf;\n\t\t}\n\t}\n\t/* sign */\n\tif (sign) {\n\t\tif (buf < end)\n\t\t\t*buf = sign;\n\t\t++buf;\n\t}\n\t/* \"0x\" / \"0\" prefix */\n\tif (need_pfx) {\n\t\tif (spec.base == 16 || !is_zero) {\n\t\t\tif (buf < end)\n\t\t\t\t*buf = '0';\n\t\t\t++buf;\n\t\t}\n\t\tif (spec.base == 16) {\n\t\t\tif (buf < end)\n\t\t\t\t*buf = ('X' | locase);\n\t\t\t++buf;\n\t\t}\n\t}\n\t/* zero or space padding */\n\tif (!(spec.flags & LEFT)) {\n\t\tchar c = (spec.flags & ZEROPAD) ? '0' : ' ';\n\t\twhile (--spec.field_width >= 0) {\n\t\t\tif (buf < end)\n\t\t\t\t*buf = c;\n\t\t\t++buf;\n\t\t}\n\t}\n\t/* hmm even more zero padding? */\n\twhile (i <= --spec.precision) {\n\t\tif (buf < end)\n\t\t\t*buf = '0';\n\t\t++buf;\n\t}\n\t/* actual digits of result */\n\twhile (--i >= 0) {\n\t\tif (buf < end)\n\t\t\t*buf = tmp[i];\n\t\t++buf;\n\t}\n\t/* trailing space padding */\n\twhile (--spec.field_width >= 0) {\n\t\tif (buf < end)\n\t\t\t*buf = ' ';\n\t\t++buf;\n\t}\n\n\treturn buf;\n}",
+            3
+        ],
+        [
+            "security/keys/key.c",
+            "key_user_lookup",
+            "struct key_user *key_user_lookup(kuid_t uid) /* <=== key_user_lookup */ \n{\n\tstruct key_user *candidate = NULL, *user;\n\tstruct rb_node *parent = NULL;\n\tstruct rb_node **p;\n\ntry_again:\n\tp = &key_user_tree.rb_node;\n\tspin_lock(&key_user_lock);\n\n\t/* search the tree for a user record with a matching UID */\n\twhile (*p) {\n\t\tparent = *p;\n\t\tuser = rb_entry(parent, struct key_user, node);\n\n\t\tif (uid_lt(uid, user->uid))\n\t\t\tp = &(*p)->rb_left;\n\t\telse if (uid_gt(uid, user->uid))\n\t\t\tp = &(*p)->rb_right;\n\t\telse\n\t\t\tgoto found;\n\t}\n\n\t/* if we get here, we failed to find a match in the tree */\n\tif (!candidate) {\n\t\t/* allocate a candidate user record if we don't already have\n\t\t * one */\n\t\tspin_unlock(&key_user_lock);\n\n\t\tuser = NULL;\n\t\tcandidate = kmalloc(sizeof(struct key_user), GFP_KERNEL);\n\t\tif (unlikely(!candidate))\n\t\t\tgoto out;\n\n\t\t/* the allocation may have scheduled, so we need to repeat the\n\t\t * search lest someone else added the record whilst we were\n\t\t * asleep */\n\t\tgoto try_again;\n\t}\n\n\t/* if we get here, then the user record still hadn't appeared on the\n\t * second pass - so we use the candidate record */\n\tatomic_set(&candidate->usage, 1);\n\tatomic_set(&candidate->nkeys, 0);\n\tatomic_set(&candidate->nikeys, 0);\n\tcandidate->uid = uid;\n\tcandidate->qnkeys = 0;\n\tcandidate->qnbytes = 0;\n\tspin_lock_init(&candidate->lock);\n\tmutex_init(&candidate->cons_lock);\n\n\trb_link_node(&candidate->node, parent, p);\n\trb_insert_color(&candidate->node, &key_user_tree);\n\tspin_unlock(&key_user_lock);\n\tuser = candidate;\n\tgoto out;\n\n\t/* okay - we found a user record for this UID */\nfound:\n\tatomic_inc(&user->usage);\n\tspin_unlock(&key_user_lock);\n\tkfree(candidate);\nout:\n\treturn user;\n}",
+            3
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "number",
+            "static char * number(char * str, unsigned long long num, int base, int size, int precision, int type) /* <=== number */ \n{\n\tchar c,sign,tmp[66];\n\tconst char *digits=\"0123456789abcdefghijklmnopqrstuvwxyz\";\n\tint i;\n\n\tif (type & LARGE)\n\t\tdigits = \"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ\";\n\tif (type & LEFT)\n\t\ttype &= ~ZEROPAD;\n\tif (base < 2 || base > 36)\n\t\treturn 0;\n\tc = (type & ZEROPAD) ? '0' : ' ';\n\tsign = 0;\n\tif (type & SIGN) {\n\t\tif ((signed long long)num < 0) {\n\t\t\tsign = '-';\n\t\t\tnum = - (signed long long)num;\n\t\t\tsize--;\n\t\t} else if (type & PLUS) {\n\t\t\tsign = '+';\n\t\t\tsize--;\n\t\t} else if (type & SPACE) {\n\t\t\tsign = ' ';\n\t\t\tsize--;\n\t\t}\n\t}\n\tif (type & SPECIAL) {\n\t\tif (base == 16)\n\t\t\tsize -= 2;\n\t\telse if (base == 8)\n\t\t\tsize--;\n\t}\n\ti = 0;\n\tif (num == 0)\n\t\ttmp[i++]='0';\n\telse while (num != 0) {\n\t\ttmp[i++] = digits[do_div(num, base)];\n\t}\n\tif (i > precision)\n\t\tprecision = i;\n\tsize -= precision;\n\tif (!(type&(ZEROPAD+LEFT)))\n\t\twhile(size-->0)\n\t\t\t*str++ = ' ';\n\tif (sign)\n\t\t*str++ = sign;\n\tif (type & SPECIAL) {\n\t\tif (base==8)\n\t\t\t*str++ = '0';\n\t\telse if (base==16) {\n\t\t\t*str++ = '0';\n\t\t\t*str++ = digits[33];\n\t\t}\n\t}\n\tif (!(type & LEFT))\n\t\twhile (size-- > 0)\n\t\t\t*str++ = c;\n\twhile (i < precision--)\n\t\t*str++ = '0';\n\twhile (i-- > 0)\n\t\t*str++ = tmp[i];\n\twhile (size-- > 0)\n\t\t*str++ = ' ';\n\treturn str;\n}",
+            3
+        ],
+        [
+            "lib/vsprintf.c",
+            "vsnprintf",
+            "int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) /* <=== vsnprintf */ \n{\n\tunsigned long long num;\n\tchar *str, *end;\n\tstruct printf_spec spec = {0};\n\n\t/* Reject out-of-range values early.  Large positive sizes are\n\t   used for unknown buffer sizes. */\n\tif (WARN_ON_ONCE((int) size < 0))\n\t\treturn 0;\n\n\tstr = buf;\n\tend = buf + size;\n\n\t/* Make sure end is always >= buf */\n\tif (end < buf) {\n\t\tend = ((void *)-1);\n\t\tsize = end - buf;\n\t}\n\n\twhile (*fmt) {\n\t\tconst char *old_fmt = fmt;\n\t\tint read = format_decode(fmt, &spec);\n\n\t\tfmt += read;\n\n\t\tswitch (spec.type) {\n\t\tcase FORMAT_TYPE_NONE: {\n\t\t\tint copy = read;\n\t\t\tif (str < end) {\n\t\t\t\tif (copy > end - str)\n\t\t\t\t\tcopy = end - str;\n\t\t\t\tmemcpy(str, old_fmt, copy);\n\t\t\t}\n\t\t\tstr += read;\n\t\t\tbreak;\n\t\t}\n\n\t\tcase FORMAT_TYPE_WIDTH:\n\t\t\tspec.field_width = va_arg(args, int);\n\t\t\tbreak;\n\n\t\tcase FORMAT_TYPE_PRECISION:\n\t\t\tspec.precision = va_arg(args, int);\n\t\t\tbreak;\n\n\t\tcase FORMAT_TYPE_CHAR: {\n\t\t\tchar c;\n\n\t\t\tif (!(spec.flags & LEFT)) {\n\t\t\t\twhile (--spec.field_width > 0) {\n\t\t\t\t\tif (str < end)\n\t\t\t\t\t\t*str = ' ';\n\t\t\t\t\t++str;\n\n\t\t\t\t}\n\t\t\t}\n\t\t\tc = (unsigned char) va_arg(args, int);\n\t\t\tif (str < end)\n\t\t\t\t*str = c;\n\t\t\t++str;\n\t\t\twhile (--spec.field_width > 0) {\n\t\t\t\tif (str < end)\n\t\t\t\t\t*str = ' ';\n\t\t\t\t++str;\n\t\t\t}\n\t\t\tbreak;\n\t\t}\n\n\t\tcase FORMAT_TYPE_STR:\n\t\t\tstr = string(str, end, va_arg(args, char *), spec);\n\t\t\tbreak;\n\n\t\tcase FORMAT_TYPE_PTR:\n\t\t\tstr = pointer(fmt+1, str, end, va_arg(args, void *),\n\t\t\t\t      spec);\n\t\t\twhile (isalnum(*fmt))\n\t\t\t\tfmt++;\n\t\t\tbreak;\n\n\t\tcase FORMAT_TYPE_PERCENT_CHAR:\n\t\t\tif (str < end)\n\t\t\t\t*str = '%';\n\t\t\t++str;\n\t\t\tbreak;\n\n\t\tcase FORMAT_TYPE_INVALID:\n\t\t\tif (str < end)\n\t\t\t\t*str = '%';\n\t\t\t++str;\n\t\t\tbreak;\n\n\t\tcase FORMAT_TYPE_NRCHARS: {\n\t\t\tu8 qualifier = spec.qualifier;\n\n\t\t\tif (qualifier == 'l') {\n\t\t\t\tlong *ip = va_arg(args, long *);\n\t\t\t\t*ip = (str - buf);\n\t\t\t} else if (_tolower(qualifier) == 'z') {\n\t\t\t\tsize_t *ip = va_arg(args, size_t *);\n\t\t\t\t*ip = (str - buf);\n\t\t\t} else {\n\t\t\t\tint *ip = va_arg(args, int *);\n\t\t\t\t*ip = (str - buf);\n\t\t\t}\n\t\t\tbreak;\n\t\t}\n\n\t\tdefault:\n\t\t\tswitch (spec.type) {\n\t\t\tcase FORMAT_TYPE_LONG_LONG:\n\t\t\t\tnum = va_arg(args, long long);\n\t\t\t\tbreak;\n\t\t\tcase FORMAT_TYPE_ULONG:\n\t\t\t\tnum = va_arg(args, unsigned long);\n\t\t\t\tbreak;\n\t\t\tcase FORMAT_TYPE_LONG:\n\t\t\t\tnum = va_arg(args, long);\n\t\t\t\tbreak;\n\t\t\tcase FORMAT_TYPE_SIZE_T:\n\t\t\t\tif (spec.flags & SIGN)\n\t\t\t\t\tnum = va_arg(args, ssize_t);\n\t\t\t\telse\n\t\t\t\t\tnum = va_arg(args, size_t);\n\t\t\t\tbreak;\n\t\t\tcase FORMAT_TYPE_PTRDIFF:\n\t\t\t\tnum = va_arg(args, ptrdiff_t);\n\t\t\t\tbreak;\n\t\t\tcase FORMAT_TYPE_UBYTE:\n\t\t\t\tnum = (unsigned char) va_arg(args, int);\n\t\t\t\tbreak;\n\t\t\tcase FORMAT_TYPE_BYTE:\n\t\t\t\tnum = (signed char) va_arg(args, int);\n\t\t\t\tbreak;\n\t\t\tcase FORMAT_TYPE_USHORT:\n\t\t\t\tnum = (unsigned short) va_arg(args, int);\n\t\t\t\tbreak;\n\t\t\tcase FORMAT_TYPE_SHORT:\n\t\t\t\tnum = (short) va_arg(args, int);\n\t\t\t\tbreak;\n\t\t\tcase FORMAT_TYPE_INT:\n\t\t\t\tnum = (int) va_arg(args, int);\n\t\t\t\tbreak;\n\t\t\tdefault:\n\t\t\t\tnum = va_arg(args, unsigned int);\n\t\t\t}\n\n\t\t\tstr = number(str, end, num, spec);\n\t\t}\n\t}\n\n\tif (size > 0) {\n\t\tif (str < end)\n\t\t\t*str = '\\0';\n\t\telse\n\t\t\tend[-1] = '\\0';\n\t}\n\n\t/* the trailing null byte doesn't count towards the total */\n\treturn str-buf;\n\n}",
+            2
+        ],
+        [
+            "security/keys/keyring.c",
+            "KEYRING_NAME_HASH_SIZE",
+            "#define KEYRING_NAME_HASH_SIZE\t(1 << 5) /* <=== security/keys/keyring.c:48:48:KEYRING_NAME_HASH_SIZE:0 */ ",
+            3
+        ],
+        [
+            "security/keys/key.c",
+            "key_put",
+            "void key_put(struct key *key) /* <=== key_put */ \n{\n\tif (key) {\n\t\tkey_check(key);\n\n\t\tif (atomic_dec_and_test(&key->usage))\n\t\t\tschedule_work(&key_gc_work);\n\t}\n}",
+            1
+        ],
+        [
+            "security/keys/internal.h",
+            "kdebug",
+            "#define kdebug(FMT, ...) \\ /* <=== security/keys/internal.h:31:32:kdebug:2 */ \n\tno_printk(KERN_DEBUG FMT\"\\n\", ##__VA_ARGS__)",
+            3
+        ],
+        [
+            "security/keys/keyring.c",
+            "find_keyring_by_name",
+            "struct key *find_keyring_by_name(const char *name, bool skip_perm_check) /* <=== find_keyring_by_name */ \n{\n\tstruct key *keyring;\n\tint bucket;\n\n\tif (!name)\n\t\treturn ERR_PTR(-EINVAL);\n\n\tbucket = keyring_hash(name);\n\n\tread_lock(&keyring_name_lock);\n\n\tif (keyring_name_hash[bucket].next) {\n\t\t/* search this hash bucket for a keyring with a matching name\n\t\t * that's readable and that hasn't been revoked */\n\t\tlist_for_each_entry(keyring,\n\t\t\t\t    &keyring_name_hash[bucket],\n\t\t\t\t    type_data.link\n\t\t\t\t    ) {\n\t\t\tif (!kuid_has_mapping(current_user_ns(), keyring->user->uid))\n\t\t\t\tcontinue;\n\n\t\t\tif (test_bit(KEY_FLAG_REVOKED, &keyring->flags))\n\t\t\t\tcontinue;\n\n\t\t\tif (strcmp(keyring->description, name) != 0)\n\t\t\t\tcontinue;\n\n\t\t\tif (!skip_perm_check &&\n\t\t\t    key_permission(make_key_ref(keyring, 0),\n\t\t\t\t\t   KEY_SEARCH) < 0)\n\t\t\t\tcontinue;\n\n\t\t\t/* we've got a match but we might end up racing with\n\t\t\t * key_cleanup() if the keyring is currently 'dead'\n\t\t\t * (ie. it has a zero usage count) */\n\t\t\tif (!atomic_inc_not_zero(&keyring->usage))\n\t\t\t\tcontinue;\n\t\t\tkeyring->last_used_at = current_kernel_time().tv_sec;\n\t\t\tgoto out;\n\t\t}\n\t}\n\n\tkeyring = ERR_PTR(-ENOKEY);\nout:\n\tread_unlock(&keyring_name_lock);\n\treturn keyring;\n}",
+            1
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "ZEROPAD",
+            "#define ZEROPAD\t1\t\t/* pad with zero */ /* <=== arch/powerpc/boot/stdio.c:51:51:ZEROPAD:0 */ ",
+            3
+        ],
+        [
+            "include/linux/slab.h",
+            "kfree",
+            "void kfree(const void *); /* <=== kfree */ ",
+            3
+        ],
+        [
+            "lib/vsprintf.c",
+            "format_decode",
+            "int format_decode(const char *fmt, struct printf_spec *spec) /* <=== format_decode */ \n{\n\tconst char *start = fmt;\n\n\t/* we finished early by reading the field width */\n\tif (spec->type == FORMAT_TYPE_WIDTH) {\n\t\tif (spec->field_width < 0) {\n\t\t\tspec->field_width = -spec->field_width;\n\t\t\tspec->flags |= LEFT;\n\t\t}\n\t\tspec->type = FORMAT_TYPE_NONE;\n\t\tgoto precision;\n\t}\n\n\t/* we finished early by reading the precision */\n\tif (spec->type == FORMAT_TYPE_PRECISION) {\n\t\tif (spec->precision < 0)\n\t\t\tspec->precision = 0;\n\n\t\tspec->type = FORMAT_TYPE_NONE;\n\t\tgoto qualifier;\n\t}\n\n\t/* By default */\n\tspec->type = FORMAT_TYPE_NONE;\n\n\tfor (; *fmt ; ++fmt) {\n\t\tif (*fmt == '%')\n\t\t\tbreak;\n\t}\n\n\t/* Return the current non-format string */\n\tif (fmt != start || !*fmt)\n\t\treturn fmt - start;\n\n\t/* Process flags */\n\tspec->flags = 0;\n\n\twhile (1) { /* this also skips first '%' */\n\t\tbool found = true;\n\n\t\t++fmt;\n\n\t\tswitch (*fmt) {\n\t\tcase '-': spec->flags |= LEFT;    break;\n\t\tcase '+': spec->flags |= PLUS;    break;\n\t\tcase ' ': spec->flags |= SPACE;   break;\n\t\tcase '#': spec->flags |= SPECIAL; break;\n\t\tcase '0': spec->flags |= ZEROPAD; break;\n\t\tdefault:  found = false;\n\t\t}\n\n\t\tif (!found)\n\t\t\tbreak;\n\t}\n\n\t/* get field width */\n\tspec->field_width = -1;\n\n\tif (isdigit(*fmt))\n\t\tspec->field_width = skip_atoi(&fmt);\n\telse if (*fmt == '*') {\n\t\t/* it's the next argument */\n\t\tspec->type = FORMAT_TYPE_WIDTH;\n\t\treturn ++fmt - start;\n\t}\n\nprecision:\n\t/* get the precision */\n\tspec->precision = -1;\n\tif (*fmt == '.') {\n\t\t++fmt;\n\t\tif (isdigit(*fmt)) {\n\t\t\tspec->precision = skip_atoi(&fmt);\n\t\t\tif (spec->precision < 0)\n\t\t\t\tspec->precision = 0;\n\t\t} else if (*fmt == '*') {\n\t\t\t/* it's the next argument */\n\t\t\tspec->type = FORMAT_TYPE_PRECISION;\n\t\t\treturn ++fmt - start;\n\t\t}\n\t}\n\nqualifier:\n\t/* get the conversion qualifier */\n\tspec->qualifier = -1;\n\tif (*fmt == 'h' || _tolower(*fmt) == 'l' ||\n\t    _tolower(*fmt) == 'z' || *fmt == 't') {\n\t\tspec->qualifier = *fmt++;\n\t\tif (unlikely(spec->qualifier == *fmt)) {\n\t\t\tif (spec->qualifier == 'l') {\n\t\t\t\tspec->qualifier = 'L';\n\t\t\t\t++fmt;\n\t\t\t} else if (spec->qualifier == 'h') {\n\t\t\t\tspec->qualifier = 'H';\n\t\t\t\t++fmt;\n\t\t\t}\n\t\t}\n\t}\n\n\t/* default base */\n\tspec->base = 10;\n\tswitch (*fmt) {\n\tcase 'c':\n\t\tspec->type = FORMAT_TYPE_CHAR;\n\t\treturn ++fmt - start;\n\n\tcase 's':\n\t\tspec->type = FORMAT_TYPE_STR;\n\t\treturn ++fmt - start;\n\n\tcase 'p':\n\t\tspec->type = FORMAT_TYPE_PTR;\n\t\treturn fmt - start;\n\t\t/* skip alnum */\n\n\tcase 'n':\n\t\tspec->type = FORMAT_TYPE_NRCHARS;\n\t\treturn ++fmt - start;\n\n\tcase '%':\n\t\tspec->type = FORMAT_TYPE_PERCENT_CHAR;\n\t\treturn ++fmt - start;\n\n\t/* integer number formats - set up the flags and \"break\" */\n\tcase 'o':\n\t\tspec->base = 8;\n\t\tbreak;\n\n\tcase 'x':\n\t\tspec->flags |= SMALL;\n\n\tcase 'X':\n\t\tspec->base = 16;\n\t\tbreak;\n\n\tcase 'd':\n\tcase 'i':\n\t\tspec->flags |= SIGN;\n\tcase 'u':\n\t\tbreak;\n\n\tdefault:\n\t\tspec->type = FORMAT_TYPE_INVALID;\n\t\treturn fmt - start;\n\t}\n\n\tif (spec->qualifier == 'L')\n\t\tspec->type = FORMAT_TYPE_LONG_LONG;\n\telse if (spec->qualifier == 'l') {\n\t\tif (spec->flags & SIGN)\n\t\t\tspec->type = FORMAT_TYPE_LONG;\n\t\telse\n\t\t\tspec->type = FORMAT_TYPE_ULONG;\n\t} else if (_tolower(spec->qualifier) == 'z') {\n\t\tspec->type = FORMAT_TYPE_SIZE_T;\n\t} else if (spec->qualifier == 't') {\n\t\tspec->type = FORMAT_TYPE_PTRDIFF;\n\t} else if (spec->qualifier == 'H') {\n\t\tif (spec->flags & SIGN)\n\t\t\tspec->type = FORMAT_TYPE_BYTE;\n\t\telse\n\t\t\tspec->type = FORMAT_TYPE_UBYTE;\n\t} else if (spec->qualifier == 'h') {\n\t\tif (spec->flags & SIGN)\n\t\t\tspec->type = FORMAT_TYPE_SHORT;\n\t\telse\n\t\t\tspec->type = FORMAT_TYPE_USHORT;\n\t} else {\n\t\tif (spec->flags & SIGN)\n\t\t\tspec->type = FORMAT_TYPE_INT;\n\t\telse\n\t\t\tspec->type = FORMAT_TYPE_UINT;\n\t}\n\n\treturn ++fmt - start;\n}",
+            3
+        ],
+        [
+            "security/keys/internal.h",
+            "key_check",
+            "#define key_check(key) do {} while(0) /* <=== security/keys/internal.h:260:260:key_check:1 */ ",
+            2
+        ],
+        [
+            "lib/vsprintf.c",
+            "vsprintf",
+            "int vsprintf(char *buf, const char *fmt, va_list args) /* <=== vsprintf */ \n{\n\treturn vsnprintf(buf, INT_MAX, fmt, args);\n}",
+            2
+        ],
+        [
+            "security/keys/keyring.c",
+            "__key_link",
+            "void __key_link(struct key *keyring, struct key *key, /* <=== __key_link */ \n\t\tunsigned long *_prealloc)\n{\n\tstruct keyring_list *klist, *nklist;\n\tstruct key *discard;\n\n\tnklist = (struct keyring_list *)(*_prealloc & ~KEY_LINK_FIXQUOTA);\n\t*_prealloc = 0;\n\n\tkenter(\"%d,%d,%p\", keyring->serial, key->serial, nklist);\n\n\tklist = rcu_dereference_locked_keyring(keyring);\n\n\tatomic_inc(&key->usage);\n\tkeyring->last_used_at = key->last_used_at =\n\t\tcurrent_kernel_time().tv_sec;\n\n\t/* there's a matching key we can displace or an empty slot in a newly\n\t * allocated list we can fill */\n\tif (nklist) {\n\t\tkdebug(\"reissue %hu/%hu/%hu\",\n\t\t       nklist->delkey, nklist->nkeys, nklist->maxkeys);\n\n\t\tRCU_INIT_POINTER(nklist->keys[nklist->delkey], key);\n\n\t\trcu_assign_pointer(keyring->payload.subscriptions, nklist);\n\n\t\t/* dispose of the old keyring list and, if there was one, the\n\t\t * displaced key */\n\t\tif (klist) {\n\t\t\tkdebug(\"dispose %hu/%hu/%hu\",\n\t\t\t       klist->delkey, klist->nkeys, klist->maxkeys);\n\t\t\tcall_rcu(&klist->rcu, keyring_unlink_rcu_disposal);\n\t\t}\n\t} else if (klist->delkey < klist->nkeys) {\n\t\tkdebug(\"replace %hu/%hu/%hu\",\n\t\t       klist->delkey, klist->nkeys, klist->maxkeys);\n\n\t\tdiscard = rcu_dereference_protected(\n\t\t\tklist->keys[klist->delkey],\n\t\t\trwsem_is_locked(&keyring->sem));\n\t\trcu_assign_pointer(klist->keys[klist->delkey], key);\n\t\t/* The garbage collector will take care of RCU\n\t\t * synchronisation */\n\t\tkey_put(discard);\n\t} else {\n\t\t/* there's sufficient slack space to append directly */\n\t\tkdebug(\"append %hu/%hu/%hu\",\n\t\t       klist->delkey, klist->nkeys, klist->maxkeys);\n\n\t\tRCU_INIT_POINTER(klist->keys[klist->delkey], key);\n\t\tsmp_wmb();\n\t\tklist->nkeys++;\n\t}\n}",
+            2
+        ],
+        [
+            "security/keys/keyring.c",
+            "keyring_detect_cycle",
+            "static int keyring_detect_cycle(struct key *A, struct key *B) /* <=== keyring_detect_cycle */ \n{\n\tstruct {\n\t\tstruct keyring_list *keylist;\n\t\tint kix;\n\t} stack[KEYRING_SEARCH_MAX_DEPTH];\n\n\tstruct keyring_list *keylist;\n\tstruct key *subtree, *key;\n\tint sp, nkeys, kix, ret;\n\n\trcu_read_lock();\n\n\tret = -EDEADLK;\n\tif (A == B)\n\t\tgoto cycle_detected;\n\n\tsubtree = B;\n\tsp = 0;\n\n\t/* start processing a new keyring */\ndescend:\n\tif (test_bit(KEY_FLAG_REVOKED, &subtree->flags))\n\t\tgoto not_this_keyring;\n\n\tkeylist = rcu_dereference(subtree->payload.subscriptions);\n\tif (!keylist)\n\t\tgoto not_this_keyring;\n\tkix = 0;\n\nascend:\n\t/* iterate through the remaining keys in this keyring */\n\tnkeys = keylist->nkeys;\n\tsmp_rmb();\n\tfor (; kix < nkeys; kix++) {\n\t\tkey = rcu_dereference(keylist->keys[kix]);\n\n\t\tif (key == A)\n\t\t\tgoto cycle_detected;\n\n\t\t/* recursively check nested keyrings */\n\t\tif (key->type == &key_type_keyring) {\n\t\t\tif (sp >= KEYRING_SEARCH_MAX_DEPTH)\n\t\t\t\tgoto too_deep;\n\n\t\t\t/* stack the current position */\n\t\t\tstack[sp].keylist = keylist;\n\t\t\tstack[sp].kix = kix;\n\t\t\tsp++;\n\n\t\t\t/* begin again with the new keyring */\n\t\t\tsubtree = key;\n\t\t\tgoto descend;\n\t\t}\n\t}\n\n\t/* the keyring we're looking at was disqualified or didn't contain a\n\t * matching key */\nnot_this_keyring:\n\tif (sp > 0) {\n\t\t/* resume the checking of a keyring higher up in the tree */\n\t\tsp--;\n\t\tkeylist = stack[sp].keylist;\n\t\tkix = stack[sp].kix + 1;\n\t\tgoto ascend;\n\t}\n\n\tret = 0; /* no cycles detected */\n\nerror:\n\trcu_read_unlock();\n\treturn ret;\n\ntoo_deep:\n\tret = -ELOOP;\n\tgoto error;\n\ncycle_detected:\n\tret = -EDEADLK;\n\tgoto error;\n}",
+            3
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_unlock",
+            "extern void mutex_unlock(struct mutex *lock); /* <=== mutex_unlock */ ",
+            1
+        ],
+        [
+            "include/linux/string.h",
+            "kmemdup",
+            "extern void *kmemdup(const void *src, size_t len, gfp_t gfp); /* <=== kmemdup */ ",
+            3
+        ],
+        [
+            "include/linux/spinlock.h",
+            "spin_unlock",
+            "static inline void spin_unlock(spinlock_t *lock) /* <=== spin_unlock */ \n{\n\traw_spin_unlock(&lock->rlock);\n}",
+            3
+        ],
+        [
+            "security/keys/keyring.c",
+            "__key_link_check_live_key",
+            "int __key_link_check_live_key(struct key *keyring, struct key *key) /* <=== __key_link_check_live_key */ \n{\n\tif (key->type == &key_type_keyring)\n\t\t/* check that we aren't going to create a cycle by linking one\n\t\t * keyring to another */\n\t\treturn keyring_detect_cycle(keyring, key);\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "security/keys/internal.h",
+            "kenter",
+            "#define kenter(FMT, ...) \\ /* <=== security/keys/internal.h:27:28:kenter:2 */ \n\tno_printk(KERN_DEBUG \"==> %s(\"FMT\")\\n\", __func__, ##__VA_ARGS__)",
+            3
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "SIGN",
+            "#define SIGN\t2\t\t/* unsigned/signed long */ /* <=== arch/powerpc/boot/stdio.c:52:52:SIGN:0 */ ",
+            3
+        ],
+        [
+            "security/keys/internal.h",
+            "key_permission",
+            "static inline int key_permission(const key_ref_t key_ref, key_perm_t perm) /* <=== key_permission */ \n{\n\treturn key_task_permission(key_ref, current_cred(), perm);\n}",
+            2
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "SIGN",
+            "#define SIGN\t2\t\t/* unsigned/signed long */ /* <=== arch/x86/boot/printf.c:30:30:SIGN:0 */ ",
+            3
+        ],
+        [
+            "security/keys/keyring.c",
+            "keyring_hash",
+            "static inline unsigned keyring_hash(const char *desc) /* <=== keyring_hash */ \n{\n\tunsigned bucket = 0;\n\n\tfor (; *desc; desc++)\n\t\tbucket += (unsigned char)*desc;\n\n\treturn bucket & (KEYRING_NAME_HASH_SIZE - 1);\n}",
+            2
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "PLUS",
+            "#define PLUS\t4\t\t/* show plus */ /* <=== arch/x86/boot/printf.c:31:31:PLUS:0 */ ",
+            3
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "skip_atoi",
+            "static int skip_atoi(const char **s) /* <=== skip_atoi */ \n{\n\tint i = 0;\n\n\twhile (isdigit(**s))\n\t\ti = i * 10 + *((*s)++) - '0';\n\treturn i;\n}",
+            3
+        ],
+        [
+            "include/linux/string.h",
+            "memcpy",
+            "extern void * memcpy(void *,const void *,__kernel_size_t); /* <=== memcpy */ ",
+            3
+        ],
+        [
+            "security/keys/keyring.c",
+            "key_link",
+            "int key_link(struct key *keyring, struct key *key) /* <=== key_link */ \n{\n\tunsigned long prealloc;\n\tint ret;\n\n\tkey_check(keyring);\n\tkey_check(key);\n\n\tret = __key_link_begin(keyring, key->type, key->description, &prealloc);\n\tif (ret == 0) {\n\t\tret = __key_link_check_live_key(keyring, key);\n\t\tif (ret == 0)\n\t\t\t__key_link(keyring, key, &prealloc);\n\t\t__key_link_end(keyring, key->type, prealloc);\n\t}\n\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "PLUS",
+            "#define PLUS\t4\t\t/* show plus */ /* <=== arch/powerpc/boot/stdio.c:53:53:PLUS:0 */ ",
+            3
+        ],
+        [
+            "arch/powerpc/boot/stdio.c",
+            "LEFT",
+            "#define LEFT\t16\t\t/* left justified */ /* <=== arch/powerpc/boot/stdio.c:55:55:LEFT:0 */ ",
+            3
+        ],
+        [
+            "security/keys/key.c",
+            "__key_instantiate_and_link",
+            "static int __key_instantiate_and_link(struct key *key, /* <=== __key_instantiate_and_link */ \n\t\t\t\t      struct key_preparsed_payload *prep,\n\t\t\t\t      struct key *keyring,\n\t\t\t\t      struct key *authkey,\n\t\t\t\t      unsigned long *_prealloc)\n{\n\tint ret, awaken;\n\n\tkey_check(key);\n\tkey_check(keyring);\n\n\tawaken = 0;\n\tret = -EBUSY;\n\n\tmutex_lock(&key_construction_mutex);\n\n\t/* can't instantiate twice */\n\tif (!test_bit(KEY_FLAG_INSTANTIATED, &key->flags)) {\n\t\t/* instantiate the key */\n\t\tret = key->type->instantiate(key, prep);\n\n\t\tif (ret == 0) {\n\t\t\t/* mark the key as being instantiated */\n\t\t\tatomic_inc(&key->user->nikeys);\n\t\t\tset_bit(KEY_FLAG_INSTANTIATED, &key->flags);\n\n\t\t\tif (test_and_clear_bit(KEY_FLAG_USER_CONSTRUCT, &key->flags))\n\t\t\t\tawaken = 1;\n\n\t\t\t/* and link it into the destination keyring */\n\t\t\tif (keyring)\n\t\t\t\t__key_link(keyring, key, _prealloc);\n\n\t\t\t/* disable the authorisation key */\n\t\t\tif (authkey)\n\t\t\t\tkey_revoke(authkey);\n\t\t}\n\t}\n\n\tmutex_unlock(&key_construction_mutex);\n\n\t/* wake up anyone waiting for a key to be constructed */\n\tif (awaken)\n\t\twake_up_bit(&key->flags, KEY_FLAG_USER_CONSTRUCT);\n\n\treturn ret;\n}",
+            3
+        ],
+        [
+            "security/keys/keyring.c",
+            "KEY_LINK_FIXQUOTA",
+            "#define KEY_LINK_FIXQUOTA 1UL /* <=== security/keys/keyring.c:37:37:KEY_LINK_FIXQUOTA:0 */ ",
+            3
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "SPECIAL",
+            "#define SPECIAL\t64\t\t/* 0x */ /* <=== arch/x86/boot/printf.c:35:35:SPECIAL:0 */ ",
+            3
+        ],
+        [
+            "security/keys/internal.h",
+            "key_task_permission",
+            "extern int key_task_permission(const key_ref_t key_ref, /* <=== key_task_permission */ \n\t\t\t       const struct cred *cred,\n\t\t\t       key_perm_t perm);",
+            3
+        ],
+        [
+            "arch/x86/boot/printf.c",
+            "vsprintf",
+            "int vsprintf(char *buf, const char *fmt, va_list args) /* <=== vsprintf */ \n{\n\tint len;\n\tunsigned long num;\n\tint i, base;\n\tchar *str;\n\tconst char *s;\n\n\tint flags;\t\t/* flags to number() */\n\n\tint field_width;\t/* width of output field */\n\tint precision;\t\t/* min. # of digits for integers; max\n\t\t\t\t   number of chars for from string */\n\tint qualifier;\t\t/* 'h', 'l', or 'L' for integer fields */\n\n\tfor (str = buf; *fmt; ++fmt) {\n\t\tif (*fmt != '%') {\n\t\t\t*str++ = *fmt;\n\t\t\tcontinue;\n\t\t}\n\n\t\t/* process flags */\n\t\tflags = 0;\n\t      repeat:\n\t\t++fmt;\t\t/* this also skips first '%' */\n\t\tswitch (*fmt) {\n\t\tcase '-':\n\t\t\tflags |= LEFT;\n\t\t\tgoto repeat;\n\t\tcase '+':\n\t\t\tflags |= PLUS;\n\t\t\tgoto repeat;\n\t\tcase ' ':\n\t\t\tflags |= SPACE;\n\t\t\tgoto repeat;\n\t\tcase '#':\n\t\t\tflags |= SPECIAL;\n\t\t\tgoto repeat;\n\t\tcase '0':\n\t\t\tflags |= ZEROPAD;\n\t\t\tgoto repeat;\n\t\t}\n\n\t\t/* get field width */\n\t\tfield_width = -1;\n\t\tif (isdigit(*fmt))\n\t\t\tfield_width = skip_atoi(&fmt);\n\t\telse if (*fmt == '*') {\n\t\t\t++fmt;\n\t\t\t/* it's the next argument */\n\t\t\tfield_width = va_arg(args, int);\n\t\t\tif (field_width < 0) {\n\t\t\t\tfield_width = -field_width;\n\t\t\t\tflags |= LEFT;\n\t\t\t}\n\t\t}\n\n\t\t/* get the precision */\n\t\tprecision = -1;\n\t\tif (*fmt == '.') {\n\t\t\t++fmt;\n\t\t\tif (isdigit(*fmt))\n\t\t\t\tprecision = skip_atoi(&fmt);\n\t\t\telse if (*fmt == '*') {\n\t\t\t\t++fmt;\n\t\t\t\t/* it's the next argument */\n\t\t\t\tprecision = va_arg(args, int);\n\t\t\t}\n\t\t\tif (precision < 0)\n\t\t\t\tprecision = 0;\n\t\t}\n\n\t\t/* get the conversion qualifier */\n\t\tqualifier = -1;\n\t\tif (*fmt == 'h' || *fmt == 'l' || *fmt == 'L') {\n\t\t\tqualifier = *fmt;\n\t\t\t++fmt;\n\t\t}\n\n\t\t/* default base */\n\t\tbase = 10;\n\n\t\tswitch (*fmt) {\n\t\tcase 'c':\n\t\t\tif (!(flags & LEFT))\n\t\t\t\twhile (--field_width > 0)\n\t\t\t\t\t*str++ = ' ';\n\t\t\t*str++ = (unsigned char)va_arg(args, int);\n\t\t\twhile (--field_width > 0)\n\t\t\t\t*str++ = ' ';\n\t\t\tcontinue;\n\n\t\tcase 's':\n\t\t\ts = va_arg(args, char *);\n\t\t\tlen = strnlen(s, precision);\n\n\t\t\tif (!(flags & LEFT))\n\t\t\t\twhile (len < field_width--)\n\t\t\t\t\t*str++ = ' ';\n\t\t\tfor (i = 0; i < len; ++i)\n\t\t\t\t*str++ = *s++;\n\t\t\twhile (len < field_width--)\n\t\t\t\t*str++ = ' ';\n\t\t\tcontinue;\n\n\t\tcase 'p':\n\t\t\tif (field_width == -1) {\n\t\t\t\tfield_width = 2 * sizeof(void *);\n\t\t\t\tflags |= ZEROPAD;\n\t\t\t}\n\t\t\tstr = number(str,\n\t\t\t\t     (unsigned long)va_arg(args, void *), 16,\n\t\t\t\t     field_width, precision, flags);\n\t\t\tcontinue;\n\n\t\tcase 'n':\n\t\t\tif (qualifier == 'l') {\n\t\t\t\tlong *ip = va_arg(args, long *);\n\t\t\t\t*ip = (str - buf);\n\t\t\t} else {\n\t\t\t\tint *ip = va_arg(args, int *);\n\t\t\t\t*ip = (str - buf);\n\t\t\t}\n\t\t\tcontinue;\n\n\t\tcase '%':\n\t\t\t*str++ = '%';\n\t\t\tcontinue;\n\n\t\t\t/* integer number formats - set up the flags and \"break\" */\n\t\tcase 'o':\n\t\t\tbase = 8;\n\t\t\tbreak;\n\n\t\tcase 'x':\n\t\t\tflags |= SMALL;\n\t\tcase 'X':\n\t\t\tbase = 16;\n\t\t\tbreak;\n\n\t\tcase 'd':\n\t\tcase 'i':\n\t\t\tflags |= SIGN;\n\t\tcase 'u':\n\t\t\tbreak;\n\n\t\tdefault:\n\t\t\t*str++ = '%';\n\t\t\tif (*fmt)\n\t\t\t\t*str++ = *fmt;\n\t\t\telse\n\t\t\t\t--fmt;\n\t\t\tcontinue;\n\t\t}\n\t\tif (qualifier == 'l')\n\t\t\tnum = va_arg(args, unsigned long);\n\t\telse if (qualifier == 'h') {\n\t\t\tnum = (unsigned short)va_arg(args, int);\n\t\t\tif (flags & SIGN)\n\t\t\t\tnum = (short)num;\n\t\t} else if (flags & SIGN)\n\t\t\tnum = va_arg(args, int);\n\t\telse\n\t\t\tnum = va_arg(args, unsigned int);\n\t\tstr = number(str, num, base, field_width, precision, flags);\n\t}\n\t*str = '\\0';\n\treturn str - buf;\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/sched.h>",
+        "#include <linux/err.h>",
+        "#include <linux/keyctl.h>",
+        "#include <linux/security.h>",
+        "#include <linux/module.h>",
+        "#include <linux/user_namespace.h>",
+        "#include \"internal.h\"",
+        "#include <linux/init.h>",
+        "#include <linux/mutex.h>",
+        "#include <linux/fs.h>",
+        "#include <asm/uaccess.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct user_struct {\n\tatomic_t __count;\t/* reference count */\n\tatomic_t processes;\t/* How many processes does this user have? */\n\tatomic_t files;\t\t/* How many open files does this user have? */\n\tatomic_t sigpending;\t/* How many pending signals does this user have? */\n#ifdef CONFIG_INOTIFY_USER\n\tatomic_t inotify_watches; /* How many inotify watches does this user have? */\n\tatomic_t inotify_devs;\t/* How many inotify devs does this user have opened? */\n#endif\n#ifdef CONFIG_FANOTIFY\n\tatomic_t fanotify_listeners;\n#endif\n#ifdef CONFIG_EPOLL\n\tatomic_long_t epoll_watches; /* The number of file descriptors currently watched */\n#endif\n#ifdef CONFIG_POSIX_MQUEUE\n\t/* protected by mq_lock\t*/\n\tunsigned long mq_bytes;\t/* How many bytes can be allocated to mqueue? */\n#endif\n\tunsigned long locked_shm; /* How many pages of mlocked shm ? */\n\n#ifdef CONFIG_KEYS\n\tstruct key *uid_keyring;\t/* UID specific keyring */\n\tstruct key *session_keyring;\t/* UID's default session keyring */\n#endif\n\n\t/* Hash table maintenance information */\n\tstruct hlist_node uidhash_node;\n\tkuid_t uid;\n\n#ifdef CONFIG_PERF_EVENTS\n\tatomic_long_t locked_vm;\n#endif\n}",
+            "user_struct"
+        ],
+        [
+            "struct cred",
+            "cred"
+        ],
+        [
+            "extern struct key",
+            "key"
+        ],
+        [
+            "typedef __kernel_uid32_t\tuid_t;",
+            "uid_t"
+        ],
+        [
+            "struct cred {\n\tatomic_t\tusage;\n#ifdef CONFIG_DEBUG_CREDENTIALS\n\tatomic_t\tsubscribers;\t/* number of processes subscribed */\n\tvoid\t\t*put_addr;\n\tunsigned\tmagic;\n#define CRED_MAGIC\t0x43736564\n#define CRED_MAGIC_DEAD\t0x44656144\n#endif\n\tkuid_t\t\tuid;\t\t/* real UID of the task */\n\tkgid_t\t\tgid;\t\t/* real GID of the task */\n\tkuid_t\t\tsuid;\t\t/* saved UID of the task */\n\tkgid_t\t\tsgid;\t\t/* saved GID of the task */\n\tkuid_t\t\teuid;\t\t/* effective UID of the task */\n\tkgid_t\t\tegid;\t\t/* effective GID of the task */\n\tkuid_t\t\tfsuid;\t\t/* UID for VFS ops */\n\tkgid_t\t\tfsgid;\t\t/* GID for VFS ops */\n\tunsigned\tsecurebits;\t/* SUID-less security management */\n\tkernel_cap_t\tcap_inheritable; /* caps our children can inherit */\n\tkernel_cap_t\tcap_permitted;\t/* caps we're permitted */\n\tkernel_cap_t\tcap_effective;\t/* caps we can actually use */\n\tkernel_cap_t\tcap_bset;\t/* capability bounding set */\n#ifdef CONFIG_KEYS\n\tunsigned char\tjit_keyring;\t/* default keyring to attach requested\n\t\t\t\t\t * keys to */\n\tstruct key __rcu *session_keyring; /* keyring inherited over fork */\n\tstruct key\t*process_keyring; /* keyring private to this process */\n\tstruct key\t*thread_keyring; /* keyring private to this thread */\n\tstruct key\t*request_key_auth; /* assumed request_key authority */\n#endif\n#ifdef CONFIG_SECURITY\n\tvoid\t\t*security;\t/* subjective LSM security */\n#endif\n\tstruct user_struct *user;\t/* real user ID subscription */\n\tstruct user_namespace *user_ns; /* user_ns the caps and keyrings are relative to. */\n\tstruct group_info *group_info;\t/* supplementary groups for euid/fsgid */\n\tstruct rcu_head\trcu;\t\t/* RCU deletion hook */\n}",
+            "cred"
+        ],
+        [
+            "struct user_struct",
+            "user_struct"
+        ]
+    ],
+    "visitedLines_after": {
+        "security/keys/process_keys.c": [
+            43,
+            54,
+            55,
+            56,
+            60,
+            61,
+            62,
+            65,
+            66,
+            68,
+            73,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            88,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            103,
+            104,
+            109,
+            110,
+            113,
+            114,
+            115,
+            118,
+            120,
+            122,
+            123,
+            124
+        ]
+    },
+    "visitedLines_before": {
+        "security/keys/process_keys.c": [
+            43,
+            54,
+            55,
+            56,
+            60,
+            61,
+            62,
+            65,
+            66,
+            68,
+            73,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            88,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            103,
+            104,
+            109,
+            110,
+            113,
+            114,
+            115,
+            118,
+            120,
+            122,
+            123,
+            124
+        ]
+    },
+    "visitedParams": {},
+    "vulnerableMethods_after": [
+        [
+            "security/keys/process_keys.c",
+            "install_user_keyrings",
+            "int install_user_keyrings(void) /* <=== install_user_keyrings */ \n{\n\tstruct user_struct *user;\n\tconst struct cred *cred;\n\tstruct key *uid_keyring, *session_keyring;\n\tkey_perm_t user_keyring_perm;\n\tchar buf[20];\n\tint ret;\n\tuid_t uid;\n\n\tuser_keyring_perm = (KEY_POS_ALL & ~KEY_POS_SETATTR) | KEY_USR_ALL;\n\tcred = current_cred();\n\tuser = cred->user;\n\tuid = from_kuid(cred->user_ns, user->uid);\n\n\tkenter(\"%p{%u}\", user, uid);\n\n\tif (user->uid_keyring && user->session_keyring) {\n\t\tkleave(\" = 0 [exist]\");\n\t\treturn 0;\n\t}\n\n\tmutex_lock(&key_user_keyring_mutex);\n\tret = 0;\n\n\tif (!user->uid_keyring) {\n\t\t/* get the UID-specific keyring\n\t\t * - there may be one in existence already as it may have been\n\t\t *   pinned by a session, but the user_struct pointing to it\n\t\t *   may have been destroyed by setuid */\n\t\tsprintf(buf, \"_uid.%u\", uid);\n\n\t\tuid_keyring = find_keyring_by_name(buf, true);\n\t\tif (IS_ERR(uid_keyring)) {\n\t\t\tuid_keyring = keyring_alloc(buf, user->uid, INVALID_GID,\n\t\t\t\t\t\t    cred, user_keyring_perm,\n\t\t\t\t\t\t    KEY_ALLOC_IN_QUOTA, NULL);\n\t\t\tif (IS_ERR(uid_keyring)) {\n\t\t\t\tret = PTR_ERR(uid_keyring);\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t}\n\n\t\t/* get a default session keyring (which might also exist\n\t\t * already) */\n\t\tsprintf(buf, \"_uid_ses.%u\", uid);\n\n\t\tsession_keyring = find_keyring_by_name(buf, true);\n\t\tif (IS_ERR(session_keyring)) {\n\t\t\tsession_keyring =\n\t\t\t\tkeyring_alloc(buf, user->uid, INVALID_GID,\n\t\t\t\t\t      cred, user_keyring_perm,\n\t\t\t\t\t      KEY_ALLOC_IN_QUOTA, NULL);\n\t\t\tif (IS_ERR(session_keyring)) {\n\t\t\t\tret = PTR_ERR(session_keyring);\n\t\t\t\tgoto error_release;\n\t\t\t}\n\n\t\t\t/* we install a link from the user session keyring to\n\t\t\t * the user keyring */\n\t\t\tret = key_link(session_keyring, uid_keyring);\n\t\t\tif (ret < 0)\n\t\t\t\tgoto error_release_both;\n\t\t}\n\n\t\t/* install the keyrings */\n\t\tuser->uid_keyring = uid_keyring;\n\t\tuser->session_keyring = session_keyring;\n\t}\n\n\tmutex_unlock(&key_user_keyring_mutex);\n\tkleave(\" = 0\");\n\treturn 0;\n\nerror_release_both:\n\tkey_put(session_keyring);\nerror_release:\n\tkey_put(uid_keyring);\nerror:\n\tmutex_unlock(&key_user_keyring_mutex);\n\tkleave(\" = %d\", ret);\n\treturn ret;\n}",
+            43
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "security/keys/process_keys.c",
+            "install_user_keyrings",
+            "int install_user_keyrings(void) /* <=== install_user_keyrings */ \n{\n\tstruct user_struct *user;\n\tconst struct cred *cred;\n\tstruct key *uid_keyring, *session_keyring;\n\tkey_perm_t user_keyring_perm;\n\tchar buf[20];\n\tint ret;\n\tuid_t uid;\n\n\tuser_keyring_perm = (KEY_POS_ALL & ~KEY_POS_SETATTR) | KEY_USR_ALL;\n\tcred = current_cred();\n\tuser = cred->user;\n\tuid = from_kuid(cred->user_ns, user->uid);\n\n\tkenter(\"%p{%u}\", user, uid);\n\n\tif (user->uid_keyring) {\n\t\tkleave(\" = 0 [exist]\");\n\t\treturn 0;\n\t}\n\n\tmutex_lock(&key_user_keyring_mutex);\n\tret = 0;\n\n\tif (!user->uid_keyring) {\n\t\t/* get the UID-specific keyring\n\t\t * - there may be one in existence already as it may have been\n\t\t *   pinned by a session, but the user_struct pointing to it\n\t\t *   may have been destroyed by setuid */\n\t\tsprintf(buf, \"_uid.%u\", uid);\n\n\t\tuid_keyring = find_keyring_by_name(buf, true);\n\t\tif (IS_ERR(uid_keyring)) {\n\t\t\tuid_keyring = keyring_alloc(buf, user->uid, INVALID_GID,\n\t\t\t\t\t\t    cred, user_keyring_perm,\n\t\t\t\t\t\t    KEY_ALLOC_IN_QUOTA, NULL);\n\t\t\tif (IS_ERR(uid_keyring)) {\n\t\t\t\tret = PTR_ERR(uid_keyring);\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t}\n\n\t\t/* get a default session keyring (which might also exist\n\t\t * already) */\n\t\tsprintf(buf, \"_uid_ses.%u\", uid);\n\n\t\tsession_keyring = find_keyring_by_name(buf, true);\n\t\tif (IS_ERR(session_keyring)) {\n\t\t\tsession_keyring =\n\t\t\t\tkeyring_alloc(buf, user->uid, INVALID_GID,\n\t\t\t\t\t      cred, user_keyring_perm,\n\t\t\t\t\t      KEY_ALLOC_IN_QUOTA, NULL);\n\t\t\tif (IS_ERR(session_keyring)) {\n\t\t\t\tret = PTR_ERR(session_keyring);\n\t\t\t\tgoto error_release;\n\t\t\t}\n\n\t\t\t/* we install a link from the user session keyring to\n\t\t\t * the user keyring */\n\t\t\tret = key_link(session_keyring, uid_keyring);\n\t\t\tif (ret < 0)\n\t\t\t\tgoto error_release_both;\n\t\t}\n\n\t\t/* install the keyrings */\n\t\tuser->uid_keyring = uid_keyring;\n\t\tuser->session_keyring = session_keyring;\n\t}\n\n\tmutex_unlock(&key_user_keyring_mutex);\n\tkleave(\" = 0\");\n\treturn 0;\n\nerror_release_both:\n\tkey_put(session_keyring);\nerror_release:\n\tkey_put(uid_keyring);\nerror:\n\tmutex_unlock(&key_user_keyring_mutex);\n\tkleave(\" = %d\", ret);\n\treturn ret;\n}",
+            43
+        ]
+    ]
+}

@@ -1,0 +1,376 @@
+{
+    "calleeMethods": [
+        [
+            "xen/arch/arm/mm.c",
+            "get_page_type",
+            "int get_page_type(struct page_info *page, unsigned long type) /* <=== get_page_type */ \n{\n    return 1;\n}",
+            1
+        ],
+        [
+            "xen/arch/x86/mm.c",
+            "get_page_type",
+            "int get_page_type(struct page_info *page, unsigned long type) /* <=== get_page_type */ \n{\n    int rc = _get_page_type(page, type, false);\n\n    if ( likely(rc == 0) )\n        return 1;\n    ASSERT(rc != -EINTR && rc != -ERESTART);\n    return 0;\n}",
+            1
+        ],
+        [
+            "xen/include/asm-x86/p2m.h",
+            "get_page_from_gfn",
+            "static inline struct page_info *get_page_from_gfn( /* <=== get_page_from_gfn */ \n    struct domain *d, unsigned long gfn, p2m_type_t *t, p2m_query_t q)\n{\n    struct page_info *page;\n\n    if ( paging_mode_translate(d) )\n        return p2m_get_page_from_gfn(p2m_get_hostp2m(d), _gfn(gfn), t, NULL, q);\n\n    /* Non-translated guests see 1-1 RAM / MMIO mappings everywhere */\n    if ( t )\n        *t = likely(d != dom_io) ? p2m_ram_rw : p2m_mmio_direct;\n    page = mfn_to_page(_mfn(gfn));\n    return mfn_valid(_mfn(gfn)) && get_page(page, d) ? page : NULL;\n}",
+            1
+        ],
+        [
+            "xen/arch/x86/mm.c",
+            "_put_page_type",
+            "static int _put_page_type(struct page_info *page, bool preemptible, /* <=== _put_page_type */ \n                          struct page_info *ptpg)\n{\n    unsigned long nx, x, y = page->u.inuse.type_info;\n\n    ASSERT(current_locked_page_ne_check(page));\n\n    for ( ; ; )\n    {\n        x  = y;\n        nx = x - 1;\n\n        ASSERT((x & PGT_count_mask) != 0);\n\n        switch ( nx & (PGT_locked | PGT_count_mask) )\n        {\n        case 0:\n            if ( unlikely((nx & PGT_type_mask) <= PGT_l4_page_table) &&\n                 likely(nx & (PGT_validated|PGT_partial)) )\n            {\n                int rc;\n\n                /*\n                 * Page-table pages must be unvalidated when count is zero. The\n                 * 'free' is safe because the refcnt is non-zero and validated\n                 * bit is clear => other ops will spin or fail.\n                 */\n                nx = x & ~(PGT_validated|PGT_partial);\n                if ( unlikely((y = cmpxchg(&page->u.inuse.type_info,\n                                           x, nx)) != x) )\n                    break;\n                /* We cleared the 'valid bit' so we do the clean up. */\n                rc = _put_final_page_type(page, x, preemptible, ptpg);\n                if ( x & PGT_partial )\n                    put_page(page);\n\n                return rc;\n            }\n\n            if ( !ptpg || !PGT_type_equal(x, ptpg->u.inuse.type_info) )\n            {\n                /*\n                 * set_tlbflush_timestamp() accesses the same union\n                 * linear_pt_count lives in. Pages (including page table ones),\n                 * however, don't need their flush time stamp set except when\n                 * the last reference is being dropped. For page table pages\n                 * this happens in _put_final_page_type().\n                 */\n                set_tlbflush_timestamp(page);\n            }\n            else\n                BUG_ON(!IS_ENABLED(CONFIG_PV_LINEAR_PT));\n\n            /* fall through */\n        default:\n            if ( unlikely((y = cmpxchg(&page->u.inuse.type_info, x, nx)) != x) )\n                break;\n\n            if ( ptpg && PGT_type_equal(x, ptpg->u.inuse.type_info) )\n            {\n                dec_linear_uses(page);\n                dec_linear_entries(ptpg);\n            }\n\n            return 0;\n\n        case PGT_locked:\n            ASSERT_UNREACHABLE();\n            return -EILSEQ;\n\n        case PGT_locked | 1:\n            /*\n             * We must not drop the second to last reference when the page is\n             * locked, as page_unlock() doesn't do any cleanup of the type.\n             */\n            cpu_relax();\n            y = page->u.inuse.type_info;\n            break;\n        }\n\n        if ( preemptible && hypercall_preempt_check() )\n            return -EINTR;\n    }\n}",
+            3
+        ],
+        [
+            "xen/arch/arm/mm.c",
+            "page_get_owner_and_reference",
+            "struct domain *page_get_owner_and_reference(struct page_info *page) /* <=== page_get_owner_and_reference */ \n{\n    unsigned long x, y = page->count_info;\n    struct domain *owner;\n\n    do {\n        x = y;\n        /*\n         * Count ==  0: Page is not allocated, so we cannot take a reference.\n         * Count == -1: Reference count would wrap, which is invalid.\n         */\n        if ( unlikely(((x + 1) & PGC_count_mask) <= 1) )\n            return NULL;\n    }\n    while ( (y = cmpxchg(&page->count_info, x, x + 1)) != x );\n\n    owner = page_get_owner(page);\n    ASSERT(owner);\n\n    return owner;\n}",
+            3
+        ],
+        [
+            "xen/arch/x86/mm.c",
+            "page_get_owner_and_reference",
+            "struct domain *page_get_owner_and_reference(struct page_info *page) /* <=== page_get_owner_and_reference */ \n{\n    unsigned long x, y = page->count_info;\n    struct domain *owner;\n\n    do {\n        x = y;\n        /*\n         * Count ==  0: Page is not allocated, so we cannot take a reference.\n         * Count == -1: Reference count would wrap, which is invalid.\n         * Count == -2: Remaining unused ref is reserved for get_page_light().\n         */\n        if ( unlikely(((x + 2) & PGC_count_mask) <= 2) )\n            return NULL;\n    }\n    while ( (y = cmpxchg(&page->count_info, x, x + 1)) != x );\n\n    owner = page_get_owner(page);\n    ASSERT(owner);\n\n    return owner;\n}",
+            3
+        ],
+        [
+            "xen/arch/x86/mm.c",
+            "get_page",
+            "int get_page(struct page_info *page, struct domain *domain) /* <=== get_page */ \n{\n    struct domain *owner = page_get_owner_and_reference(page);\n\n    if ( likely(owner == domain) )\n        return 1;\n\n    if ( !paging_mode_refcounts(domain) && !domain->is_dying )\n        gprintk(XENLOG_INFO,\n                \"Error mfn %\"PRI_mfn\": rd=%pd od=%pd caf=%08lx taf=%\"PRtype_info\"\\n\",\n                mfn_x(page_to_mfn(page)), domain, owner,\n                page->count_info - !!owner, page->u.inuse.type_info);\n\n    if ( owner )\n        put_page(page);\n\n    return 0;\n}",
+            2
+        ],
+        [
+            "xen/arch/arm/mm.c",
+            "put_page",
+            "void put_page(struct page_info *page) /* <=== put_page */ \n{\n    unsigned long nx, x, y = page->count_info;\n\n    do {\n        ASSERT((y & PGC_count_mask) != 0);\n        x  = y;\n        nx = x - 1;\n    }\n    while ( unlikely((y = cmpxchg(&page->count_info, x, nx)) != x) );\n\n    if ( unlikely((nx & PGC_count_mask) == 0) )\n    {\n        free_domheap_page(page);\n    }\n}",
+            1
+        ],
+        [
+            "xen/arch/x86/mm.c",
+            "put_page",
+            "void put_page(struct page_info *page) /* <=== put_page */ \n{\n    unsigned long nx, x, y = page->count_info;\n\n    do {\n        ASSERT((y & PGC_count_mask) != 0);\n        x  = y;\n        nx = x - 1;\n    }\n    while ( unlikely((y = cmpxchg(&page->count_info, x, nx)) != x) );\n\n    if ( unlikely((nx & PGC_count_mask) == 0) )\n    {\n        if ( !cleanup_page_mappings(page) )\n            free_domheap_page(page);\n        else\n            gdprintk(XENLOG_WARNING,\n                     \"Leaking mfn %\" PRI_mfn \"\\n\", mfn_x(page_to_mfn(page)));\n    }\n}",
+            1
+        ],
+        [
+            "xen/arch/x86/pv/mm.h",
+            "guest_get_eff_l1e",
+            "static inline l1_pgentry_t guest_get_eff_l1e(unsigned long linear) /* <=== guest_get_eff_l1e */ \n{\n    l1_pgentry_t l1e;\n\n    ASSERT(!paging_mode_translate(current->domain));\n    ASSERT(!paging_mode_external(current->domain));\n\n    if ( unlikely(!__addr_ok(linear)) ||\n         __copy_from_user(&l1e,\n                          &__linear_l1_table[l1_linear_offset(linear)],\n                          sizeof(l1_pgentry_t)) )\n        l1e = l1e_empty();\n\n    return l1e;\n}",
+            2
+        ],
+        [
+            "xen/arch/arm/mm.c",
+            "get_page",
+            "int get_page(struct page_info *page, struct domain *domain) /* <=== get_page */ \n{\n    struct domain *owner = page_get_owner_and_reference(page);\n\n    if ( likely(owner == domain) )\n        return 1;\n\n    if ( owner != NULL )\n        put_page(page);\n\n    return 0;\n}",
+            2
+        ],
+        [
+            "xen/arch/x86/mm.c",
+            "alloc_page_type",
+            "static int alloc_page_type(struct page_info *page, unsigned long type, /* <=== alloc_page_type */ \n                           int preemptible)\n{\n#ifdef CONFIG_PV\n    struct domain *owner = page_get_owner(page);\n    int rc;\n\n    /* A page table is dirtied when its type count becomes non-zero. */\n    if ( likely(owner != NULL) )\n        paging_mark_dirty(owner, page_to_mfn(page));\n\n    switch ( type & PGT_type_mask )\n    {\n    case PGT_l1_page_table:\n        rc = alloc_l1_table(page);\n        break;\n    case PGT_l2_page_table:\n        ASSERT(preemptible);\n        rc = alloc_l2_table(page, type);\n        break;\n    case PGT_l3_page_table:\n        ASSERT(preemptible);\n        rc = alloc_l3_table(page);\n        break;\n    case PGT_l4_page_table:\n        ASSERT(preemptible);\n        rc = alloc_l4_table(page);\n        break;\n    case PGT_seg_desc_page:\n        rc = alloc_segdesc_page(page);\n        break;\n    default:\n        printk(\"Bad type in alloc_page_type %lx t=%\" PRtype_info \" c=%lx\\n\",\n               type, page->u.inuse.type_info,\n               page->count_info);\n        rc = -EINVAL;\n        BUG();\n    }\n\n    /* No need for atomic update of type_info here: noone else updates it. */\n    smp_wmb();\n    switch ( rc )\n    {\n    case 0:\n        page->u.inuse.type_info |= PGT_validated;\n        break;\n    case -EINTR:\n        ASSERT((page->u.inuse.type_info &\n                (PGT_count_mask|PGT_validated|PGT_partial)) == 1);\n        page->u.inuse.type_info &= ~PGT_count_mask;\n        break;\n    default:\n        ASSERT(rc < 0);\n        gdprintk(XENLOG_WARNING, \"Error while validating mfn %\" PRI_mfn\n                 \" (pfn %\" PRI_pfn \") for type %\" PRtype_info\n                 \": caf=%08lx taf=%\" PRtype_info \"\\n\",\n                 mfn_x(page_to_mfn(page)),\n                 get_gpfn_from_mfn(mfn_x(page_to_mfn(page))),\n                 type, page->count_info, page->u.inuse.type_info);\n        if ( page != current->arch.old_guest_table )\n            page->u.inuse.type_info = 0;\n        else\n        {\n            ASSERT((page->u.inuse.type_info &\n                    (PGT_count_mask | PGT_validated)) == 1);\n    case -ERESTART:\n            get_page_light(page);\n            page->u.inuse.type_info |= PGT_partial;\n        }\n        break;\n    }\n\n    return rc;\n#else\n    ASSERT_UNREACHABLE();\n    return -EINVAL;\n#endif\n}",
+            3
+        ],
+        [
+            "xen/arch/x86/pv/mm.c",
+            "guest_get_eff_kern_l1e",
+            "static l1_pgentry_t guest_get_eff_kern_l1e(unsigned long linear) /* <=== guest_get_eff_kern_l1e */ \n{\n    struct vcpu *curr = current;\n    const bool user_mode = !(curr->arch.flags & TF_kernel_mode);\n    l1_pgentry_t l1e;\n\n    if ( user_mode )\n        toggle_guest_pt(curr);\n\n    l1e = guest_get_eff_l1e(linear);\n\n    if ( user_mode )\n        toggle_guest_pt(curr);\n\n    return l1e;\n}",
+            1
+        ],
+        [
+            "xen/include/asm-arm/p2m.h",
+            "get_page_from_gfn",
+            "static inline struct page_info *get_page_from_gfn( /* <=== get_page_from_gfn */ \n    struct domain *d, unsigned long gfn, p2m_type_t *t, p2m_query_t q)\n{\n    mfn_t mfn;\n    p2m_type_t _t;\n    struct page_info *page;\n\n    /*\n     * Special case for DOMID_XEN as it is the only domain so far that is\n     * not auto-translated.\n     */\n    if ( likely(d != dom_xen) )\n        return p2m_get_page_from_gfn(d, _gfn(gfn), t);\n\n    if ( !t )\n        t = &_t;\n\n    *t = p2m_invalid;\n\n    /*\n     * DOMID_XEN sees 1-1 RAM. The p2m_type is based on the type of the\n     * page.\n     */\n    mfn = _mfn(gfn);\n    page = mfn_to_page(mfn);\n\n    if ( !mfn_valid(mfn) || !get_page(page, d) )\n        return NULL;\n\n    if ( page->u.inuse.type_info & PGT_writable_page )\n        *t = p2m_ram_rw;\n    else\n        *t = p2m_ram_ro;\n\n    return page;\n}",
+            1
+        ],
+        [
+            "xen/include/asm-x86/p2m.h",
+            "p2m_get_hostp2m",
+            "#define p2m_get_hostp2m(d)      ((d)->arch.p2m) /* <=== xen/include/asm-x86/p2m.h:368:368:p2m_get_hostp2m:1 */ ",
+            2
+        ],
+        [
+            "xen/arch/x86/mm.c",
+            "_get_page_type",
+            "static int _get_page_type(struct page_info *page, unsigned long type, /* <=== _get_page_type */ \n                          bool preemptible)\n{\n    unsigned long nx, x, y = page->u.inuse.type_info;\n    int rc = 0;\n\n    ASSERT(!(type & ~(PGT_type_mask | PGT_pae_xen_l2)));\n    ASSERT(!in_irq());\n\n    for ( ; ; )\n    {\n        x  = y;\n        nx = x + 1;\n        if ( unlikely((nx & PGT_count_mask) == 0) )\n        {\n            gdprintk(XENLOG_WARNING,\n                     \"Type count overflow on mfn %\"PRI_mfn\"\\n\",\n                     mfn_x(page_to_mfn(page)));\n            return -EINVAL;\n        }\n        else if ( unlikely((x & PGT_count_mask) == 0) )\n        {\n            struct domain *d = page_get_owner(page);\n\n            if ( d && shadow_mode_enabled(d) )\n               shadow_prepare_page_type_change(d, page, type);\n\n            ASSERT(!(x & PGT_pae_xen_l2));\n            if ( (x & PGT_type_mask) != type )\n            {\n                /*\n                 * On type change we check to flush stale TLB entries. It is\n                 * vital that no other CPUs are left with mappings of a frame\n                 * which is about to become writeable to the guest.\n                 */\n                cpumask_t *mask = this_cpu(scratch_cpumask);\n\n                BUG_ON(in_irq());\n                cpumask_copy(mask, d->dirty_cpumask);\n\n                /* Don't flush if the timestamp is old enough */\n                tlbflush_filter(mask, page->tlbflush_timestamp);\n\n                if ( unlikely(!cpumask_empty(mask)) &&\n                     /* Shadow mode: track only writable pages. */\n                     (!shadow_mode_enabled(page_get_owner(page)) ||\n                      ((nx & PGT_type_mask) == PGT_writable_page)) )\n                {\n                    perfc_incr(need_flush_tlb_flush);\n                    flush_tlb_mask(mask);\n                }\n\n                /* We lose existing type and validity. */\n                nx &= ~(PGT_type_mask | PGT_validated);\n                nx |= type;\n\n                /*\n                 * No special validation needed for writable pages.\n                 * Page tables and GDT/LDT need to be scanned for validity.\n                 */\n                if ( type == PGT_writable_page || type == PGT_shared_page )\n                    nx |= PGT_validated;\n            }\n        }\n        else if ( unlikely((x & (PGT_type_mask|PGT_pae_xen_l2)) != type) )\n        {\n            /* Don't log failure if it could be a recursive-mapping attempt. */\n            if ( ((x & PGT_type_mask) == PGT_l2_page_table) &&\n                 (type == PGT_l1_page_table) )\n                return -EINVAL;\n            if ( ((x & PGT_type_mask) == PGT_l3_page_table) &&\n                 (type == PGT_l2_page_table) )\n                return -EINVAL;\n            if ( ((x & PGT_type_mask) == PGT_l4_page_table) &&\n                 (type == PGT_l3_page_table) )\n                return -EINVAL;\n            gdprintk(XENLOG_WARNING,\n                     \"Bad type (saw %\" PRtype_info \" != exp %\" PRtype_info \") \"\n                     \"for mfn %\" PRI_mfn \" (pfn %\" PRI_pfn \")\\n\",\n                     x, type, mfn_x(page_to_mfn(page)),\n                     get_gpfn_from_mfn(mfn_x(page_to_mfn(page))));\n            return -EINVAL;\n        }\n        else if ( unlikely(!(x & PGT_validated)) )\n        {\n            if ( !(x & PGT_partial) )\n            {\n                /* Someone else is updating validation of this page. Wait... */\n                do {\n                    if ( preemptible && hypercall_preempt_check() )\n                        return -EINTR;\n                    cpu_relax();\n                } while ( (y = page->u.inuse.type_info) == x );\n                continue;\n            }\n            /* Type ref count was left at 1 when PGT_partial got set. */\n            ASSERT((x & PGT_count_mask) == 1);\n            nx = x & ~PGT_partial;\n        }\n\n        if ( likely((y = cmpxchg(&page->u.inuse.type_info, x, nx)) == x) )\n            break;\n\n        if ( preemptible && hypercall_preempt_check() )\n            return -EINTR;\n    }\n\n    if ( unlikely((x & PGT_type_mask) != type) )\n    {\n        /* Special pages should not be accessible from devices. */\n        struct domain *d = page_get_owner(page);\n        if ( d && is_pv_domain(d) && unlikely(need_iommu_pt_sync(d)) )\n        {\n            mfn_t mfn = page_to_mfn(page);\n\n            if ( (x & PGT_type_mask) == PGT_writable_page )\n                rc = iommu_legacy_unmap(d, _dfn(mfn_x(mfn)), PAGE_ORDER_4K);\n            else if ( type == PGT_writable_page )\n                rc = iommu_legacy_map(d, _dfn(mfn_x(mfn)), mfn, PAGE_ORDER_4K,\n                                      IOMMUF_readable | IOMMUF_writable);\n\n            if ( unlikely(rc) )\n            {\n                _put_page_type(page, false, NULL);\n                goto out;\n            }\n        }\n    }\n\n    if ( unlikely(!(nx & PGT_validated)) )\n    {\n        if ( !(x & PGT_partial) )\n        {\n            page->nr_validated_ptes = 0;\n            page->partial_pte = 0;\n        }\n        page->linear_pt_count = 0;\n        rc = alloc_page_type(page, type, preemptible);\n    }\n\n out:\n    if ( (x & PGT_partial) && !(nx & PGT_partial) )\n        put_page(page);\n\n    return rc;\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"emulate.h\"",
+        "#include \"mm.h\"",
+        "#include <xsm/xsm.h>",
+        "#include <xen/trace.h>",
+        "#include <asm/hpet.h>",
+        "#include <asm/apic.h>",
+        "#include <asm/debugreg.h>",
+        "#include <asm/hypercall.h>",
+        "#include <asm/current.h>",
+        "#include <xen/guest_access.h>",
+        "#include <xen/spinlock.h>",
+        "#include <xen/errno.h>",
+        "#include <asm/p2m.h>",
+        "#include <asm/pv/traps.h>",
+        "#include <asm/x86_emulate.h>",
+        "#include <asm/mc146818rtc.h>",
+        "#include <asm/traps.h>",
+        "#include <xen/event.h>",
+        "#include <xen/iocap.h>",
+        "#include <asm/shared.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct page_info",
+            "page_info"
+        ],
+        [
+            "struct vcpu\n{\n    int              vcpu_id;\n\n    int              processor;\n\n    vcpu_info_t     *vcpu_info;\n\n    struct domain   *domain;\n\n    struct vcpu     *next_in_list;\n\n    spinlock_t       periodic_timer_lock;\n    s_time_t         periodic_period;\n    s_time_t         periodic_last_event;\n    struct timer     periodic_timer;\n    struct timer     singleshot_timer;\n\n    struct timer     poll_timer;    /* timeout for SCHEDOP_poll */\n\n    struct sched_unit *sched_unit;\n\n    struct vcpu_runstate_info runstate;\n#ifndef CONFIG_COMPAT\n# define runstate_guest(v) ((v)->runstate_guest)\n    XEN_GUEST_HANDLE(vcpu_runstate_info_t) runstate_guest; /* guest address */\n#else\n# define runstate_guest(v) ((v)->runstate_guest.native)\n    union {\n        XEN_GUEST_HANDLE(vcpu_runstate_info_t) native;\n        XEN_GUEST_HANDLE(vcpu_runstate_info_compat_t) compat;\n    } runstate_guest; /* guest address */\n#endif\n    unsigned int     new_state;\n\n    /* Has the FPU been initialised? */\n    bool             fpu_initialised;\n    /* Has the FPU been used since it was last saved? */\n    bool             fpu_dirtied;\n    /* Initialization completed for this VCPU? */\n    bool             is_initialised;\n    /* Currently running on a CPU? */\n    bool             is_running;\n    /* VCPU should wake fast (do not deep sleep the CPU). */\n    bool             is_urgent;\n    /* VCPU must context_switch without scheduling unit. */\n    bool             force_context_switch;\n\n#ifdef VCPU_TRAP_LAST\n#define VCPU_TRAP_NONE    0\n    struct {\n        bool             pending;\n        uint8_t          old_mask;\n    }                async_exception_state[VCPU_TRAP_LAST];\n#define async_exception_state(t) async_exception_state[(t)-1]\n    uint8_t          async_exception_mask;\n#endif\n\n    /* Require shutdown to be deferred for some asynchronous operation? */\n    bool             defer_shutdown;\n    /* VCPU is paused following shutdown request (d->is_shutting_down)? */\n    bool             paused_for_shutdown;\n    /* VCPU need affinity restored */\n    uint8_t          affinity_broken;\n#define VCPU_AFFINITY_OVERRIDE    0x01\n#define VCPU_AFFINITY_WAIT        0x02\n\n    /* A hypercall has been preempted. */\n    bool             hcall_preempted;\n#ifdef CONFIG_COMPAT\n    /* A hypercall is using the compat ABI? */\n    bool             hcall_compat;\n#endif\n\n    /* The CPU, if any, which is holding onto this VCPU's state. */\n#define VCPU_CPU_CLEAN (~0u)\n    unsigned int     dirty_cpu;\n\n    /*\n     * > 0: a single port is being polled;\n     * = 0: nothing is being polled (vcpu should be clear in d->poll_mask);\n     * < 0: multiple ports may be being polled.\n     */\n    int              poll_evtchn;\n\n    /* (over-)protected by ->domain->event_lock */\n    int              pirq_evtchn_head;\n\n    unsigned long    pause_flags;\n    atomic_t         pause_count;\n\n    /* VCPU paused for vm_event replies. */\n    atomic_t         vm_event_pause_count;\n    /* VCPU paused by system controller. */\n    int              controller_pause_count;\n\n    /* Grant table map tracking. */\n    spinlock_t       maptrack_freelist_lock;\n    unsigned int     maptrack_head;\n    unsigned int     maptrack_tail;\n\n    /* IRQ-safe virq_lock protects against delivering VIRQ to stale evtchn. */\n    evtchn_port_t    virq_to_evtchn[NR_VIRQS];\n    spinlock_t       virq_lock;\n\n    /* Tasklet for continue_hypercall_on_cpu(). */\n    struct tasklet   continue_hypercall_tasklet;\n\n    /* Multicall information. */\n    struct mc_state  mc_state;\n\n    struct waitqueue_vcpu *waitqueue_vcpu;\n\n    /* Guest-specified relocation of vcpu_info. */\n    mfn_t            vcpu_info_mfn;\n\n    struct evtchn_fifo_vcpu *evtchn_fifo;\n\n    /* vPCI per-vCPU area, used to store data for long running operations. */\n    struct vpci_vcpu vpci;\n\n    struct arch_vcpu arch;\n}",
+            "vcpu"
+        ],
+        [
+            "struct domain\n{\n    domid_t          domain_id;\n\n    unsigned int     max_vcpus;\n    struct vcpu    **vcpu;\n\n    shared_info_t   *shared_info;     /* shared data area */\n\n    spinlock_t       domain_lock;\n\n    spinlock_t       page_alloc_lock; /* protects all the following fields  */\n    struct page_list_head page_list;  /* linked list */\n    struct page_list_head xenpage_list; /* linked list (size xenheap_pages) */\n    unsigned int     tot_pages;       /* number of pages currently possesed */\n    unsigned int     xenheap_pages;   /* # pages allocated from Xen heap    */\n    unsigned int     outstanding_pages; /* pages claimed but not possessed  */\n    unsigned int     max_pages;       /* maximum value for tot_pages        */\n    atomic_t         shr_pages;       /* number of shared pages             */\n    atomic_t         paged_pages;     /* number of paged-out pages          */\n\n    /* Scheduling. */\n    void            *sched_priv;    /* scheduler-specific data */\n    struct sched_unit *sched_unit_list;\n    struct cpupool  *cpupool;\n\n    struct domain   *next_in_list;\n    struct domain   *next_in_hashbucket;\n\n    struct list_head rangesets;\n    spinlock_t       rangesets_lock;\n\n    /* Event channel information. */\n    struct evtchn   *evtchn;                         /* first bucket only */\n    struct evtchn  **evtchn_group[NR_EVTCHN_GROUPS]; /* all other buckets */\n    unsigned int     max_evtchns;     /* number supported by ABI */\n    unsigned int     max_evtchn_port; /* max permitted port number */\n    unsigned int     valid_evtchns;   /* number of allocated event channels */\n    spinlock_t       event_lock;\n    const struct evtchn_port_ops *evtchn_port_ops;\n    struct evtchn_fifo_domain *evtchn_fifo;\n\n    struct grant_table *grant_table;\n\n    /*\n     * Interrupt to event-channel mappings and other per-guest-pirq data.\n     * Protected by the domain's event-channel spinlock.\n     */\n    struct radix_tree_root pirq_tree;\n    unsigned int     nr_pirqs;\n\n    unsigned int     options;         /* copy of createdomain flags */\n\n    /* Is this guest dying (i.e., a zombie)? */\n    enum { DOMDYING_alive, DOMDYING_dying, DOMDYING_dead } is_dying;\n\n    /* Domain is paused by controller software? */\n    int              controller_pause_count;\n\n    int64_t          time_offset_seconds;\n\n#ifdef CONFIG_HAS_PCI\n    struct list_head pdev_list;\n#endif\n\n#ifdef CONFIG_HAS_PASSTHROUGH\n    struct domain_iommu iommu;\n#endif\n    /* is node-affinity automatically computed? */\n    bool             auto_node_affinity;\n    /* Is this guest fully privileged (aka dom0)? */\n    bool             is_privileged;\n    /* Can this guest access the Xen console? */\n    bool             is_console;\n    /* Non-migratable and non-restoreable? */\n    bool             disable_migrate;\n    /* Is this guest being debugged by dom0? */\n    bool             debugger_attached;\n    /*\n     * Set to true at the very end of domain creation, when the domain is\n     * unpaused for the first time by the systemcontroller.\n     */\n    bool             creation_finished;\n\n    /* Which guest this guest has privileges on */\n    struct domain   *target;\n\n    /* Are any VCPUs polling event channels (SCHEDOP_poll)? */\n#if MAX_VIRT_CPUS <= BITS_PER_LONG\n    DECLARE_BITMAP(poll_mask, MAX_VIRT_CPUS);\n#else\n    unsigned long   *poll_mask;\n#endif\n\n    /* I/O capabilities (access to IRQs and memory-mapped I/O). */\n    struct rangeset *iomem_caps;\n    struct rangeset *irq_caps;\n\n    /* Guest has shut down (inc. reason code)? */\n    spinlock_t       shutdown_lock;\n    bool             is_shutting_down; /* in process of shutting down? */\n    bool             is_shut_down;     /* fully shut down? */\n#define SHUTDOWN_CODE_INVALID ~0u\n    unsigned int     shutdown_code;\n\n    /* If this is not 0, send suspend notification here instead of\n     * raising DOM_EXC */\n    evtchn_port_t    suspend_evtchn;\n\n    atomic_t         pause_count;\n    atomic_t         refcnt;\n\n    unsigned long    vm_assist;\n\n    /* Bitmask of CPUs which are holding onto this domain's state. */\n    cpumask_var_t    dirty_cpumask;\n\n    struct arch_domain arch;\n\n    void *ssid; /* sHype security subject identifier */\n\n    /* Control-plane tools handle for this domain. */\n    xen_domain_handle_t handle;\n\n    /* hvm_print_line() and guest_console_write() logging. */\n#define DOMAIN_PBUF_SIZE 200\n    char       *pbuf;\n    unsigned    pbuf_idx;\n    spinlock_t  pbuf_lock;\n\n    /* OProfile support. */\n    struct xenoprof *xenoprof;\n\n    /* Domain watchdog. */\n#define NR_DOMAIN_WATCHDOG_TIMERS 2\n    spinlock_t watchdog_lock;\n    uint32_t watchdog_inuse_map;\n    struct timer watchdog_timer[NR_DOMAIN_WATCHDOG_TIMERS];\n\n    struct rcu_head rcu;\n\n    /*\n     * Hypercall deadlock avoidance lock. Used if a hypercall might\n     * cause a deadlock. Acquirers don't spin waiting; they preempt.\n     */\n    spinlock_t hypercall_deadlock_mutex;\n\n    struct lock_profile_qhead profile_head;\n\n    /* Various vm_events */\n\n    /* Memory sharing support */\n#ifdef CONFIG_MEM_SHARING\n    struct vm_event_domain *vm_event_share;\n#endif\n    /* Memory paging support */\n#ifdef CONFIG_HAS_MEM_PAGING\n    struct vm_event_domain *vm_event_paging;\n#endif\n    /* VM event monitor support */\n    struct vm_event_domain *vm_event_monitor;\n\n    /*\n     * Can be specified by the user. If that is not the case, it is\n     * computed from the union of all the vcpu cpu-affinity masks.\n     */\n    nodemask_t node_affinity;\n    unsigned int last_alloc_node;\n    spinlock_t node_affinity_lock;\n\n    /* vNUMA topology accesses are protected by rwlock. */\n    rwlock_t vnuma_rwlock;\n    struct vnuma_info *vnuma;\n\n    /* Common monitor options */\n    struct {\n        unsigned int guest_request_enabled       : 1;\n        unsigned int guest_request_sync          : 1;\n    } monitor;\n\n#ifdef CONFIG_ARGO\n    /* Argo interdomain communication support */\n    struct argo_domain *argo;\n#endif\n}",
+            "domain"
+        ]
+    ],
+    "visitedLines_after": {
+        "xen/arch/x86/pv/emul-gate-op.c": [
+            44,
+            45,
+            48,
+            51,
+            53,
+            55,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            72,
+            73,
+            74,
+            76,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            88,
+            90,
+            91,
+            93,
+            96,
+            99
+        ],
+        "xen/arch/x86/pv/emulate.c": [
+            28,
+            34,
+            35,
+            37,
+            39,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            51,
+            52,
+            53,
+            54,
+            55,
+            57,
+            65,
+            69,
+            75,
+            76,
+            79
+        ],
+        "xen/arch/x86/pv/mm.c": [
+            84,
+            86,
+            87,
+            90,
+            100,
+            102,
+            103,
+            106,
+            107,
+            109,
+            110,
+            111,
+            113,
+            114,
+            115,
+            117,
+            119,
+            120,
+            123,
+            124,
+            130,
+            137
+        ]
+    },
+    "visitedLines_before": {
+        "xen/arch/x86/pv/emul-gate-op.c": [
+            44,
+            45,
+            48,
+            51,
+            53,
+            54,
+            55,
+            56,
+            58,
+            59,
+            60,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            78,
+            79,
+            82,
+            84,
+            85,
+            87,
+            90,
+            93
+        ],
+        "xen/arch/x86/pv/emulate.c": [
+            28,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            41,
+            42,
+            44,
+            45,
+            46,
+            47,
+            48,
+            50,
+            58,
+            62,
+            68,
+            69,
+            72
+        ],
+        "xen/arch/x86/pv/mm.c": [
+            84,
+            86,
+            87,
+            90,
+            100,
+            102,
+            103,
+            105,
+            106,
+            107,
+            109,
+            110,
+            111,
+            113,
+            115,
+            116,
+            119,
+            120,
+            126,
+            133
+        ]
+    },
+    "visitedParams": {
+        "xen/arch/x86/pv/emul-gate-op.c": [
+            [
+                "const struct vcpu *v",
+                "read_gate_descriptor"
+            ],
+            [
+                "unsigned int *ar",
+                "read_gate_descriptor"
+            ],
+            [
+                "unsigned int gate_sel",
+                "read_gate_descriptor"
+            ]
+        ],
+        "xen/arch/x86/pv/emulate.c": [
+            [
+                "const struct vcpu *v",
+                "pv_emul_read_descriptor"
+            ],
+            [
+                "unsigned int sel",
+                "pv_emul_read_descriptor"
+            ]
+        ],
+        "xen/arch/x86/pv/mm.c": [
+            [
+                "unsigned int offset",
+                "pv_map_ldt_shadow_page"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "xen/arch/x86/pv/emul-gate-op.c",
+            "read_gate_descriptor",
+            "static int read_gate_descriptor(unsigned int gate_sel, /* <=== read_gate_descriptor */ \n                                const struct vcpu *v,\n                                unsigned int *sel,\n                                unsigned long *off,\n                                unsigned int *ar)\n{\n    seg_desc_t desc;\n    const seg_desc_t *pdesc = gdt_ldt_desc_ptr(gate_sel);\n\n    if ( (gate_sel < 4) ||\n         /*\n          * We're interested in call gates only, which occupy a single\n          * seg_desc_t for 32-bit and a consecutive pair of them for 64-bit.\n          */\n         ((gate_sel >> 3) + !is_pv_32bit_vcpu(v) >=\n          (gate_sel & 4 ? v->arch.pv.ldt_ents\n                        : v->arch.pv.gdt_ents)) ||\n         __get_user(desc, pdesc) )\n        return 0;\n\n    *sel = (desc.a >> 16) & 0x0000fffc;\n    *off = (desc.a & 0x0000ffff) | (desc.b & 0xffff0000);\n    *ar = desc.b & 0x0000ffff;\n\n    /*\n     * check_descriptor() clears the DPL field and stores the\n     * guest requested DPL in the selector's RPL field.\n     */\n    if ( *ar & _SEGMENT_DPL )\n        return 0;\n    *ar |= (desc.a >> (16 - 13)) & _SEGMENT_DPL;\n\n    if ( !is_pv_32bit_vcpu(v) )\n    {\n        if ( (*ar & 0x1f00) != 0x0c00 ||\n             /* Limit check done above already. */\n             __get_user(desc, pdesc + 1) ||\n             (desc.b & 0x1f00) )\n            return 0;\n\n        *off |= (unsigned long)desc.a << 32;\n        return 1;\n    }\n\n    switch ( *ar & 0x1f00 )\n    {\n    case 0x0400:\n        *off &= 0xffff;\n        break;\n    case 0x0c00:\n        break;\n    default:\n        return 0;\n    }\n\n    return 1;\n}",
+            44
+        ],
+        [
+            "xen/arch/x86/pv/emulate.c",
+            "pv_emul_read_descriptor",
+            "int pv_emul_read_descriptor(unsigned int sel, const struct vcpu *v, /* <=== pv_emul_read_descriptor */ \n                            unsigned long *base, unsigned long *limit,\n                            unsigned int *ar, bool insn_fetch)\n{\n    seg_desc_t desc;\n\n    if ( sel < 4 ||\n         /*\n          * Don't apply the GDT limit here, as the selector may be a Xen\n          * provided one. __get_user() will fail (without taking further\n          * action) for ones falling in the gap between guest populated\n          * and Xen ones.\n          */\n         ((sel & 4) && (sel >> 3) >= v->arch.pv.ldt_ents) )\n        desc.b = desc.a = 0;\n    else if ( __get_user(desc, gdt_ldt_desc_ptr(sel)) )\n        return 0;\n    if ( !insn_fetch )\n        desc.b &= ~_SEGMENT_L;\n\n    *ar = desc.b & 0x00f0ff00;\n    if ( !(desc.b & _SEGMENT_L) )\n    {\n        *base = ((desc.a >> 16) + ((desc.b & 0xff) << 16) +\n                 (desc.b & 0xff000000));\n        *limit = (desc.a & 0xffff) | (desc.b & 0x000f0000);\n        if ( desc.b & _SEGMENT_G )\n            *limit = ((*limit + 1) << 12) - 1;\n#ifndef NDEBUG\n        if ( sel > 3 )\n        {\n            unsigned int a, l;\n            unsigned char valid;\n\n            asm volatile (\n                \"larl %2,%0 ; setz %1\"\n                : \"=r\" (a), \"=qm\" (valid) : \"rm\" (sel));\n            BUG_ON(valid && ((a & 0x00f0ff00) != *ar));\n            asm volatile (\n                \"lsll %2,%0 ; setz %1\"\n                : \"=r\" (l), \"=qm\" (valid) : \"rm\" (sel));\n            BUG_ON(valid && (l != *limit));\n        }\n#endif\n    }\n    else\n    {\n        *base = 0UL;\n        *limit = ~0UL;\n    }\n\n    return 1;\n}",
+            28
+        ],
+        [
+            "xen/arch/x86/pv/mm.c",
+            "pv_map_ldt_shadow_page",
+            "bool pv_map_ldt_shadow_page(unsigned int offset) /* <=== pv_map_ldt_shadow_page */ \n{\n    struct vcpu *curr = current;\n    struct domain *currd = curr->domain;\n    struct page_info *page;\n    l1_pgentry_t gl1e, *pl1e;\n    unsigned long linear = curr->arch.pv.ldt_base + offset;\n\n    BUG_ON(unlikely(in_irq()));\n\n    /*\n     * Prior limit checking should guarantee this property.  NB. This is\n     * safe as updates to the LDT can only be made by MMUEXT_SET_LDT to the\n     * current vcpu, and vcpu_reset() will block until this vcpu has been\n     * descheduled before continuing.\n     */\n    if ( unlikely((offset >> 3) >= curr->arch.pv.ldt_ents) )\n    {\n        ASSERT_UNREACHABLE();\n        return false;\n    }\n\n    if ( is_pv_32bit_domain(currd) )\n        linear = (uint32_t)linear;\n\n    gl1e = guest_get_eff_kern_l1e(linear);\n    if ( unlikely(!(l1e_get_flags(gl1e) & _PAGE_PRESENT)) )\n        return false;\n\n    page = get_page_from_gfn(currd, l1e_get_pfn(gl1e), NULL, P2M_ALLOC);\n    if ( unlikely(!page) )\n        return false;\n\n    if ( unlikely(!get_page_type(page, PGT_seg_desc_page)) )\n    {\n        put_page(page);\n        return false;\n    }\n\n    pl1e = &pv_ldt_ptes(curr)[offset >> PAGE_SHIFT];\n    l1e_add_flags(gl1e, _PAGE_RW);\n\n#ifdef CONFIG_PV_LDT_PAGING\n    spin_lock(&curr->arch.pv.shadow_ldt_lock);\n#endif\n\n    l1e_write(pl1e, gl1e);\n\n#ifdef CONFIG_PV_LDT_PAGING\n    curr->arch.pv.shadow_ldt_mapcnt++;\n    spin_unlock(&curr->arch.pv.shadow_ldt_lock);\n#endif\n\n    return true;\n}",
+            84
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "xen/arch/x86/pv/emul-gate-op.c",
+            "read_gate_descriptor",
+            "static int read_gate_descriptor(unsigned int gate_sel, /* <=== read_gate_descriptor */ \n                                const struct vcpu *v,\n                                unsigned int *sel,\n                                unsigned long *off,\n                                unsigned int *ar)\n{\n    seg_desc_t desc;\n    const seg_desc_t *pdesc = gdt_ldt_desc_ptr(gate_sel);\n\n    if ( (gate_sel < 4) ||\n         ((gate_sel >= FIRST_RESERVED_GDT_BYTE) && !(gate_sel & 4)) ||\n         __get_user(desc, pdesc) )\n        return 0;\n\n    *sel = (desc.a >> 16) & 0x0000fffc;\n    *off = (desc.a & 0x0000ffff) | (desc.b & 0xffff0000);\n    *ar = desc.b & 0x0000ffff;\n\n    /*\n     * check_descriptor() clears the DPL field and stores the\n     * guest requested DPL in the selector's RPL field.\n     */\n    if ( *ar & _SEGMENT_DPL )\n        return 0;\n    *ar |= (desc.a >> (16 - 13)) & _SEGMENT_DPL;\n\n    if ( !is_pv_32bit_vcpu(v) )\n    {\n        if ( (*ar & 0x1f00) != 0x0c00 ||\n             (gate_sel >= FIRST_RESERVED_GDT_BYTE - 8 && !(gate_sel & 4)) ||\n             __get_user(desc, pdesc + 1) ||\n             (desc.b & 0x1f00) )\n            return 0;\n\n        *off |= (unsigned long)desc.a << 32;\n        return 1;\n    }\n\n    switch ( *ar & 0x1f00 )\n    {\n    case 0x0400:\n        *off &= 0xffff;\n        break;\n    case 0x0c00:\n        break;\n    default:\n        return 0;\n    }\n\n    return 1;\n}",
+            44
+        ],
+        [
+            "xen/arch/x86/pv/emulate.c",
+            "pv_emul_read_descriptor",
+            "int pv_emul_read_descriptor(unsigned int sel, const struct vcpu *v, /* <=== pv_emul_read_descriptor */ \n                            unsigned long *base, unsigned long *limit,\n                            unsigned int *ar, bool insn_fetch)\n{\n    seg_desc_t desc;\n\n    if ( sel < 4)\n        desc.b = desc.a = 0;\n    else if ( __get_user(desc, gdt_ldt_desc_ptr(sel)) )\n        return 0;\n    if ( !insn_fetch )\n        desc.b &= ~_SEGMENT_L;\n\n    *ar = desc.b & 0x00f0ff00;\n    if ( !(desc.b & _SEGMENT_L) )\n    {\n        *base = ((desc.a >> 16) + ((desc.b & 0xff) << 16) +\n                 (desc.b & 0xff000000));\n        *limit = (desc.a & 0xffff) | (desc.b & 0x000f0000);\n        if ( desc.b & _SEGMENT_G )\n            *limit = ((*limit + 1) << 12) - 1;\n#ifndef NDEBUG\n        if ( sel > 3 )\n        {\n            unsigned int a, l;\n            unsigned char valid;\n\n            asm volatile (\n                \"larl %2,%0 ; setz %1\"\n                : \"=r\" (a), \"=qm\" (valid) : \"rm\" (sel));\n            BUG_ON(valid && ((a & 0x00f0ff00) != *ar));\n            asm volatile (\n                \"lsll %2,%0 ; setz %1\"\n                : \"=r\" (l), \"=qm\" (valid) : \"rm\" (sel));\n            BUG_ON(valid && (l != *limit));\n        }\n#endif\n    }\n    else\n    {\n        *base = 0UL;\n        *limit = ~0UL;\n    }\n\n    return 1;\n}",
+            28
+        ],
+        [
+            "xen/arch/x86/pv/mm.c",
+            "pv_map_ldt_shadow_page",
+            "bool pv_map_ldt_shadow_page(unsigned int offset) /* <=== pv_map_ldt_shadow_page */ \n{\n    struct vcpu *curr = current;\n    struct domain *currd = curr->domain;\n    struct page_info *page;\n    l1_pgentry_t gl1e, *pl1e;\n    unsigned long linear = curr->arch.pv.ldt_base + offset;\n\n    BUG_ON(unlikely(in_irq()));\n\n    /*\n     * Hardware limit checking should guarantee this property.  NB. This is\n     * safe as updates to the LDT can only be made by MMUEXT_SET_LDT to the\n     * current vcpu, and vcpu_reset() will block until this vcpu has been\n     * descheduled before continuing.\n     */\n    ASSERT((offset >> 3) <= curr->arch.pv.ldt_ents);\n\n    if ( is_pv_32bit_domain(currd) )\n        linear = (uint32_t)linear;\n\n    gl1e = guest_get_eff_kern_l1e(linear);\n    if ( unlikely(!(l1e_get_flags(gl1e) & _PAGE_PRESENT)) )\n        return false;\n\n    page = get_page_from_gfn(currd, l1e_get_pfn(gl1e), NULL, P2M_ALLOC);\n    if ( unlikely(!page) )\n        return false;\n\n    if ( unlikely(!get_page_type(page, PGT_seg_desc_page)) )\n    {\n        put_page(page);\n        return false;\n    }\n\n    pl1e = &pv_ldt_ptes(curr)[offset >> PAGE_SHIFT];\n    l1e_add_flags(gl1e, _PAGE_RW);\n\n#ifdef CONFIG_PV_LDT_PAGING\n    spin_lock(&curr->arch.pv.shadow_ldt_lock);\n#endif\n\n    l1e_write(pl1e, gl1e);\n\n#ifdef CONFIG_PV_LDT_PAGING\n    curr->arch.pv.shadow_ldt_mapcnt++;\n    spin_unlock(&curr->arch.pv.shadow_ldt_lock);\n#endif\n\n    return true;\n}",
+            84
+        ]
+    ]
+}

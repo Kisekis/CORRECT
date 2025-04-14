@@ -1,0 +1,194 @@
+{
+    "calleeMethods": [
+        [
+            "include/exec/memory.h",
+            "memory_access_is_direct",
+            "static inline bool memory_access_is_direct(MemoryRegion *mr, bool is_write) /* <=== memory_access_is_direct */ \n{\n    if (is_write) {\n        return memory_region_is_ram(mr) && !mr->readonly;\n    } else {\n        return memory_region_is_ram(mr) || memory_region_is_romd(mr);\n    }\n}",
+            3
+        ],
+        [
+            "exec.c",
+            "qemu_ram_ptr_length",
+            "static void *qemu_ram_ptr_length(RAMBlock *ram_block, ram_addr_t addr, /* <=== qemu_ram_ptr_length */ \n                                 hwaddr *size)\n{\n    RAMBlock *block = ram_block;\n    if (*size == 0) {\n        return NULL;\n    }\n\n    if (block == NULL) {\n        block = qemu_get_ram_block(addr);\n        addr -= block->offset;\n    }\n    *size = MIN(*size, block->max_length - addr);\n\n    if (xen_enabled() && block->host == NULL) {\n        /* We need to check if the requested address is in the RAM\n         * because we don't want to map the entire memory in QEMU.\n         * In that case just map the requested area.\n         */\n        if (block->offset == 0) {\n            return xen_map_cache(addr, *size, 1);\n        }\n\n        block->host = xen_map_cache(block->offset, block->max_length, 1);\n    }\n\n    return ramblock_ptr(block, addr);\n}",
+            3
+        ],
+        [
+            "exec.c",
+            "address_space_map",
+            "void *address_space_map(AddressSpace *as, /* <=== address_space_map */ \n                        hwaddr addr,\n                        hwaddr *plen,\n                        bool is_write)\n{\n    hwaddr len = *plen;\n    hwaddr done = 0;\n    hwaddr l, xlat, base;\n    MemoryRegion *mr, *this_mr;\n    void *ptr;\n\n    if (len == 0) {\n        return NULL;\n    }\n\n    l = len;\n    rcu_read_lock();\n    mr = address_space_translate(as, addr, &xlat, &l, is_write);\n\n    if (!memory_access_is_direct(mr, is_write)) {\n        if (atomic_xchg(&bounce.in_use, true)) {\n            rcu_read_unlock();\n            return NULL;\n        }\n        /* Avoid unbounded allocations */\n        l = MIN(l, TARGET_PAGE_SIZE);\n        bounce.buffer = qemu_memalign(TARGET_PAGE_SIZE, l);\n        bounce.addr = addr;\n        bounce.len = l;\n\n        memory_region_ref(mr);\n        bounce.mr = mr;\n        if (!is_write) {\n            address_space_read(as, addr, MEMTXATTRS_UNSPECIFIED,\n                               bounce.buffer, l);\n        }\n\n        rcu_read_unlock();\n        *plen = l;\n        return bounce.buffer;\n    }\n\n    base = xlat;\n\n    for (;;) {\n        len -= l;\n        addr += l;\n        done += l;\n        if (len == 0) {\n            break;\n        }\n\n        l = len;\n        this_mr = address_space_translate(as, addr, &xlat, &l, is_write);\n        if (this_mr != mr || xlat != base + done) {\n            break;\n        }\n    }\n\n    memory_region_ref(mr);\n    *plen = done;\n    ptr = qemu_ram_ptr_length(mr->ram_block, base, plen);\n    rcu_read_unlock();\n\n    return ptr;\n}",
+            2
+        ],
+        [
+            "exec.c",
+            "address_space_translate",
+            "MemoryRegion *address_space_translate(AddressSpace *as, hwaddr addr, /* <=== address_space_translate */ \n                                      hwaddr *xlat, hwaddr *plen,\n                                      bool is_write)\n{\n    IOMMUTLBEntry iotlb;\n    MemoryRegionSection *section;\n    MemoryRegion *mr;\n\n    for (;;) {\n        AddressSpaceDispatch *d = atomic_rcu_read(&as->dispatch);\n        section = address_space_translate_internal(d, addr, &addr, plen, true);\n        mr = section->mr;\n\n        if (!mr->iommu_ops) {\n            break;\n        }\n\n        iotlb = mr->iommu_ops->translate(mr, addr, is_write);\n        addr = ((iotlb.translated_addr & ~iotlb.addr_mask)\n                | (addr & iotlb.addr_mask));\n        *plen = MIN(*plen, (addr | iotlb.addr_mask) - addr + 1);\n        if (!(iotlb.perm & (1 << is_write))) {\n            mr = &io_mem_unassigned;\n            break;\n        }\n\n        as = iotlb.target_as;\n    }\n\n    if (xen_enabled() && memory_access_is_direct(mr, is_write)) {\n        hwaddr page = ((addr & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE) - addr;\n        *plen = MIN(page, *plen);\n    }\n\n    *xlat = addr;\n    return mr;\n}",
+            3
+        ],
+        [
+            "include/qemu/atomic.h",
+            "atomic_xchg",
+            "#define atomic_xchg(ptr, i)    (smp_mb(), __sync_lock_test_and_set(ptr, i)) /* <=== include/qemu/atomic.h:345:345:atomic_xchg:2 */ ",
+            3
+        ],
+        [
+            "util/qemu-error.c",
+            "error_vreport",
+            "void error_vreport(const char *fmt, va_list ap) /* <=== error_vreport */ \n{\n    GTimeVal tv;\n    gchar *timestr;\n\n    if (enable_timestamp_msg && !cur_mon) {\n        g_get_current_time(&tv);\n        timestr = g_time_val_to_iso8601(&tv);\n        error_printf(\"%s \", timestr);\n        g_free(timestr);\n    }\n\n    error_print_loc();\n    error_vprintf(fmt, ap);\n    error_printf(\"\\n\");\n}",
+            2
+        ],
+        [
+            "include/qemu/osdep.h",
+            "MIN",
+            "#define MIN(a, b) (((a) < (b)) ? (a) : (b)) /* <=== include/qemu/osdep.h:145:145:MIN:2 */ ",
+            3
+        ],
+        [
+            "include/exec/memattrs.h",
+            "MEMTXATTRS_UNSPECIFIED",
+            "#define MEMTXATTRS_UNSPECIFIED ((MemTxAttrs) { .unspecified = 1 }) /* <=== include/exec/memattrs.h:47:47:MEMTXATTRS_UNSPECIFIED:0 */ ",
+            3
+        ],
+        [
+            "util/qemu-error.c",
+            "error_vprintf",
+            "void error_vprintf(const char *fmt, va_list ap) /* <=== error_vprintf */ \n{\n    if (cur_mon && !monitor_cur_is_qmp()) {\n        monitor_vprintf(cur_mon, fmt, ap);\n    } else {\n        vfprintf(stderr, fmt, ap);\n    }\n}",
+            3
+        ],
+        [
+            "include/qemu/osdep.h",
+            "qemu_memalign",
+            "void *qemu_memalign(size_t alignment, size_t size); /* <=== qemu_memalign */ ",
+            3
+        ],
+        [
+            "include/exec/memory.h",
+            "address_space_read",
+            "static inline __attribute__((__always_inline__)) /* <=== address_space_read */ \nMemTxResult address_space_read(AddressSpace *as, hwaddr addr, MemTxAttrs attrs,\n                               uint8_t *buf, int len)\n{\n    MemTxResult result = MEMTX_OK;\n    hwaddr l, addr1;\n    void *ptr;\n    MemoryRegion *mr;\n\n    if (__builtin_constant_p(len)) {\n        if (len) {\n            rcu_read_lock();\n            l = len;\n            mr = address_space_translate(as, addr, &addr1, &l, false);\n            if (len == l && memory_access_is_direct(mr, false)) {\n                ptr = qemu_map_ram_ptr(mr->ram_block, addr1);\n                memcpy(buf, ptr, len);\n            } else {\n                result = address_space_read_continue(as, addr, attrs, buf, len,\n                                                     addr1, l, mr);\n            }\n            rcu_read_unlock();\n        }\n    } else {\n        result = address_space_read_full(as, addr, attrs, buf, len);\n    }\n    return result;\n}",
+            3
+        ],
+        [
+            "include/exec/memory.h",
+            "memory_region_ref",
+            "void memory_region_ref(MemoryRegion *mr); /* <=== memory_region_ref */ ",
+            3
+        ],
+        [
+            "include/exec/cpu-all.h",
+            "TARGET_PAGE_SIZE",
+            "#define TARGET_PAGE_SIZE (1 << TARGET_PAGE_BITS) /* <=== include/exec/cpu-all.h:192:192:TARGET_PAGE_SIZE:0 */ ",
+            3
+        ],
+        [
+            "scripts/coverity-model.c",
+            "g_free",
+            "void g_free(void *ptr) /* <=== g_free */ \n{\n    __coverity_free__(ptr);\n    __coverity_mark_as_afm_freed__(ptr, \"g_free\");\n}",
+            3
+        ],
+        [
+            "exec.c",
+            "cpu_physical_memory_map",
+            "void *cpu_physical_memory_map(hwaddr addr, /* <=== cpu_physical_memory_map */ \n                              hwaddr *plen,\n                              int is_write)\n{\n    return address_space_map(&address_space_memory, addr, plen, is_write);\n}",
+            1
+        ],
+        [
+            "util/qemu-error.c",
+            "error_report",
+            "void error_report(const char *fmt, ...) /* <=== error_report */ \n{\n    va_list ap;\n\n    va_start(ap, fmt);\n    error_vreport(fmt, ap);\n    va_end(ap);\n}",
+            1
+        ],
+        [
+            "util/qemu-error.c",
+            "error_print_loc",
+            "static void error_print_loc(void) /* <=== error_print_loc */ \n{\n    const char *sep = \"\";\n    int i;\n    const char *const *argp;\n\n    if (!cur_mon && progname) {\n        fprintf(stderr, \"%s:\", progname);\n        sep = \" \";\n    }\n    switch (cur_loc->kind) {\n    case LOC_CMDLINE:\n        argp = cur_loc->ptr;\n        for (i = 0; i < cur_loc->num; i++) {\n            error_printf(\"%s%s\", sep, argp[i]);\n            sep = \" \";\n        }\n        error_printf(\": \");\n        break;\n    case LOC_FILE:\n        error_printf(\"%s:\", (const char *)cur_loc->ptr);\n        if (cur_loc->num) {\n            error_printf(\"%d:\", cur_loc->num);\n        }\n        error_printf(\" \");\n        break;\n    default:\n        error_printf(\"%s\", sep);\n    }\n}",
+            3
+        ],
+        [
+            "util/qemu-error.c",
+            "error_printf",
+            "void error_printf(const char *fmt, ...) /* <=== error_printf */ \n{\n    va_list ap;\n\n    va_start(ap, fmt);\n    error_vprintf(fmt, ap);\n    va_end(ap);\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"hw/virtio/virtio-bus.h\"",
+        "#include \"trace.h\"",
+        "#include \"migration/migration.h\"",
+        "#include \"qemu-common.h\"",
+        "#include \"qemu/error-report.h\"",
+        "#include \"qapi/error.h\"",
+        "#include \"exec/address-spaces.h\"",
+        "#include \"qemu/osdep.h\"",
+        "#include \"hw/virtio/virtio-access.h\"",
+        "#include \"cpu.h\"",
+        "#include \"qemu/atomic.h\"",
+        "#include \"hw/virtio/virtio.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct iovec {\n    void *iov_base;\n    size_t iov_len;\n}",
+            "iovec"
+        ],
+        [
+            "typedef uint64_t hwaddr;",
+            "hwaddr"
+        ],
+        [
+            "typedef _Bool bool;",
+            "bool"
+        ]
+    ],
+    "visitedLines_after": {
+        "hw/virtio/virtio.c": [
+            454,
+            455,
+            456,
+            461,
+            462,
+            463,
+            467,
+            474,
+            475,
+            476,
+            478,
+            479
+        ]
+    },
+    "visitedLines_before": {
+        "hw/virtio/virtio.c": [
+            454,
+            455,
+            456,
+            462,
+            469,
+            470,
+            471,
+            473,
+            474
+        ]
+    },
+    "visitedParams": {
+        "hw/virtio/virtio.c": [
+            [
+                "size_t sz",
+                "virtqueue_map_desc"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "hw/virtio/virtio.c",
+            "virtqueue_map_desc",
+            "static void virtqueue_map_desc(unsigned int *p_num_sg, hwaddr *addr, struct iovec *iov, /* <=== virtqueue_map_desc */ \n                               unsigned int max_num_sg, bool is_write,\n                               hwaddr pa, size_t sz)\n{\n    unsigned num_sg = *p_num_sg;\n    assert(num_sg <= max_num_sg);\n\n    if (!sz) {\n        error_report(\"virtio: zero sized buffers are not allowed\");\n        exit(1);\n    }\n\n    while (sz) {\n        hwaddr len = sz;\n\n        if (num_sg == max_num_sg) {\n            error_report(\"virtio: too many write descriptors in indirect table\");\n            exit(1);\n        }\n\n        iov[num_sg].iov_base = cpu_physical_memory_map(pa, &len, is_write);\n        iov[num_sg].iov_len = len;\n        addr[num_sg] = pa;\n\n        sz -= len;\n        pa += len;\n        num_sg++;\n    }\n    *p_num_sg = num_sg;\n}",
+            454
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "hw/virtio/virtio.c",
+            "virtqueue_map_desc",
+            "static void virtqueue_map_desc(unsigned int *p_num_sg, hwaddr *addr, struct iovec *iov, /* <=== virtqueue_map_desc */ \n                               unsigned int max_num_sg, bool is_write,\n                               hwaddr pa, size_t sz)\n{\n    unsigned num_sg = *p_num_sg;\n    assert(num_sg <= max_num_sg);\n\n    while (sz) {\n        hwaddr len = sz;\n\n        if (num_sg == max_num_sg) {\n            error_report(\"virtio: too many write descriptors in indirect table\");\n            exit(1);\n        }\n\n        iov[num_sg].iov_base = cpu_physical_memory_map(pa, &len, is_write);\n        iov[num_sg].iov_len = len;\n        addr[num_sg] = pa;\n\n        sz -= len;\n        pa += len;\n        num_sg++;\n    }\n    *p_num_sg = num_sg;\n}",
+            454
+        ]
+    ]
+}

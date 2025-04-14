@@ -1,0 +1,950 @@
+{
+    "calleeMethods": [
+        [
+            "include/bouncer.h",
+            "AUTH_PAM",
+            "#define AUTH_PAM\t111 /* <=== include/bouncer.h:186:186:AUTH_PAM:0 */ ",
+            2
+        ],
+        [
+            "include/bouncer.h",
+            "PKT_STARTUP_V2",
+            "#define PKT_STARTUP_V2  0x20000 /* <=== include/bouncer.h:190:190:PKT_STARTUP_V2:0 */ ",
+            2
+        ],
+        [
+            "src/admin.c",
+            "admin_handle_cancel",
+            "void admin_handle_cancel(PgSocket *admin) /* <=== admin_handle_cancel */ \n{\n\t/* weird, but no reason to fail */\n\tif (!admin->wait_for_response)\n\t\tslog_warning(admin, \"admin cancel request for non-waiting client?\");\n\n\tif (cf_pause_mode != P_NONE)\n\t\tfull_resume();\n}",
+            3
+        ],
+        [
+            "src/scram.c",
+            "build_server_final_message",
+            "char *build_server_final_message(ScramState *scram_state) /* <=== build_server_final_message */ \n{\n\tchar *server_signature = NULL;\n\tsize_t len;\n\tchar *result;\n\n\tserver_signature = compute_server_signature(scram_state);\n\tif (!server_signature)\n\t\tgoto failed;\n\n\tlen = 2 + strlen(server_signature) + 1;\n\tresult = malloc(len);\n\tif (!result)\n\t\tgoto failed;\n\tsnprintf(result, len, \"v=%s\", server_signature);\n\n\tfree(server_signature);\n\treturn result;\nfailed:\n\tfree(server_signature);\n\treturn NULL;\n}",
+            3
+        ],
+        [
+            "src/sbuf.c",
+            "ACT_SKIP",
+            "#define ACT_SKIP 2 /* <=== src/sbuf.c:39:39:ACT_SKIP:0 */ ",
+            2
+        ],
+        [
+            "include/sbuf.h",
+            "sbuf_is_empty",
+            "static inline bool sbuf_is_empty(SBuf *sbuf) /* <=== sbuf_is_empty */ \n{\n\treturn iobuf_empty(sbuf->io) && sbuf->pkt_remain == 0;\n}",
+            2
+        ],
+        [
+            "src/sbuf.c",
+            "sbuf_prepare_skip",
+            "void sbuf_prepare_skip(SBuf *sbuf, unsigned amount) /* <=== sbuf_prepare_skip */ \n{\n\tAssertActive(sbuf);\n\tAssert(sbuf->pkt_remain == 0);\n\t/* Assert(sbuf->pkt_action == ACT_UNSET || iobuf_send_pending_avail(&sbuf->io)); */\n\tAssert(amount > 0);\n\n\tsbuf->pkt_action = ACT_SKIP;\n\tsbuf->pkt_remain = amount;\n}",
+            2
+        ],
+        [
+            "src/proto.c",
+            "send_pooler_error",
+            "bool send_pooler_error(PgSocket *client, bool send_ready, bool level_fatal, const char *msg) /* <=== send_pooler_error */ \n{\n\tuint8_t tmpbuf[512];\n\tPktBuf buf;\n\n\tif (cf_log_pooler_errors)\n\t\tslog_warning(client, \"pooler error: %s\", msg);\n\n\tpktbuf_static(&buf, tmpbuf, sizeof(tmpbuf));\n\tpktbuf_write_generic(&buf, 'E', \"cscscsc\",\n\t\t\t     'S', level_fatal ? \"FATAL\" : \"ERROR\",\n\t\t\t     'C', \"08P01\", 'M', msg, 0);\n\tif (send_ready)\n\t\tpktbuf_write_ReadyForQuery(&buf);\n\treturn pktbuf_send_immediate(&buf, client);\n}",
+            3
+        ],
+        [
+            "include/bouncer.h",
+            "POOL_SESSION",
+            "#define POOL_SESSION\t0 /* <=== include/bouncer.h:196:196:POOL_SESSION:0 */ ",
+            3
+        ],
+        [
+            "include/iobuf.h",
+            "iobuf_sane",
+            "static inline bool iobuf_sane(const IOBuf *io) /* <=== iobuf_sane */ \n{\n\treturn (io == NULL) ||\n\t\t(  io->parse_pos >= io->done_pos\n\t\t&& io->recv_pos >= io->parse_pos\n\t\t&& (unsigned)cf_sbuf_len >= io->recv_pos);\n}",
+            2
+        ],
+        [
+            "src/objects.c",
+            "disconnect_server",
+            "void disconnect_server(PgSocket *server, bool notify, const char *reason, ...) /* <=== disconnect_server */ \n{\n\tPgPool *pool = server->pool;\n\tPgSocket *client;\n\tstatic const uint8_t pkt_term[] = {'X', 0,0,0,4};\n\tbool send_term = true;\n\tusec_t now = get_cached_time();\n\tchar buf[128];\n\tva_list ap;\n\n\tva_start(ap, reason);\n\tvsnprintf(buf, sizeof(buf), reason, ap);\n\tva_end(ap);\n\treason = buf;\n\n\tif (cf_log_disconnections)\n\t\tslog_info(server, \"closing because: %s (age=%\" PRIu64 \"s)\", reason,\n\t\t\t  (now - server->connect_time) / USEC);\n\n\tswitch (server->state) {\n\tcase SV_ACTIVE:\n\t\tclient = server->link;\n\t\tif (client) {\n\t\t\tclient->link = NULL;\n\t\t\tserver->link = NULL;\n\t\t\tdisconnect_client(client, true, \"%s\", reason);\n\t\t}\n\t\tbreak;\n\tcase SV_TESTED:\n\tcase SV_USED:\n\tcase SV_IDLE:\n\t\tbreak;\n\tcase SV_LOGIN:\n\t\t/*\n\t\t * usually disconnect means problems in startup phase,\n\t\t * except when sending cancel packet\n\t\t */\n\t\tif (!server->ready)\n\t\t{\n\t\t\tpool->last_login_failed = true;\n\t\t\tpool->last_connect_failed = true;\n\t\t}\n\t\telse\n\t\t{\n\t\t\t/*\n\t\t\t * We did manage to connect and used the connection for query\n\t\t\t * cancellation, so to the best of our knowledge we can connect to\n\t\t\t * the server, reset last_connect_failed accordingly.\n\t\t\t */\n\t\t\tpool->last_connect_failed = false;\n\t\t\tsend_term = false;\n\t\t}\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad server state: %d\", server->state);\n\t}\n\n\tAssert(server->link == NULL);\n\n\t/* notify server and close connection */\n\tif (send_term && notify) {\n\t\tbool _ignore = sbuf_answer(&server->sbuf, pkt_term, sizeof(pkt_term));\n\t\t(void) _ignore;\n\t}\n\n\tif (server->dns_token) {\n\t\tadns_cancel(adns, server->dns_token);\n\t\tserver->dns_token = NULL;\n\t}\n\n\tfree_scram_state(&server->scram_state);\n\n\tserver->pool->db->connection_count--;\n\tserver->pool->user->connection_count--;\n\n\tchange_server_state(server, SV_JUSTFREE);\n\tif (!sbuf_close(&server->sbuf))\n\t\tlog_noise(\"sbuf_close failed, retry later\");\n}",
+            1
+        ],
+        [
+            "src/sbuf.c",
+            "sbuf_pause",
+            "bool sbuf_pause(SBuf *sbuf) /* <=== sbuf_pause */ \n{\n\tAssertActive(sbuf);\n\tAssert(sbuf->wait_type == W_RECV);\n\n\tif (event_del(&sbuf->ev) < 0) {\n\t\tlog_warning(\"event_del: %s\", strerror(errno));\n\t\treturn false;\n\t}\n\tsbuf->wait_type = W_NONE;\n\treturn true;\n}",
+            2
+        ],
+        [
+            "src/sbuf.c",
+            "AssertActive",
+            "#define AssertActive(sbuf) do { \\ /* <=== src/sbuf.c:61:64:AssertActive:1 */ \n\tAssert((sbuf)->sock > 0); \\\n\tAssertSanity(sbuf); \\\n} while (0)",
+            2
+        ],
+        [
+            "src/objects.c",
+            "change_server_state",
+            "void change_server_state(PgSocket *server, SocketState newstate) /* <=== change_server_state */ \n{\n\tPgPool *pool = server->pool;\n\n\t/* remove from old location */\n\tswitch (server->state) {\n\tcase SV_FREE:\n\t\tbreak;\n\tcase SV_JUSTFREE:\n\t\tstatlist_remove(&justfree_server_list, &server->head);\n\t\tbreak;\n\tcase SV_LOGIN:\n\t\tstatlist_remove(&pool->new_server_list, &server->head);\n\t\tbreak;\n\tcase SV_USED:\n\t\tstatlist_remove(&pool->used_server_list, &server->head);\n\t\tbreak;\n\tcase SV_TESTED:\n\t\tstatlist_remove(&pool->tested_server_list, &server->head);\n\t\tbreak;\n\tcase SV_IDLE:\n\t\tstatlist_remove(&pool->idle_server_list, &server->head);\n\t\tbreak;\n\tcase SV_ACTIVE:\n\t\tstatlist_remove(&pool->active_server_list, &server->head);\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad old server state: %d\", server->state);\n\t}\n\n\tserver->state = newstate;\n\n\t/* put to new location */\n\tswitch (server->state) {\n\tcase SV_FREE:\n\t\tvarcache_clean(&server->vars);\n\t\tslab_free(server_cache, server);\n\t\tbreak;\n\tcase SV_JUSTFREE:\n\t\tstatlist_append(&justfree_server_list, &server->head);\n\t\tbreak;\n\tcase SV_LOGIN:\n\t\tstatlist_append(&pool->new_server_list, &server->head);\n\t\tbreak;\n\tcase SV_USED:\n\t\t/* use LIFO */\n\t\tstatlist_prepend(&pool->used_server_list, &server->head);\n\t\tbreak;\n\tcase SV_TESTED:\n\t\tstatlist_append(&pool->tested_server_list, &server->head);\n\t\tbreak;\n\tcase SV_IDLE:\n\t\tif (server->close_needed || cf_server_round_robin) {\n\t\t\t/* try to avoid immediate usage then */\n\t\t\tstatlist_append(&pool->idle_server_list, &server->head);\n\t\t} else {\n\t\t\t/* otherwise use LIFO */\n\t\t\tstatlist_prepend(&pool->idle_server_list, &server->head);\n\t\t}\n\t\tbreak;\n\tcase SV_ACTIVE:\n\t\tstatlist_append(&pool->active_server_list, &server->head);\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad server state: %d\", server->state);\n\t}\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "life_over",
+            "static bool life_over(PgSocket *server) /* <=== life_over */ \n{\n\tPgPool *pool = server->pool;\n\tusec_t lifetime_kill_gap = 0;\n\tusec_t now = get_cached_time();\n\tusec_t age = now - server->connect_time;\n\tusec_t last_kill = now - pool->last_lifetime_disconnect;\n\n\tif (age < cf_server_lifetime)\n\t\treturn false;\n\n\tif (pool_pool_size(pool) > 0)\n\t\tlifetime_kill_gap = cf_server_lifetime / pool_pool_size(pool);\n\n\tif (last_kill >= lifetime_kill_gap)\n\t\treturn true;\n\n\treturn false;\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "reuse_on_release",
+            "static bool reuse_on_release(PgSocket *server) /* <=== reuse_on_release */ \n{\n\tbool res = true;\n\tPgPool *pool = server->pool;\n\tPgSocket *client = first_socket(&pool->waiting_client_list);\n\tif (client) {\n\t\tactivate_client(client);\n\n\t\t/*\n\t\t * As the activate_client() does full read loop,\n\t\t * then it may happen that linked client closing\n\t\t * causes server closing.  Report it.\n\t\t */\n\t\tif (server->state == SV_FREE || server->state == SV_JUSTFREE)\n\t\t\tres = false;\n\t}\n\treturn res;\n}",
+            3
+        ],
+        [
+            "include/dnslookup.h",
+            "adns_cancel",
+            "void adns_cancel(struct DNSContext *ctx, struct DNSToken *tk); /* <=== adns_cancel */ ",
+            2
+        ],
+        [
+            "src/client.c",
+            "check_client_passwd",
+            "static bool check_client_passwd(PgSocket *client, const char *passwd) /* <=== check_client_passwd */ \n{\n\tPgUser *user = client->login_user;\n\tint auth_type = client->client_auth_type;\n\n\tif (user->mock_auth)\n\t\treturn false;\n\n\t/* disallow empty passwords */\n\tif (!*user->passwd)\n\t\treturn false;\n\n\tswitch (auth_type) {\n\tcase AUTH_PLAIN:\n\t\tswitch (get_password_type(user->passwd)) {\n\t\tcase PASSWORD_TYPE_PLAINTEXT:\n\t\t\treturn strcmp(user->passwd, passwd) == 0;\n\t\tcase PASSWORD_TYPE_MD5: {\n\t\t\tchar md5[MD5_PASSWD_LEN + 1];\n\t\t\tpg_md5_encrypt(passwd, user->name, strlen(user->name), md5);\n\t\t\treturn strcmp(user->passwd, md5) == 0;\n\t\t}\n\t\tcase PASSWORD_TYPE_SCRAM_SHA_256:\n\t\t\treturn scram_verify_plain_password(client, user->name, passwd, user->passwd);\n\t\tdefault:\n\t\t\treturn false;\n\t\t}\n\tcase AUTH_MD5: {\n\t\tchar *stored_passwd;\n\t\tchar md5[MD5_PASSWD_LEN + 1];\n\n\t\tif (strlen(passwd) != MD5_PASSWD_LEN)\n\t\t\treturn false;\n\n\t\t/*\n\t\t * The client sends\n\t\t * 'md5'+md5(md5(password+username)+salt).  The stored\n\t\t * password is either 'md5'+md5(password+username) or\n\t\t * plain text.  If the latter, we compute the inner\n\t\t * md5() call first.\n\t\t */\n\t\tif (get_password_type(user->passwd) == PASSWORD_TYPE_PLAINTEXT) {\n\t\t\tpg_md5_encrypt(user->passwd, user->name, strlen(user->name), md5);\n\t\t\tstored_passwd = md5;\n\t\t} else {\n\t\t\tstored_passwd = user->passwd;\n\t\t}\n\t\tpg_md5_encrypt(stored_passwd + 3, (char *)client->tmp_login_salt, 4, md5);\n\t\treturn strcmp(md5, passwd) == 0;\n\t}\n\t}\n\treturn false;\n}",
+            2
+        ],
+        [
+            "src/scram.c",
+            "scram_verify_plain_password",
+            "bool /* <=== scram_verify_plain_password */ \nscram_verify_plain_password(PgSocket *client,\n\t\t\t    const char *username, const char *password,\n\t\t\t    const char *verifier)\n{\n\tchar *encoded_salt = NULL;\n\tchar *salt = NULL;\n\tint saltlen;\n\tint iterations;\n\tuint8_t salted_password[SCRAM_KEY_LEN];\n\tuint8_t stored_key[SCRAM_KEY_LEN];\n\tuint8_t server_key[SCRAM_KEY_LEN];\n\tuint8_t computed_key[SCRAM_KEY_LEN];\n\tchar *prep_password = NULL;\n\tpg_saslprep_rc rc;\n\tbool result = false;\n\n\tif (!parse_scram_verifier(verifier, &iterations, &encoded_salt,\n\t\t\t\t  stored_key, server_key))\n\t{\n\t\t/* The password looked like a SCRAM verifier, but could not be parsed. */\n\t\tslog_warning(client, \"invalid SCRAM verifier for user \\\"%s\\\"\", username);\n\t\tgoto failed;\n\t}\n\n\tsalt = malloc(pg_b64_dec_len(strlen(encoded_salt)));\n\tif (!salt)\n\t\tgoto failed;\n\tsaltlen = pg_b64_decode(encoded_salt, strlen(encoded_salt), salt);\n\tif (saltlen == -1)\n\t{\n\t\tslog_warning(client, \"invalid SCRAM verifier for user \\\"%s\\\"\", username);\n\t\tgoto failed;\n\t}\n\n\t/* Normalize the password */\n\trc = pg_saslprep(password, &prep_password);\n\tif (rc == SASLPREP_SUCCESS)\n\t\tpassword = prep_password;\n\n\t/* Compute Server Key based on the user-supplied plaintext password */\n\tscram_SaltedPassword(password, salt, saltlen, iterations, salted_password);\n\tscram_ServerKey(salted_password, computed_key);\n\n\t/*\n\t * Compare the verifier's Server Key with the one computed from the\n\t * user-supplied password.\n\t */\n\tresult = memcmp(computed_key, server_key, SCRAM_KEY_LEN) == 0;\n\nfailed:\n\tfree(encoded_salt);\n\tfree(salt);\n\tfree(prep_password);\n\treturn result;\n}",
+            3
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_send_immediate",
+            "bool pktbuf_send_immediate(PktBuf *buf, PgSocket *sk) /* <=== pktbuf_send_immediate */ \n{\n\tuint8_t *pos = buf->buf + buf->send_pos;\n\tint amount = buf->write_pos - buf->send_pos;\n\tssize_t res;\n\n\tif (buf->failed)\n\t\treturn false;\n\tres = sbuf_op_send(&sk->sbuf, pos, amount);\n\tif (res < 0) {\n\t\tlog_debug(\"pktbuf_send_immediate: %s\", strerror(errno));\n\t}\n\treturn res == amount;\n}",
+            2
+        ],
+        [
+            "src/objects.c",
+            "release_server",
+            "bool release_server(PgSocket *server) /* <=== release_server */ \n{\n\tPgPool *pool = server->pool;\n\tSocketState newstate = SV_IDLE;\n\n\tAssert(server->ready);\n\n\t/* remove from old list */\n\tswitch (server->state) {\n\tcase SV_ACTIVE:\n\t\tserver->link->link = NULL;\n\t\tserver->link = NULL;\n\n\t\tif (*cf_server_reset_query && (cf_server_reset_query_always ||\n\t\t\t\t\t       pool_pool_mode(pool) == POOL_SESSION))\n\t\t{\n\t\t\t/* notify reset is required */\n\t\t\tnewstate = SV_TESTED;\n\t\t} else if (cf_server_check_delay == 0 && *cf_server_check_query) {\n\t\t\t/*\n\t\t\t * deprecated: before reset_query, the check_delay = 0\n\t\t\t * was used to get same effect.  This if() can be removed\n\t\t\t * after couple of releases.\n\t\t\t */\n\t\t\tnewstate = SV_USED;\n\t\t}\n\tcase SV_USED:\n\tcase SV_TESTED:\n\t\tbreak;\n\tcase SV_LOGIN:\n\t\tpool->last_login_failed = false;\n\t\tpool->last_connect_failed = false;\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad server state: %d\", server->state);\n\t}\n\n\t/* enforce lifetime immediately on release */\n\tif (server->state != SV_LOGIN && life_over(server)) {\n\t\tdisconnect_server(server, true, \"server_lifetime\");\n\t\tpool->last_lifetime_disconnect = get_cached_time();\n\t\treturn false;\n\t}\n\n\t/* enforce close request */\n\tif (server->close_needed) {\n\t\tdisconnect_server(server, true, \"close_needed\");\n\t\treturn false;\n\t}\n\n\tAssert(server->link == NULL);\n\tslog_noise(server, \"release_server: new state=%d\", newstate);\n\tchange_server_state(server, newstate);\n\n\tif (newstate == SV_IDLE) {\n\t\t/* immediately process waiters, to give fair chance */\n\t\treturn reuse_on_release(server);\n\t} else if (newstate == SV_TESTED) {\n\t\treturn reset_on_release(server);\n\t}\n\n\treturn true;\n}",
+            2
+        ],
+        [
+            "src/scram.c",
+            "get_password_type",
+            "PasswordType /* <=== get_password_type */ \nget_password_type(const char *shadow_pass)\n{\n\tchar *encoded_salt = NULL;\n\tint iterations;\n\tuint8_t stored_key[SCRAM_KEY_LEN];\n\tuint8_t server_key[SCRAM_KEY_LEN];\n\n\tif (strncmp(shadow_pass, \"md5\", 3) == 0 &&\n\t    strlen(shadow_pass) == MD5_PASSWD_LEN &&\n\t    strspn(shadow_pass + 3, MD5_PASSWD_CHARSET) == MD5_PASSWD_LEN - 3)\n\t\treturn PASSWORD_TYPE_MD5;\n\tif (parse_scram_verifier(shadow_pass, &iterations, &encoded_salt,\n\t\t\t\t stored_key, server_key)) {\n\t\tfree(encoded_salt);\n\t\treturn PASSWORD_TYPE_SCRAM_SHA_256;\n\t}\n\tfree(encoded_salt);\n\treturn PASSWORD_TYPE_PLAINTEXT;\n}",
+            3
+        ],
+        [
+            "include/proto.h",
+            "incomplete_pkt",
+            "static inline bool incomplete_pkt(const PktHdr *pkt) /* <=== incomplete_pkt */ \n{\n\treturn mbuf_written(&pkt->data) != pkt->len;\n}",
+            2
+        ],
+        [
+            "include/bouncer.h",
+            "PKT_SSLREQ",
+            "#define PKT_SSLREQ      80877103 /* <=== include/bouncer.h:193:193:PKT_SSLREQ:0 */ ",
+            1
+        ],
+        [
+            "src/client.c",
+            "scram_client_first",
+            "static bool scram_client_first(PgSocket *client, uint32_t datalen, const uint8_t *data) /* <=== scram_client_first */ \n{\n\tchar *ibuf;\n\tchar *input;\n\tint res;\n\tPgUser *user = client->login_user;\n\n\tibuf = malloc(datalen + 1);\n\tif (ibuf == NULL)\n\t\treturn false;\n\tmemcpy(ibuf, data, datalen);\n\tibuf[datalen] = '\\0';\n\n\tinput = ibuf;\n\tslog_debug(client, \"SCRAM client-first-message = \\\"%s\\\"\", input);\n\tif (!read_client_first_message(client, input,\n\t\t\t\t       &client->scram_state.cbind_flag,\n\t\t\t\t       &client->scram_state.client_first_message_bare,\n\t\t\t\t       &client->scram_state.client_nonce))\n\t\tgoto failed;\n\n\tif (!user->mock_auth) {\n\t\tslog_debug(client, \"stored secret = \\\"%s\\\"\", user->passwd);\n\t\tswitch (get_password_type(user->passwd)) {\n\t\tcase PASSWORD_TYPE_MD5:\n\t\t\tslog_error(client, \"SCRAM authentication failed: user has MD5 secret\");\n\t\t\tgoto failed;\n\t\tcase PASSWORD_TYPE_PLAINTEXT:\n\t\tcase PASSWORD_TYPE_SCRAM_SHA_256:\n\t\t\tbreak;\n\t\t}\n\t}\n\n\tif (!build_server_first_message(&client->scram_state, user->name, user->mock_auth ? NULL : user->passwd))\n\t\tgoto failed;\n\tslog_debug(client, \"SCRAM server-first-message = \\\"%s\\\"\", client->scram_state.server_first_message);\n\n\tSEND_generic(res, client, 'R', \"ib\",\n\t\t     AUTH_SASL_CONT,\n\t\t     client->scram_state.server_first_message,\n\t\t     strlen(client->scram_state.server_first_message));\n\n\tfree(ibuf);\n\treturn res;\nfailed:\n\tfree(ibuf);\n\treturn false;\n}",
+            2
+        ],
+        [
+            "include/bouncer.h",
+            "first_socket",
+            "static inline PgSocket * /* <=== first_socket */ \nfirst_socket(struct StatList *slist)\n{\n\tif (statlist_empty(slist))\n\t\treturn NULL;\n\treturn container_of(slist->head.next, PgSocket, head);\n}",
+            3
+        ],
+        [
+            "include/proto.h",
+            "OLD_HEADER_LEN",
+            "#define OLD_HEADER_LEN\t8 /* <=== include/proto.h:20:20:OLD_HEADER_LEN:0 */ ",
+            2
+        ],
+        [
+            "src/sbuf.c",
+            "sbuf_tls_accept",
+            "bool sbuf_tls_accept(SBuf *sbuf) { return false; } /* <=== sbuf_tls_accept */ ",
+            2
+        ],
+        [
+            "src/varcache.c",
+            "varcache_clean",
+            "void varcache_clean(VarCache *cache) /* <=== varcache_clean */ \n{\n\tint i;\n\tfor (i = 0; i < NumVars; i++) {\n\t\tstrpool_decref(cache->var_list[i]);\n\t\tcache->var_list[i] = NULL;\n\t}\n}",
+            3
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_write_generic",
+            "void pktbuf_write_generic(PktBuf *buf, int type, const char *pktdesc, ...) /* <=== pktbuf_write_generic */ \n{\n\tva_list ap;\n\tint len;\n\tconst char *adesc = pktdesc;\n\tuint8_t *bin;\n\n\tpktbuf_start_packet(buf, type);\n\n\tva_start(ap, pktdesc);\n\twhile (*adesc) {\n\t\tswitch (*adesc) {\n\t\tcase 'c':\n\t\t\tpktbuf_put_char(buf, va_arg(ap, int));\n\t\t\tbreak;\n\t\tcase 'h':\n\t\t\tpktbuf_put_uint16(buf, va_arg(ap, int));\n\t\t\tbreak;\n\t\tcase 'i':\n\t\t\tpktbuf_put_uint32(buf, va_arg(ap, int));\n\t\t\tbreak;\n\t\tcase 'q':\n\t\t\tpktbuf_put_uint64(buf, va_arg(ap, uint64_t));\n\t\t\tbreak;\n\t\tcase 's':\n\t\t\tpktbuf_put_string(buf, va_arg(ap, char *));\n\t\t\tbreak;\n\t\tcase 'b':\n\t\t\tbin = va_arg(ap, uint8_t *);\n\t\t\tlen = va_arg(ap, int);\n\t\t\tpktbuf_put_bytes(buf, bin, len);\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tfatal(\"bad pktdesc: %s\", pktdesc);\n\t\t}\n\t\tadesc++;\n\t}\n\tva_end(ap);\n\n\t/* set correct length */\n\tpktbuf_finish_packet(buf);\n}",
+            3
+        ],
+        [
+            "src/sbuf.c",
+            "sbuf_close",
+            "bool sbuf_close(SBuf *sbuf) /* <=== sbuf_close */ \n{\n\tif (sbuf->wait_type) {\n\t\tAssert(sbuf->sock);\n\t\t/* event_del() acts funny occasionally, debug it */\n\t\terrno = 0;\n\t\tif (event_del(&sbuf->ev) < 0) {\n\t\t\tif (errno) {\n\t\t\t\tlog_warning(\"event_del: %s\", strerror(errno));\n\t\t\t} else {\n\t\t\t\tlog_warning(\"event_del: libevent error\");\n\t\t\t}\n\t\t\t/* we can retry whole sbuf_close() if needed */\n\t\t\t/* if (errno == ENOMEM) return false; */\n\t\t}\n\t}\n\tsbuf_op_close(sbuf);\n\tsbuf->dst = NULL;\n\tsbuf->sock = 0;\n\tsbuf->pkt_remain = 0;\n\tsbuf->pkt_action = sbuf->wait_type = 0;\n\tif (sbuf->io) {\n\t\tslab_free(iobuf_cache, sbuf->io);\n\t\tsbuf->io = NULL;\n\t}\n\treturn true;\n}",
+            2
+        ],
+        [
+            "include/sbuf.h",
+            "sbuf_op_send",
+            "static inline ssize_t sbuf_op_send(SBuf *sbuf, const void *buf, size_t len) /* <=== sbuf_op_send */ \n{\n\treturn sbuf->ops->sbufio_send(sbuf, buf, len);\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "check_fast_fail",
+            "bool check_fast_fail(PgSocket *client) /* <=== check_fast_fail */ \n{\n\tint cnt;\n\tPgPool *pool = client->pool;\n\n\t/* Could be mock authentication, proceed normally */\n\tif (!pool)\n\t\treturn true;\n\n\t/* If last login succeeded, client can go ahead. */\n\tif (!pool->last_login_failed)\n\t\treturn true;\n\n\t/* If there are servers available, client can go ahead. */\n\tcnt = pool_server_count(pool) - statlist_count(&pool->new_server_list);\n\tif (cnt)\n\t\treturn true;\n\n\t/* Else we fail the client. */\n\tdisconnect_client(client, true, \"pgbouncer cannot connect to server\");\n\n\t/*\n\t * Try to launch a new connection.  (launch_new_connection()\n\t * will check for server_login_retry etc.)  The usual relaunch\n\t * from janitor.c won't do anything, as there are no waiting\n\t * clients, so we need to do it here to get any new servers\n\t * eventually.\n\t */\n\tlaunch_new_connection(pool);\n\n\treturn false;\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "change_client_state",
+            "void change_client_state(PgSocket *client, SocketState newstate) /* <=== change_client_state */ \n{\n\tPgPool *pool = client->pool;\n\n\t/* remove from old location */\n\tswitch (client->state) {\n\tcase CL_FREE:\n\t\tbreak;\n\tcase CL_JUSTFREE:\n\t\tstatlist_remove(&justfree_client_list, &client->head);\n\t\tbreak;\n\tcase CL_LOGIN:\n\t\tif (newstate == CL_WAITING)\n\t\t\tnewstate = CL_WAITING_LOGIN;\n\t\tstatlist_remove(&login_client_list, &client->head);\n\t\tbreak;\n\tcase CL_WAITING_LOGIN:\n\t\tif (newstate == CL_ACTIVE)\n\t\t\tnewstate = CL_LOGIN;\n\t\t/* fallthrough */\n\tcase CL_WAITING:\n\t\tstatlist_remove(&pool->waiting_client_list, &client->head);\n\t\tbreak;\n\tcase CL_ACTIVE:\n\t\tstatlist_remove(&pool->active_client_list, &client->head);\n\t\tbreak;\n\tcase CL_CANCEL:\n\t\tstatlist_remove(&pool->cancel_req_list, &client->head);\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad cur client state: %d\", client->state);\n\t}\n\n\tclient->state = newstate;\n\n\t/* put to new location */\n\tswitch (client->state) {\n\tcase CL_FREE:\n\t\tvarcache_clean(&client->vars);\n\t\tslab_free(client_cache, client);\n\t\tbreak;\n\tcase CL_JUSTFREE:\n\t\tstatlist_append(&justfree_client_list, &client->head);\n\t\tbreak;\n\tcase CL_LOGIN:\n\t\tstatlist_append(&login_client_list, &client->head);\n\t\tbreak;\n\tcase CL_WAITING:\n\tcase CL_WAITING_LOGIN:\n\t\tclient->wait_start = get_cached_time();\n\t\tstatlist_append(&pool->waiting_client_list, &client->head);\n\t\tbreak;\n\tcase CL_ACTIVE:\n\t\tstatlist_append(&pool->active_client_list, &client->head);\n\t\tbreak;\n\tcase CL_CANCEL:\n\t\tstatlist_append(&pool->cancel_req_list, &client->head);\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad new client state: %d\", client->state);\n\t}\n}",
+            3
+        ],
+        [
+            "src/admin.c",
+            "admin_handle_client",
+            "bool admin_handle_client(PgSocket *admin, PktHdr *pkt) /* <=== admin_handle_client */ \n{\n\tconst char *q;\n\tbool res;\n\n\t/* don't tolerate partial packets */\n\tif (incomplete_pkt(pkt)) {\n\t\tdisconnect_client(admin, true, \"incomplete pkt\");\n\t\treturn false;\n\t}\n\n\tswitch (pkt->type) {\n\tcase 'Q':\n\t\tif (!mbuf_get_string(&pkt->data, &q)) {\n\t\t\tdisconnect_client(admin, true, \"incomplete query\");\n\t\t\treturn false;\n\t\t}\n\t\tlog_debug(\"got admin query: %s\", q);\n\t\tres = admin_parse_query(admin, q);\n\t\tif (res)\n\t\t\tsbuf_prepare_skip(&admin->sbuf, pkt->len);\n\t\treturn res;\n\tcase 'X':\n\t\tdisconnect_client(admin, false, \"close req\");\n\t\tbreak;\n\tdefault:\n\t\tadmin_error(admin, \"unsupported pkt type: %d\", pkt_desc(pkt));\n\t\tdisconnect_client(admin, true, \"bad pkt\");\n\t\tbreak;\n\t}\n\treturn false;\n}",
+            2
+        ],
+        [
+            "src/proto.c",
+            "send_startup_packet",
+            "bool send_startup_packet(PgSocket *server) /* <=== send_startup_packet */ \n{\n\tPgDatabase *db = server->pool->db;\n\tconst char *username = server->pool->user->name;\n\tPktBuf *pkt;\n\n\tpkt = pktbuf_temp();\n\tpktbuf_write_StartupMessage(pkt, username,\n\t\t\t\t    db->startup_params->buf,\n\t\t\t\t    db->startup_params->write_pos);\n\treturn pktbuf_send_immediate(pkt, server);\n}",
+            1
+        ],
+        [
+            "include/proto.h",
+            "NEW_HEADER_LEN",
+            "#define NEW_HEADER_LEN\t5 /* <=== include/proto.h:22:22:NEW_HEADER_LEN:0 */ ",
+            2
+        ],
+        [
+            "include/bouncer.h",
+            "AUTH_TRUST",
+            "#define AUTH_TRUST\tAUTH_OK /* <=== include/bouncer.h:164:164:AUTH_TRUST:0 */ ",
+            3
+        ],
+        [
+            "src/admin.c",
+            "admin_parse_query",
+            "static bool admin_parse_query(PgSocket *admin, const char *q) /* <=== admin_parse_query */ \n{\n\tregmatch_t grp[MAX_GROUPS];\n\tchar cmd[16];\n\tchar arg[64];\n\tchar val[256];\n\tbool res;\n\tbool ok;\n\n\tcurrent_query = q;\n\n\tif (regexec(&rc_cmd, q, MAX_GROUPS, grp, 0) == 0) {\n\t\tok = copy_arg(q, grp, CMD_NAME, cmd, sizeof(cmd), '\"');\n\t\tif (!ok)\n\t\t\tgoto failed;\n\t\tok = copy_arg(q, grp, CMD_ARG, arg, sizeof(arg), '\"');\n\t\tif (!ok)\n\t\t\tgoto failed;\n\t\tres = exec_cmd(cmd_list, admin, cmd, arg);\n\t} else if (regexec(&rc_set_str, q, MAX_GROUPS, grp, 0) == 0) {\n\t\tok = copy_arg(q, grp, SET_KEY, arg, sizeof(arg), '\"');\n\t\tif (!ok || !arg[0])\n\t\t\tgoto failed;\n\t\tok = copy_arg(q, grp, SET_VAL, val, sizeof(val), '\\'');\n\t\tif (!ok)\n\t\t\tgoto failed;\n\t\tres = admin_set(admin, arg, val);\n\t} else if (regexec(&rc_set_word, q, MAX_GROUPS, grp, 0) == 0) {\n\t\tok = copy_arg(q, grp, SET_KEY, arg, sizeof(arg), '\"');\n\t\tif (!ok || !arg[0])\n\t\t\tgoto failed;\n\t\tok = copy_arg(q, grp, SET_VAL, val, sizeof(val), '\"');\n\t\tif (!ok)\n\t\t\tgoto failed;\n\t\tres = admin_set(admin, arg, val);\n\t} else\n\t\tres = syntax_error(admin);\ndone:\n\tcurrent_query = NULL;\n\tif (!res)\n\t\tdisconnect_client(admin, true, \"failure\");\n\treturn res;\nfailed:\n\tres = admin_error(admin, \"bad arguments\");\n\tgoto done;\n}",
+            3
+        ],
+        [
+            "src/client.c",
+            "handle_client_startup",
+            "static bool handle_client_startup(PgSocket *client, PktHdr *pkt) /* <=== handle_client_startup */ \n{\n\tconst char *passwd;\n\tconst uint8_t *key;\n\tbool ok;\n\tbool is_unix = pga_is_unix(&client->remote_addr);\n\n\tSBuf *sbuf = &client->sbuf;\n\n\t/* don't tolerate partial packets */\n\tif (incomplete_pkt(pkt)) {\n\t\tdisconnect_client(client, true, \"client sent partial pkt in startup phase\");\n\t\treturn false;\n\t}\n\n\tif (client->wait_for_welcome || client->wait_for_auth) {\n\t\tif  (finish_client_login(client)) {\n\t\t\t/* the packet was already parsed */\n\t\t\tsbuf_prepare_skip(sbuf, pkt->len);\n\t\t\treturn true;\n\t\t} else {\n\t\t\treturn false;\n\t\t}\n\t}\n\n\tswitch (pkt->type) {\n\tcase PKT_SSLREQ:\n\t\tslog_noise(client, \"C: req SSL\");\n\n\t\tif (client->sbuf.tls) {\n\t\t\tdisconnect_client(client, false, \"SSL req inside SSL\");\n\t\t\treturn false;\n\t\t}\n\t\tif (client_accept_sslmode != SSLMODE_DISABLED && !is_unix) {\n\t\t\tslog_noise(client, \"P: SSL ack\");\n\t\t\tif (!sbuf_answer(&client->sbuf, \"S\", 1)) {\n\t\t\t\tdisconnect_client(client, false, \"failed to ack SSL\");\n\t\t\t\treturn false;\n\t\t\t}\n\t\t\tif (!sbuf_tls_accept(&client->sbuf)) {\n\t\t\t\tdisconnect_client(client, false, \"failed to accept SSL\");\n\t\t\t\treturn false;\n\t\t\t}\n\t\t\tbreak;\n\t\t}\n\n\t\t/* reject SSL attempt */\n\t\tslog_noise(client, \"P: nak\");\n\t\tif (!sbuf_answer(&client->sbuf, \"N\", 1)) {\n\t\t\tdisconnect_client(client, false, \"failed to nak SSL\");\n\t\t\treturn false;\n\t\t}\n\t\tbreak;\n\tcase PKT_GSSENCREQ:\n\t\t/* reject GSS encryption attempt */\n\t\tslog_noise(client, \"C: req GSS enc\");\n\t\tif (!sbuf_answer(&client->sbuf, \"N\", 1)) {\n\t\t\tdisconnect_client(client, false, \"failed to nak GSS enc\");\n\t\t\treturn false;\n\t\t}\n\t\tbreak;\n\tcase PKT_STARTUP_V2:\n\t\tdisconnect_client(client, true, \"old V2 protocol not supported\");\n\t\treturn false;\n\tcase PKT_STARTUP:\n\t\t/* require SSL except on unix socket */\n\t\tif (client_accept_sslmode >= SSLMODE_REQUIRE && !client->sbuf.tls && !is_unix) {\n\t\t\tdisconnect_client(client, true, \"SSL required\");\n\t\t\treturn false;\n\t\t}\n\n\t\tif (client->pool && !client->wait_for_user_conn && !client->wait_for_user) {\n\t\t\tdisconnect_client(client, true, \"client re-sent startup pkt\");\n\t\t\treturn false;\n\t\t}\n\n\t\tif (client->wait_for_user) {\n\t\t\tclient->wait_for_user = false;\n\t\t\tif (!finish_set_pool(client, false))\n\t\t\t\treturn false;\n\t\t} else if (!decide_startup_pool(client, pkt)) {\n\t\t\treturn false;\n\t\t}\n\n\t\tbreak;\n\tcase 'p':\t\t/* PasswordMessage, SASLInitialResponse, or SASLResponse */\n\t\t/* too early */\n\t\tif (!client->login_user) {\n\t\t\tdisconnect_client(client, true, \"client password pkt before startup packet\");\n\t\t\treturn false;\n\t\t}\n\n\t\tif (client->client_auth_type == AUTH_SCRAM_SHA_256) {\n\t\t\tconst char *mech;\n\t\t\tuint32_t length;\n\t\t\tconst uint8_t *data;\n\n\t\t\tif (!client->scram_state.server_nonce) {\n\t\t\t\t/* process as SASLInitialResponse */\n\t\t\t\tif (!mbuf_get_string(&pkt->data, &mech))\n\t\t\t\t\treturn false;\n\t\t\t\tslog_debug(client, \"C: selected SASL mechanism: %s\", mech);\n\t\t\t\tif (strcmp(mech, \"SCRAM-SHA-256\") != 0) {\n\t\t\t\t\tdisconnect_client(client, true, \"client selected an invalid SASL authentication mechanism\");\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t\tif (!mbuf_get_uint32be(&pkt->data, &length))\n\t\t\t\t\treturn false;\n\t\t\t\tif (!mbuf_get_bytes(&pkt->data, length, &data))\n\t\t\t\t\treturn false;\n\t\t\t\tif (!scram_client_first(client, length, data)) {\n\t\t\t\t\tdisconnect_client(client, true, \"SASL authentication failed\");\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\t/* process as SASLResponse */\n\t\t\t\tlength = mbuf_avail_for_read(&pkt->data);\n\t\t\t\tif (!mbuf_get_bytes(&pkt->data, length, &data))\n\t\t\t\t\treturn false;\n\t\t\t\tif (scram_client_final(client, length, data)) {\n\t\t\t\t\t/* save SCRAM keys for user */\n\t\t\t\t\tif (!client->scram_state.adhoc) {\n\t\t\t\t\t\tmemcpy(client->pool->user->scram_ClientKey,\n\t\t\t\t\t\t       client->scram_state.ClientKey,\n\t\t\t\t\t\t       sizeof(client->scram_state.ClientKey));\n\t\t\t\t\t\tmemcpy(client->pool->user->scram_ServerKey,\n\t\t\t\t\t\t       client->scram_state.ServerKey,\n\t\t\t\t\t\t       sizeof(client->scram_state.ServerKey));\n\t\t\t\t\t\tclient->pool->user->has_scram_keys = true;\n\t\t\t\t\t}\n\n\t\t\t\t\tfree_scram_state(&client->scram_state);\n\t\t\t\t\tif (!finish_client_login(client))\n\t\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t\telse {\n\t\t\t\t\tdisconnect_client(client, true, \"SASL authentication failed\");\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t}\n\t\t} else {\n\t\t\t/* process as PasswordMessage */\n\t\t\tok = mbuf_get_string(&pkt->data, &passwd);\n\n\t\t\tif (ok) {\n\t\t\t\t/*\n\t\t\t\t * Don't allow an empty password; see\n\t\t\t\t * PostgreSQL recv_password_packet().\n\t\t\t\t */\n\t\t\t\tif (!*passwd) {\n\t\t\t\t\tdisconnect_client(client, true, \"empty password returned by client\");\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\n\t\t\t\tif (client->client_auth_type == AUTH_PAM) {\n\t\t\t\t\tif (!sbuf_pause(&client->sbuf)) {\n\t\t\t\t\t\tdisconnect_client(client, true, \"pause failed\");\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\t\t\t\t\tpam_auth_begin(client, passwd);\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\n\t\t\t\tif (check_client_passwd(client, passwd)) {\n\t\t\t\t\tif (!finish_client_login(client))\n\t\t\t\t\t\treturn false;\n\t\t\t\t} else {\n\t\t\t\t\tdisconnect_client(client, true, \"password authentication failed\");\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tbreak;\n\tcase PKT_CANCEL:\n\t\tif (mbuf_avail_for_read(&pkt->data) == BACKENDKEY_LEN\n\t\t    && mbuf_get_bytes(&pkt->data, BACKENDKEY_LEN, &key))\n\t\t{\n\t\t\tmemcpy(client->cancel_key, key, BACKENDKEY_LEN);\n\t\t\taccept_cancel_request(client);\n\t\t} else {\n\t\t\tdisconnect_client(client, false, \"bad cancel request\");\n\t\t}\n\t\treturn false;\n\tdefault:\n\t\tdisconnect_client(client, false, \"bad packet\");\n\t\treturn false;\n\t}\n\tsbuf_prepare_skip(sbuf, pkt->len);\n\tclient->request_time = get_cached_time();\n\treturn true;\n}",
+            1
+        ],
+        [
+            "src/scram.c",
+            "read_client_final_message",
+            "bool read_client_final_message(PgSocket *client, const uint8_t *raw_input, char *input, /* <=== read_client_final_message */ \n\t\t\t       const char **client_final_nonce_p,\n\t\t\t       char **proof_p)\n{\n\tconst char *input_start = input;\n\tchar attr;\n\tchar *channel_binding;\n\tchar *client_final_nonce;\n\tchar *proof_start;\n\tchar *value;\n\tchar *encoded_proof;\n\tchar *proof = NULL;\n\tint prooflen;\n\n\t/*\n\t * Read channel-binding.  We don't support channel binding, so\n\t * it's expected to always be \"biws\", which is \"n,,\",\n\t * base64-encoded, or \"eSws\", which is \"y,,\".  We also have to\n\t * check whether the flag is the same one that the client\n\t * originally sent.\n\t */\n\tchannel_binding = read_attr_value(client, &input, 'c');\n\tif (channel_binding == NULL)\n\t\tgoto failed;\n\tif (!(strcmp(channel_binding, \"biws\") == 0 && client->scram_state.cbind_flag == 'n') &&\n\t    !(strcmp(channel_binding, \"eSws\") == 0 && client->scram_state.cbind_flag == 'y')) {\n\t\tslog_error(client, \"unexpected SCRAM channel-binding attribute in client-final-message\");\n\t\tgoto failed;\n\t}\n\n\tclient_final_nonce = read_attr_value(client, &input, 'r');\n\n\t/* ignore optional extensions */\n\tdo\n\t{\n\t\tproof_start = input - 1;\n\t\tvalue = read_any_attr(client, &input, &attr);\n\t} while (value && attr != 'p');\n\n\tif (!value) {\n\t\tslog_error(client, \"could not read proof\");\n\t\tgoto failed;\n\t}\n\n\tencoded_proof = value;\n\n\tproof = malloc(pg_b64_dec_len(strlen(encoded_proof)));\n\tif (proof == NULL) {\n\t\tslog_error(client, \"could not decode proof\");\n\t\tgoto failed;\n\t}\n\tprooflen = pg_b64_decode(encoded_proof,\n\t\t\t\t strlen(encoded_proof),\n\t\t\t\t proof);\n\t(void) prooflen;\n\n\tif (*input != '\\0') {\n\t\tslog_error(client, \"malformed SCRAM message (garbage at the end of client-final-message)\");\n\t\tgoto failed;\n\t}\n\n\tclient->scram_state.client_final_message_without_proof = malloc(proof_start - input_start + 1);\n\tif (!client->scram_state.client_final_message_without_proof)\n\t\tgoto failed;\n\tmemcpy(client->scram_state.client_final_message_without_proof, raw_input, proof_start - input_start);\n\tclient->scram_state.client_final_message_without_proof[proof_start - input_start] = '\\0';\n\n\t*client_final_nonce_p = client_final_nonce;\n\t*proof_p = proof;\n\treturn true;\nfailed:\n\tfree(proof);\n\treturn false;\n}",
+            3
+        ],
+        [
+            "include/util.h",
+            "slog_debug",
+            "#define slog_debug(sk, args...) do { \\ /* <=== include/util.h:27:30:slog_debug:2 */ \n\t\tif (unlikely(cf_verbose > 0)) \\\n\t\t\tlog_generic(LG_DEBUG, sk, ## args); \\\n\t} while (0)",
+            2
+        ],
+        [
+            "include/bouncer.h",
+            "PKT_CANCEL",
+            "#define PKT_CANCEL      80877102 /* <=== include/bouncer.h:192:192:PKT_CANCEL:0 */ ",
+            2
+        ],
+        [
+            "include/proto.h",
+            "pkt_desc",
+            "static inline char pkt_desc(const PktHdr *pkt) /* <=== pkt_desc */ \n{\n\treturn pkt->type > 256 ? '!' : pkt->type;\n}",
+            1
+        ],
+        [
+            "src/sbuf.c",
+            "ACT_SEND",
+            "#define ACT_SEND 1 /* <=== src/sbuf.c:38:38:ACT_SEND:0 */ ",
+            3
+        ],
+        [
+            "include/util.h",
+            "slog_error",
+            "#define slog_error(sk, args...) log_generic(LG_ERROR, sk, ## args) /* <=== include/util.h:24:24:slog_error:2 */ ",
+            2
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_reset",
+            "void pktbuf_reset(struct PktBuf *pkt) /* <=== pktbuf_reset */ \n{\n\tpkt->failed = false;\n\tpkt->write_pos = 0;\n\tpkt->pktlen_pos = 0;\n\tpkt->send_pos = 0;\n\tpkt->sending = false;\n}",
+            3
+        ],
+        [
+            "include/util.h",
+            "slog_warning",
+            "#define slog_warning(sk, args...) log_generic(LG_WARNING, sk, ## args) /* <=== include/util.h:25:25:slog_warning:2 */ ",
+            3
+        ],
+        [
+            "src/admin.c",
+            "admin_post_login",
+            "bool admin_post_login(PgSocket *client) /* <=== admin_post_login */ \n{\n\tconst char *username = client->login_user->name;\n\n\tif (cf_auth_type == AUTH_ANY)\n\t\treturn true;\n\n\tif (client->admin_user || strlist_contains(cf_admin_users, username)) {\n\t\tclient->admin_user = true;\n\t\treturn true;\n\t} else if (strlist_contains(cf_stats_users, username)) {\n\t\treturn true;\n\t}\n\n\tdisconnect_client(client, true, \"not allowed\");\n\treturn false;\n}",
+            3
+        ],
+        [
+            "include/pktbuf.h",
+            "SEND_generic",
+            "#define SEND_generic(res, sk, args...) \\ /* <=== include/pktbuf.h:143:144:SEND_generic:3 */ \n\tSEND_wrap(512, pktbuf_write_generic, res, sk, ## args)",
+            3
+        ],
+        [
+            "include/pktbuf.h",
+            "pktbuf_write_StartupMessage",
+            "#define pktbuf_write_StartupMessage(buf, user, parms, parms_len) \\ /* <=== include/pktbuf.h:100:101:pktbuf_write_StartupMessage:4 */ \n\tpktbuf_write_generic(buf, PKT_STARTUP, \"bsss\", parms, parms_len, \"user\", user, \"\")",
+            2
+        ],
+        [
+            "src/proto.c",
+            "get_header",
+            "bool get_header(struct MBuf *data, PktHdr *pkt) /* <=== get_header */ \n{\n\tunsigned type;\n\tuint32_t len;\n\tunsigned got;\n\tunsigned avail;\n\tuint16_t len16;\n\tuint8_t type8;\n\tuint32_t code;\n\tstruct MBuf hdr;\n\tconst uint8_t *ptr;\n\n\tmbuf_copy(data, &hdr);\n\n\tif (mbuf_avail_for_read(&hdr) < NEW_HEADER_LEN) {\n\t\tlog_noise(\"get_header: less than 5 bytes available\");\n\t\treturn false;\n\t}\n\tif (!mbuf_get_byte(&hdr, &type8))\n\t\treturn false;\n\ttype = type8;\n\tif (type != 0) {\n\t\t/* wire length does not include type byte */\n\t\tif (!mbuf_get_uint32be(&hdr, &len))\n\t\t\treturn false;\n\t\tlen++;\n\t\tgot = NEW_HEADER_LEN;\n\t} else {\n\t\tif (!mbuf_get_byte(&hdr, &type8))\n\t\t\treturn false;\n\t\tif (type8 != 0) {\n\t\t\tlog_noise(\"get_header: unknown special pkt\");\n\t\t\treturn false;\n\t\t}\n\t\t/* don't tolerate partial pkt */\n\t\tif (mbuf_avail_for_read(&hdr) < OLD_HEADER_LEN - 2) {\n\t\t\tlog_noise(\"get_header: less than 8 bytes for special pkt\");\n\t\t\treturn false;\n\t\t}\n\t\tif (!mbuf_get_uint16be(&hdr, &len16))\n\t\t\treturn false;\n\t\tlen = len16;\n\t\tif (!mbuf_get_uint32be(&hdr, &code))\n\t\t\treturn false;\n\t\tif (code == PKT_CANCEL) {\n\t\t\ttype = PKT_CANCEL;\n\t\t} else if (code == PKT_SSLREQ) {\n\t\t\ttype = PKT_SSLREQ;\n\t\t} else if (code == PKT_GSSENCREQ) {\n\t\t\ttype = PKT_GSSENCREQ;\n\t\t} else if ((code >> 16) == 3 && (code & 0xFFFF) < 2) {\n\t\t\ttype = PKT_STARTUP;\n\t\t} else if (code == PKT_STARTUP_V2) {\n\t\t\ttype = PKT_STARTUP_V2;\n\t\t} else {\n\t\t\tlog_noise(\"get_header: unknown special pkt: len=%u code=%u\", len, code);\n\t\t\treturn false;\n\t\t}\n\t\tgot = OLD_HEADER_LEN;\n\t}\n\n\t/* don't believe nonsense */\n\tif (len < got || len > cf_max_packet_size)\n\t\treturn false;\n\n\t/* store pkt info */\n\tpkt->type = type;\n\tpkt->len = len;\n\n\t/* fill pkt with only data for this packet */\n\tif (len > mbuf_avail_for_read(data)) {\n\t\tavail = mbuf_avail_for_read(data);\n\t} else {\n\t\tavail = len;\n\t}\n\tif (!mbuf_slice(data, avail, &pkt->data))\n\t\treturn false;\n\n\t/* tag header as read */\n\treturn mbuf_get_bytes(&pkt->data, got, &ptr);\n}",
+            1
+        ],
+        [
+            "src/sbuf.c",
+            "sbuf_prepare_skip",
+            "void sbuf_prepare_skip(SBuf *sbuf, unsigned amount) /* <=== sbuf_prepare_skip */ \n{\n\tAssertActive(sbuf);\n\tAssert(sbuf->pkt_remain == 0);\n\t/* Assert(sbuf->pkt_action == ACT_UNSET || iobuf_send_pending_avail(&sbuf->io)); */\n\tAssert(amount > 0);\n\n\tsbuf->pkt_action = ACT_SKIP;\n\tsbuf->pkt_remain = amount;\n}",
+            1
+        ],
+        [
+            "src/proto.c",
+            "send_pooler_error",
+            "bool send_pooler_error(PgSocket *client, bool send_ready, bool level_fatal, const char *msg) /* <=== send_pooler_error */ \n{\n\tuint8_t tmpbuf[512];\n\tPktBuf buf;\n\n\tif (cf_log_pooler_errors)\n\t\tslog_warning(client, \"pooler error: %s\", msg);\n\n\tpktbuf_static(&buf, tmpbuf, sizeof(tmpbuf));\n\tpktbuf_write_generic(&buf, 'E', \"cscscsc\",\n\t\t\t     'S', level_fatal ? \"FATAL\" : \"ERROR\",\n\t\t\t     'C', \"08P01\", 'M', msg, 0);\n\tif (send_ready)\n\t\tpktbuf_write_ReadyForQuery(&buf);\n\treturn pktbuf_send_immediate(&buf, client);\n}",
+            2
+        ],
+        [
+            "src/sbuf.c",
+            "sbuf_answer",
+            "bool sbuf_answer(SBuf *sbuf, const void *buf, size_t len) /* <=== sbuf_answer */ \n{\n\tssize_t res;\n\tif (sbuf->sock <= 0)\n\t\treturn false;\n\tres = sbuf_op_send(sbuf, buf, len);\n\tif (res < 0) {\n\t\tlog_debug(\"sbuf_answer: error sending: %s\", strerror(errno));\n\t} else if ((unsigned)res != len) {\n\t\tlog_debug(\"sbuf_answer: partial send: len=%zu sent=%zd\", len, res);\n\t}\n\treturn (unsigned)res == len;\n}",
+            2
+        ],
+        [
+            "include/bouncer.h",
+            "PKT_GSSENCREQ",
+            "#define PKT_GSSENCREQ   80877104 /* <=== include/bouncer.h:194:194:PKT_GSSENCREQ:0 */ ",
+            1
+        ],
+        [
+            "src/scram.c",
+            "verify_client_proof",
+            "bool verify_client_proof(ScramState *state, const char *ClientProof) /* <=== verify_client_proof */ \n{\n    uint8_t ClientSignature[SCRAM_KEY_LEN];\n    uint8_t client_StoredKey[SCRAM_KEY_LEN];\n    scram_HMAC_ctx ctx;\n    int i;\n\n    /* calculate ClientSignature */\n    scram_HMAC_init(&ctx, state->StoredKey, SCRAM_KEY_LEN);\n    scram_HMAC_update(&ctx,\n\t\t      state->client_first_message_bare,\n\t\t      strlen(state->client_first_message_bare));\n    scram_HMAC_update(&ctx, \",\", 1);\n    scram_HMAC_update(&ctx,\n\t\t      state->server_first_message,\n\t\t      strlen(state->server_first_message));\n    scram_HMAC_update(&ctx, \",\", 1);\n    scram_HMAC_update(&ctx,\n\t\t      state->client_final_message_without_proof,\n\t\t      strlen(state->client_final_message_without_proof));\n    scram_HMAC_final(ClientSignature, &ctx);\n\n    /* Extract the ClientKey that the client calculated from the proof */\n    for (i = 0; i < SCRAM_KEY_LEN; i++)\n\t    state->ClientKey[i] = ClientProof[i] ^ ClientSignature[i];\n\n    /* Hash it one more time, and compare with StoredKey */\n    scram_H(state->ClientKey, SCRAM_KEY_LEN, client_StoredKey);\n\n    if (memcmp(client_StoredKey, state->StoredKey, SCRAM_KEY_LEN) != 0)\n\t    return false;\n\n    return true;\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "accept_cancel_request",
+            "void accept_cancel_request(PgSocket *req) /* <=== accept_cancel_request */ \n{\n\tstruct List *pitem, *citem;\n\tPgPool *pool = NULL;\n\tPgSocket *server = NULL, *client, *main_client = NULL;\n\n\tAssert(req->state == CL_LOGIN);\n\n\t/* find real client this is for */\n\tstatlist_for_each(pitem, &pool_list) {\n\t\tpool = container_of(pitem, PgPool, head);\n\t\tstatlist_for_each(citem, &pool->active_client_list) {\n\t\t\tclient = container_of(citem, PgSocket, head);\n\t\t\tif (memcmp(client->cancel_key, req->cancel_key, 8) == 0) {\n\t\t\t\tmain_client = client;\n\t\t\t\tgoto found;\n\t\t\t}\n\t\t}\n\t\tstatlist_for_each(citem, &pool->waiting_client_list) {\n\t\t\tclient = container_of(citem, PgSocket, head);\n\t\t\tif (memcmp(client->cancel_key, req->cancel_key, 8) == 0) {\n\t\t\t\tmain_client = client;\n\t\t\t\tgoto found;\n\t\t\t}\n\t\t}\n\t}\nfound:\n\n\t/* wrong key */\n\tif (!main_client) {\n\t\tdisconnect_client(req, false, \"failed cancel request\");\n\t\treturn;\n\t}\n\n\t/* not linked client, just drop it then */\n\tif (!main_client->link) {\n\t\t/* let administrative cancel be handled elsewhere */\n\t\tif (main_client->pool->db->admin) {\n\t\t\tdisconnect_client(req, false, \"cancel request for console client\");\n\t\t\tadmin_handle_cancel(main_client);\n\t\t\treturn;\n\t\t}\n\n\t\tdisconnect_client(req, false, \"cancel request for idle client\");\n\n\t\treturn;\n\t}\n\n\t/* drop the connection, if fails, retry later in justfree list */\n\tif (!sbuf_close(&req->sbuf))\n\t\tlog_noise(\"sbuf_close failed, retry later\");\n\n\t/* remember server key */\n\tserver = main_client->link;\n\tmemcpy(req->cancel_key, server->cancel_key, 8);\n\n\t/* attach to target pool */\n\treq->pool = pool;\n\tchange_client_state(req, CL_CANCEL);\n\n\t/* need fresh connection */\n\tlaunch_new_connection(pool);\n}",
+            2
+        ],
+        [
+            "include/bouncer.h",
+            "PKT_STARTUP",
+            "#define PKT_STARTUP     0x30000 /* <=== include/bouncer.h:191:191:PKT_STARTUP:0 */ ",
+            2
+        ],
+        [
+            "include/util.h",
+            "slog_info",
+            "#define slog_info(sk, args...) log_generic(LG_INFO, sk, ## args) /* <=== include/util.h:26:26:slog_info:2 */ ",
+            3
+        ],
+        [
+            "src/sbuf.c",
+            "sbuf_prepare_send",
+            "void sbuf_prepare_send(SBuf *sbuf, SBuf *dst, unsigned amount) /* <=== sbuf_prepare_send */ \n{\n\tAssertActive(sbuf);\n\tAssert(sbuf->pkt_remain == 0);\n\t/* Assert(sbuf->pkt_action == ACT_UNSET || sbuf->pkt_action == ACT_SEND || iobuf_amount_pending(&sbuf->io)); */\n\tAssert(amount > 0);\n\n\tsbuf->pkt_action = ACT_SEND;\n\tsbuf->pkt_remain = amount;\n\tsbuf->dst = dst;\n}",
+            2
+        ],
+        [
+            "src/sbuf.c",
+            "AssertActive",
+            "#define AssertActive(sbuf) do { \\ /* <=== src/sbuf.c:61:64:AssertActive:1 */ \n\tAssert((sbuf)->sock > 0); \\\n\tAssertSanity(sbuf); \\\n} while (0)",
+            3
+        ],
+        [
+            "include/bouncer.h",
+            "AUTH_ANY",
+            "#define AUTH_ANY\t-1 /* same as trust but without username check */ /* <=== include/bouncer.h:163:163:AUTH_ANY:0 */ ",
+            3
+        ],
+        [
+            "include/util.h",
+            "slog_noise",
+            "#define slog_noise(sk, args...) do { \\ /* <=== include/util.h:31:34:slog_noise:2 */ \n\t\tif (unlikely(cf_verbose > 1)) \\\n\t\t\tlog_generic(LG_NOISE, sk, ## args); \\\n\t} while (0)",
+            1
+        ],
+        [
+            "include/sbuf.h",
+            "sbuf_is_empty",
+            "static inline bool sbuf_is_empty(SBuf *sbuf) /* <=== sbuf_is_empty */ \n{\n\treturn iobuf_empty(sbuf->io) && sbuf->pkt_remain == 0;\n}",
+            3
+        ],
+        [
+            "src/sbuf.c",
+            "ACT_SKIP",
+            "#define ACT_SKIP 2 /* <=== src/sbuf.c:39:39:ACT_SKIP:0 */ ",
+            3
+        ],
+        [
+            "include/iobuf.h",
+            "iobuf_sane",
+            "static inline bool iobuf_sane(const IOBuf *io) /* <=== iobuf_sane */ \n{\n\treturn (io == NULL) ||\n\t\t(  io->parse_pos >= io->done_pos\n\t\t&& io->recv_pos >= io->parse_pos\n\t\t&& (unsigned)cf_sbuf_len >= io->recv_pos);\n}",
+            3
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_put_bytes",
+            "void pktbuf_put_bytes(PktBuf *buf, const void *data, int len) /* <=== pktbuf_put_bytes */ \n{\n\tmake_room(buf, len);\n\tif (buf->failed)\n\t\treturn;\n\tmemcpy(buf->buf + buf->write_pos, data, len);\n\tbuf->write_pos += len;\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "disconnect_client",
+            "void disconnect_client(PgSocket *client, bool notify, const char *reason, ...) /* <=== disconnect_client */ \n{\n\tusec_t now = get_cached_time();\n\n\tif (reason) {\n\t\tchar buf[128];\n\t\tva_list ap;\n\n\t\tva_start(ap, reason);\n\t\tvsnprintf(buf, sizeof(buf), reason, ap);\n\t\tva_end(ap);\n\t\treason = buf;\n\t}\n\n\tif (cf_log_disconnections && reason)\n\t\tslog_info(client, \"closing because: %s (age=%\" PRIu64 \"s)\", reason,\n\t\t\t  (now - client->connect_time) / USEC);\n\n\tswitch (client->state) {\n\tcase CL_ACTIVE:\n\tcase CL_LOGIN:\n\t\tif (client->link) {\n\t\t\tPgSocket *server = client->link;\n\t\t\tif (!server->ready) {\n\t\t\t\tserver->link = NULL;\n\t\t\t\tclient->link = NULL;\n\t\t\t\t/*\n\t\t\t\t * This can happen if the client\n\t\t\t\t * connection is normally closed while\n\t\t\t\t * the server has a transaction block\n\t\t\t\t * open.  Then there is no way for us\n\t\t\t\t * to reset the server other than by\n\t\t\t\t * closing it.  Perhaps it would be\n\t\t\t\t * worth tracking this separately to\n\t\t\t\t * make the error message more\n\t\t\t\t * precise and less scary.\n\t\t\t\t */\n\t\t\t\tdisconnect_server(server, true, \"client disconnect while server was not ready\");\n\t\t\t} else if (!sbuf_is_empty(&server->sbuf)) {\n\t\t\t\t/* ->ready may be set before all is sent */\n\t\t\t\tserver->link = NULL;\n\t\t\t\tclient->link = NULL;\n\t\t\t\tdisconnect_server(server, true, \"client disconnect before everything was sent to the server\");\n\t\t\t} else {\n\t\t\t\t/* retval does not matter here */\n\t\t\t\trelease_server(server);\n\t\t\t}\n\t\t}\n\tcase CL_WAITING:\n\tcase CL_WAITING_LOGIN:\n\tcase CL_CANCEL:\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad client state: %d\", client->state);\n\t}\n\n\t/* send reason to client */\n\tif (notify && reason && client->state != CL_CANCEL) {\n\t\t/*\n\t\t * don't send Ready pkt here, or client won't notice\n\t\t * closed connection\n\t\t */\n\t\tsend_pooler_error(client, false, true, reason);\n\t}\n\n\tfree_scram_state(&client->scram_state);\n\tif (client->login_user && client->login_user->mock_auth) {\n\t\tfree(client->login_user);\n\t\tclient->login_user = NULL;\n\t}\n\n\tchange_client_state(client, CL_JUSTFREE);\n\tif (!sbuf_close(&client->sbuf))\n\t\tlog_noise(\"sbuf_close failed, retry later\");\n}",
+            2
+        ],
+        [
+            "src/pam.c",
+            "pam_auth_begin",
+            "void pam_auth_begin(PgSocket *client, const char *passwd) /* <=== pam_auth_begin */ \n{\n\tdie(\"PAM authentication is not supported\");\n}",
+            2
+        ],
+        [
+            "src/objects.c",
+            "disconnect_server",
+            "void disconnect_server(PgSocket *server, bool notify, const char *reason, ...) /* <=== disconnect_server */ \n{\n\tPgPool *pool = server->pool;\n\tPgSocket *client;\n\tstatic const uint8_t pkt_term[] = {'X', 0,0,0,4};\n\tbool send_term = true;\n\tusec_t now = get_cached_time();\n\tchar buf[128];\n\tva_list ap;\n\n\tva_start(ap, reason);\n\tvsnprintf(buf, sizeof(buf), reason, ap);\n\tva_end(ap);\n\treason = buf;\n\n\tif (cf_log_disconnections)\n\t\tslog_info(server, \"closing because: %s (age=%\" PRIu64 \"s)\", reason,\n\t\t\t  (now - server->connect_time) / USEC);\n\n\tswitch (server->state) {\n\tcase SV_ACTIVE:\n\t\tclient = server->link;\n\t\tif (client) {\n\t\t\tclient->link = NULL;\n\t\t\tserver->link = NULL;\n\t\t\tdisconnect_client(client, true, \"%s\", reason);\n\t\t}\n\t\tbreak;\n\tcase SV_TESTED:\n\tcase SV_USED:\n\tcase SV_IDLE:\n\t\tbreak;\n\tcase SV_LOGIN:\n\t\t/*\n\t\t * usually disconnect means problems in startup phase,\n\t\t * except when sending cancel packet\n\t\t */\n\t\tif (!server->ready)\n\t\t{\n\t\t\tpool->last_login_failed = true;\n\t\t\tpool->last_connect_failed = true;\n\t\t}\n\t\telse\n\t\t{\n\t\t\t/*\n\t\t\t * We did manage to connect and used the connection for query\n\t\t\t * cancellation, so to the best of our knowledge we can connect to\n\t\t\t * the server, reset last_connect_failed accordingly.\n\t\t\t */\n\t\t\tpool->last_connect_failed = false;\n\t\t\tsend_term = false;\n\t\t}\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad server state: %d\", server->state);\n\t}\n\n\tAssert(server->link == NULL);\n\n\t/* notify server and close connection */\n\tif (send_term && notify) {\n\t\tbool _ignore = sbuf_answer(&server->sbuf, pkt_term, sizeof(pkt_term));\n\t\t(void) _ignore;\n\t}\n\n\tif (server->dns_token) {\n\t\tadns_cancel(adns, server->dns_token);\n\t\tserver->dns_token = NULL;\n\t}\n\n\tfree_scram_state(&server->scram_state);\n\n\tserver->pool->db->connection_count--;\n\tserver->pool->user->connection_count--;\n\n\tchange_server_state(server, SV_JUSTFREE);\n\tif (!sbuf_close(&server->sbuf))\n\t\tlog_noise(\"sbuf_close failed, retry later\");\n}",
+            2
+        ],
+        [
+            "include/dnslookup.h",
+            "adns_cancel",
+            "void adns_cancel(struct DNSContext *ctx, struct DNSToken *tk); /* <=== adns_cancel */ ",
+            3
+        ],
+        [
+            "include/bouncer.h",
+            "AUTH_SCRAM_SHA_256",
+            "#define AUTH_SCRAM_SHA_256\t112 /* <=== include/bouncer.h:187:187:AUTH_SCRAM_SHA_256:0 */ ",
+            2
+        ],
+        [
+            "src/scram.c",
+            "free_scram_state",
+            "void free_scram_state(ScramState *scram_state) /* <=== free_scram_state */ \n{\n\tfree(scram_state->client_nonce);\n\tfree(scram_state->client_first_message_bare);\n\tfree(scram_state->client_final_message_without_proof);\n\tfree(scram_state->server_nonce);\n\tfree(scram_state->server_first_message);\n\tfree(scram_state->SaltedPassword);\n\tfree(scram_state->salt);\n\tmemset(scram_state, 0, sizeof(*scram_state));\n}",
+            2
+        ],
+        [
+            "src/objects.c",
+            "get_pool",
+            "PgPool *get_pool(PgDatabase *db, PgUser *user) /* <=== get_pool */ \n{\n\tstruct List *item;\n\tPgPool *pool;\n\n\tif (!db || !user)\n\t\treturn NULL;\n\n\tlist_for_each(item, &user->pool_list) {\n\t\tpool = container_of(item, PgPool, map_head);\n\t\tif (pool->db == db)\n\t\t\treturn pool;\n\t}\n\n\treturn new_pool(db, user);\n}",
+            3
+        ],
+        [
+            "src/hba.c",
+            "hba_eval",
+            "int hba_eval(struct HBA *hba, PgAddr *addr, bool is_tls, const char *dbname, const char *username) /* <=== hba_eval */ \n{\n\tstruct List *el;\n\tstruct HBARule *rule;\n\tunsigned int dbnamelen = strlen(dbname);\n\tunsigned int unamelen = strlen(username);\n\n\tif (!hba)\n\t\treturn AUTH_REJECT;\n\n\tlist_for_each(el, &hba->rules) {\n\t\trule = container_of(el, struct HBARule, node);\n\n\t\t/* match address */\n\t\tif (pga_is_unix(addr)) {\n\t\t\tif (rule->rule_type != RULE_LOCAL)\n\t\t\t\tcontinue;\n\t\t} else if (rule->rule_type == RULE_LOCAL) {\n\t\t\tcontinue;\n\t\t} else if (rule->rule_type == RULE_HOSTSSL && !is_tls) {\n\t\t\tcontinue;\n\t\t} else if (rule->rule_type == RULE_HOSTNOSSL && is_tls) {\n\t\t\tcontinue;\n\t\t} else if (rule->rule_af == AF_INET) {\n\t\t\tif (!match_inet4(rule, addr))\n\t\t\t\tcontinue;\n\t\t} else if (rule->rule_af == AF_INET6) {\n\t\t\tif (!match_inet6(rule, addr))\n\t\t\t\tcontinue;\n\t\t} else {\n\t\t\tcontinue;\n\t\t}\n\n\t\t/* match db & user */\n\t\tif (!name_match(&rule->db_name, dbname, dbnamelen, username))\n\t\t\tcontinue;\n\t\tif (!name_match(&rule->user_name, username, unamelen, dbname))\n\t\t\tcontinue;\n\n\t\t/* rule matches */\n\t\treturn rule->rule_method;\n\t}\n\treturn AUTH_REJECT;\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "release_server",
+            "bool release_server(PgSocket *server) /* <=== release_server */ \n{\n\tPgPool *pool = server->pool;\n\tSocketState newstate = SV_IDLE;\n\n\tAssert(server->ready);\n\n\t/* remove from old list */\n\tswitch (server->state) {\n\tcase SV_ACTIVE:\n\t\tserver->link->link = NULL;\n\t\tserver->link = NULL;\n\n\t\tif (*cf_server_reset_query && (cf_server_reset_query_always ||\n\t\t\t\t\t       pool_pool_mode(pool) == POOL_SESSION))\n\t\t{\n\t\t\t/* notify reset is required */\n\t\t\tnewstate = SV_TESTED;\n\t\t} else if (cf_server_check_delay == 0 && *cf_server_check_query) {\n\t\t\t/*\n\t\t\t * deprecated: before reset_query, the check_delay = 0\n\t\t\t * was used to get same effect.  This if() can be removed\n\t\t\t * after couple of releases.\n\t\t\t */\n\t\t\tnewstate = SV_USED;\n\t\t}\n\tcase SV_USED:\n\tcase SV_TESTED:\n\t\tbreak;\n\tcase SV_LOGIN:\n\t\tpool->last_login_failed = false;\n\t\tpool->last_connect_failed = false;\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad server state: %d\", server->state);\n\t}\n\n\t/* enforce lifetime immediately on release */\n\tif (server->state != SV_LOGIN && life_over(server)) {\n\t\tdisconnect_server(server, true, \"server_lifetime\");\n\t\tpool->last_lifetime_disconnect = get_cached_time();\n\t\treturn false;\n\t}\n\n\t/* enforce close request */\n\tif (server->close_needed) {\n\t\tdisconnect_server(server, true, \"close_needed\");\n\t\treturn false;\n\t}\n\n\tAssert(server->link == NULL);\n\tslog_noise(server, \"release_server: new state=%d\", newstate);\n\tchange_server_state(server, newstate);\n\n\tif (newstate == SV_IDLE) {\n\t\t/* immediately process waiters, to give fair chance */\n\t\treturn reuse_on_release(server);\n\t} else if (newstate == SV_TESTED) {\n\t\treturn reset_on_release(server);\n\t}\n\n\treturn true;\n}",
+            3
+        ],
+        [
+            "include/bouncer.h",
+            "AUTH_PLAIN",
+            "#define AUTH_PLAIN\t3 /* <=== include/bouncer.h:170:170:AUTH_PLAIN:0 */ ",
+            3
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_send_immediate",
+            "bool pktbuf_send_immediate(PktBuf *buf, PgSocket *sk) /* <=== pktbuf_send_immediate */ \n{\n\tuint8_t *pos = buf->buf + buf->send_pos;\n\tint amount = buf->write_pos - buf->send_pos;\n\tssize_t res;\n\n\tif (buf->failed)\n\t\treturn false;\n\tres = sbuf_op_send(&sk->sbuf, pos, amount);\n\tif (res < 0) {\n\t\tlog_debug(\"pktbuf_send_immediate: %s\", strerror(errno));\n\t}\n\treturn res == amount;\n}",
+            3
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_write_generic",
+            "void pktbuf_write_generic(PktBuf *buf, int type, const char *pktdesc, ...) /* <=== pktbuf_write_generic */ \n{\n\tva_list ap;\n\tint len;\n\tconst char *adesc = pktdesc;\n\tuint8_t *bin;\n\n\tpktbuf_start_packet(buf, type);\n\n\tva_start(ap, pktdesc);\n\twhile (*adesc) {\n\t\tswitch (*adesc) {\n\t\tcase 'c':\n\t\t\tpktbuf_put_char(buf, va_arg(ap, int));\n\t\t\tbreak;\n\t\tcase 'h':\n\t\t\tpktbuf_put_uint16(buf, va_arg(ap, int));\n\t\t\tbreak;\n\t\tcase 'i':\n\t\t\tpktbuf_put_uint32(buf, va_arg(ap, int));\n\t\t\tbreak;\n\t\tcase 'q':\n\t\t\tpktbuf_put_uint64(buf, va_arg(ap, uint64_t));\n\t\t\tbreak;\n\t\tcase 's':\n\t\t\tpktbuf_put_string(buf, va_arg(ap, char *));\n\t\t\tbreak;\n\t\tcase 'b':\n\t\t\tbin = va_arg(ap, uint8_t *);\n\t\t\tlen = va_arg(ap, int);\n\t\t\tpktbuf_put_bytes(buf, bin, len);\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tfatal(\"bad pktdesc: %s\", pktdesc);\n\t\t}\n\t\tadesc++;\n\t}\n\tva_end(ap);\n\n\t/* set correct length */\n\tpktbuf_finish_packet(buf);\n}",
+            2
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_temp",
+            "struct PktBuf *pktbuf_temp(void) /* <=== pktbuf_temp */ \n{\n\tif (!temp_pktbuf)\n\t\ttemp_pktbuf = pktbuf_dynamic(512);\n\tif (!temp_pktbuf)\n\t\tdie(\"out of memory\");\n\tpktbuf_reset(temp_pktbuf);\n\treturn temp_pktbuf;\n}",
+            2
+        ],
+        [
+            "src/objects.c",
+            "change_client_state",
+            "void change_client_state(PgSocket *client, SocketState newstate) /* <=== change_client_state */ \n{\n\tPgPool *pool = client->pool;\n\n\t/* remove from old location */\n\tswitch (client->state) {\n\tcase CL_FREE:\n\t\tbreak;\n\tcase CL_JUSTFREE:\n\t\tstatlist_remove(&justfree_client_list, &client->head);\n\t\tbreak;\n\tcase CL_LOGIN:\n\t\tif (newstate == CL_WAITING)\n\t\t\tnewstate = CL_WAITING_LOGIN;\n\t\tstatlist_remove(&login_client_list, &client->head);\n\t\tbreak;\n\tcase CL_WAITING_LOGIN:\n\t\tif (newstate == CL_ACTIVE)\n\t\t\tnewstate = CL_LOGIN;\n\t\t/* fallthrough */\n\tcase CL_WAITING:\n\t\tstatlist_remove(&pool->waiting_client_list, &client->head);\n\t\tbreak;\n\tcase CL_ACTIVE:\n\t\tstatlist_remove(&pool->active_client_list, &client->head);\n\t\tbreak;\n\tcase CL_CANCEL:\n\t\tstatlist_remove(&pool->cancel_req_list, &client->head);\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad cur client state: %d\", client->state);\n\t}\n\n\tclient->state = newstate;\n\n\t/* put to new location */\n\tswitch (client->state) {\n\tcase CL_FREE:\n\t\tvarcache_clean(&client->vars);\n\t\tslab_free(client_cache, client);\n\t\tbreak;\n\tcase CL_JUSTFREE:\n\t\tstatlist_append(&justfree_client_list, &client->head);\n\t\tbreak;\n\tcase CL_LOGIN:\n\t\tstatlist_append(&login_client_list, &client->head);\n\t\tbreak;\n\tcase CL_WAITING:\n\tcase CL_WAITING_LOGIN:\n\t\tclient->wait_start = get_cached_time();\n\t\tstatlist_append(&pool->waiting_client_list, &client->head);\n\t\tbreak;\n\tcase CL_ACTIVE:\n\t\tstatlist_append(&pool->active_client_list, &client->head);\n\t\tbreak;\n\tcase CL_CANCEL:\n\t\tstatlist_append(&pool->cancel_req_list, &client->head);\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad new client state: %d\", client->state);\n\t}\n}",
+            2
+        ],
+        [
+            "include/bouncer.h",
+            "AUTH_CERT",
+            "#define AUTH_CERT\t107 /* <=== include/bouncer.h:182:182:AUTH_CERT:0 */ ",
+            3
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_start_packet",
+            "void pktbuf_start_packet(PktBuf *buf, int type) /* <=== pktbuf_start_packet */ \n{\n\tif (buf->failed)\n\t\treturn;\n\n\tif (type < 256) {\n\t\t/* new-style packet */\n\t\tpktbuf_put_char(buf, type);\n\t\tbuf->pktlen_pos = buf->write_pos;\n\t\tpktbuf_put_uint32(buf, 0);\n\t} else {\n\t\t/* old-style packet */\n\t\tbuf->pktlen_pos = buf->write_pos;\n\t\tpktbuf_put_uint32(buf, 0);\n\t\tpktbuf_put_uint32(buf, type);\n\t}\n}",
+            3
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_put_uint64",
+            "void pktbuf_put_uint64(PktBuf *buf, uint64_t val) /* <=== pktbuf_put_uint64 */ \n{\n\tpktbuf_put_uint32(buf, val >> 32);\n\tpktbuf_put_uint32(buf, (uint32_t)val);\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "reset_on_release",
+            "static bool reset_on_release(PgSocket *server) /* <=== reset_on_release */ \n{\n\tbool res;\n\n\tAssert(server->state == SV_TESTED);\n\n\tslog_debug(server, \"resetting: %s\", cf_server_reset_query);\n\tSEND_generic(res, server, 'Q', \"s\", cf_server_reset_query);\n\tif (!res)\n\t\tdisconnect_server(server, false, \"reset query failed\");\n\treturn res;\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "find_server",
+            "bool find_server(PgSocket *client) /* <=== find_server */ \n{\n\tPgPool *pool = client->pool;\n\tPgSocket *server;\n\tbool res;\n\tbool varchange = false;\n\n\tAssert(client->state == CL_ACTIVE || client->state == CL_LOGIN);\n\n\t/* no wait by default */\n\tclient->wait_start = 0;\n\n\tif (client->link)\n\t\treturn true;\n\n\t/* try to get idle server, if allowed */\n\tif (cf_pause_mode == P_PAUSE || pool->db->db_paused) {\n\t\tserver = NULL;\n\t} else {\n\t\twhile (1) {\n\t\t\tserver = first_socket(&pool->idle_server_list);\n\t\t\tif (!server) {\n\t\t\t\tbreak;\n\t\t\t} else if (server->close_needed) {\n\t\t\t\tdisconnect_server(server, true, \"obsolete connection\");\n\t\t\t} else if (!server->ready) {\n\t\t\t\tdisconnect_server(server, true, \"idle server got dirty\");\n\t\t\t} else {\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\n\t\tif (!server && !check_fast_fail(client))\n\t\t\treturn false;\n\n\t}\n\tAssert(!server || server->state == SV_IDLE);\n\n\t/* send var changes */\n\tif (server) {\n\t\tres = varcache_apply(server, client, &varchange);\n\t\tif (!res) {\n\t\t\tdisconnect_server(server, true, \"var change failed\");\n\t\t\tserver = NULL;\n\t\t}\n\t}\n\n\t/* link or send to waiters list */\n\tif (server) {\n\t\tclient->link = server;\n\t\tserver->link = client;\n\t\tchange_server_state(server, SV_ACTIVE);\n\t\tif (varchange) {\n\t\t\tserver->setting_vars = true;\n\t\t\tserver->ready = false;\n\t\t\tres = false; /* don't process client data yet */\n\t\t\tif (!sbuf_pause(&client->sbuf))\n\t\t\t\tdisconnect_client(client, true, \"pause failed\");\n\t\t} else {\n\t\t\tres = true;\n\t\t}\n\t} else {\n\t\tpause_client(client);\n\t\tres = false;\n\t}\n\treturn res;\n}",
+            2
+        ],
+        [
+            "src/client.c",
+            "finish_set_pool",
+            "static bool finish_set_pool(PgSocket *client, bool takeover) /* <=== finish_set_pool */ \n{\n\tbool ok = false;\n\tint auth;\n\n\tif (!client->login_user->mock_auth) {\n\t\tPgUser *pool_user;\n\n\t\tif (client->db->forced_user)\n\t\t\tpool_user = client->db->forced_user;\n\t\telse\n\t\t\tpool_user = client->login_user;\n\n\t\tclient->pool = get_pool(client->db, pool_user);\n\t\tif (!client->pool) {\n\t\t\tdisconnect_client(client, true, \"no memory for pool\");\n\t\t\treturn false;\n\t\t}\n\t}\n\n\tif (cf_log_connections) {\n\t\tif (client->sbuf.tls) {\n\t\t\tchar infobuf[96] = \"\";\n\t\t\ttls_get_connection_info(client->sbuf.tls, infobuf, sizeof infobuf);\n\t\t\tslog_info(client, \"login attempt: db=%s user=%s tls=%s\",\n\t\t\t\t  client->db->name, client->login_user->name, infobuf);\n\t\t} else {\n\t\t\tslog_info(client, \"login attempt: db=%s user=%s tls=no\",\n\t\t\t\t  client->db->name, client->login_user->name);\n\t\t}\n\t}\n\n\tif (!check_fast_fail(client))\n\t\treturn false;\n\n\tif (takeover)\n\t\treturn true;\n\n\tif (client->pool && client->pool->db->admin) {\n\t\tif (!admin_post_login(client))\n\t\t\treturn false;\n\t}\n\n\tif (client->own_user)\n\t\treturn finish_client_login(client);\n\n\tauth = cf_auth_type;\n\tif (auth == AUTH_HBA) {\n\t\tauth = hba_eval(parsed_hba, &client->remote_addr, !!client->sbuf.tls,\n\t\t\t\tclient->db->name, client->login_user->name);\n\t}\n\n\tif (auth == AUTH_MD5)\n\t{\n\t\tif (get_password_type(client->login_user->passwd) == PASSWORD_TYPE_SCRAM_SHA_256)\n\t\t\tauth = AUTH_SCRAM_SHA_256;\n\t}\n\n\t/* remember method */\n\tclient->client_auth_type = auth;\n\n\tswitch (auth) {\n\tcase AUTH_ANY:\n\t\tok = finish_client_login(client);\n\t\tbreak;\n\tcase AUTH_TRUST:\n\t\tif (client->login_user->mock_auth)\n\t\t\tdisconnect_client(client, true, \"\\\"trust\\\" authentication failed\");\n\t\telse\n\t\t\tok = finish_client_login(client);\n\t\tbreak;\n\tcase AUTH_PLAIN:\n\tcase AUTH_MD5:\n\tcase AUTH_PAM:\n\tcase AUTH_SCRAM_SHA_256:\n\t\tok = send_client_authreq(client);\n\t\tbreak;\n\tcase AUTH_CERT:\n\t\tok = login_via_cert(client);\n\t\tbreak;\n\tcase AUTH_PEER:\n\t\tok = login_as_unix_peer(client);\n\t\tbreak;\n\tdefault:\n\t\tdisconnect_client(client, true, \"login rejected\");\n\t\tok = false;\n\t}\n\treturn ok;\n}",
+            2
+        ],
+        [
+            "src/objects.c",
+            "change_server_state",
+            "void change_server_state(PgSocket *server, SocketState newstate) /* <=== change_server_state */ \n{\n\tPgPool *pool = server->pool;\n\n\t/* remove from old location */\n\tswitch (server->state) {\n\tcase SV_FREE:\n\t\tbreak;\n\tcase SV_JUSTFREE:\n\t\tstatlist_remove(&justfree_server_list, &server->head);\n\t\tbreak;\n\tcase SV_LOGIN:\n\t\tstatlist_remove(&pool->new_server_list, &server->head);\n\t\tbreak;\n\tcase SV_USED:\n\t\tstatlist_remove(&pool->used_server_list, &server->head);\n\t\tbreak;\n\tcase SV_TESTED:\n\t\tstatlist_remove(&pool->tested_server_list, &server->head);\n\t\tbreak;\n\tcase SV_IDLE:\n\t\tstatlist_remove(&pool->idle_server_list, &server->head);\n\t\tbreak;\n\tcase SV_ACTIVE:\n\t\tstatlist_remove(&pool->active_server_list, &server->head);\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad old server state: %d\", server->state);\n\t}\n\n\tserver->state = newstate;\n\n\t/* put to new location */\n\tswitch (server->state) {\n\tcase SV_FREE:\n\t\tvarcache_clean(&server->vars);\n\t\tslab_free(server_cache, server);\n\t\tbreak;\n\tcase SV_JUSTFREE:\n\t\tstatlist_append(&justfree_server_list, &server->head);\n\t\tbreak;\n\tcase SV_LOGIN:\n\t\tstatlist_append(&pool->new_server_list, &server->head);\n\t\tbreak;\n\tcase SV_USED:\n\t\t/* use LIFO */\n\t\tstatlist_prepend(&pool->used_server_list, &server->head);\n\t\tbreak;\n\tcase SV_TESTED:\n\t\tstatlist_append(&pool->tested_server_list, &server->head);\n\t\tbreak;\n\tcase SV_IDLE:\n\t\tif (server->close_needed || cf_server_round_robin) {\n\t\t\t/* try to avoid immediate usage then */\n\t\t\tstatlist_append(&pool->idle_server_list, &server->head);\n\t\t} else {\n\t\t\t/* otherwise use LIFO */\n\t\t\tstatlist_prepend(&pool->idle_server_list, &server->head);\n\t\t}\n\t\tbreak;\n\tcase SV_ACTIVE:\n\t\tstatlist_append(&pool->active_server_list, &server->head);\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad server state: %d\", server->state);\n\t}\n}",
+            2
+        ],
+        [
+            "src/client.c",
+            "login_via_cert",
+            "static bool login_via_cert(PgSocket *client) /* <=== login_via_cert */ \n{\n\tstruct tls *tls = client->sbuf.tls;\n\n\tif (!tls) {\n\t\tslog_error(client, \"TLS connection required\");\n\t\tgoto fail;\n\t}\n\tif (!tls_peer_cert_provided(client->sbuf.tls)) {\n\t\tslog_error(client, \"TLS client certificate required\");\n\t\tgoto fail;\n\t}\n\tif (client->login_user->mock_auth)\n\t\tgoto fail;\n\n\tlog_debug(\"TLS cert login: %s\", tls_peer_cert_subject(client->sbuf.tls));\n\tif (!tls_peer_cert_contains_name(client->sbuf.tls, client->login_user->name)) {\n\t\tslog_error(client, \"TLS certificate name mismatch\");\n\t\tgoto fail;\n\t}\n\n\t/* login successful */\n\treturn finish_client_login(client);\nfail:\n\tdisconnect_client(client, true, \"certificate authentication failed\");\n\treturn false;\n}",
+            3
+        ],
+        [
+            "include/proto.h",
+            "incomplete_header",
+            "static inline bool incomplete_header(const struct MBuf *data) { /* <=== incomplete_header */ \n\tuint32_t avail = mbuf_avail_for_read(data);\n\tif (avail >= OLD_HEADER_LEN)\n\t\treturn false;\n\tif (avail < NEW_HEADER_LEN)\n\t\treturn true;\n\t/* is it old V2 header? */\n\treturn data->data[data->read_pos] == 0;\n}",
+            1
+        ],
+        [
+            "src/objects.c",
+            "launch_new_connection",
+            "void launch_new_connection(PgPool *pool) /* <=== launch_new_connection */ \n{\n\tPgSocket *server;\n\tint max;\n\n\t/* allow only small number of connection attempts at a time */\n\tif (!statlist_empty(&pool->new_server_list)) {\n\t\tlog_debug(\"launch_new_connection: already progress\");\n\t\treturn;\n\t}\n\n\t/* if server bounces, don't retry too fast */\n\tif (pool->last_connect_failed) {\n\t\tusec_t now = get_cached_time();\n\t\tif (now - pool->last_connect_time < cf_server_login_retry) {\n\t\t\tlog_debug(\"launch_new_connection: last failed, not launching new connection yet, still waiting %\" PRIu64 \" s\",\n\t\t\t\t  (cf_server_login_retry - (now - pool->last_connect_time)) / USEC);\n\t\t\treturn;\n\t\t}\n\t}\n\n\tmax = pool_server_count(pool);\n\n\t/* when a cancel request is queued allow connections up to twice the pool size */\n\tif (!statlist_empty(&pool->cancel_req_list) && max < (2 * pool_pool_size(pool))) {\n\t\tlog_debug(\"launch_new_connection: bypass pool limitations for cancel request\");\n\t\tgoto force_new;\n\t}\n\n\t/* is it allowed to add servers? */\n\tif (max >= pool_pool_size(pool) && pool->welcome_msg_ready) {\n\t\t/* should we use reserve pool? */\n\t\tif (cf_res_pool_timeout && pool_res_pool_size(pool)) {\n\t\t\tusec_t now = get_cached_time();\n\t\t\tPgSocket *c = first_socket(&pool->waiting_client_list);\n\t\t\tif (c && (now - c->request_time) >= cf_res_pool_timeout) {\n\t\t\t\tif (max < pool_pool_size(pool) + pool_res_pool_size(pool)) {\n\t\t\t\t\tslog_warning(c, \"taking connection from reserve_pool\");\n\t\t\t\t\tgoto allow_new;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tlog_debug(\"launch_new_connection: pool full (%d >= %d)\",\n\t\t\t\tmax, pool_pool_size(pool));\n\t\treturn;\n\t}\n\nallow_new:\n\tmax = database_max_connections(pool->db);\n\tif (max > 0) {\n\t\t/* try to evict unused connections first */\n\t\twhile (pool->db->connection_count >= max) {\n\t\t\tif (!evict_connection(pool->db)) {\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t\tif (pool->db->connection_count >= max) {\n\t\t\tlog_debug(\"launch_new_connection: database '%s' full (%d >= %d)\",\n\t\t\t\t  pool->db->name, pool->db->connection_count, max);\n\t\t\treturn;\n\t\t}\n\t}\n\n\tmax = user_max_connections(pool->user);\n\tif (max > 0) {\n\t\t/* try to evict unused connection first */\n\t\twhile (pool->user->connection_count >= max) {\n\t\t\tif (!evict_user_connection(pool->user)) {\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t\tif (pool->user->connection_count >= max) {\n\t\t\tlog_debug(\"launch_new_connection: user '%s' full (%d >= %d)\",\n\t\t\t\t  pool->user->name, pool->user->connection_count, max);\n\t\t\treturn;\n\t\t}\n\t}\n\nforce_new:\n\t/* get free conn object */\n\tserver = slab_alloc(server_cache);\n\tif (!server) {\n\t\tlog_debug(\"launch_new_connection: no memory\");\n\t\treturn;\n\t}\n\n\t/* initialize it */\n\tserver->pool = pool;\n\tserver->login_user = server->pool->user;\n\tserver->connect_time = get_cached_time();\n\tpool->last_connect_time = get_cached_time();\n\tchange_server_state(server, SV_LOGIN);\n\tpool->db->connection_count++;\n\tpool->user->connection_count++;\n\n\tdns_connect(server);\n}",
+            3
+        ],
+        [
+            "src/client.c",
+            "set_appname",
+            "static void set_appname(PgSocket *client, const char *app_name) /* <=== set_appname */ \n{\n\tchar buf[400], abuf[300];\n\tconst char *details;\n\n\tif (cf_application_name_add_host) {\n\t\t/* give app a name */\n\t\tif (!app_name)\n\t\t\tapp_name = \"app\";\n\n\t\t/* add details */\n\t\tdetails = pga_details(&client->remote_addr, abuf, sizeof(abuf));\n\t\tsnprintf(buf, sizeof(buf), \"%s - %s\", app_name, details);\n\t\tapp_name = buf;\n\t}\n\tif (app_name) {\n\t\tslog_debug(client, \"using application_name: %s\", app_name);\n\t\tvarcache_set(&client->vars, \"application_name\", app_name);\n\t}\n}",
+            3
+        ],
+        [
+            "src/client.c",
+            "set_pool",
+            "bool set_pool(PgSocket *client, const char *dbname, const char *username, const char *password, bool takeover) /* <=== set_pool */ \n{\n\tAssert((password && takeover) || (!password && !takeover));\n\n\t/* find database */\n\tclient->db = find_database(dbname);\n\tif (!client->db) {\n\t\tclient->db = register_auto_database(dbname);\n\t\tif (!client->db) {\n\t\t\tdisconnect_client(client, true, \"no such database: %s\", dbname);\n\t\t\tif (cf_log_connections)\n\t\t\t\tslog_info(client, \"login failed: db=%s user=%s\", dbname, username);\n\t\t\treturn false;\n\t\t} else {\n\t\t\tslog_info(client, \"registered new auto-database: db=%s\", dbname);\n\t\t}\n\t}\n\n\t/* are new connections allowed? */\n\tif (client->db->db_disabled) {\n\t\tdisconnect_client(client, true, \"database does not allow connections: %s\", dbname);\n\t\treturn false;\n\t}\n\n\tif (client->db->admin) {\n\t\tif (admin_pre_login(client, username))\n\t\t\treturn finish_set_pool(client, takeover);\n\t}\n\n\t/* avoid dealing with invalid data below, and give an\n\t * appropriate error message */\n\tif (strlen(username) >= MAX_USERNAME) {\n\t\tdisconnect_client(client, true, \"username too long\");\n\t\tif (cf_log_connections)\n\t\t\tslog_info(client, \"login failed: db=%s user=%s\", dbname, username);\n\t\treturn false;\n\t}\n\tif (password && strlen(password) >= MAX_PASSWORD) {\n\t\tdisconnect_client(client, true, \"password too long\");\n\t\tif (cf_log_connections)\n\t\t\tslog_info(client, \"login failed: db=%s user=%s\", dbname, username);\n\t\treturn false;\n\t}\n\n\t/* find user */\n\tif (cf_auth_type == AUTH_ANY) {\n\t\t/* ignore requested user */\n\t\tif (client->db->forced_user == NULL) {\n\t\t\tslog_error(client, \"auth_type=any requires forced user\");\n\t\t\tdisconnect_client(client, true, \"bouncer config error\");\n\t\t\treturn false;\n\t\t}\n\t\tclient->login_user = client->db->forced_user;\n\t} else if (cf_auth_type == AUTH_PAM) {\n\t\tif (client->db->auth_user) {\n\t\t\tslog_error(client, \"PAM can't be used together with database authentication\");\n\t\t\tdisconnect_client(client, true, \"bouncer config error\");\n\t\t\treturn false;\n\t\t}\n\t\t/* Password will be set after successful authentication when not in takeover mode */\n\t\tclient->login_user = add_pam_user(username, password);\n\t\tif (!client->login_user) {\n\t\t\tslog_error(client, \"set_pool(): failed to allocate new PAM user\");\n\t\t\tdisconnect_client(client, true, \"bouncer resources exhaustion\");\n\t\t\treturn false;\n\t\t}\n\t} else {\n\t\tclient->login_user = find_user(username);\n\t\tif (!client->login_user) {\n\t\t\t/*\n\t\t\t * If the login user specified by the client\n\t\t\t * does not exist, check if an auth_user is\n\t\t\t * set and if so send off an auth_query.  If\n\t\t\t * no auth_user is set for the db, see if the\n\t\t\t * global auth_user is set and use that.\n\t\t\t */\n\t\t\tif (!client->db->auth_user && cf_auth_user) {\n\t\t\t\tclient->db->auth_user = find_user(cf_auth_user);\n\t\t\t\tif (!client->db->auth_user)\n\t\t\t\t\tclient->db->auth_user = add_user(cf_auth_user, \"\");\n\t\t\t}\n\t\t\tif (client->db->auth_user) {\n\t\t\t\tif (takeover) {\n\t\t\t\t\tclient->login_user = add_db_user(client->db, username, password);\n\t\t\t\t\treturn finish_set_pool(client, takeover);\n\t\t\t\t}\n\t\t\t\tstart_auth_query(client, username);\n\t\t\t\treturn false;\n\t\t\t}\n\n\t\t\tslog_info(client, \"no such user: %s\", username);\n\t\t\tclient->login_user = calloc(1, sizeof(*client->login_user));\n\t\t\tclient->login_user->mock_auth = true;\n\t\t\tsafe_strcpy(client->login_user->name, username, sizeof(client->login_user->name));\n\t\t}\n\t}\n\n\treturn finish_set_pool(client, takeover);\n}",
+            3
+        ],
+        [
+            "src/server.c",
+            "pool_pool_mode",
+            "int pool_pool_mode(PgPool *pool) /* <=== pool_pool_mode */ \n{\n\tint pool_mode = pool->user->pool_mode;\n\tif (pool_mode == POOL_INHERIT)\n\t\tpool_mode = pool->db->pool_mode;\n\tif (pool_mode == POOL_INHERIT)\n\t\tpool_mode = cf_pool_mode;\n\treturn pool_mode;\n}",
+            3
+        ],
+        [
+            "src/admin.c",
+            "admin_error",
+            "bool admin_error(PgSocket *admin, const char *fmt, ...) /* <=== admin_error */ \n{\n\tchar str[1024];\n\tva_list ap;\n\tbool res = true;\n\n\tva_start(ap, fmt);\n\tvsnprintf(str, sizeof(str), fmt, ap);\n\tva_end(ap);\n\n\tlog_error(\"%s\", str);\n\tif (admin)\n\t\tres = send_pooler_error(admin, true, false, str);\n\treturn res;\n}",
+            3
+        ],
+        [
+            "src/scram.c",
+            "build_server_first_message",
+            "char *build_server_first_message(ScramState *scram_state, const char *username, const char *stored_secret) /* <=== build_server_first_message */ \n{\n\tuint8_t raw_nonce[SCRAM_RAW_NONCE_LEN + 1];\n\tint encoded_len;\n\tsize_t len;\n\tchar *result;\n\n\tif (!stored_secret) {\n\t\tif (!build_mock_scram_secret(username, scram_state))\n\t\t\tgoto failed;\n\t} else {\n\t\tswitch (get_password_type(stored_secret)) {\n\t\tcase PASSWORD_TYPE_SCRAM_SHA_256:\n\t\t\tif (!parse_scram_verifier(stored_secret,\n\t\t\t\t\t\t  &scram_state->iterations,\n\t\t\t\t\t\t  &scram_state->salt,\n\t\t\t\t\t\t  scram_state->StoredKey,\n\t\t\t\t\t\t  scram_state->ServerKey))\n\t\t\t\tgoto failed;\n\t\t\tbreak;\n\t\tcase PASSWORD_TYPE_PLAINTEXT:\n\t\t\tif (!build_adhoc_scram_secret(stored_secret, scram_state))\n\t\t\t\tgoto failed;\n\t\t\tbreak;\n\t\tdefault:\n\t\t\t/* shouldn't get here */\n\t\t\tgoto failed;\n\t\t}\n\t}\n\n\tget_random_bytes(raw_nonce, SCRAM_RAW_NONCE_LEN);\n\tscram_state->server_nonce = malloc(pg_b64_enc_len(SCRAM_RAW_NONCE_LEN) + 1);\n\tif (scram_state->server_nonce == NULL)\n\t\tgoto failed;\n\tencoded_len = pg_b64_encode((char *) raw_nonce, SCRAM_RAW_NONCE_LEN, scram_state->server_nonce);\n\tscram_state->server_nonce[encoded_len] = '\\0';\n\n\tlen = (2\n\t       + strlen(scram_state->client_nonce)\n\t       + strlen(scram_state->server_nonce)\n\t       + 3\n\t       + strlen(scram_state->salt)\n\t       + 3 + 10 + 1);\n\tresult = malloc(len);\n\tif (!result)\n\t\tgoto failed;\n\tsnprintf(result, len,\n\t\t \"r=%s%s,s=%s,i=%u\",\n\t\t scram_state->client_nonce,\n\t\t scram_state->server_nonce,\n\t\t scram_state->salt,\n\t\t scram_state->iterations);\n\n\tscram_state->server_first_message = result;\n\n\treturn result;\nfailed:\n\tfree(scram_state->server_nonce);\n\tfree(scram_state->server_first_message);\n\treturn NULL;\n}",
+            3
+        ],
+        [
+            "include/bouncer.h",
+            "pga_is_unix",
+            "static inline bool pga_is_unix(const PgAddr *a) { return a->sa.sa_family == AF_UNIX; } /* <=== pga_is_unix */ ",
+            2
+        ],
+        [
+            "include/bouncer.h",
+            "AUTH_HBA",
+            "#define AUTH_HBA\t109 /* <=== include/bouncer.h:184:184:AUTH_HBA:0 */ ",
+            3
+        ],
+        [
+            "src/objects.c",
+            "pause_client",
+            "static void pause_client(PgSocket *client) /* <=== pause_client */ \n{\n\tAssert(client->state == CL_ACTIVE || client->state == CL_LOGIN);\n\n\tslog_debug(client, \"pause_client\");\n\tchange_client_state(client, CL_WAITING);\n\tif (!sbuf_pause(&client->sbuf))\n\t\tdisconnect_client(client, true, \"pause failed\");\n}",
+            3
+        ],
+        [
+            "include/sbuf.h",
+            "sbuf_op_close",
+            "static inline int sbuf_op_close(SBuf *sbuf) /* <=== sbuf_op_close */ \n{\n\treturn sbuf->ops->sbufio_close(sbuf);\n}",
+            3
+        ],
+        [
+            "src/varcache.c",
+            "varcache_set",
+            "bool varcache_set(VarCache *cache, const char *key, const char *value) /* <=== varcache_set */ \n{\n\tconst struct var_lookup *lk;\n\tstruct PStr *pstr = NULL;\n\n\tif (!vpool) {\n\t\tvpool = strpool_create(USUAL_ALLOC);\n\t\tif (!vpool)\n\t\t\treturn false;\n\t}\n\n\tfor (lk = lookup; lk->name; lk++) {\n\t\tif (strcasecmp(lk->name, key) == 0)\n\t\t\tgoto set_value;\n\t}\n\treturn false;\n\nset_value:\n\t/* drop old value */\n\tstrpool_decref(cache->var_list[lk->idx]);\n\tcache->var_list[lk->idx] = NULL;\n\n\t/* NULL value? */\n\tif (!value)\n\t\treturn false;\n\n\t/* set new value */\n\tpstr = strpool_get(vpool, value, strlen(value));\n\tif (!pstr)\n\t\treturn false;\n\tcache->var_list[lk->idx] = pstr;\n\treturn true;\n}",
+            3
+        ],
+        [
+            "include/bouncer.h",
+            "BACKENDKEY_LEN",
+            "#define BACKENDKEY_LEN\t8 /* <=== include/bouncer.h:201:201:BACKENDKEY_LEN:0 */ ",
+            2
+        ],
+        [
+            "src/sbuf.c",
+            "sbuf_tls_connect",
+            "bool sbuf_tls_connect(SBuf *sbuf, const char *hostname) { return false; } /* <=== sbuf_tls_connect */ ",
+            1
+        ],
+        [
+            "src/objects.c",
+            "disconnect_client",
+            "void disconnect_client(PgSocket *client, bool notify, const char *reason, ...) /* <=== disconnect_client */ \n{\n\tusec_t now = get_cached_time();\n\n\tif (reason) {\n\t\tchar buf[128];\n\t\tva_list ap;\n\n\t\tva_start(ap, reason);\n\t\tvsnprintf(buf, sizeof(buf), reason, ap);\n\t\tva_end(ap);\n\t\treason = buf;\n\t}\n\n\tif (cf_log_disconnections && reason)\n\t\tslog_info(client, \"closing because: %s (age=%\" PRIu64 \"s)\", reason,\n\t\t\t  (now - client->connect_time) / USEC);\n\n\tswitch (client->state) {\n\tcase CL_ACTIVE:\n\tcase CL_LOGIN:\n\t\tif (client->link) {\n\t\t\tPgSocket *server = client->link;\n\t\t\tif (!server->ready) {\n\t\t\t\tserver->link = NULL;\n\t\t\t\tclient->link = NULL;\n\t\t\t\t/*\n\t\t\t\t * This can happen if the client\n\t\t\t\t * connection is normally closed while\n\t\t\t\t * the server has a transaction block\n\t\t\t\t * open.  Then there is no way for us\n\t\t\t\t * to reset the server other than by\n\t\t\t\t * closing it.  Perhaps it would be\n\t\t\t\t * worth tracking this separately to\n\t\t\t\t * make the error message more\n\t\t\t\t * precise and less scary.\n\t\t\t\t */\n\t\t\t\tdisconnect_server(server, true, \"client disconnect while server was not ready\");\n\t\t\t} else if (!sbuf_is_empty(&server->sbuf)) {\n\t\t\t\t/* ->ready may be set before all is sent */\n\t\t\t\tserver->link = NULL;\n\t\t\t\tclient->link = NULL;\n\t\t\t\tdisconnect_server(server, true, \"client disconnect before everything was sent to the server\");\n\t\t\t} else {\n\t\t\t\t/* retval does not matter here */\n\t\t\t\trelease_server(server);\n\t\t\t}\n\t\t}\n\tcase CL_WAITING:\n\tcase CL_WAITING_LOGIN:\n\tcase CL_CANCEL:\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad client state: %d\", client->state);\n\t}\n\n\t/* send reason to client */\n\tif (notify && reason && client->state != CL_CANCEL) {\n\t\t/*\n\t\t * don't send Ready pkt here, or client won't notice\n\t\t * closed connection\n\t\t */\n\t\tsend_pooler_error(client, false, true, reason);\n\t}\n\n\tfree_scram_state(&client->scram_state);\n\tif (client->login_user && client->login_user->mock_auth) {\n\t\tfree(client->login_user);\n\t\tclient->login_user = NULL;\n\t}\n\n\tchange_client_state(client, CL_JUSTFREE);\n\tif (!sbuf_close(&client->sbuf))\n\t\tlog_noise(\"sbuf_close failed, retry later\");\n}",
+            1
+        ],
+        [
+            "src/scram.c",
+            "read_client_first_message",
+            "bool read_client_first_message(PgSocket *client, char *input, /* <=== read_client_first_message */ \n\t\t\t       char *cbind_flag_p,\n\t\t\t       char **client_first_message_bare_p,\n\t\t\t       char **client_nonce_p)\n{\n\tchar *client_first_message_bare = NULL;\n\tchar *client_nonce = NULL;\n\tchar *client_nonce_copy = NULL;\n\n\t*cbind_flag_p = *input;\n\tswitch (*input) {\n\tcase 'n':\n\t\t/* Client does not support channel binding */\n\t\tinput++;\n\t\tbreak;\n\tcase 'y':\n\t\t/* Client supports channel binding, but we're not doing it today */\n\t\tinput++;\n\t\tbreak;\n\tcase 'p':\n\t\t/* Client requires channel binding.  We don't support it. */\n\t\tslog_error(client, \"client requires SCRAM channel binding, but it is not supported\");\n\t\tgoto failed;\n\tdefault:\n\t\tslog_error(client, \"malformed SCRAM message (unexpected channel-binding flag \\\"%s\\\")\",\n\t\t\t   sanitize_char(*input));\n\t\tgoto failed;\n\t}\n\n\tif (*input != ',') {\n\t\tslog_error(client, \"malformed SCRAM message (comma expected, but found character \\\"%s\\\")\",\n\t\t\t   sanitize_char(*input));\n\t\tgoto failed;\n\t}\n\tinput++;\n\n\tif (*input == 'a') {\n\t\tslog_error(client, \"client uses authorization identity, but it is not supported\");\n\t\tgoto failed;\n\t}\n\tif (*input != ',') {\n\t\tslog_error(client, \"malformed SCRAM message (unexpected attribute \\\"%s\\\" in client-first-message)\",\n\t\t\t   sanitize_char(*input));\n\t\tgoto failed;\n\t}\n\tinput++;\n\n\tclient_first_message_bare = strdup(input);\n\tif (client_first_message_bare == NULL)\n\t\tgoto failed;\n\n\tif (*input == 'm') {\n\t\tslog_error(client, \"client requires an unsupported SCRAM extension\");\n\t\tgoto failed;\n\t}\n\n\t/* read and ignore user name */\n\tread_attr_value(client, &input, 'n');\n\n\tclient_nonce = read_attr_value(client, &input, 'r');\n\tif (client_nonce == NULL)\n\t\tgoto failed;\n\tif (!is_scram_printable(client_nonce)) {\n\t\tslog_error(client, \"non-printable characters in SCRAM nonce\");\n\t\tgoto failed;\n\t}\n\tclient_nonce_copy = strdup(client_nonce);\n\tif (client_nonce_copy == NULL)\n\t\tgoto failed;\n\n\t/*\n\t * There can be any number of optional extensions after this.  We don't\n\t * support any extensions, so ignore them.\n\t */\n\twhile (*input != '\\0') {\n\t\tif (!read_any_attr(client, &input, NULL))\n\t\t\tgoto failed;\n\t}\n\n\t*client_first_message_bare_p = client_first_message_bare;\n\t*client_nonce_p = client_nonce_copy;\n\treturn true;\nfailed:\n\tfree(client_first_message_bare);\n\tfree(client_nonce_copy);\n\treturn false;\n}",
+            3
+        ],
+        [
+            "include/bouncer.h",
+            "AUTH_MD5",
+            "#define AUTH_MD5\t5 /* <=== include/bouncer.h:172:172:AUTH_MD5:0 */ ",
+            3
+        ],
+        [
+            "include/bouncer.h",
+            "AUTH_PEER",
+            "#define AUTH_PEER\t108 /* <=== include/bouncer.h:183:183:AUTH_PEER:0 */ ",
+            3
+        ],
+        [
+            "include/bouncer.h",
+            "is_server_socket",
+            "#define is_server_socket(sk) ((sk)->state >= SV_FREE) /* <=== include/bouncer.h:91:91:is_server_socket:1 */ ",
+            1
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_static",
+            "void pktbuf_static(PktBuf *buf, uint8_t *data, int len) /* <=== pktbuf_static */ \n{\n\tmemset(buf, 0, sizeof(*buf));\n\tbuf->buf = data;\n\tbuf->buf_len = len;\n\tbuf->fixed_buf = true;\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "get_active_client_count",
+            "int get_active_client_count(void) /* <=== get_active_client_count */ \n{\n\treturn slab_active_count(client_cache);\n}",
+            3
+        ],
+        [
+            "src/client.c",
+            "decide_startup_pool",
+            "static bool decide_startup_pool(PgSocket *client, PktHdr *pkt) /* <=== decide_startup_pool */ \n{\n\tconst char *username = NULL, *dbname = NULL;\n\tconst char *key, *val;\n\tbool ok;\n\tbool appname_found = false;\n\n\twhile (1) {\n\t\tok = mbuf_get_string(&pkt->data, &key);\n\t\tif (!ok || *key == 0)\n\t\t\tbreak;\n\t\tok = mbuf_get_string(&pkt->data, &val);\n\t\tif (!ok)\n\t\t\tbreak;\n\n\t\tif (strcmp(key, \"database\") == 0) {\n\t\t\tslog_debug(client, \"got var: %s=%s\", key, val);\n\t\t\tdbname = val;\n\t\t} else if (strcmp(key, \"user\") == 0) {\n\t\t\tslog_debug(client, \"got var: %s=%s\", key, val);\n\t\t\tusername = val;\n\t\t} else if (strcmp(key, \"application_name\") == 0) {\n\t\t\tset_appname(client, val);\n\t\t\tappname_found = true;\n\t\t} else if (varcache_set(&client->vars, key, val)) {\n\t\t\tslog_debug(client, \"got var: %s=%s\", key, val);\n\t\t} else if (strlist_contains(cf_ignore_startup_params, key)) {\n\t\t\tslog_debug(client, \"ignoring startup parameter: %s=%s\", key, val);\n\t\t} else {\n\t\t\tslog_warning(client, \"unsupported startup parameter: %s=%s\", key, val);\n\t\t\tdisconnect_client(client, true, \"unsupported startup parameter: %s\", key);\n\t\t\treturn false;\n\t\t}\n\t}\n\tif (!username || !username[0]) {\n\t\tdisconnect_client(client, true, \"no username supplied\");\n\t\treturn false;\n\t}\n\n\t/* if missing dbname, default to username */\n\tif (!dbname || !dbname[0])\n\t\tdbname = username;\n\n\t/* create application_name if requested */\n\tif (!appname_found)\n\t\tset_appname(client, NULL);\n\n\t/* check if limit allows, don't limit admin db\n\t   nb: new incoming conn will be attached to PgSocket, thus\n\t   get_active_client_count() counts it */\n\tif (get_active_client_count() > cf_max_client_conn) {\n\t\tif (strcmp(dbname, \"pgbouncer\") != 0) {\n\t\t\tdisconnect_client(client, true, \"no more connections allowed (max_client_conn)\");\n\t\t\treturn false;\n\t\t}\n\t}\n\n\t/* find pool */\n\treturn set_pool(client, dbname, username, NULL, false);\n}",
+            2
+        ],
+        [
+            "src/util.c",
+            "strlist_contains",
+            "bool strlist_contains(const char *liststr, const char *str) /* <=== strlist_contains */ \n{\n\tint c, len = strlen(str);\n\tconst char *p, *listpos = liststr;\n\nloop:\n\t/* find string fragment, later check if actual token */\n\tp = strstr(listpos, str);\n\tif (p == NULL)\n\t\treturn false;\n\n\t/* move listpos further */\n\tlistpos = p + len;\n\t/* survive len=0 and avoid unnecessary compare */\n\tif (*listpos)\n\t\tlistpos++;\n\n\t/* check previous symbol */\n\tif (p > liststr) {\n\t\tc = *(p - 1);\n\t\tif (!isspace(c) && c != ',')\n\t\t\tgoto loop;\n\t}\n\n\t/* check following symbol */\n\tc = p[len];\n\tif (c != 0 && !isspace(c) && c != ',')\n\t\tgoto loop;\n\n\treturn true;\n}",
+            3
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_finish_packet",
+            "void pktbuf_finish_packet(PktBuf *buf) /* <=== pktbuf_finish_packet */ \n{\n\tuint8_t *pos;\n\tunsigned len;\n\n\tif (buf->failed)\n\t\treturn;\n\n\tlen = buf->write_pos - buf->pktlen_pos;\n\tpos = buf->buf + buf->pktlen_pos;\n\tbuf->pktlen_pos = 0;\n\n\t*pos++ = (len >> 24) & 255;\n\t*pos++ = (len >> 16) & 255;\n\t*pos++ = (len >> 8) & 255;\n\t*pos++ = len & 255;\n}",
+            3
+        ],
+        [
+            "src/client.c",
+            "scram_client_final",
+            "static bool scram_client_final(PgSocket *client, uint32_t datalen, const uint8_t *data) /* <=== scram_client_final */ \n{\n\tchar *ibuf;\n\tchar *input;\n\tconst char *client_final_nonce = NULL;\n\tchar *proof = NULL;\n\tchar *server_final_message;\n\tint res;\n\n\tibuf = malloc(datalen + 1);\n\tif (ibuf == NULL)\n\t\treturn false;\n\tmemcpy(ibuf, data, datalen);\n\tibuf[datalen] = '\\0';\n\n\tinput = ibuf;\n\tslog_debug(client, \"SCRAM client-final-message = \\\"%s\\\"\", input);\n\tif (!read_client_final_message(client, data, input,\n\t\t\t\t       &client_final_nonce,\n\t\t\t\t       &proof))\n\t\tgoto failed;\n\tslog_debug(client, \"SCRAM client-final-message-without-proof = \\\"%s\\\"\",\n\t\t   client->scram_state.client_final_message_without_proof);\n\n\tif (!verify_final_nonce(&client->scram_state, client_final_nonce)) {\n\t\tslog_error(client, \"invalid SCRAM response (nonce does not match)\");\n\t\tgoto failed;\n\t}\n\n\tif (!verify_client_proof(&client->scram_state, proof)\n\t    || !client->login_user) {\n\t\tslog_error(client, \"password authentication failed\");\n\t\tgoto failed;\n\t}\n\n\tserver_final_message = build_server_final_message(&client->scram_state);\n\tif (!server_final_message)\n\t\tgoto failed;\n\tslog_debug(client, \"SCRAM server-final-message = \\\"%s\\\"\", server_final_message);\n\n\tSEND_generic(res, client, 'R', \"ib\",\n\t\t     AUTH_SASL_FIN,\n\t\t     server_final_message,\n\t\t     strlen(server_final_message));\n\n\tfree(server_final_message);\n\tfree(proof);\n\tfree(ibuf);\n\treturn res;\nfailed:\n\tfree(proof);\n\tfree(ibuf);\n\treturn false;\n}",
+            2
+        ],
+        [
+            "include/pktbuf.h",
+            "pktbuf_write_ReadyForQuery",
+            "#define pktbuf_write_ReadyForQuery(buf) \\ /* <=== include/pktbuf.h:88:89:pktbuf_write_ReadyForQuery:1 */ \n\tpktbuf_write_generic(buf, 'Z', \"c\", 'I')",
+            3
+        ],
+        [
+            "src/client.c",
+            "login_as_unix_peer",
+            "static bool login_as_unix_peer(PgSocket *client) /* <=== login_as_unix_peer */ \n{\n\tif (!pga_is_unix(&client->remote_addr))\n\t\tgoto fail;\n\tif (client->login_user->mock_auth)\n\t\tgoto fail;\n\tif (!check_unix_peer_name(sbuf_socket(&client->sbuf), client->login_user->name))\n\t\tgoto fail;\n\treturn finish_client_login(client);\nfail:\n\tdisconnect_client(client, true, \"unix socket login rejected\");\n\treturn false;\n}",
+            3
+        ],
+        [
+            "src/pktbuf.c",
+            "pktbuf_dynamic",
+            "PktBuf *pktbuf_dynamic(int start_len) /* <=== pktbuf_dynamic */ \n{\n\tPktBuf *buf = zmalloc(sizeof(PktBuf));\n\tlog_debug(\"pktbuf_dynamic(%d): %p\", start_len, buf);\n\tif (!buf)\n\t\treturn NULL;\n\n\tbuf->ev = zmalloc(sizeof(*buf->ev));\n\tif (!buf->ev) {\n\t\tpktbuf_free(buf);\n\t\treturn NULL;\n\t}\n\tbuf->buf = malloc(start_len);\n\tif (!buf->buf) {\n\t\tpktbuf_free(buf);\n\t\treturn NULL;\n\t}\n\tbuf->buf_len = start_len;\n\treturn buf;\n}",
+            3
+        ],
+        [
+            "src/client.c",
+            "handle_client_work",
+            "static bool handle_client_work(PgSocket *client, PktHdr *pkt) /* <=== handle_client_work */ \n{\n\tSBuf *sbuf = &client->sbuf;\n\tint rfq_delta = 0;\n\n\tswitch (pkt->type) {\n\n\t/* one-packet queries */\n\tcase 'Q':\t\t/* Query */\n\t\tif (cf_disable_pqexec) {\n\t\t\tslog_error(client, \"client used 'Q' packet type\");\n\t\t\tdisconnect_client(client, true, \"PQexec disallowed\");\n\t\t\treturn false;\n\t\t}\n\t\trfq_delta++;\n\t\tbreak;\n\tcase 'F':\t\t/* FunctionCall */\n\t\trfq_delta++;\n\t\tbreak;\n\n\t/* request immediate response from server */\n\tcase 'S':\t\t/* Sync */\n\t\trfq_delta++;\n\t\tbreak;\n\tcase 'H':\t\t/* Flush */\n\t\tbreak;\n\n\t/* copy end markers */\n\tcase 'c':\t\t/* CopyDone(F/B) */\n\tcase 'f':\t\t/* CopyFail(F/B) */\n\t\tbreak;\n\n\t/*\n\t * extended protocol allows server (and thus pooler)\n\t * to buffer packets until sync or flush is sent by client\n\t */\n\tcase 'P':\t\t/* Parse */\n\tcase 'E':\t\t/* Execute */\n\tcase 'C':\t\t/* Close */\n\tcase 'B':\t\t/* Bind */\n\tcase 'D':\t\t/* Describe */\n\tcase 'd':\t\t/* CopyData(F/B) */\n\t\tbreak;\n\n\t/* client wants to go away */\n\tdefault:\n\t\tslog_error(client, \"unknown pkt from client: %d/0x%x\", pkt->type, pkt->type);\n\t\tdisconnect_client(client, true, \"unknown pkt\");\n\t\treturn false;\n\tcase 'X': /* Terminate */\n\t\tdisconnect_client(client, false, \"client close request\");\n\t\treturn false;\n\t}\n\n\t/* update stats */\n\tif (!client->query_start) {\n\t\tclient->pool->stats.query_count++;\n\t\tclient->query_start = get_cached_time();\n\t}\n\n\t/* remember timestamp of the first query in a transaction */\n\tif (!client->xact_start) {\n\t\tclient->pool->stats.xact_count++;\n\t\tclient->xact_start = client->query_start;\n\t}\n\n\tif (client->pool->db->admin)\n\t\treturn admin_handle_client(client, pkt);\n\n\t/* acquire server */\n\tif (!find_server(client))\n\t\treturn false;\n\n\t/* postpone rfq change until certain that client will not be paused */\n\tif (rfq_delta) {\n\t\tclient->expect_rfq_count += rfq_delta;\n\t}\n\n\tclient->pool->stats.client_bytes += pkt->len;\n\n\t/* tag the server as dirty */\n\tclient->link->ready = false;\n\tclient->link->idle_tx = false;\n\n\t/* forward the packet */\n\tsbuf_prepare_send(sbuf, &client->link->sbuf, pkt->len);\n\n\treturn true;\n}",
+            1
+        ],
+        [
+            "include/iobuf.h",
+            "iobuf_empty",
+            "static inline bool iobuf_empty(const IOBuf *io) /* <=== iobuf_empty */ \n{\n\treturn io == NULL || io->done_pos == io->recv_pos;\n}",
+            3
+        ],
+        [
+            "src/objects.c",
+            "finish_client_login",
+            "bool finish_client_login(PgSocket *client) /* <=== finish_client_login */ \n{\n\tswitch (client->state) {\n\tcase CL_LOGIN:\n\t\tchange_client_state(client, CL_ACTIVE);\n\tcase CL_ACTIVE:\n\t\tbreak;\n\tdefault:\n\t\tfatal(\"bad client state: %d\", client->state);\n\t}\n\n\tclient->wait_for_auth = false;\n\n\t/* check if we know server signature */\n\tif (!client->pool->welcome_msg_ready) {\n\t\tlog_debug(\"finish_client_login: no welcome message, pause\");\n\t\tclient->wait_for_welcome = true;\n\t\tpause_client(client);\n\t\tif (cf_pause_mode == P_NONE)\n\t\t\tlaunch_new_connection(client->pool);\n\t\treturn false;\n\t}\n\tclient->wait_for_welcome = false;\n\n\t/* send the message */\n\tif (!welcome_client(client))\n\t\treturn false;\n\n\tslog_debug(client, \"logged in\");\n\n\treturn true;\n}",
+            2
+        ],
+        [
+            "src/proto.c",
+            "welcome_client",
+            "bool welcome_client(PgSocket *client) /* <=== welcome_client */ \n{\n\tint res;\n\tPgPool *pool = client->pool;\n\tconst PktBuf *pmsg = pool->welcome_msg;\n\tPktBuf *msg;\n\n\tslog_noise(client, \"P: welcome_client\");\n\n\t/* copy prepared stuff around */\n\tmsg = pktbuf_temp();\n\tpktbuf_put_bytes(msg, pmsg->buf, pmsg->write_pos);\n\n\t/* fill vars */\n\tvarcache_fill_unset(&pool->orig_vars, client);\n\tvarcache_add_params(msg, &client->vars);\n\n\t/* give each client its own cancel key */\n\tget_random_bytes(client->cancel_key, 8);\n\tpktbuf_write_BackendKeyData(msg, client->cancel_key);\n\n\t/* finish */\n\tpktbuf_write_ReadyForQuery(msg);\n\tif (msg->failed) {\n\t\tdisconnect_client(client, true, \"failed to prepare welcome message\");\n\t\treturn false;\n\t}\n\n\t/* send all together */\n\tres = pktbuf_send_immediate(msg, client);\n\tif (!res) {\n\t\tdisconnect_client(client, true, \"failed to send welcome message\");\n\t\treturn false;\n\t}\n\treturn true;\n}",
+            3
+        ],
+        [
+            "include/util.h",
+            "MD5_PASSWD_LEN",
+            "#define MD5_PASSWD_LEN  35 /* <=== include/util.h:39:39:MD5_PASSWD_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/client.c",
+            "send_client_authreq",
+            "static bool send_client_authreq(PgSocket *client) /* <=== send_client_authreq */ \n{\n\tint res;\n\tint auth_type = client->client_auth_type;\n\n\tif (auth_type == AUTH_MD5) {\n\t\tuint8_t saltlen = 4;\n\t\tget_random_bytes((void*)client->tmp_login_salt, saltlen);\n\t\tSEND_generic(res, client, 'R', \"ib\", AUTH_MD5, client->tmp_login_salt, saltlen);\n\t} else if (auth_type == AUTH_PLAIN || auth_type == AUTH_PAM) {\n\t\tSEND_generic(res, client, 'R', \"i\", AUTH_PLAIN);\n\t} else if (auth_type == AUTH_SCRAM_SHA_256) {\n\t\tSEND_generic(res, client, 'R', \"iss\", AUTH_SASL, \"SCRAM-SHA-256\", \"\");\n\t} else {\n\t\treturn false;\n\t}\n\n\tif (!res)\n\t\tdisconnect_client(client, false, \"failed to send auth req\");\n\treturn res;\n}",
+            3
+        ],
+        [
+            "src/varcache.c",
+            "varcache_apply",
+            "bool varcache_apply(PgSocket *server, PgSocket *client, bool *changes_p) /* <=== varcache_apply */ \n{\n\tint changes = 0;\n\tstruct PStr *cval, *sval;\n\tconst struct var_lookup *lk;\n\tint sql_ofs;\n\tstruct PktBuf *pkt = pktbuf_temp();\n\n\tpktbuf_start_packet(pkt, 'Q');\n\n\t/* grab query position inside pkt */\n\tsql_ofs = pktbuf_written(pkt);\n\n\tfor (lk = lookup; lk->name; lk++) {\n\t\tsval = get_value(&server->vars, lk);\n\t\tcval = get_value(&client->vars, lk);\n\t\tchanges += apply_var(pkt, lk->name, cval, sval);\n\t}\n\t*changes_p = changes > 0;\n\tif (!changes)\n\t\treturn true;\n\n\tpktbuf_put_char(pkt, 0);\n\tpktbuf_finish_packet(pkt);\n\n\tslog_debug(server, \"varcache_apply: %s\", pkt->buf + sql_ofs);\n\treturn pktbuf_send_immediate(pkt, server);\n}",
+            3
+        ],
+        [
+            "src/util.c",
+            "pg_md5_encrypt",
+            "void pg_md5_encrypt(const char *part1, /* <=== pg_md5_encrypt */ \n\t\t    const char *part2, size_t part2len,\n\t\t    char *dest)\n{\n\tstruct md5_ctx ctx;\n\tuint8_t hash[MD5_DIGEST_LENGTH];\n\n\tmd5_reset(&ctx);\n\tmd5_update(&ctx, part1, strlen(part1));\n\tmd5_update(&ctx, part2, part2len);\n\tmd5_final(&ctx, hash);\n\n\tmemcpy(dest, \"md5\", 3);\n\thash2hex(hash, dest + 3);\n}",
+            3
+        ],
+        [
+            "src/scram.c",
+            "verify_final_nonce",
+            "bool verify_final_nonce(const ScramState *scram_state, const char *client_final_nonce) /* <=== verify_final_nonce */ \n{\n\tsize_t client_nonce_len = strlen(scram_state->client_nonce);\n\tsize_t server_nonce_len = strlen(scram_state->server_nonce);\n\tsize_t final_nonce_len = strlen(client_final_nonce);\n\n\tif (final_nonce_len != client_nonce_len + server_nonce_len)\n\t\treturn false;\n\tif (memcmp(client_final_nonce, scram_state->client_nonce, client_nonce_len) != 0)\n\t\treturn false;\n\tif (memcmp(client_final_nonce + client_nonce_len, scram_state->server_nonce, server_nonce_len) != 0)\n\t\treturn false;\n\n\treturn true;\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"pam.h\"",
+        "#include \"scram.h\"",
+        "#include \"bouncer.h\"",
+        "#include <usual/pgutil.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct MBuf",
+            "MBuf"
+        ],
+        [
+            "struct PktHdr {\n\tunsigned type;\n\tunsigned len;\n\tstruct MBuf data;\n}",
+            "PktHdr"
+        ],
+        [
+            "struct PgSocket {\n\tstruct List head;\t\t/* list header */\n\tPgSocket *link;\t\t/* the dest of packets */\n\tPgPool *pool;\t\t/* parent pool, if NULL not yet assigned */\n\n\tPgUser *login_user;\t/* presented login, for client it may differ from pool->user */\n\n\tint client_auth_type;\t/* auth method decided by hba */\n\n\tSocketState state:8;\t/* this also specifies socket location */\n\n\tbool ready:1;\t\t/* server: accepts new query */\n\tbool idle_tx:1;\t\t/* server: idling in tx */\n\tbool close_needed:1;\t/* server: this socket must be closed ASAP */\n\tbool setting_vars:1;\t/* server: setting client vars */\n\tbool exec_on_connect:1;\t/* server: executing connect_query */\n\tbool resetting:1;\t/* server: executing reset query from auth login; don't release on flush */\n\tbool copy_mode:1;\t/* server: in copy stream, ignores any Sync packets */\n\n\tbool wait_for_welcome:1;/* client: no server yet in pool, cannot send welcome msg */\n\tbool wait_for_user_conn:1;/* client: waiting for auth_conn server connection */\n\tbool wait_for_user:1;\t/* client: waiting for auth_conn query results */\n\tbool wait_for_auth:1;\t/* client: waiting for external auth (PAM) to be completed */\n\n\tbool suspended:1;\t/* client/server: if the socket is suspended */\n\n\tbool admin_user:1;\t/* console client: has admin rights */\n\tbool own_user:1;\t/* console client: client with same uid on unix socket */\n\tbool wait_for_response:1;/* console client: waits for completion of PAUSE/SUSPEND cmd */\n\n\tbool wait_sslchar:1;\t/* server: waiting for ssl response: S/N */\n\n\tint expect_rfq_count;\t/* client: count of ReadyForQuery packets client should see */\n\n\tusec_t connect_time;\t/* when connection was made */\n\tusec_t request_time;\t/* last activity time */\n\tusec_t query_start;\t/* query start moment */\n\tusec_t xact_start;\t/* xact start moment */\n\tusec_t wait_start;\t/* waiting start moment */\n\n\tuint8_t cancel_key[BACKENDKEY_LEN]; /* client: generated, server: remote */\n\tPgAddr remote_addr;\t/* ip:port for remote endpoint */\n\tPgAddr local_addr;\t/* ip:port for local endpoint */\n\n\tunion {\n\t\tstruct DNSToken *dns_token;\t/* ongoing request */\n\t\tPgDatabase *db;\t\t\t/* cache db while doing auth query */\n\t};\n\n\tstruct ScramState {\n\t\tchar *client_nonce;\n\t\tchar *client_first_message_bare;\n\t\tchar *client_final_message_without_proof;\n\t\tchar *server_nonce;\n\t\tchar *server_first_message;\n\t\tuint8_t\t*SaltedPassword;\n\t\tchar cbind_flag;\n\t\tbool adhoc;\t/* SCRAM data made up from plain-text password */\n\t\tint iterations;\n\t\tchar *salt;\t/* base64-encoded */\n\t\tuint8_t ClientKey[32];\t/* SHA256_DIGEST_LENGTH */\n\t\tuint8_t StoredKey[32];\n\t\tuint8_t ServerKey[32];\n\t} scram_state;\n\n\tVarCache vars;\t\t/* state of interesting server parameters */\n\n\tSBuf sbuf;\t\t/* stream buffer, must be last */\n}",
+            "PgSocket"
+        ],
+        [
+            "typedef enum {\n\tSBUF_EV_READ,\t\t/* got new packet */\n\tSBUF_EV_RECV_FAILED,\t/* error */\n\tSBUF_EV_SEND_FAILED,\t/* error */\n\tSBUF_EV_CONNECT_FAILED,\t/* error */\n\tSBUF_EV_CONNECT_OK,\t/* got connection */\n\tSBUF_EV_FLUSH,\t\t/* data is sent, buffer empty */\n\tSBUF_EV_PKT_CALLBACK,\t/* next part of pkt data */\n\tSBUF_EV_TLS_READY\t/* TLS was established */\n}",
+            "SBufEvent"
+        ],
+        [
+            "struct SBuf {\n\tstruct event ev;\t/* libevent handle */\n\n\tuint8_t wait_type;\t/* track wait state */\n\tuint8_t pkt_action;\t/* method for handling current pkt */\n\tuint8_t tls_state;\t/* progress of tls */\n\n\tint sock;\t\t/* fd for this socket */\n\n\tunsigned pkt_remain;\t/* total packet length remaining */\n\n\tsbuf_cb_t proto_cb;\t/* protocol callback */\n\n\tSBuf *dst;\t\t/* target SBuf for current packet */\n\n\tIOBuf *io;\t\t/* data buffer, lazily allocated */\n\n\tconst SBufIO *ops;\t/* normal vs. TLS */\n\tstruct tls *tls;\t/* TLS context */\n\tconst char *tls_host;\t/* target hostname */\n}",
+            "SBuf"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/client.c": [
+            972,
+            974,
+            975,
+            979,
+            981,
+            984,
+            987,
+            1006,
+            1010,
+            1016,
+            1027,
+            1028,
+            1029,
+            1031,
+            1032,
+            1033,
+            1036,
+            1037,
+            1038,
+            1039,
+            1041,
+            1042,
+            1043,
+            1045,
+            1047,
+            1048,
+            1050,
+            1064
+        ],
+        "src/server.c": [
+            475,
+            477,
+            480,
+            482,
+            483,
+            484,
+            485,
+            489,
+            491,
+            493,
+            494,
+            495,
+            497,
+            498,
+            499,
+            500,
+            501,
+            502,
+            503,
+            505,
+            506,
+            509,
+            510,
+            512,
+            514
+        ]
+    },
+    "visitedLines_before": {
+        "src/client.c": [
+            972,
+            974,
+            975,
+            979,
+            981,
+            984,
+            987,
+            1006,
+            1010,
+            1016,
+            1018,
+            1019,
+            1020,
+            1021,
+            1023,
+            1024,
+            1025,
+            1027,
+            1029,
+            1030,
+            1032,
+            1046
+        ],
+        "src/server.c": [
+            475,
+            477,
+            480,
+            482,
+            483,
+            484,
+            485,
+            488,
+            489,
+            490,
+            491,
+            492,
+            493,
+            496,
+            499,
+            500,
+            502,
+            504
+        ]
+    },
+    "visitedParams": {
+        "src/client.c": [
+            [
+                "SBuf *sbuf",
+                "client_proto"
+            ],
+            [
+                "struct MBuf *data",
+                "client_proto"
+            ]
+        ],
+        "src/server.c": [
+            [
+                "PgSocket *server",
+                "handle_sslchar"
+            ],
+            [
+                "struct MBuf *data",
+                "handle_sslchar"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/client.c",
+            "client_proto",
+            "bool client_proto(SBuf *sbuf, SBufEvent evtype, struct MBuf *data) /* <=== client_proto */ \n{\n\tbool res = false;\n\tPgSocket *client = container_of(sbuf, PgSocket, sbuf);\n\tPktHdr pkt;\n\n\n\tAssert(!is_server_socket(client));\n\tAssert(client->sbuf.sock);\n\tAssert(client->state != CL_FREE);\n\n\t/* may happen if close failed */\n\tif (client->state == CL_JUSTFREE)\n\t\treturn false;\n\n\tswitch (evtype) {\n\tcase SBUF_EV_CONNECT_OK:\n\tcase SBUF_EV_CONNECT_FAILED:\n\t\t/* ^ those should not happen */\n\tcase SBUF_EV_RECV_FAILED:\n\t\t/*\n\t\t * Don't log error if client disconnects right away,\n\t\t * could be monitoring probe.\n\t\t */\n\t\tif (client->state == CL_LOGIN && mbuf_avail_for_read(data) == 0)\n\t\t\tdisconnect_client(client, false, NULL);\n\t\telse\n\t\t\tdisconnect_client(client, false, \"client unexpected eof\");\n\t\tbreak;\n\tcase SBUF_EV_SEND_FAILED:\n\t\tdisconnect_server(client->link, false, \"server connection closed\");\n\t\tbreak;\n\tcase SBUF_EV_READ:\n\t\t/* Wait until full packet headers is available. */\n\t\tif (incomplete_header(data)) {\n\t\t\tslog_noise(client, \"C: got partial header, trying to wait a bit\");\n\t\t\treturn false;\n\t\t}\n\t\tif (!get_header(data, &pkt)) {\n\t\t\tchar hex[8*2 + 1];\n\t\t\tdisconnect_client(client, true, \"bad packet header: '%s'\",\n\t\t\t\t\t  hdr2hex(data, hex, sizeof(hex)));\n\t\t\treturn false;\n\t\t}\n\t\tslog_noise(client, \"read pkt='%c' len=%d\", pkt_desc(&pkt), pkt.len);\n\n\t\t/*\n\t\t * If we are reading an SSL request or GSSAPI\n\t\t * encryption request, we should have no data already\n\t\t * buffered at this point.  If we do, it was received\n\t\t * before we performed the SSL or GSSAPI handshake, so\n\t\t * it wasn't encrypted and indeed may have been\n\t\t * injected by a man-in-the-middle.  We report this\n\t\t * case to the client.\n\t\t */\n\t\tif (pkt.type == PKT_SSLREQ && mbuf_avail_for_read(data) > 0) {\n\t\t\tdisconnect_client(client, true, \"received unencrypted data after SSL request\");\n\t\t\treturn false;\n\t\t}\n\t\tif (pkt.type == PKT_GSSENCREQ && mbuf_avail_for_read(data) > 0) {\n\t\t\tdisconnect_client(client, true, \"received unencrypted data after GSSAPI encryption request\");\n\t\t\treturn false;\n\t\t}\n\n\t\tclient->request_time = get_cached_time();\n\t\tswitch (client->state) {\n\t\tcase CL_LOGIN:\n\t\t\tres = handle_client_startup(client, &pkt);\n\t\t\tbreak;\n\t\tcase CL_ACTIVE:\n\t\t\tif (client->wait_for_welcome)\n\t\t\t\tres = handle_client_startup(client, &pkt);\n\t\t\telse\n\t\t\t\tres = handle_client_work(client, &pkt);\n\t\t\tbreak;\n\t\tcase CL_WAITING:\n\t\t\tfatal(\"why waiting client in client_proto()\");\n\t\tdefault:\n\t\t\tfatal(\"bad client state: %d\", client->state);\n\t\t}\n\t\tbreak;\n\tcase SBUF_EV_FLUSH:\n\t\t/* client is not interested in it */\n\t\tbreak;\n\tcase SBUF_EV_PKT_CALLBACK:\n\t\t/* unused ATM */\n\t\tbreak;\n\tcase SBUF_EV_TLS_READY:\n\t\tsbuf_continue(&client->sbuf);\n\t\tres = true;\n\t\tbreak;\n\t}\n\treturn res;\n}",
+            972
+        ],
+        [
+            "src/server.c",
+            "handle_sslchar",
+            "static bool handle_sslchar(PgSocket *server, struct MBuf *data) /* <=== handle_sslchar */ \n{\n\tuint8_t schar = '?';\n\tbool ok;\n\n\tserver->wait_sslchar = false;\n\n\tok = mbuf_get_byte(data, &schar);\n\tif (!ok || (schar != 'S' && schar != 'N')) {\n\t\tdisconnect_server(server, false, \"bad sslreq answer\");\n\t\treturn false;\n\t}\n\t/*\n\t * At this point we should have no data already buffered.  If\n\t * we do, it was received before we performed the SSL\n\t * handshake, so it wasn't encrypted and indeed may have been\n\t * injected by a man-in-the-middle.\n\t */\n\tif (mbuf_avail_for_read(data) != 0) {\n\t\tdisconnect_server(server, false, \"received unencrypted data after SSL response\");\n\t\treturn false;\n\t}\n\n\tif (schar == 'S') {\n\t\tslog_noise(server, \"launching tls\");\n\t\tok = sbuf_tls_connect(&server->sbuf, server->pool->db->host);\n\t} else if (server_connect_sslmode >= SSLMODE_REQUIRE) {\n\t\tdisconnect_server(server, false, \"server refused SSL\");\n\t\treturn false;\n\t} else {\n\t\t/* proceed with non-TLS connection */\n\t\tok = send_startup_packet(server);\n\t}\n\n\tif (ok) {\n\t\tsbuf_prepare_skip(&server->sbuf, 1);\n\t} else {\n\t\tdisconnect_server(server, false, \"sslreq processing failed\");\n\t}\n\treturn ok;\n}",
+            475
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/client.c",
+            "client_proto",
+            "bool client_proto(SBuf *sbuf, SBufEvent evtype, struct MBuf *data) /* <=== client_proto */ \n{\n\tbool res = false;\n\tPgSocket *client = container_of(sbuf, PgSocket, sbuf);\n\tPktHdr pkt;\n\n\n\tAssert(!is_server_socket(client));\n\tAssert(client->sbuf.sock);\n\tAssert(client->state != CL_FREE);\n\n\t/* may happen if close failed */\n\tif (client->state == CL_JUSTFREE)\n\t\treturn false;\n\n\tswitch (evtype) {\n\tcase SBUF_EV_CONNECT_OK:\n\tcase SBUF_EV_CONNECT_FAILED:\n\t\t/* ^ those should not happen */\n\tcase SBUF_EV_RECV_FAILED:\n\t\t/*\n\t\t * Don't log error if client disconnects right away,\n\t\t * could be monitoring probe.\n\t\t */\n\t\tif (client->state == CL_LOGIN && mbuf_avail_for_read(data) == 0)\n\t\t\tdisconnect_client(client, false, NULL);\n\t\telse\n\t\t\tdisconnect_client(client, false, \"client unexpected eof\");\n\t\tbreak;\n\tcase SBUF_EV_SEND_FAILED:\n\t\tdisconnect_server(client->link, false, \"server connection closed\");\n\t\tbreak;\n\tcase SBUF_EV_READ:\n\t\t/* Wait until full packet headers is available. */\n\t\tif (incomplete_header(data)) {\n\t\t\tslog_noise(client, \"C: got partial header, trying to wait a bit\");\n\t\t\treturn false;\n\t\t}\n\t\tif (!get_header(data, &pkt)) {\n\t\t\tchar hex[8*2 + 1];\n\t\t\tdisconnect_client(client, true, \"bad packet header: '%s'\",\n\t\t\t\t\t  hdr2hex(data, hex, sizeof(hex)));\n\t\t\treturn false;\n\t\t}\n\t\tslog_noise(client, \"read pkt='%c' len=%d\", pkt_desc(&pkt), pkt.len);\n\n\t\tclient->request_time = get_cached_time();\n\t\tswitch (client->state) {\n\t\tcase CL_LOGIN:\n\t\t\tres = handle_client_startup(client, &pkt);\n\t\t\tbreak;\n\t\tcase CL_ACTIVE:\n\t\t\tif (client->wait_for_welcome)\n\t\t\t\tres = handle_client_startup(client, &pkt);\n\t\t\telse\n\t\t\t\tres = handle_client_work(client, &pkt);\n\t\t\tbreak;\n\t\tcase CL_WAITING:\n\t\t\tfatal(\"why waiting client in client_proto()\");\n\t\tdefault:\n\t\t\tfatal(\"bad client state: %d\", client->state);\n\t\t}\n\t\tbreak;\n\tcase SBUF_EV_FLUSH:\n\t\t/* client is not interested in it */\n\t\tbreak;\n\tcase SBUF_EV_PKT_CALLBACK:\n\t\t/* unused ATM */\n\t\tbreak;\n\tcase SBUF_EV_TLS_READY:\n\t\tsbuf_continue(&client->sbuf);\n\t\tres = true;\n\t\tbreak;\n\t}\n\treturn res;\n}",
+            972
+        ],
+        [
+            "src/server.c",
+            "handle_sslchar",
+            "static bool handle_sslchar(PgSocket *server, struct MBuf *data) /* <=== handle_sslchar */ \n{\n\tuint8_t schar = '?';\n\tbool ok;\n\n\tserver->wait_sslchar = false;\n\n\tok = mbuf_get_byte(data, &schar);\n\tif (!ok || (schar != 'S' && schar != 'N') || mbuf_avail_for_read(data) != 0) {\n\t\tdisconnect_server(server, false, \"bad sslreq answer\");\n\t\treturn false;\n\t}\n\n\tif (schar == 'S') {\n\t\tslog_noise(server, \"launching tls\");\n\t\tok = sbuf_tls_connect(&server->sbuf, server->pool->db->host);\n\t} else if (server_connect_sslmode >= SSLMODE_REQUIRE) {\n\t\tdisconnect_server(server, false, \"server refused SSL\");\n\t\treturn false;\n\t} else {\n\t\t/* proceed with non-TLS connection */\n\t\tok = send_startup_packet(server);\n\t}\n\n\tif (ok) {\n\t\tsbuf_prepare_skip(&server->sbuf, 1);\n\t} else {\n\t\tdisconnect_server(server, false, \"sslreq processing failed\");\n\t}\n\treturn ok;\n}",
+            475
+        ]
+    ]
+}

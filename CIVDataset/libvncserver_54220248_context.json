@@ -1,0 +1,230 @@
+{
+    "calleeMethods": [
+        [
+            "libvncclient/cursor.c",
+            "MAX_CURSOR_SIZE",
+            "#define MAX_CURSOR_SIZE 1024 /* <=== libvncclient/cursor.c:31:31:MAX_CURSOR_SIZE:0 */ ",
+            1
+        ],
+        [
+            "libvncclient/cursor.c",
+            "RGB24_TO_PIXEL",
+            "#define RGB24_TO_PIXEL(bpp,r,g,b)                                       \\ /* <=== libvncclient/cursor.c:33:39:RGB24_TO_PIXEL:4 */ \n   ((((uint##bpp##_t)(r) & 0xFF) * client->format.redMax + 127) / 255             \\\n    << client->format.redShift |                                              \\\n    (((uint##bpp##_t)(g) & 0xFF) * client->format.greenMax + 127) / 255           \\\n    << client->format.greenShift |                                            \\\n    (((uint##bpp##_t)(b) & 0xFF) * client->format.blueMax + 127) / 255            \\\n    << client->format.blueShift)",
+            1
+        ],
+        [
+            "libvncclient/sockets.c",
+            "ReadFromRFBServer",
+            "rfbBool /* <=== ReadFromRFBServer */ \nReadFromRFBServer(rfbClient* client, char *out, unsigned int n)\n{\n#undef DEBUG_READ_EXACT\n#ifdef DEBUG_READ_EXACT\n\tchar* oout=out;\n\tint nn=n;\n\trfbClientLog(\"ReadFromRFBServer %d bytes\\n\",n);\n#endif\n\n  /* Handle attempts to write to NULL out buffer that might occur\n     when an outside malloc() fails. For instance, memcpy() to NULL\n     results in undefined behaviour and probably memory corruption.*/\n  if(!out)\n    return FALSE;\n\n  if (client->serverPort==-1) {\n    /* vncrec playing */\n    rfbVNCRec* rec = client->vncRec;\n    struct timeval tv;\n\n    if (rec->readTimestamp) {\n      rec->readTimestamp = FALSE;\n      if (!fread(&tv,sizeof(struct timeval),1,rec->file))\n        return FALSE;\n\n      tv.tv_sec = rfbClientSwap32IfLE (tv.tv_sec);\n      tv.tv_usec = rfbClientSwap32IfLE (tv.tv_usec);\n\n      if (rec->tv.tv_sec!=0 && !rec->doNotSleep) {\n        struct timeval diff;\n        diff.tv_sec = tv.tv_sec - rec->tv.tv_sec;\n        diff.tv_usec = tv.tv_usec - rec->tv.tv_usec;\n        if(diff.tv_usec<0) {\n\t  diff.tv_sec--;\n\t  diff.tv_usec+=1000000;\n        }\n#ifndef WIN32\n        sleep (diff.tv_sec);\n        usleep (diff.tv_usec);\n#else\n\tSleep (diff.tv_sec * 1000 + diff.tv_usec/1000);\n#endif\n      }\n\n      rec->tv=tv;\n    }\n    \n    return (fread(out,1,n,rec->file) != n ? FALSE : TRUE);\n  }\n  \n  if (n <= client->buffered) {\n    memcpy(out, client->bufoutptr, n);\n    client->bufoutptr += n;\n    client->buffered -= n;\n#ifdef DEBUG_READ_EXACT\n    goto hexdump;\n#endif\n    return TRUE;\n  }\n\n  memcpy(out, client->bufoutptr, client->buffered);\n\n  out += client->buffered;\n  n -= client->buffered;\n\n  client->bufoutptr = client->buf;\n  client->buffered = 0;\n\n  if (n <= RFB_BUF_SIZE) {\n\n    while (client->buffered < n) {\n      int i;\n      if (client->tlsSession)\n        i = ReadFromTLS(client, client->buf + client->buffered, RFB_BUF_SIZE - client->buffered);\n      else\n#ifdef LIBVNCSERVER_HAVE_SASL\n      if (client->saslconn)\n        i = ReadFromSASL(client, client->buf + client->buffered, RFB_BUF_SIZE - client->buffered);\n      else {\n#endif /* LIBVNCSERVER_HAVE_SASL */\n        i = read(client->sock, client->buf + client->buffered, RFB_BUF_SIZE - client->buffered);\n#ifdef WIN32\n\tif (i < 0) errno=WSAGetLastError();\n#endif\n#ifdef LIBVNCSERVER_HAVE_SASL\n      }\n#endif\n  \n      if (i <= 0) {\n\tif (i < 0) {\n\t  if (errno == EWOULDBLOCK || errno == EAGAIN) {\n\t    /* TODO:\n\t       ProcessXtEvents();\n\t    */\n\t    WaitForMessage(client, 100000);\n\t    i = 0;\n\t  } else {\n\t    rfbClientErr(\"read (%d: %s)\\n\",errno,strerror(errno));\n\t    return FALSE;\n\t  }\n\t} else {\n\t  if (errorMessageOnReadFailure) {\n\t    rfbClientLog(\"VNC server closed connection\\n\");\n\t  }\n\t  return FALSE;\n\t}\n      }\n      client->buffered += i;\n    }\n\n    memcpy(out, client->bufoutptr, n);\n    client->bufoutptr += n;\n    client->buffered -= n;\n\n  } else {\n\n    while (n > 0) {\n      int i;\n      if (client->tlsSession)\n        i = ReadFromTLS(client, out, n);\n      else\n#ifdef LIBVNCSERVER_HAVE_SASL\n      if (client->saslconn)\n        i = ReadFromSASL(client, out, n);\n      else\n#endif\n        i = read(client->sock, out, n);\n\n      if (i <= 0) {\n\tif (i < 0) {\n#ifdef WIN32\n\t  errno=WSAGetLastError();\n#endif\n\t  if (errno == EWOULDBLOCK || errno == EAGAIN) {\n\t    /* TODO:\n\t       ProcessXtEvents();\n\t    */\n\t    WaitForMessage(client, 100000);\n\t    i = 0;\n\t  } else {\n\t    rfbClientErr(\"read (%s)\\n\",strerror(errno));\n\t    return FALSE;\n\t  }\n\t} else {\n\t  if (errorMessageOnReadFailure) {\n\t    rfbClientLog(\"VNC server closed connection\\n\");\n\t  }\n\t  return FALSE;\n\t}\n      }\n      out += i;\n      n -= i;\n    }\n  }\n\n#ifdef DEBUG_READ_EXACT\nhexdump:\n  { int ii;\n    for(ii=0;ii<nn;ii++)\n      fprintf(stderr,\"%02x \",(unsigned char)oout[ii]);\n    fprintf(stderr,\"\\n\");\n  }\n#endif\n\n  return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncclient/sockets.c",
+            "WaitForMessage",
+            "int WaitForMessage(rfbClient* client,unsigned int usecs) /* <=== WaitForMessage */ \n{\n  fd_set fds;\n  struct timeval timeout;\n  int num;\n\n  if (client->serverPort==-1)\n    /* playing back vncrec file */\n    return 1;\n  \n  timeout.tv_sec=(usecs/1000000);\n  timeout.tv_usec=(usecs%1000000);\n\n  FD_ZERO(&fds);\n  FD_SET(client->sock,&fds);\n\n  num=select(client->sock+1, &fds, NULL, NULL, &timeout);\n  if(num<0) {\n#ifdef WIN32\n    errno=WSAGetLastError();\n#endif\n    rfbClientLog(\"Waiting for message failed: %d (%s)\\n\",errno,strerror(errno));\n  }\n\n  return num;\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <rfb/rfbclient.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef int8_t rfbBool;",
+            "rfbBool"
+        ],
+        [
+            "typedef struct {\n    uint8_t foreRed;\n    uint8_t foreGreen;\n    uint8_t foreBlue;\n    uint8_t backRed;\n    uint8_t backGreen;\n    uint8_t backBlue;\n}",
+            "rfbXCursorColors"
+        ],
+        [
+            "typedef struct _rfbClient {\n\tuint8_t* frameBuffer;\n\tint width, height;\n\n\tint endianTest;\n\n\tAppData appData;\n\n\tconst char* programName;\n\tchar* serverHost;\n\tint serverPort; /**< if -1, then use file recorded by vncrec */\n\trfbBool listenSpecified;\n\tint listenPort, flashPort;\n\n\tstruct {\n\t\tint x, y, w, h;\n\t} updateRect;\n\n\t/** Note that the CoRRE encoding uses this buffer and assumes it is big enough\n\t   to hold 255 * 255 * 32 bits -> 260100 bytes.  640*480 = 307200 bytes.\n\t   Hextile also assumes it is big enough to hold 16 * 16 * 32 bits.\n\t   Tight encoding assumes BUFFER_SIZE is at least 16384 bytes. */\n\n#define RFB_BUFFER_SIZE (640*480)\n\tchar buffer[RFB_BUFFER_SIZE];\n\n\t/* rfbproto.c */\n\n\tint sock;\n\trfbBool canUseCoRRE;\n\trfbBool canUseHextile;\n\tchar *desktopName;\n\trfbPixelFormat format;\n\trfbServerInitMsg si;\n\n\t/* sockets.c */\n#define RFB_BUF_SIZE 8192\n\tchar buf[RFB_BUF_SIZE];\n\tchar *bufoutptr;\n\tint buffered;\n\n\t/* The zlib encoding requires expansion/decompression/deflation of the\n\t   compressed data in the \"buffer\" above into another, result buffer.\n\t   However, the size of the result buffer can be determined precisely\n\t   based on the bitsPerPixel, height and width of the rectangle.  We\n\t   allocate this buffer one time to be the full size of the buffer. */\n\n\t/* Ultra Encoding uses this buffer too */\n\t\n\tint ultra_buffer_size;\n\tchar *ultra_buffer;\n\n\tint raw_buffer_size;\n\tchar *raw_buffer;\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n\tz_stream decompStream;\n\trfbBool decompStreamInited;\n#endif\n\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n\t/*\n\t * Variables for the ``tight'' encoding implementation.\n\t */\n\n\t/** Separate buffer for compressed data. */\n#define ZLIB_BUFFER_SIZE 30000\n\tchar zlib_buffer[ZLIB_BUFFER_SIZE];\n\n\t/* Four independent compression streams for zlib library. */\n\tz_stream zlibStream[4];\n\trfbBool zlibStreamActive[4];\n\n\t/* Filter stuff. Should be initialized by filter initialization code. */\n\trfbBool cutZeros;\n\tint rectWidth, rectColors;\n\tchar tightPalette[256*4];\n\tuint8_t tightPrevRow[2048*3*sizeof(uint16_t)];\n\n#ifdef LIBVNCSERVER_HAVE_LIBJPEG\n\t/** JPEG decoder state (obsolete-- do not use). */\n\trfbBool jpegError;\n\n\tstruct jpeg_source_mgr* jpegSrcManager;\n\tvoid* jpegBufferPtr;\n\tsize_t jpegBufferLen;\n\n#endif\n#endif\n\n\n\t/* cursor.c */\n\t/** Holds cursor shape data when received from server. */\n\tuint8_t *rcSource, *rcMask;\n\n\t/** private data pointer */\n\trfbClientData* clientData;\n\n\trfbVNCRec* vncRec;\n\n\t/* Keyboard State support (is 'Caps Lock' set on the remote display???) */\n\tint KeyboardLedStateEnabled;\n\tint CurrentKeyboardLedState;\n\n\tint canHandleNewFBSize;\n\n\t/* hooks */\n\tHandleTextChatProc         HandleTextChat;\n\tHandleKeyboardLedStateProc HandleKeyboardLedState;\n\tHandleCursorPosProc HandleCursorPos;\n\tSoftCursorLockAreaProc SoftCursorLockArea;\n\tSoftCursorUnlockScreenProc SoftCursorUnlockScreen;\n\tGotFrameBufferUpdateProc GotFrameBufferUpdate;\n\t/** the pointer returned by GetPassword will be freed after use! */\n\tGetPasswordProc GetPassword;\n\tMallocFrameBufferProc MallocFrameBuffer;\n\tGotXCutTextProc GotXCutText;\n\tBellProc Bell;\n\n\tGotCursorShapeProc GotCursorShape;\n\tGotCopyRectProc GotCopyRect;\n\n\t/** Which messages are supported by the server\n\t * This is a *guess* for most servers.\n\t * (If we can even detect the type of server)\n\t *\n\t * If the server supports the \"rfbEncodingSupportedMessages\"\n\t * then this will be updated when the encoding is received to\n\t * accurately reflect the servers capabilities.\n\t */\n\trfbSupportedMessages supportedMessages;\n\n\t/** negotiated protocol version */\n\tint major, minor;\n\n\t/** The selected security types */\n\tuint32_t authScheme, subAuthScheme;\n\n\t/** The TLS session for Anonymous TLS and VeNCrypt */\n\tvoid* tlsSession;\n\n\t/** To support security types that requires user input (except VNC password\n\t * authentication), for example VeNCrypt and MSLogon, this callback function\n\t * must be set before the authentication. Otherwise, it implicates that the\n\t * caller application does not support it and related security types should\n\t * be bypassed.\n\t */\n\tGetCredentialProc GetCredential;\n\n\t/** The 0-terminated security types supported by the client.\n\t * Set by function SetClientAuthSchemes() */\n\tuint32_t *clientAuthSchemes;\n\n\t/** When the server is a repeater, this specifies the final destination */\n\tchar *destHost;\n\tint destPort;\n\n        /** the QoS IP DSCP for this client */\n        int QoS_DSCP;\n\n        /** hook to handle xvp server messages */\n\tHandleXvpMsgProc           HandleXvpMsg;\n\n\t/* listen.c */\n        int listenSock;\n\n\tFinishedFrameBufferUpdateProc FinishedFrameBufferUpdate;\n\n\tchar *listenAddress;\n        /* IPv6 listen socket, address and port*/\n        int listen6Sock;\n        char* listen6Address;\n        int listen6Port;\n\n        /* Output Window ID. When set, client application enables libvncclient to perform direct rendering in its window */\n        unsigned long outputWindow;\n\n\t/** Hooks for optional protection WriteToTLS() by mutex */\n\tLockWriteToTLSProc LockWriteToTLS;\n\tUnlockWriteToTLSProc UnlockWriteToTLS;\n\n        /** Hooks for custom rendering\n         *\n         * VNC rendering boils down to 3 activities:\n         * - GotCopyRect: copy an area of the framebuffer\n         * - GotFillRect: fill an area of the framebuffer with a solid color\n         * - GotBitmap: copy the bitmap in the buffer into the framebuffer\n         * The client application should either set all three of these or none!\n         */\n        GotFillRectProc GotFillRect;\n        GotBitmapProc GotBitmap;\n        /** Hook for custom JPEG decoding and rendering */\n        GotJpegProc GotJpeg;\n\n#ifdef LIBVNCSERVER_HAVE_SASL\n        sasl_conn_t *saslconn;\n        const char *saslDecoded;\n        unsigned int saslDecodedLength;\n        unsigned int saslDecodedOffset;\n        sasl_secret_t *saslSecret;\n\n        /* Callback to allow the client to choose a preferred mechanism. The string returned will\n           be freed once no longer required. */\n        GetSASLMechanismProc GetSASLMechanism;\n        GetUserProc GetUser;\n\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n#ifdef LIBVNCSERVER_HAVE_LIBJPEG\n\t/** JPEG decoder state. */\n\tvoid *tjhnd;\n\n#endif\n#endif\n} rfbClient;",
+            "rfbClient"
+        ]
+    ],
+    "visitedLines_after": {
+        "libvncclient/cursor.c": [
+            42,
+            53,
+            54,
+            56,
+            59,
+            60,
+            63,
+            64,
+            66,
+            67,
+            68,
+            70,
+            71,
+            72,
+            73,
+            74,
+            79,
+            81,
+            82,
+            83,
+            84,
+            85,
+            87,
+            88,
+            91,
+            92,
+            93,
+            94,
+            95,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            107,
+            108,
+            109,
+            114,
+            115,
+            116,
+            117,
+            119,
+            120,
+            121,
+            123,
+            124,
+            125,
+            131,
+            132,
+            133,
+            134,
+            135,
+            142,
+            143,
+            144,
+            145,
+            146,
+            149,
+            150,
+            151,
+            152,
+            153,
+            154,
+            157,
+            158,
+            159,
+            160,
+            161,
+            164,
+            165,
+            169,
+            170,
+            173,
+            175
+        ]
+    },
+    "visitedLines_before": {
+        "libvncclient/cursor.c": [
+            42,
+            53,
+            54,
+            56,
+            60,
+            61,
+            63,
+            64,
+            65,
+            67,
+            68,
+            69,
+            70,
+            71,
+            76,
+            78,
+            79,
+            80,
+            81,
+            82,
+            84,
+            85,
+            88,
+            89,
+            90,
+            91,
+            92,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            104,
+            105,
+            106,
+            111,
+            112,
+            113,
+            114,
+            116,
+            117,
+            118,
+            120,
+            121,
+            122,
+            128,
+            129,
+            130,
+            131,
+            132,
+            139,
+            140,
+            141,
+            142,
+            143,
+            146,
+            147,
+            148,
+            149,
+            150,
+            151,
+            154,
+            155,
+            156,
+            157,
+            158,
+            161,
+            162,
+            166,
+            167,
+            170,
+            172
+        ]
+    },
+    "visitedParams": {
+        "libvncclient/cursor.c": [
+            [
+                "int height",
+                "HandleCursorShape"
+            ],
+            [
+                "int width",
+                "HandleCursorShape"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libvncclient/cursor.c",
+            "HandleCursorShape",
+            "rfbBool HandleCursorShape(rfbClient* client,int xhot, int yhot, int width, int height, uint32_t enc) /* <=== HandleCursorShape */ \n{\n  int bytesPerPixel;\n  size_t bytesPerRow, bytesMaskData;\n  rfbXCursorColors rgb;\n  uint32_t colors[2];\n  char *buf;\n  uint8_t *ptr;\n  int x, y, b;\n\n  bytesPerPixel = client->format.bitsPerPixel / 8;\n  bytesPerRow = (width + 7) / 8;\n  bytesMaskData = bytesPerRow * height;\n\n  if (width * height == 0)\n    return TRUE;\n\n  if (width >= MAX_CURSOR_SIZE || height >= MAX_CURSOR_SIZE)\n    return FALSE;\n\n  /* Allocate memory for pixel data and temporary mask data. */\n  if(client->rcSource)\n    free(client->rcSource);\n\n  client->rcSource = malloc(width * height * bytesPerPixel);\n  if (client->rcSource == NULL)\n    return FALSE;\n\n  buf = malloc(bytesMaskData);\n  if (buf == NULL) {\n    free(client->rcSource);\n    client->rcSource = NULL;\n    return FALSE;\n  }\n\n  /* Read and decode cursor pixel data, depending on the encoding type. */\n\n  if (enc == rfbEncodingXCursor) {\n    /* Read and convert background and foreground colors. */\n    if (!ReadFromRFBServer(client, (char *)&rgb, sz_rfbXCursorColors)) {\n      free(client->rcSource);\n      client->rcSource = NULL;\n      free(buf);\n      return FALSE;\n    }\n    colors[0] = RGB24_TO_PIXEL(32, rgb.backRed, rgb.backGreen, rgb.backBlue);\n    colors[1] = RGB24_TO_PIXEL(32, rgb.foreRed, rgb.foreGreen, rgb.foreBlue);\n\n    /* Read 1bpp pixel data into a temporary buffer. */\n    if (!ReadFromRFBServer(client, buf, bytesMaskData)) {\n      free(client->rcSource);\n      client->rcSource = NULL;\n      free(buf);\n      return FALSE;\n    }\n\n    /* Convert 1bpp data to byte-wide color indices. */\n    ptr = client->rcSource;\n    for (y = 0; y < height; y++) {\n      for (x = 0; x < width / 8; x++) {\n\tfor (b = 7; b >= 0; b--) {\n\t  *ptr = buf[y * bytesPerRow + x] >> b & 1;\n\t  ptr += bytesPerPixel;\n\t}\n      }\n      for (b = 7; b > 7 - width % 8; b--) {\n\t*ptr = buf[y * bytesPerRow + x] >> b & 1;\n\tptr += bytesPerPixel;\n      }\n    }\n\n    /* Convert indices into the actual pixel values. */\n    switch (bytesPerPixel) {\n    case 1:\n      for (x = 0; x < width * height; x++)\n\tclient->rcSource[x] = (uint8_t)colors[client->rcSource[x]];\n      break;\n    case 2:\n      for (x = 0; x < width * height; x++)\n\t((uint16_t *)client->rcSource)[x] = (uint16_t)colors[client->rcSource[x * 2]];\n      break;\n    case 4:\n      for (x = 0; x < width * height; x++)\n\t((uint32_t *)client->rcSource)[x] = colors[client->rcSource[x * 4]];\n      break;\n    }\n\n  } else {\t\t\t/* enc == rfbEncodingRichCursor */\n\n    if (!ReadFromRFBServer(client, (char *)client->rcSource, width * height * bytesPerPixel)) {\n      free(client->rcSource);\n      client->rcSource = NULL;\n      free(buf);\n      return FALSE;\n    }\n\n  }\n\n  /* Read and decode mask data. */\n\n  if (!ReadFromRFBServer(client, buf, bytesMaskData)) {\n    free(client->rcSource);\n    client->rcSource = NULL;\n    free(buf);\n    return FALSE;\n  }\n\n  client->rcMask = malloc(width * height);\n  if (client->rcMask == NULL) {\n    free(client->rcSource);\n    client->rcSource = NULL;\n    free(buf);\n    return FALSE;\n  }\n\n  ptr = client->rcMask;\n  for (y = 0; y < height; y++) {\n    for (x = 0; x < width / 8; x++) {\n      for (b = 7; b >= 0; b--) {\n\t*ptr++ = buf[y * bytesPerRow + x] >> b & 1;\n      }\n    }\n    for (b = 7; b > 7 - width % 8; b--) {\n      *ptr++ = buf[y * bytesPerRow + x] >> b & 1;\n    }\n  }\n\n  if (client->GotCursorShape != NULL) {\n     client->GotCursorShape(client, xhot, yhot, width, height, bytesPerPixel);\n  }\n\n  free(buf);\n\n  return TRUE;\n}",
+            42
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libvncclient/cursor.c",
+            "HandleCursorShape",
+            "rfbBool HandleCursorShape(rfbClient* client,int xhot, int yhot, int width, int height, uint32_t enc) /* <=== HandleCursorShape */ \n{\n  int bytesPerPixel;\n  size_t bytesPerRow, bytesMaskData;\n  rfbXCursorColors rgb;\n  uint32_t colors[2];\n  char *buf;\n  uint8_t *ptr;\n  int x, y, b;\n\n  bytesPerPixel = client->format.bitsPerPixel / 8;\n  bytesPerRow = (width + 7) / 8;\n  bytesMaskData = bytesPerRow * height;\n\n  if (width * height == 0)\n    return TRUE;\n\n  /* Allocate memory for pixel data and temporary mask data. */\n  if(client->rcSource)\n    free(client->rcSource);\n\n  client->rcSource = malloc(width * height * bytesPerPixel);\n  if (client->rcSource == NULL)\n    return FALSE;\n\n  buf = malloc(bytesMaskData);\n  if (buf == NULL) {\n    free(client->rcSource);\n    client->rcSource = NULL;\n    return FALSE;\n  }\n\n  /* Read and decode cursor pixel data, depending on the encoding type. */\n\n  if (enc == rfbEncodingXCursor) {\n    /* Read and convert background and foreground colors. */\n    if (!ReadFromRFBServer(client, (char *)&rgb, sz_rfbXCursorColors)) {\n      free(client->rcSource);\n      client->rcSource = NULL;\n      free(buf);\n      return FALSE;\n    }\n    colors[0] = RGB24_TO_PIXEL(32, rgb.backRed, rgb.backGreen, rgb.backBlue);\n    colors[1] = RGB24_TO_PIXEL(32, rgb.foreRed, rgb.foreGreen, rgb.foreBlue);\n\n    /* Read 1bpp pixel data into a temporary buffer. */\n    if (!ReadFromRFBServer(client, buf, bytesMaskData)) {\n      free(client->rcSource);\n      client->rcSource = NULL;\n      free(buf);\n      return FALSE;\n    }\n\n    /* Convert 1bpp data to byte-wide color indices. */\n    ptr = client->rcSource;\n    for (y = 0; y < height; y++) {\n      for (x = 0; x < width / 8; x++) {\n\tfor (b = 7; b >= 0; b--) {\n\t  *ptr = buf[y * bytesPerRow + x] >> b & 1;\n\t  ptr += bytesPerPixel;\n\t}\n      }\n      for (b = 7; b > 7 - width % 8; b--) {\n\t*ptr = buf[y * bytesPerRow + x] >> b & 1;\n\tptr += bytesPerPixel;\n      }\n    }\n\n    /* Convert indices into the actual pixel values. */\n    switch (bytesPerPixel) {\n    case 1:\n      for (x = 0; x < width * height; x++)\n\tclient->rcSource[x] = (uint8_t)colors[client->rcSource[x]];\n      break;\n    case 2:\n      for (x = 0; x < width * height; x++)\n\t((uint16_t *)client->rcSource)[x] = (uint16_t)colors[client->rcSource[x * 2]];\n      break;\n    case 4:\n      for (x = 0; x < width * height; x++)\n\t((uint32_t *)client->rcSource)[x] = colors[client->rcSource[x * 4]];\n      break;\n    }\n\n  } else {\t\t\t/* enc == rfbEncodingRichCursor */\n\n    if (!ReadFromRFBServer(client, (char *)client->rcSource, width * height * bytesPerPixel)) {\n      free(client->rcSource);\n      client->rcSource = NULL;\n      free(buf);\n      return FALSE;\n    }\n\n  }\n\n  /* Read and decode mask data. */\n\n  if (!ReadFromRFBServer(client, buf, bytesMaskData)) {\n    free(client->rcSource);\n    client->rcSource = NULL;\n    free(buf);\n    return FALSE;\n  }\n\n  client->rcMask = malloc(width * height);\n  if (client->rcMask == NULL) {\n    free(client->rcSource);\n    client->rcSource = NULL;\n    free(buf);\n    return FALSE;\n  }\n\n  ptr = client->rcMask;\n  for (y = 0; y < height; y++) {\n    for (x = 0; x < width / 8; x++) {\n      for (b = 7; b >= 0; b--) {\n\t*ptr++ = buf[y * bytesPerRow + x] >> b & 1;\n      }\n    }\n    for (b = 7; b > 7 - width % 8; b--) {\n      *ptr++ = buf[y * bytesPerRow + x] >> b & 1;\n    }\n  }\n\n  if (client->GotCursorShape != NULL) {\n     client->GotCursorShape(client, xhot, yhot, width, height, bytesPerPixel);\n  }\n\n  free(buf);\n\n  return TRUE;\n}",
+            40
+        ]
+    ]
+}

@@ -1,0 +1,260 @@
+{
+    "calleeMethods": [
+        [
+            "sx/sx.h",
+            "sx_error",
+            "JABBERD2_API void                        sx_error(sx_t s, int err, const char *text); /* <=== sx_error */ ",
+            1
+        ],
+        [
+            "s2s/out.c",
+            "out_route",
+            "int out_route(s2s_t s2s, char *route, int routelen, conn_t *out, int allow_bad) { /* <=== out_route */ \n    dnscache_t dns;\n    char ipport[INET6_ADDRSTRLEN + 16], *dkey, *c;\n    time_t now;\n    int reuse = 0;\n    char ip[INET6_ADDRSTRLEN] = {0};\n    int port, c_len, from_len;\n\n    c = memchr(route, '/', routelen);\n    from_len = c - route;\n    c++;\n    c_len = routelen - (c - route);\n    dkey = strndup(c, c_len);\n\n    log_debug(ZONE, \"trying to find connection for '%s'\", dkey);\n    *out = (conn_t) xhash_get(s2s->out_dest, dkey);\n    if(*out == NULL) {\n        log_debug(ZONE, \"connection for '%s' not found\", dkey);\n\n        /* check resolver cache for ip/port */\n        dns = xhash_get(s2s->dnscache, dkey);\n        if(dns == NULL) {\n            /* new resolution */\n            log_debug(ZONE, \"no dns for %s, preparing for resolution\", dkey);\n\n            dns = (dnscache_t) calloc(1, sizeof(struct dnscache_st));\n\n            strcpy(dns->name, dkey);\n\n            xhash_put(s2s->dnscache, dns->name, (void *) dns);\n\n#if 0\n            /* this is good for testing */\n            dns->pending = 0;\n            strcpy(dns->ip, \"127.0.0.1\");\n            dns->port = 3000;\n            dns->expiry = time(NULL) + 99999999;\n#endif\n        }\n\n        /* resolution in progress */\n        if(dns->pending) {\n            log_debug(ZONE, \"pending resolution\");\n            free(dkey);\n            return 0;\n        }\n\n        /* has it expired (this is 0 for new cache objects, so they're always expired */\n        now = time(NULL); /* each entry must be expired no earlier than the collection */\n        if(now > dns->expiry) {\n            /* resolution required */\n            log_debug(ZONE, \"requesting resolution for %s\", dkey);\n\n            dns->init_time = time(NULL);\n            dns->pending = 1;\n\n            dns_resolve_domain(s2s, dns);\n            free(dkey);\n            return 0;\n        }\n\n        /* dns is valid */\n        if (dns_select(s2s, ip, &port, now, dns, allow_bad)) {\n            /* failed to find anything acceptable */\n            free(dkey);\n            return -1;\n        }\n\n        /* re-request resolution if dns_select expired the data */\n        if (now > dns->expiry) {\n            /* resolution required */\n            log_debug(ZONE, \"requesting resolution for %s\", dkey);\n\n            dns->init_time = time(NULL);\n            dns->pending = 1;\n\n            dns_resolve_domain(s2s, dns);\n\n            free(dkey);\n            return 0;\n        }\n\n        /* generate the ip/port pair, this is the hash key for the conn */\n        snprintf(ipport, INET6_ADDRSTRLEN + 16, \"%s/%d\", ip, port);\n\n        /* try to re-use an existing connection */\n        if (s2s->out_reuse)\n            *out = (conn_t) xhash_get(s2s->out_host, ipport);\n\n        if (*out != NULL) {\n            log_write(s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] using connection for '%s'\", (*out)->fd->fd, (*out)->ip, (*out)->port, dkey);\n\n            /* associate existing connection with domain */\n            xhash_put(s2s->out_dest, s2s->out_reuse ? pstrdup(xhash_pool((*out)->routes), dkey) : dkey, (void *) *out);\n\n            reuse = 1;\n        } else{\n            /* no conn, create one */\n            *out = (conn_t) calloc(1, sizeof(struct conn_st));\n\n            (*out)->s2s = s2s;\n\n            (*out)->key = strdup(ipport);\n            if (s2s->out_reuse)\n                (*out)->dkey = NULL;\n            else\n                (*out)->dkey = dkey;\n\n            strcpy((*out)->ip, ip);\n            (*out)->port = port;\n\n            (*out)->states = xhash_new(101);\n            (*out)->states_time = xhash_new(101);\n\n            (*out)->routes = xhash_new(101);\n\n            (*out)->init_time = time(NULL);\n\n            if (s2s->out_reuse)\n                xhash_put(s2s->out_host, (*out)->key, (void *) *out);\n            xhash_put(s2s->out_dest, s2s->out_reuse ? pstrdup(xhash_pool((*out)->routes), dkey) : dkey, (void *) *out);\n\n            xhash_put((*out)->routes, pstrdupx(xhash_pool((*out)->routes), route, routelen), (void *) 1);\n\n            /* connect */\n            log_debug(ZONE, \"initiating connection to %s\", ipport);\n\n            /* APPLE: multiple origin_ips may be specified; use IPv6 if possible or otherwise IPv4 */\n            int ip_is_v6 = 0;\n            if (strchr(ip, ':') != NULL)\n                ip_is_v6 = 1;\n            int i;\n            for (i = 0; i < s2s->origin_nips; i++) {\n                // only bother with mio_connect if the src and dst IPs are of the same type\n                if ((ip_is_v6 && (strchr(s2s->origin_ips[i], ':') != NULL)) ||          // both are IPv6\n                            (! ip_is_v6 && (strchr(s2s->origin_ips[i], ':') == NULL)))  // both are IPv4\n                    (*out)->fd = mio_connect(s2s->mio, port, ip, s2s->origin_ips[i], _out_mio_callback, (void *) *out);\n\n                if ((*out)->fd != NULL) break;\n            }\n\n            if ((*out)->fd == NULL) {\n                log_write(s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] mio_connect error: %s (%d)\", -1, (*out)->ip, (*out)->port, MIO_STRERROR(MIO_ERROR), MIO_ERROR);\n\n                _out_dns_mark_bad(*out);\n\n                if (s2s->out_reuse)\n                   xhash_zap(s2s->out_host, (*out)->key);\n                xhash_zap(s2s->out_dest, dkey);\n\n                xhash_free((*out)->states);\n                xhash_free((*out)->states_time);\n\n                xhash_free((*out)->routes);\n\n                free((*out)->key);\n                free((*out)->dkey);\n                free(*out);\n                *out = NULL;\n\n                /* try again without allowing bad hosts */\n                return out_route(s2s, route, routelen, out, 0);\n            } else {\n                log_write(s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] outgoing connection for '%s'\", (*out)->fd->fd, (*out)->ip, (*out)->port, dkey);\n\n                (*out)->s = sx_new(s2s->sx_env, (*out)->fd->fd, _out_sx_callback, (void *) *out);\n\n#ifdef HAVE_SSL\n                /* Send a stream version of 1.0 if we can do STARTTLS */\n                if(s2s->sx_ssl != NULL) {\n                    sx_client_init((*out)->s, S2S_DB_HEADER, uri_SERVER, dkey, pstrdupx(xhash_pool((*out)->routes), route, from_len), \"1.0\");\n                } else {\n                    sx_client_init((*out)->s, S2S_DB_HEADER, uri_SERVER, NULL, NULL, NULL);\n                }\n#else\n                sx_client_init((*out)->s, S2S_DB_HEADER, uri_SERVER, NULL, NULL, NULL);\n#endif\n                /* dkey is now used by the hash table */\n                return 0;\n            }\n        }\n    } else {\n        log_debug(ZONE, \"connection for '%s' found (%d %s/%d)\", dkey, (*out)->fd->fd, (*out)->ip, (*out)->port);\n    }\n\n    /* connection in progress, or re-using connection: add to routes list */\n    if (!(*out)->online || reuse) {\n        if (xhash_getx((*out)->routes, route, routelen) == NULL)\n            xhash_put((*out)->routes, pstrdupx(xhash_pool((*out)->routes), route, routelen), (void *) 1);\n    }\n\n    free(dkey);\n    return 0;\n}",
+            3
+        ],
+        [
+            "s2s/s2s.h",
+            "s2s_domain_in_whitelist",
+            "int             s2s_domain_in_whitelist(s2s_t s2s, char *in_domain); /* <=== s2s_domain_in_whitelist */ ",
+            3
+        ],
+        [
+            "s2s/s2s.h",
+            "s2s_route_key",
+            "char            *s2s_route_key(pool_t p, char *local, char *remote); /* <=== s2s_route_key */ ",
+            3
+        ],
+        [
+            "s2s/out.c",
+            "_out_dialback",
+            "static void _out_dialback(conn_t out, char *rkey, int rkeylen) { /* <=== _out_dialback */ \n    char *c, *dbkey, *tmp;\n    nad_t nad;\n    int elem, ns;\n    int from_len, to_len;\n    time_t now;\n\n    now = time(NULL);\n\n    c = memchr(rkey, '/', rkeylen);\n    from_len = c - rkey;\n    c++;\n    to_len = rkeylen - (c - rkey);\n\n    /* kick off the dialback */\n    tmp = strndup(c, to_len);\n    dbkey = s2s_db_key(NULL, out->s2s->local_secret, tmp, out->s->id);\n    free(tmp);\n\n    nad = nad_new();\n\n    /* request auth */\n    ns = nad_add_namespace(nad, uri_DIALBACK, \"db\");\n    elem = nad_append_elem(nad, ns, \"result\", 0);\n    nad_set_attr(nad, elem, -1, \"from\", rkey, from_len);\n    nad_set_attr(nad, elem, -1, \"to\", c, to_len);\n    nad_append_cdata(nad, dbkey, strlen(dbkey), 1);\n\n    log_debug(ZONE, \"sending auth request for %.*s (key %s)\", rkeylen, rkey, dbkey);\n    log_write(out->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] sending dialback auth request for route '%.*s'\", out->fd->fd, out->ip, out->port, rkeylen, rkey);\n\n    /* off it goes */\n    sx_nad_write(out->s, nad);\n\n    free(dbkey);\n\n    /* we're in progress now */\n    xhash_put(out->states, pstrdupx(xhash_pool(out->states), rkey, rkeylen), (void *) conn_INPROGRESS);\n\n    /* record the time that we set conn_INPROGRESS state */\n    xhash_put(out->states_time, pstrdupx(xhash_pool(out->states_time), rkey, rkeylen), (void *) now);\n}",
+            3
+        ],
+        [
+            "s2s/out.c",
+            "out_bounce_route_queue",
+            "int out_bounce_route_queue(s2s_t s2s, char *rkey, int rkeylen, int err) /* <=== out_bounce_route_queue */ \n{\n  jqueue_t q;\n  pkt_t pkt;\n  int pktcount = 0;\n\n  q = xhash_getx(s2s->outq, rkey, rkeylen);\n  if(q == NULL)\n     return 0;\n\n  while((pkt = jqueue_pull(q)) != NULL) {\n     /* only packets with content, in namespace jabber:client and not already errors */\n     if(pkt->nad->ecur > 1 && NAD_NURI_L(pkt->nad, NAD_ENS(pkt->nad, 1)) == strlen(uri_CLIENT) && strncmp(NAD_NURI(pkt->nad, NAD_ENS(pkt->nad, 1)), uri_CLIENT, strlen(uri_CLIENT)) == 0 && nad_find_attr(pkt->nad, 0, -1, \"error\", NULL) < 0) {\n         sx_nad_write(s2s->router, stanza_tofrom(stanza_tofrom(stanza_error(pkt->nad, 1, err), 1), 0));\n         pktcount++;\n     }\n     else\n         nad_free(pkt->nad);\n\n     jid_free(pkt->to);\n     jid_free(pkt->from);\n     free(pkt);\n  }\n\n  /* delete queue and remove domain from queue hash */\n  log_debug(ZONE, \"deleting out packet queue for %.*s\", rkeylen, rkey);\n  rkey = q->key;\n  jqueue_free(q);\n  xhash_zap(s2s->outq, rkey);\n  free(rkey);\n\n  return pktcount;\n}",
+            1
+        ],
+        [
+            "sx/sx.h",
+            "ZONE",
+            "#define ZONE __FILE__,__LINE__ /* <=== sx/sx.h:385:385:ZONE:0 */ ",
+            1
+        ],
+        [
+            "s2s/out.c",
+            "out_flush_route_queue",
+            "void out_flush_route_queue(s2s_t s2s, char *rkey, int rkeylen) { /* <=== out_flush_route_queue */ \n    jqueue_t q;\n    pkt_t pkt;\n    int npkt, i, ret;\n\n    q = xhash_getx(s2s->outq, rkey, rkeylen);\n    if(q == NULL)\n        return;\n\n    npkt = jqueue_size(q);\n    log_debug(ZONE, \"flushing %d packets for '%.*s' to out_packet\", npkt, rkeylen, rkey);\n\n    for(i = 0; i < npkt; i++) {\n        pkt = jqueue_pull(q);\n        if(pkt) {\n            ret = out_packet(s2s, pkt);\n            if (ret) {\n                /* uh-oh. the queue was deleted...\n                   q and pkt have been freed\n                   if q->key == rkey, rkey has also been freed */\n                return;\n            }\n        }\n    }\n\n    /* delete queue for route and remove route from queue hash */\n    if (jqueue_size(q) == 0) {\n        log_debug(ZONE, \"deleting out packet queue for '%.*s'\", rkeylen, rkey);\n        rkey = q->key;\n        jqueue_free(q);\n        xhash_zap(s2s->outq, rkey);\n        free(rkey);\n    } else {\n        log_debug(ZONE, \"emptied queue gained more packets...\");\n    }\n}",
+            1
+        ],
+        [
+            "sx/sx.h",
+            "stream_err_INVALID_ID",
+            "#define stream_err_INVALID_ID               (9) /* <=== sx/sx.h:133:133:stream_err_INVALID_ID:0 */ ",
+            1
+        ],
+        [
+            "sx/plugins.h",
+            "SX_SSL_WRAPPER",
+            "#define SX_SSL_WRAPPER          (1<<0)    /** SSL wrapper on legacy 5223 port */ /* <=== sx/plugins.h:25:25:SX_SSL_WRAPPER:0 */ ",
+            1
+        ],
+        [
+            "s2s/out.c",
+            "_out_packet_queue",
+            "static void _out_packet_queue(s2s_t s2s, pkt_t pkt) { /* <=== _out_packet_queue */ \n    char *rkey = s2s_route_key(NULL, pkt->from->domain, pkt->to->domain);\n    jqueue_t q = (jqueue_t) xhash_get(s2s->outq, rkey);\n\n    if(q == NULL) {\n        log_debug(ZONE, \"creating new out packet queue for '%s'\", rkey);\n        q = jqueue_new();\n        q->key = rkey;\n        xhash_put(s2s->outq, q->key, (void *) q);\n    } else {\n        free(rkey);\n    }\n\n    log_debug(ZONE, \"queueing packet for '%s'\", q->key);\n\n    jqueue_push(q, (void *) pkt, 0);\n}",
+            3
+        ],
+        [
+            "sx/sx.h",
+            "sx_close",
+            "JABBERD2_API void                        sx_close(sx_t s); /* <=== sx_close */ ",
+            1
+        ],
+        [
+            "s2s/out.c",
+            "out_packet",
+            "int out_packet(s2s_t s2s, pkt_t pkt) { /* <=== out_packet */ \n    char *rkey;\n    int rkeylen;\n    conn_t out;\n    conn_state_t state;\n    int ret;\n\n    /* perform check against whitelist */\n    if (s2s->enable_whitelist > 0 &&\n            (pkt->to->domain != NULL) &&\n            (s2s_domain_in_whitelist(s2s, pkt->to->domain) == 0)) {\n        log_write(s2s->log, LOG_NOTICE, \"sending a packet to domain not in the whitelist, dropping it\");\n        if (pkt->to != NULL)\n            jid_free(pkt->to);\n        if (pkt->from != NULL)\n            jid_free(pkt->from);\n        if (pkt->nad != NULL)\n            nad_free(pkt->nad);\n        free(pkt);\n\n        return;\n    }\n\n    /* new route key */\n    rkey = s2s_route_key(NULL, pkt->from->domain, pkt->to->domain);\n    rkeylen = strlen(rkey);\n\n    /* get a connection */\n    ret = out_route(s2s, rkey, rkeylen, &out, 1);\n\n    if (out == NULL) {\n        /* connection not available, queue packet */\n        _out_packet_queue(s2s, pkt);\n\n        /* check if out_route was successful in attempting a connection */\n        if (ret) {\n            /* bounce queue */\n            out_bounce_route_queue(s2s, rkey, rkeylen, stanza_err_SERVICE_UNAVAILABLE);\n\n            free(rkey);\n            return -1;\n        }\n\n        free(rkey);\n        return 0;\n    }\n\n    /* connection in progress */\n    if(!out->online) {\n        log_debug(ZONE, \"connection in progress, queueing packet\");\n\n        _out_packet_queue(s2s, pkt);\n\n        free(rkey);\n        return 0;\n    }\n\n    /* connection state */\n    state = (conn_state_t) xhash_get(out->states, rkey);\n\n    /* valid conns or dialback packets */\n    if(state == conn_VALID || pkt->db) {\n        log_debug(ZONE, \"writing packet for %s to outgoing conn %d\", rkey, out->fd->fd);\n\n        /* send it straight out */\n        if(pkt->db) {\n            /* if this is a db:verify packet, increment counter and set timestamp */\n            if(NAD_ENAME_L(pkt->nad, 0) == 6 && strncmp(\"verify\", NAD_ENAME(pkt->nad, 0), 6) == 0) {\n                out->verify++;\n                out->last_verify = time(NULL);\n            }\n\n            /* dialback packet */\n            sx_nad_write(out->s, pkt->nad);\n        } else {\n            /* if the outgoing stanza has a jabber:client namespace, remove it so that the stream jabber:server namespaces will apply (XMPP 11.2.2) */\n            int ns = nad_find_namespace(pkt->nad, 1, uri_CLIENT, NULL);\n            if(ns >= 0) {\n               /* clear the namespaces of elem 0 (internal route element) and elem 1 (message|iq|presence) */\n               pkt->nad->elems[0].ns = -1;\n               pkt->nad->elems[0].my_ns = -1;\n               pkt->nad->elems[1].ns = -1;\n               pkt->nad->elems[1].my_ns = -1;\n            }\n\n            /* send it out */\n            sx_nad_write_elem(out->s, pkt->nad, 1);\n        }\n\n        /* update timestamp */\n        out->last_packet = time(NULL);\n\n        jid_free(pkt->from);\n        jid_free(pkt->to);\n        free(pkt);\n\n        free(rkey);\n        return 0;\n    }\n\n    /* can't be handled yet, queue */\n    _out_packet_queue(s2s, pkt);\n\n    /* if dialback is in progress, then we're done for now */\n    if(state == conn_INPROGRESS) {\n        free(rkey);\n        return 0;\n    }\n\n    /* this is a new route - send dialback auth request to piggyback on the existing connection */\n    if (out->s2s->require_tls == 0 || out->s->ssf > 0) {\n    _out_dialback(out, rkey, rkeylen);\n    }\n    free(rkey);\n    return 0;\n}",
+            2
+        ],
+        [
+            "sx/sx.h",
+            "sx_nad_write_elem",
+            "JABBERD2_API void                        sx_nad_write_elem(sx_t s, nad_t nad, int elem); /* <=== sx_nad_write_elem */ ",
+            1
+        ],
+        [
+            "sx/sx.h",
+            "sx_nad_write",
+            "#define sx_nad_write(s,nad) sx_nad_write_elem(s, nad, 0) /* <=== sx/sx.h:166:166:sx_nad_write:2 */ ",
+            1
+        ],
+        [
+            "s2s/s2s.h",
+            "s2s_route_key",
+            "char            *s2s_route_key(pool_t p, char *local, char *remote); /* <=== s2s_route_key */ ",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <string.h>",
+        "#include \"s2s.h\"",
+        "#include <idna.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct conn_st      *conn_t;",
+            "conn_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "s2s/out.c": [
+            1639,
+            1645,
+            1646,
+            1652,
+            1653,
+            1660,
+            1661,
+            1664,
+            1665,
+            1667,
+            1669,
+            1672,
+            1674,
+            1676,
+            1677,
+            1679,
+            1685,
+            1688,
+            1691,
+            1694,
+            1697,
+            1699,
+            1701,
+            1702,
+            1704,
+            1708,
+            1715,
+            1716,
+            1722,
+            1723,
+            1730,
+            1731,
+            1740,
+            1741,
+            1749,
+            1751,
+            1752,
+            1753,
+            1754,
+            1755,
+            1757,
+            1758,
+            1761,
+            1778,
+            1783,
+            1786
+        ]
+    },
+    "visitedLines_before": {
+        "s2s/out.c": [
+            1639,
+            1645,
+            1646,
+            1652,
+            1653,
+            1660,
+            1661,
+            1664,
+            1665,
+            1667,
+            1669,
+            1672,
+            1674,
+            1676,
+            1677,
+            1679,
+            1685,
+            1688,
+            1691,
+            1694,
+            1697,
+            1699,
+            1701,
+            1702,
+            1704,
+            1708,
+            1715,
+            1716,
+            1722,
+            1723,
+            1730,
+            1731,
+            1740,
+            1741,
+            1749,
+            1751,
+            1752,
+            1753,
+            1754,
+            1755,
+            1757,
+            1758,
+            1761,
+            1778,
+            1783,
+            1786
+        ]
+    },
+    "visitedParams": {
+        "s2s/out.c": [
+            [
+                "conn_t out",
+                "_out_result"
+            ],
+            [
+                "conn_t out",
+                "_out_verify"
+            ],
+            [
+                "nad_t nad",
+                "_out_result"
+            ],
+            [
+                "nad_t nad",
+                "_out_verify"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "s2s/out.c",
+            "_out_result",
+            "static void _out_result(conn_t out, nad_t nad) { /* <=== _out_result */ \n    int attr;\n    jid_t from, to;\n    char *rkey;\n    int rkeylen;\n\n    attr = nad_find_attr(nad, 0, -1, \"from\", NULL);\n    if(attr < 0 || (from = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {\n        log_debug(ZONE, \"missing or invalid from on db result packet\");\n        nad_free(nad);\n        return;\n    }\n\n    attr = nad_find_attr(nad, 0, -1, \"to\", NULL);\n    if(attr < 0 || (to = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {\n        log_debug(ZONE, \"missing or invalid to on db result packet\");\n        jid_free(from);\n        nad_free(nad);\n        return;\n    }\n\n    rkey = s2s_route_key(NULL, to->domain, from->domain);\n    rkeylen = strlen(rkey);\n\n    /* key is valid */\n    if(nad_find_attr(nad, 0, -1, \"type\", \"valid\") >= 0 && xhash_get(out->states, rkey) == (void*) conn_INPROGRESS) {\n        log_write(out->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] outgoing route '%s' is now valid%s%s\", out->fd->fd, out->ip, out->port, rkey, (out->s->flags & SX_SSL_WRAPPER) ? \", TLS negotiated\" : \"\", out->s->compressed ? \", ZLIB compression enabled\" : \"\");\n\n        xhash_put(out->states, pstrdup(xhash_pool(out->states), rkey), (void *) conn_VALID);    /* !!! small leak here */\n\n        log_debug(ZONE, \"%s valid, flushing queue\", rkey);\n\n        /* flush the queue */\n        out_flush_route_queue(out->s2s, rkey, rkeylen);\n\n        free(rkey);\n\n        jid_free(from);\n        jid_free(to);\n\n        nad_free(nad);\n\n        return;\n    }\n\n    /* invalid */\n    log_write(out->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] outgoing route '%s' is now invalid\", out->fd->fd, out->ip, out->port, rkey);\n\n    /* close connection */\n    log_write(out->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] closing connection\", out->fd->fd, out->ip, out->port);\n\n    /* report stream error */\n    sx_error(out->s, stream_err_INVALID_ID, \"dialback negotiation failed\");\n\n    /* close the stream */\n    sx_close(out->s);\n\n    /* bounce queue */\n    out_bounce_route_queue(out->s2s, rkey, rkeylen, stanza_err_SERVICE_UNAVAILABLE);\n\n    free(rkey);\n\n    jid_free(from);\n    jid_free(to);\n\n    nad_free(nad);\n}",
+            1639
+        ],
+        [
+            "s2s/out.c",
+            "_out_verify",
+            "static void _out_verify(conn_t out, nad_t nad) { /* <=== _out_verify */ \n    int attr, ns;\n    jid_t from, to;\n    conn_t in;\n    char *rkey;\n    int valid;\n\n    attr = nad_find_attr(nad, 0, -1, \"from\", NULL);\n    if(attr < 0 || (from = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {\n        log_debug(ZONE, \"missing or invalid from on db verify packet\");\n        nad_free(nad);\n        return;\n    }\n\n    attr = nad_find_attr(nad, 0, -1, \"to\", NULL);\n    if(attr < 0 || (to = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {\n        log_debug(ZONE, \"missing or invalid to on db verify packet\");\n        jid_free(from);\n        nad_free(nad);\n        return;\n    }\n\n    attr = nad_find_attr(nad, 0, -1, \"id\", NULL);\n    if(attr < 0) {\n        log_debug(ZONE, \"missing id on db verify packet\");\n        jid_free(from);\n        jid_free(to);\n        nad_free(nad);\n        return;\n    }\n\n    /* get the incoming conn */\n    in = xhash_getx(out->s2s->in, NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr));\n    if(in == NULL) {\n        log_debug(ZONE, \"got a verify for incoming conn %.*s, but it doesn't exist, dropping the packet\", NAD_AVAL_L(nad, attr), NAD_AVAL(nad, attr));\n        jid_free(from);\n        jid_free(to);\n        nad_free(nad);\n        return;\n    }\n\n    rkey = s2s_route_key(NULL, to->domain, from->domain);\n\n    attr = nad_find_attr(nad, 0, -1, \"type\", \"valid\");\n    if(attr >= 0 && xhash_get(in->states, rkey) == (void*) conn_INPROGRESS) {\n        xhash_put(in->states, pstrdup(xhash_pool(in->states), rkey), (void *) conn_VALID);\n        log_write(in->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] incoming route '%s' is now valid%s%s\", in->fd->fd, in->ip, in->port, rkey, (in->s->flags & SX_SSL_WRAPPER) ? \", TLS negotiated\" : \"\", in->s->compressed ? \", ZLIB compression enabled\" : \"\");\n        valid = 1;\n    } else {\n        log_write(in->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] incoming route '%s' is now invalid\", in->fd->fd, in->ip, in->port, rkey);\n        valid = 0;\n    }\n\n    free(rkey);\n\n    nad_free(nad);\n\n    /* decrement outstanding verify counter */\n    --out->verify;\n\n    /* let them know what happened */\n    nad = nad_new();\n\n    ns = nad_add_namespace(nad, uri_DIALBACK, \"db\");\n    nad_append_elem(nad, ns, \"result\", 0);\n    nad_append_attr(nad, -1, \"to\", from->domain);\n    nad_append_attr(nad, -1, \"from\", to->domain);\n    nad_append_attr(nad, -1, \"type\", valid ? \"valid\" : \"invalid\");\n\n    /* off it goes */\n    sx_nad_write(in->s, nad);\n\n    /* if invalid, close the stream */\n    if (!valid) {\n        /* generate stream error */\n        sx_error(in->s, stream_err_INVALID_ID, \"dialback negotiation failed\");\n\n        /* close the incoming stream */\n        sx_close(in->s);\n    }\n\n    jid_free(from);\n    jid_free(to);\n}",
+            1708
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "s2s/out.c",
+            "_out_result",
+            "static void _out_result(conn_t out, nad_t nad) { /* <=== _out_result */ \n    int attr;\n    jid_t from, to;\n    char *rkey;\n    int rkeylen;\n\n    attr = nad_find_attr(nad, 0, -1, \"from\", NULL);\n    if(attr < 0 || (from = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {\n        log_debug(ZONE, \"missing or invalid from on db result packet\");\n        nad_free(nad);\n        return;\n    }\n\n    attr = nad_find_attr(nad, 0, -1, \"to\", NULL);\n    if(attr < 0 || (to = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {\n        log_debug(ZONE, \"missing or invalid to on db result packet\");\n        jid_free(from);\n        nad_free(nad);\n        return;\n    }\n\n    rkey = s2s_route_key(NULL, to->domain, from->domain);\n    rkeylen = strlen(rkey);\n\n    /* key is valid */\n    if(nad_find_attr(nad, 0, -1, \"type\", \"valid\") >= 0) {\n        log_write(out->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] outgoing route '%s' is now valid%s%s\", out->fd->fd, out->ip, out->port, rkey, (out->s->flags & SX_SSL_WRAPPER) ? \", TLS negotiated\" : \"\", out->s->compressed ? \", ZLIB compression enabled\" : \"\");\n\n        xhash_put(out->states, pstrdup(xhash_pool(out->states), rkey), (void *) conn_VALID);    /* !!! small leak here */\n\n        log_debug(ZONE, \"%s valid, flushing queue\", rkey);\n\n        /* flush the queue */\n        out_flush_route_queue(out->s2s, rkey, rkeylen);\n\n        free(rkey);\n\n        jid_free(from);\n        jid_free(to);\n\n        nad_free(nad);\n\n        return;\n    }\n\n    /* invalid */\n    log_write(out->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] outgoing route '%s' is now invalid\", out->fd->fd, out->ip, out->port, rkey);\n\n    /* close connection */\n    log_write(out->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] closing connection\", out->fd->fd, out->ip, out->port);\n\n    /* report stream error */\n    sx_error(out->s, stream_err_INVALID_ID, \"dialback negotiation failed\");\n\n    /* close the stream */\n    sx_close(out->s);\n\n    /* bounce queue */\n    out_bounce_route_queue(out->s2s, rkey, rkeylen, stanza_err_SERVICE_UNAVAILABLE);\n\n    free(rkey);\n\n    jid_free(from);\n    jid_free(to);\n\n    nad_free(nad);\n}",
+            1639
+        ],
+        [
+            "s2s/out.c",
+            "_out_verify",
+            "static void _out_verify(conn_t out, nad_t nad) { /* <=== _out_verify */ \n    int attr, ns;\n    jid_t from, to;\n    conn_t in;\n    char *rkey;\n    int valid;\n\n    attr = nad_find_attr(nad, 0, -1, \"from\", NULL);\n    if(attr < 0 || (from = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {\n        log_debug(ZONE, \"missing or invalid from on db verify packet\");\n        nad_free(nad);\n        return;\n    }\n\n    attr = nad_find_attr(nad, 0, -1, \"to\", NULL);\n    if(attr < 0 || (to = jid_new(NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr))) == NULL) {\n        log_debug(ZONE, \"missing or invalid to on db verify packet\");\n        jid_free(from);\n        nad_free(nad);\n        return;\n    }\n\n    attr = nad_find_attr(nad, 0, -1, \"id\", NULL);\n    if(attr < 0) {\n        log_debug(ZONE, \"missing id on db verify packet\");\n        jid_free(from);\n        jid_free(to);\n        nad_free(nad);\n        return;\n    }\n\n    /* get the incoming conn */\n    in = xhash_getx(out->s2s->in, NAD_AVAL(nad, attr), NAD_AVAL_L(nad, attr));\n    if(in == NULL) {\n        log_debug(ZONE, \"got a verify for incoming conn %.*s, but it doesn't exist, dropping the packet\", NAD_AVAL_L(nad, attr), NAD_AVAL(nad, attr));\n        jid_free(from);\n        jid_free(to);\n        nad_free(nad);\n        return;\n    }\n\n    rkey = s2s_route_key(NULL, to->domain, from->domain);\n\n    attr = nad_find_attr(nad, 0, -1, \"type\", \"valid\");\n    if(attr >= 0) {\n        xhash_put(in->states, pstrdup(xhash_pool(in->states), rkey), (void *) conn_VALID);\n        log_write(in->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] incoming route '%s' is now valid%s%s\", in->fd->fd, in->ip, in->port, rkey, (in->s->flags & SX_SSL_WRAPPER) ? \", TLS negotiated\" : \"\", in->s->compressed ? \", ZLIB compression enabled\" : \"\");\n        valid = 1;\n    } else {\n        log_write(in->s2s->log, LOG_NOTICE, \"[%d] [%s, port=%d] incoming route '%s' is now invalid\", in->fd->fd, in->ip, in->port, rkey);\n        valid = 0;\n    }\n\n    free(rkey);\n\n    nad_free(nad);\n\n    /* decrement outstanding verify counter */\n    --out->verify;\n\n    /* let them know what happened */\n    nad = nad_new();\n\n    ns = nad_add_namespace(nad, uri_DIALBACK, \"db\");\n    nad_append_elem(nad, ns, \"result\", 0);\n    nad_append_attr(nad, -1, \"to\", from->domain);\n    nad_append_attr(nad, -1, \"from\", to->domain);\n    nad_append_attr(nad, -1, \"type\", valid ? \"valid\" : \"invalid\");\n\n    /* off it goes */\n    sx_nad_write(in->s, nad);\n\n    /* if invalid, close the stream */\n    if (!valid) {\n        /* generate stream error */\n        sx_error(in->s, stream_err_INVALID_ID, \"dialback negotiation failed\");\n\n        /* close the incoming stream */\n        sx_close(in->s);\n    }\n\n    jid_free(from);\n    jid_free(to);\n}",
+            1708
+        ]
+    ]
+}

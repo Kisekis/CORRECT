@@ -1,0 +1,446 @@
+{
+    "calleeMethods": [
+        [
+            "src/ticket.h",
+            "DEFAULT_RETRIES",
+            "#define DEFAULT_RETRIES\t\t\t10 /* <=== src/ticket.h:35:35:DEFAULT_RETRIES:0 */ ",
+            2
+        ],
+        [
+            "src/config.c",
+            "skip_until",
+            "inline static char *skip_until(char *cp, char expected) /* <=== skip_until */ \n{\n\twhile (*cp && *cp != expected)\n\t\tcp++;\n\treturn cp;\n}",
+            2
+        ],
+        [
+            "src/config.c",
+            "skip_while_in",
+            "inline static char *skip_while_in(const char *cp, int (*fn)(int), const char *allowed) /* <=== skip_while_in */ \n{\n\t/* strchr() returns a pointer to the terminator if *cp == 0. */\n\twhile (*cp &&\n\t\t\t(fn(*cp) ||\n\t\t\t strchr(allowed, *cp)))\n\t\tcp++;\n\t/* discard \"const\" qualifier */\n\treturn (char*)cp;\n}",
+            2
+        ],
+        [
+            "src/config.h",
+            "OTHER_SITE",
+            "#define OTHER_SITE \"other\" /* <=== src/config.h:38:38:OTHER_SITE:0 */ ",
+            2
+        ],
+        [
+            "src/config.c",
+            "add_site",
+            "static int add_site(char *addr_string, int type) /* <=== add_site */ \n{\n\tint rv;\n\tstruct booth_site *site;\n\tuLong nid;\n\tuint32_t mask;\n\tint i;\n\n\trv = 1;\n\tif (booth_conf->site_count == MAX_NODES) {\n\t\tlog_error(\"too many nodes\");\n\t\tgoto out;\n\t}\n\tif (strnlen(addr_string, sizeof(booth_conf->site[0].addr_string))\n\t\t\t>= sizeof(booth_conf->site[0].addr_string)) {\n\t\tlog_error(\"site address \\\"%s\\\" too long\", addr_string);\n\t\tgoto out;\n\t}\n\n\tsite = booth_conf->site + booth_conf->site_count;\n\n\tsite->family = AF_INET;\n\tsite->type = type;\n\n\t/* buffer overflow will not hapen (we've already checked that\n\t   addr_string will fit incl. terminating '\\0' above), but\n\t   suppress the warnings with copying everything but the boundary\n\t   byte, which is valid as-is, since this last byte will be safely\n\t   pre-zeroed from the struct booth_config initialization */\n\tstrncpy(site->addr_string, addr_string, sizeof(site->addr_string) - 1);\n\n\tif (!(inet_pton(AF_INET, site->addr_string, &site->sa4.sin_addr) > 0) &&\n        !(inet_pton(AF_INET6, site->addr_string, &site->sa6.sin6_addr) > 0)) {\n\n\t\t/* Not a valid address, so let us try to convert it into an IP address */\n\t\thostname_to_ip(site->addr_string);\n\t}\n\n\tsite->index = booth_conf->site_count;\n\tsite->bitmask = 1 << booth_conf->site_count;\n\t/* Catch site overflow */\n\tassert(site->bitmask);\n\tbooth_conf->all_bits |= site->bitmask;\n\tif (type == SITE)\n\t\tbooth_conf->sites_bits |= site->bitmask;\n\n\tsite->tcp_fd = -1;\n\n\tbooth_conf->site_count++;\n\n\trv = 0;\n\tmemset(&site->sa6, 0, sizeof(site->sa6));\n\n\tnid = crc32(0L, NULL, 0);\n\t/* Using the ASCII representation in site->addr_string (both sizeof()\n\t * and strlen()) gives quite a lot of collisions; a brute-force run\n\t * from 0.0.0.0 to 24.0.0.0 gives ~4% collisions, and this tends to\n\t * increase even more.\n\t * Whether there'll be a collision in real-life, with 3 or 5 nodes, is\n\t * another question ... but for now get the ID from the binary\n\t * representation - that had *no* collisions up to 32.0.0.0.\n\t * Note that POSIX mandates inet_pton to arange the address pointed\n\t * to by \"dst\" in network byte order, assuring little/big-endianess\n\t * mutual compatibility. */\n\tif (inet_pton(AF_INET,\n\t\t\t\tsite->addr_string,\n\t\t\t\t&site->sa4.sin_addr) > 0) {\n\n\t\tsite->family = AF_INET;\n\t\tsite->sa4.sin_family = site->family;\n\t\tsite->sa4.sin_port = htons(booth_conf->port);\n\t\tsite->saddrlen = sizeof(site->sa4);\n\t\tsite->addrlen = sizeof(site->sa4.sin_addr);\n\t\tsite->site_id = crc32(nid, (void*)&site->sa4.sin_addr, site->addrlen);\n\n\t} else if (inet_pton(AF_INET6,\n\t\t\t\tsite->addr_string,\n\t\t\t\t&site->sa6.sin6_addr) > 0) {\n\n\t\tsite->family = AF_INET6;\n\t\tsite->sa6.sin6_family = site->family;\n\t\tsite->sa6.sin6_flowinfo = 0;\n\t\tsite->sa6.sin6_port = htons(booth_conf->port);\n\t\tsite->saddrlen = sizeof(site->sa6);\n\t\tsite->addrlen = sizeof(site->sa6.sin6_addr);\n\t\tsite->site_id = crc32(nid, (void*)&site->sa6.sin6_addr, site->addrlen);\n\n\t} else {\n\t\tlog_error(\"Address string \\\"%s\\\" is bad\", site->addr_string);\n\t\trv = EINVAL;\n\t}\n\n\t/* Make sure we will never collide with NO_ONE,\n\t * or be negative (to get \"get_local_id() < 0\" working). */\n\tmask = 1 << (sizeof(site->site_id)*8 -1);\n\tassert(NO_ONE & mask);\n\tsite->site_id &= ~mask;\n\n\n\t/* Test for collisions with other sites */\n\tfor(i=0; i<site->index; i++)\n\t\tif (booth_conf->site[i].site_id == site->site_id) {\n\t\t\tlog_error(\"Got a site-ID collision. Please file a bug on https://github.com/ClusterLabs/booth/issues/new, attaching the configuration file.\");\n\t\t\texit(1);\n\t\t}\n\nout:\n\treturn rv;\n}",
+            2
+        ],
+        [
+            "src/log.h",
+            "log_error",
+            "#define log_error(fmt, args...)\t\tpriv_log(LOG_ERR, fmt, ##args) /* <=== src/log.h:43:43:log_error:2 */ ",
+            1
+        ],
+        [
+            "src/config.c",
+            "read_time",
+            "static long read_time(char *val) /* <=== read_time */ \n{\n\tlong t;\n\tchar *ep;\n\n\tt = strtol(val, &ep, 10);\n\tif (ep == val) { /* matched none */\n\t\tt = -1L;\n\t} else if (*ep == '\\0') { /* matched all */\n\t\tt = t*1000L; /* in seconds, convert to ms */\n\t} else if (strcmp(ep, \"ms\")) { /* ms not exactly matched */\n\t\tt = -1L;\n\t} /* otherwise, time in ms */\n\t/* if second fractions configured, send finer resolution\n\t * times (i.e. term_valid_for) */\n\tif (t % 1000L) {\n\t\tTIME_MULT = 1000;\n\t}\n\treturn t;\n}",
+            2
+        ],
+        [
+            "src/config.c",
+            "parse_extprog",
+            "static int parse_extprog(char *val, struct ticket_config *tk) /* <=== parse_extprog */ \n{\n\tchar *p;\n\tint i = 0;\n\n\tif (tk_test.path) {\n\t\tfree(tk_test.path);\n\t}\n\tif (!(tk_test.path = strdup(val))) {\n\t\tlog_error(\"out of memory\");\n\t\treturn -1;\n\t}\n\n\tp = strtok(tk_test.path, \" \\t\");\n\ttk_test.argv[i++] = p;\n\tdo {\n\t\tp = strtok(NULL, \" \\t\");\n\t\tif (i >= MAX_ARGS) {\n\t\t\tlog_error(\"too many arguments for the acquire-handler\");\n\t\t\tfree(tk_test.path);\n\t\t\treturn -1;\n\t\t}\n\t\ttk_test.argv[i++] = p;\n\t} while (p);\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "src/transport.c",
+            "find_myself",
+            "int find_myself(struct booth_site **mep, int fuzzy_allowed) /* <=== find_myself */ \n{\n\treturn _find_myself(AF_INET6, mep, fuzzy_allowed) ||\n\t\t_find_myself(AF_INET, mep, fuzzy_allowed);\n}",
+            1
+        ],
+        [
+            "src/booth.h",
+            "BOOTH_MIN_KEY_LEN",
+            "#define BOOTH_MIN_KEY_LEN\t8 /* <=== src/booth.h:45:45:BOOTH_MIN_KEY_LEN:0 */ ",
+            2
+        ],
+        [
+            "src/log.h",
+            "log_debug",
+            "#define log_debug(fmt, args...)\t\tdo { \\ /* <=== src/log.h:38:40:log_debug:2 */ \n\tif (ANYDEBUG) priv_log(LOG_DEBUG, fmt, ##args); } \\\n\twhile (0)",
+            2
+        ],
+        [
+            "src/transport.c",
+            "BOOTH_IPADDR_LEN",
+            "#define BOOTH_IPADDR_LEN\t(sizeof(struct in6_addr)) /* <=== src/transport.c:46:46:BOOTH_IPADDR_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/transport.c",
+            "find_address",
+            "static int find_address(unsigned char ipaddr[BOOTH_IPADDR_LEN], /* <=== find_address */ \n\t\tint family, int prefixlen,\n\t\tint fuzzy_allowed,\n\t\tstruct booth_site **me,\n\t\tint *address_bits_matched)\n{\n\tint i;\n\tstruct booth_site *node;\n\tint bytes, bits_left, mask;\n\tunsigned char node_bits, ip_bits;\n\tuint8_t *n_a;\n\tint matched;\n\tenum match_type did_match = NO_MATCH;\n\n\n\tbytes = prefixlen / 8;\n\tbits_left = prefixlen % 8;\n\t/* One bit left to check means ignore 7 lowest bits. */\n\tmask = ~( (1 << (8 - bits_left)) -1);\n\n\tfor (i = 0; i < booth_conf->site_count; i++) {\n\t\tnode = booth_conf->site + i;\n\t\tif (family != node->family)\n\t\t\tcontinue;\n\t\tn_a = node_to_addr_pointer(node);\n\n\t\tfor(matched = 0; matched < node->addrlen; matched++)\n\t\t\tif (ipaddr[matched] != n_a[matched])\n\t\t\t\tbreak;\n\n\t\tif (matched == node->addrlen) {\n\t\t\t*address_bits_matched = matched * 8;\n\t\t\t*me = node;\n\t\t\tdid_match = EXACT_MATCH;\n\t\t\tbreak;\n\t\t}\n\n\t\tif (!fuzzy_allowed)\n\t\t\tcontinue;\n\n\n\t\t/* Check prefix, whole bytes */\n\t\tif (matched < bytes)\n\t\t\tcontinue;\n\t\tif (matched * 8 < *address_bits_matched)\n\t\t\tcontinue;\n\n\t\tnode_bits = n_a[bytes];\n\t\tip_bits = ipaddr[bytes];\n\t\tif (((node_bits ^ ip_bits) & mask) == 0) {\n\t\t\t/* _At_least_ prefixlen bits matched. */\n\t\t\tif (did_match < EXACT_MATCH) {\n\t\t\t\t*address_bits_matched = prefixlen;\n\t\t\t\t*me = node;\n\t\t\t\tdid_match = FUZZY_MATCH;\n\t\t\t}\n\t\t}\n\t}\n\n\treturn did_match;\n}",
+            3
+        ],
+        [
+            "src/ticket.h",
+            "DEFAULT_TICKET_EXPIRY",
+            "#define DEFAULT_TICKET_EXPIRY\t(600*TIME_RES) /* <=== src/ticket.h:33:33:DEFAULT_TICKET_EXPIRY:0 */ ",
+            2
+        ],
+        [
+            "src/ticket.h",
+            "DEFAULT_TICKET_TIMEOUT",
+            "#define DEFAULT_TICKET_TIMEOUT\t(5*TIME_RES) /* <=== src/ticket.h:34:34:DEFAULT_TICKET_TIMEOUT:0 */ ",
+            2
+        ],
+        [
+            "src/config.h",
+            "MAX_ARGS",
+            "#define MAX_ARGS \t16 /* <=== src/config.h:35:35:MAX_ARGS:0 */ ",
+            3
+        ],
+        [
+            "src/booth.h",
+            "BOOTH_DEFAULT_MAX_TIME_SKEW",
+            "#define BOOTH_DEFAULT_MAX_TIME_SKEW\t\t600 /* <=== src/booth.h:51:51:BOOTH_DEFAULT_MAX_TIME_SKEW:0 */ ",
+            2
+        ],
+        [
+            "src/ticket.c",
+            "find_ticket_by_name",
+            "int find_ticket_by_name(const char *ticket, struct ticket_config **found) /* <=== find_ticket_by_name */ \n{\n\tint i;\n\n\tif (found)\n\t\t*found = NULL;\n\n\tfor (i = 0; i < booth_conf->ticket_count; i++) {\n\t\tif (!strncmp(booth_conf->ticket[i].name, ticket,\n\t\t\t     sizeof(booth_conf->ticket[i].name))) {\n\t\t\tif (found)\n\t\t\t\t*found = booth_conf->ticket + i;\n\t\t\treturn 1;\n\t\t}\n\t}\n\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "src/booth.h",
+            "BOOTH_RUN_DIR",
+            "#define BOOTH_RUN_DIR \"/var/run/booth/\" /* <=== src/booth.h:33:33:BOOTH_RUN_DIR:0 */ ",
+            1
+        ],
+        [
+            "src/config.h",
+            "MAX_NODES",
+            "#define MAX_NODES\t16 /* <=== src/config.h:34:34:MAX_NODES:0 */ ",
+            3
+        ],
+        [
+            "src/config.c",
+            "parse_weights",
+            "static int parse_weights(const char *input, int weights[MAX_NODES]) /* <=== parse_weights */ \n{\n\tint i, v;\n\tchar *cp;\n\n\tfor(i=0; i<MAX_NODES; i++) {\n\t\t/* End of input? */\n\t\tif (*input == 0)\n\t\t\tbreak;\n\n\t\tv = strtol(input, &cp, 0);\n\t\tif (input == cp) {\n\t\t\tlog_error(\"No integer weight value at \\\"%s\\\"\", input);\n\t\t\treturn -1;\n\t\t}\n\n\t\tweights[i] = v;\n\n\t\twhile (*cp) {\n\t\t\t/* Separator characters */\n\t\t\tif (isspace(*cp) ||\n\t\t\t\t\tstrchr(\",;:-+\", *cp))\n\t\t\t\tcp++;\n\t\t\t/* Next weight */\n\t\t\telse if (isdigit(*cp))\n\t\t\t\tbreak;\n\t\t\t/* Rest */\n\t\t\telse {\n\t\t\t\tlog_error(\"Invalid character at \\\"%s\\\"\", cp);\n\t\t\t\treturn -1;\n\t\t\t}\n\t\t}\n\n\t\tinput = cp;\n\t}\n\n\n\t/* Fill rest of vector. */\n\tfor(v=i; v<MAX_NODES; v++) {\n\t\tweights[v] = 0;\n\t}\n\n\treturn i;\n}",
+            2
+        ],
+        [
+            "src/config.c",
+            "check_config",
+            "int check_config(int type) /* <=== check_config */ \n{\n\tstruct passwd *pw;\n\tstruct group *gr;\n\tchar *cp, *input;\n\n\tif (!booth_conf)\n\t\treturn -1;\n\n\n\tinput = (type == ARBITRATOR)\n\t\t? booth_conf->arb_user\n\t\t: booth_conf->site_user;\n\tif (!*input)\n\t\tgoto u_inval;\n\tif (isdigit(input[0])) {\n\t\tbooth_conf->uid = strtol(input, &cp, 0);\n\t\tif (*cp != 0) {\nu_inval:\n\t\t\tlog_error(\"User \\\"%s\\\" cannot be resolved into a UID.\", input);\n\t\t\treturn ENOENT;\n\t\t}\n\t}\n\telse {\n\t\tpw = getpwnam(input);\n\t\tif (!pw)\n\t\t\tgoto u_inval;\n\t\tbooth_conf->uid = pw->pw_uid;\n\t}\n\n\n\tinput = (type == ARBITRATOR)\n\t\t? booth_conf->arb_group\n\t\t: booth_conf->site_group;\n\tif (!*input)\n\t\tgoto g_inval;\n\tif (isdigit(input[0])) {\n\t\tbooth_conf->gid = strtol(input, &cp, 0);\n\t\tif (*cp != 0) {\ng_inval:\n\t\t\tlog_error(\"Group \\\"%s\\\" cannot be resolved into a UID.\", input);\n\t\t\treturn ENOENT;\n\t\t}\n\t}\n\telse {\n\t\tgr = getgrnam(input);\n\t\tif (!gr)\n\t\t\tgoto g_inval;\n\t\tbooth_conf->gid = gr->gr_gid;\n\t}\n\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "src/config.c",
+            "parse_attr_prereq",
+            "static int parse_attr_prereq(char *val, struct ticket_config *tk) /* <=== parse_attr_prereq */ \n{\n\tstruct attr_prereq *ap = NULL;\n\tchar *p;\n\n\tap = (struct attr_prereq *)calloc(1, sizeof(struct attr_prereq));\n\tif (!ap) {\n\t\tlog_error(\"out of memory\");\n\t\treturn -1;\n\t}\n\n\tp = strtok(val, \" \\t\");\n\tif (!p) {\n\t\tlog_error(\"not enough arguments to attr-prereq\");\n\t\tgoto err_out;\n\t}\n\tap->grant_type = lookup_tokval(p, grant_type);\n\tif (!ap->grant_type) {\n\t\tlog_error(\"%s is not a grant type\", p);\n\t\tgoto err_out;\n\t}\n\n\tp = strtok(NULL, \" \\t\");\n\tif (!p) {\n\t\tlog_error(\"not enough arguments to attr-prereq\");\n\t\tgoto err_out;\n\t}\n\tif (!(ap->attr_name = strdup(p))) {\n\t\tlog_error(\"out of memory\");\n\t\tgoto err_out;\n\t}\n\n\tp = strtok(NULL, \" \\t\");\n\tif (!p) {\n\t\tlog_error(\"not enough arguments to attr-prereq\");\n\t\tgoto err_out;\n\t}\n\tap->op = lookup_tokval(p, attr_op);\n\tif (!ap->op) {\n\t\tlog_error(\"%s is not an attribute operation\", p);\n\t\tgoto err_out;\n\t}\n\n\tp = strtok(NULL, \" \\t\");\n\tif (!p) {\n\t\tlog_error(\"not enough arguments to attr-prereq\");\n\t\tgoto err_out;\n\t}\n\tif (!(ap->attr_val = strdup(p))) {\n\t\tlog_error(\"out of memory\");\n\t\tgoto err_out;\n\t}\n\n\ttk->attr_prereqs = g_list_append(tk->attr_prereqs, ap);\n\tif (!tk->attr_prereqs) {\n\t\tlog_error(\"out of memory\");\n\t\tgoto err_out;\n\t}\n\n\treturn 0;\n\nerr_out:\n\tif (ap) {\n\t\tif (ap->attr_val)\n\t\t\tfree(ap->attr_val);\n\t\tif (ap->attr_name)\n\t\t\tfree(ap->attr_name);\n\t\tfree(ap);\n\t}\n\treturn -1;\n}",
+            2
+        ],
+        [
+            "src/inline-fn.h",
+            "site_string",
+            "static inline const char *site_string(struct booth_site *site) /* <=== site_string */ \n{\n\treturn site ? site->addr_string : \"NONE\";\n}",
+            3
+        ],
+        [
+            "src/config.c",
+            "skip_while",
+            "inline static char *skip_while(char *cp, int (*fn)(int)) /* <=== skip_while */ \n{\n\twhile (fn(*cp))\n\t\tcp++;\n\treturn cp;\n}",
+            2
+        ],
+        [
+            "src/config.c",
+            "ticket_realloc",
+            "static int ticket_realloc(void) /* <=== ticket_realloc */ \n{\n\tconst int added = 5;\n\tint had, want;\n\tvoid *p;\n\n\thad = booth_conf->ticket_allocated;\n\twant = had + added;\n\n\tp = realloc(booth_conf->ticket,\n\t\t\tsizeof(struct ticket_config) * want);\n\tif (!p) {\n\t\tlog_error(\"can't alloc more tickets\");\n\t\treturn -ENOMEM;\n\t}\n\n\tbooth_conf->ticket = p;\n\tmemset(booth_conf->ticket + had, 0,\n\t\t\tsizeof(struct ticket_config) * added);\n\tbooth_conf->ticket_allocated = want;\n\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "src/main.c",
+            "read_authkey",
+            "static int read_authkey() /* <=== read_authkey */ \n{\n\tint fd;\n\n\tbooth_conf->authkey[0] = '\\0';\n\tfd = open(booth_conf->authfile, O_RDONLY);\n\tif (fd < 0) {\n\t\tlog_error(\"cannot open %s: %s\",\n\t\t\tbooth_conf->authfile, strerror(errno));\n\t\treturn -1;\n\t}\n\tif (fstat(fd, &booth_conf->authstat) < 0) {\n\t\tlog_error(\"cannot stat authentication file %s (%d): %s\",\n\t\t\tbooth_conf->authfile, fd, strerror(errno));\n\t\tclose(fd);\n\t\treturn -1;\n\t}\n\tif (booth_conf->authstat.st_mode & (S_IRGRP | S_IROTH)) {\n\t\tlog_error(\"%s: file shall not be readable for anyone but the owner\",\n\t\t\tbooth_conf->authfile);\n\t\tclose(fd);\n\t\treturn -1;\n\t}\n\tbooth_conf->authkey_len = read(fd, booth_conf->authkey, BOOTH_MAX_KEY_LEN);\n\tclose(fd);\n\ttrim_key();\n\tlog_debug(\"read key of size %d in authfile %s\",\n\t\tbooth_conf->authkey_len, booth_conf->authfile);\n\t/* make sure that the key is of minimum length */\n\treturn (booth_conf->authkey_len >= BOOTH_MIN_KEY_LEN) ? 0 : -1;\n}",
+            1
+        ],
+        [
+            "src/ticket.c",
+            "check_max_len_valid",
+            "int check_max_len_valid(const char *s, int max) /* <=== check_max_len_valid */ \n{\n\tint i;\n\tfor(i=0; i<max; i++)\n\t\tif (s[i] == 0)\n\t\t\treturn 1;\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "src/config.c",
+            "retrieve_ticket_mode",
+            "static ticket_mode_e retrieve_ticket_mode(const char *input) /* <=== retrieve_ticket_mode */ \n{\n\tif (strcasecmp(input, \"manual\") == 0) {\n\t\treturn TICKET_MODE_MANUAL;\n\t}\n\n\treturn TICKET_MODE_AUTO;\n}",
+            2
+        ],
+        [
+            "src/booth.h",
+            "NO_ONE",
+            "#define NO_ONE ((uint32_t)-1) /* <=== src/booth.h:76:76:NO_ONE:0 */ ",
+            3
+        ],
+        [
+            "src/booth.h",
+            "POLL_TIMEOUT",
+            "#define POLL_TIMEOUT\t100 /* <=== src/booth.h:62:62:POLL_TIMEOUT:0 */ ",
+            2
+        ],
+        [
+            "src/config.h",
+            "is_auth_req",
+            "#define is_auth_req() (booth_conf->authkey[0] != '\\0') /* <=== src/config.h:328:328:is_auth_req:0 */ ",
+            1
+        ],
+        [
+            "src/main.c",
+            "safe_copy",
+            "void safe_copy(char *dest, char *value, size_t buflen, const char *description) { /* <=== safe_copy */ \n\tint content_len = buflen - 1;\n\n\tif (strlen(value) >= content_len) {\n\t\tfprintf(stderr, \"'%s' exceeds maximum %s length of %d\\n\",\n\t\t\tvalue, description, content_len);\n\t\texit(EXIT_FAILURE);\n\t}\n\tstrncpy(dest, value, content_len);\n\tdest[content_len] = 0;\n}",
+            2
+        ],
+        [
+            "src/transport.c",
+            "NETLINK_BUFSIZE",
+            "#define NETLINK_BUFSIZE\t\t16384 /* <=== src/transport.c:48:48:NETLINK_BUFSIZE:0 */ ",
+            3
+        ],
+        [
+            "src/booth.h",
+            "BOOTH_MAX_KEY_LEN",
+            "#define BOOTH_MAX_KEY_LEN\t64 /* <=== src/booth.h:44:44:BOOTH_MAX_KEY_LEN:0 */ ",
+            2
+        ],
+        [
+            "src/config.c",
+            "get_other_site",
+            "static int get_other_site(struct booth_site **node) /* <=== get_other_site */ \n{\n\tstruct booth_site *n;\n\tint i;\n\n\t*node = NULL;\n\tif (!booth_conf)\n\t\treturn 0;\n\n\tfor (i = 0; i < booth_conf->site_count; i++) {\n\t\tn = booth_conf->site + i;\n\t\tif (n != local && n->type == SITE) {\n\t\t\tif (!*node) {\n\t\t\t\t*node = n;\n\t\t\t} else {\n\t\t\t\treturn 0;\n\t\t\t}\n\t\t}\n\t}\n\n\treturn !*node ? 0 : 1;\n}",
+            2
+        ],
+        [
+            "src/transport.c",
+            "_find_myself",
+            "int _find_myself(int family, struct booth_site **mep, int fuzzy_allowed) /* <=== _find_myself */ \n{\n\tint fd;\n\tstruct sockaddr_nl nladdr;\n\tstruct booth_site *me;\n\tunsigned char ipaddr[BOOTH_IPADDR_LEN];\n\tstatic char rcvbuf[NETLINK_BUFSIZE];\n\tstruct {\n\t\tstruct nlmsghdr nlh;\n\t\tstruct rtgenmsg g;\n\t} req;\n\tint address_bits_matched;\n\n\n\tif (local)\n\t\tgoto found;\n\n\n\tme = NULL;\n\taddress_bits_matched = 0;\n\tif (mep)\n\t\t*mep = NULL;\n\tfd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);\n\tif (fd < 0) {\n\t\tlog_error(\"failed to create netlink socket\");\n\t\treturn 0;\n\t}\n\n\t(void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));\n\n\tmemset(&nladdr, 0, sizeof(nladdr));\n\tnladdr.nl_family = AF_NETLINK;\n\n\tmemset(&req, 0, sizeof(req));\n\treq.nlh.nlmsg_len = sizeof(req);\n\treq.nlh.nlmsg_type = RTM_GETADDR;\n\treq.nlh.nlmsg_flags = NLM_F_ROOT|NLM_F_MATCH|NLM_F_REQUEST;\n\treq.nlh.nlmsg_pid = 0;\n\treq.nlh.nlmsg_seq = 1;\n\treq.g.rtgen_family = family;\n\n\tif (sendto(fd, (void *)&req, sizeof(req), 0,\n\t\t\t\t(struct sockaddr*)&nladdr, sizeof(nladdr)) < 0)  {\n\t\tclose(fd);\n\t\tlog_error(\"failed to send data to netlink socket\");\n\t\treturn 0;\n\t}\n\n\twhile (1) {\n\t\tint status;\n\t\tstruct nlmsghdr *h;\n\t\tstruct iovec iov = { rcvbuf, sizeof(rcvbuf) };\n\t\tstruct msghdr msg = {\n\t\t\t(void *)&nladdr, sizeof(nladdr),\n\t\t\t&iov,   1,\n\t\t\tNULL,   0,\n\t\t\t0\n\t\t};\n\n\t\tstatus = recvmsg(fd, &msg, 0);\n\t\tif (!status) {\n\t\t\tclose(fd);\n\t\t\tlog_error(\"failed to recvmsg from netlink socket\");\n\t\t\treturn 0;\n\t\t}\n\n\t\th = (struct nlmsghdr *)rcvbuf;\n\t\tif (h->nlmsg_type == NLMSG_DONE)\n\t\t\tbreak;\n\n\t\tif (h->nlmsg_type == NLMSG_ERROR) {\n\t\t\tclose(fd);\n\t\t\tlog_error(\"netlink socket recvmsg error\");\n\t\t\treturn 0;\n\t\t}\n\n\t\twhile (NLMSG_OK(h, status)) {\n\t\t\tif (h->nlmsg_type == RTM_NEWADDR) {\n\t\t\t\tstruct ifaddrmsg *ifa = NLMSG_DATA(h);\n\t\t\t\tstruct rtattr *tb[IFA_MAX+1];\n\t\t\t\tint len = h->nlmsg_len \n\t\t\t\t\t- NLMSG_LENGTH(sizeof(*ifa));\n\n\t\t\t\tmemset(tb, 0, sizeof(tb));\n\t\t\t\tparse_rtattr(tb, IFA_MAX, IFA_RTA(ifa), len);\n\t\t\t\tmemset(ipaddr, 0, BOOTH_IPADDR_LEN);\n\t\t\t\t/* prefer IFA_LOCAL if it exists, for p-t-p\n\t\t\t\t * interfaces, otherwise use IFA_ADDRESS */\n\t\t\t\tif (tb[IFA_LOCAL]) {\n\t\t\t\t\tmemcpy(ipaddr, RTA_DATA(tb[IFA_LOCAL]),\n\t\t\t\t\t\t\tBOOTH_IPADDR_LEN);\n\t\t\t\t} else {\n\t\t\t\t\tmemcpy(ipaddr, RTA_DATA(tb[IFA_ADDRESS]),\n\t\t\t\t\t\t\tBOOTH_IPADDR_LEN);\n\t\t\t\t}\n\n\t\t\t\t/* Try to find the exact address or the address with subnet matching.\n\t\t\t\t * The function find_address will be called for each address received\n\t\t\t\t * from NLMSG_DATA above.\n\t\t\t\t * The exact match will be preferred. If no exact match is found,\n\t\t\t\t * the function find_address will try to return another, most similar\n\t\t\t\t * address (with the longest possible number of same bytes). */\n\t\t\t\tif (ifa->ifa_prefixlen > address_bits_matched) {\n\t\t\t\t\tfind_address(ipaddr,\n\t\t\t\t\t\t\tifa->ifa_family, ifa->ifa_prefixlen,\n\t\t\t\t\t\t\tfuzzy_allowed, &me, &address_bits_matched);\n\n\t\t\t\t\tif (me) {\n\t\t\t\t\t\tlog_debug(\"found myself at %s (%d bits matched)\",\n\t\t\t\t\t\t\t\tsite_string(me), address_bits_matched);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\t/* If the previous NLMSG_DATA calls have already allowed us\n\t\t\t\t * to find an address with address_bits_matched matching bits,\n\t\t\t\t * then no other better non-exact address can be found.\n\t\t\t\t * But we can still try to find an exact match, so let us\n\t\t\t\t * call the function find_address with disabled searching of\n\t\t\t\t * similar addresses (fuzzy_allowed == 0) */\n\t\t\t\telse if (ifa->ifa_prefixlen == address_bits_matched) {\n\t\t\t\t\tfind_address(ipaddr,\n\t\t\t\t\t\t\tifa->ifa_family, ifa->ifa_prefixlen,\n\t\t\t\t\t\t\t0 /* fuzzy_allowed */, &me, &address_bits_matched);\n\n\t\t\t\t\tif (me) {\n\t\t\t\t\t\tlog_debug(\"found myself at %s (exact match)\",\n\t\t\t\t\t\t\t\tsite_string(me));\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t\th = NLMSG_NEXT(h, status);\n\t\t}\n\t}\n\n\tclose(fd);\n\n\tif (!me)\n\t\treturn 0;\n\n\tme->local = 1;\n\tlocal = me;\nfound:\n\tif (mep)\n\t\t*mep = local;\n\treturn 1;\n}",
+            2
+        ],
+        [
+            "src/config.h",
+            "tk_test",
+            "#define tk_test tk->clu_test /* <=== src/config.h:48:48:tk_test:0 */ ",
+            3
+        ],
+        [
+            "src/log.h",
+            "log_warn",
+            "#define log_warn(fmt, args...)\t\tpriv_log(LOG_WARNING, fmt, ##args) /* <=== src/log.h:42:42:log_warn:2 */ ",
+            2
+        ],
+        [
+            "src/booth.h",
+            "BOOTH_DEFAULT_PORT",
+            "#define BOOTH_DEFAULT_PORT\t\t9929 /* <=== src/booth.h:53:53:BOOTH_DEFAULT_PORT:0 */ ",
+            2
+        ],
+        [
+            "src/main.c",
+            "trim_key",
+            "static void trim_key() /* <=== trim_key */ \n{\n\tchar *p;\n\tint i;\n\n\tfor (i=0, p=booth_conf->authkey; i < booth_conf->authkey_len; i++, p++)\n\t\tif (!isascii(*p))\n\t\t\treturn;\n\n\tp = booth_conf->authkey;\n\twhile (booth_conf->authkey_len > 0 && isspace(*p)) {\n\t\tp++;\n\t\tbooth_conf->authkey_len--;\n\t}\n\tmemmove(booth_conf->authkey, p, booth_conf->authkey_len);\n\n\tp = booth_conf->authkey + booth_conf->authkey_len - 1;\n\twhile (booth_conf->authkey_len > 0 && isspace(*p)) {\n\t\tbooth_conf->authkey_len--;\n\t\tp--;\n\t}\n}",
+            2
+        ],
+        [
+            "src/config.c",
+            "lookup_tokval",
+            "static int lookup_tokval(char *key, struct toktab *tab) /* <=== lookup_tokval */ \n{\n\tstruct toktab *tp;\n\n\tfor (tp = tab; tp->str; tp++) {\n\t\tif (!strcmp(tp->str, key))\n\t\t\treturn tp->val;\n\t}\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "src/config.c",
+            "find_site_by_name",
+            "int find_site_by_name(char *site, struct booth_site **node, int any_type) /* <=== find_site_by_name */ \n{\n\tstruct booth_site *n;\n\tint i;\n\n\tif (!booth_conf)\n\t\treturn 0;\n\n\tif (!strcmp(site, OTHER_SITE))\n\t\treturn get_other_site(node);\n\n\tfor (i = 0; i < booth_conf->site_count; i++) {\n\t\tn = booth_conf->site + i;\n\t\tif ((n->type == SITE || any_type) &&\n\t\t    strncmp(n->addr_string, site, sizeof(n->addr_string)) == 0) {\n\t\t\t*node = n;\n\t\t\treturn 1;\n\t\t}\n\t}\n\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "src/config.c",
+            "add_ticket",
+            "static int add_ticket(const char *name, struct ticket_config **tkp, /* <=== add_ticket */ \n\t\tconst struct ticket_config *def)\n{\n\tint rv;\n\tstruct ticket_config *tk;\n\n\n\tif (booth_conf->ticket_count == booth_conf->ticket_allocated) {\n\t\trv = ticket_realloc();\n\t\tif (rv < 0)\n\t\t\treturn rv;\n\t}\n\n\n\ttk = booth_conf->ticket + booth_conf->ticket_count;\n\tbooth_conf->ticket_count++;\n\n\tif (!check_max_len_valid(name, sizeof(tk->name))) {\n\t\tlog_error(\"ticket name \\\"%s\\\" too long.\", name);\n\t\treturn -EINVAL;\n\t}\n\n\tif (find_ticket_by_name(name, NULL)) {\n\t\tlog_error(\"ticket name \\\"%s\\\" used again.\", name);\n\t\treturn -EINVAL;\n\t}\n\n\tif (* skip_while_in(name, isalnum, \"-/\")) {\n\t\tlog_error(\"ticket name \\\"%s\\\" invalid; only alphanumeric names.\", name);\n\t\treturn -EINVAL;\n\t}\n\n\tstrcpy(tk->name, name);\n\ttk->timeout = def->timeout;\n\ttk->term_duration = def->term_duration;\n\ttk->retries = def->retries;\n\tmemcpy(tk->weight, def->weight, sizeof(tk->weight));\n\ttk->mode = def->mode;\n\n\tif (tkp)\n\t\t*tkp = tk;\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "src/config.c",
+            "hostname_to_ip",
+            "static void hostname_to_ip(char * hostname) /* <=== hostname_to_ip */ \n{\n\tstruct addrinfo hints;\n\tstruct addrinfo *result, *rp;\n\tint res;\n\tint addr_found = 0;\n\tconst char *ntop_res;\n\n\tmemset(&hints, 0, sizeof(hints));\n\thints.ai_family = AF_UNSPEC;\n\thints.ai_socktype = SOCK_STREAM;\n\n\tres = getaddrinfo(hostname, NULL, &hints, &result);\n\n\tif (res != 0) {\n\t\tlog_error(\"can't find IP for the host \\\"%s\\\"\", hostname);\n\t\treturn;\n\t}\n\n\t/* Return the first found AF_INET or AF_INET6 address */\n\tfor (rp = result; rp && !addr_found; rp = rp->ai_next) {\n\t\tif (rp->ai_family != AF_INET && rp->ai_family != AF_INET6) {\n\t\t\tcontinue ;\n\t\t}\n\n\t\tswitch (rp->ai_family) {\n\t\tcase AF_INET:\n\t\t\tntop_res = inet_ntop(rp->ai_family,\n\t\t\t    &((struct sockaddr_in *)(rp->ai_addr))->sin_addr,\n\t\t\t    hostname, BOOTH_NAME_LEN - 1);\n\t\t\tbreak;\n\t\tcase AF_INET6:\n\t\t\tntop_res = inet_ntop(rp->ai_family,\n\t\t\t    &((struct sockaddr_in6 *)(rp->ai_addr))->sin6_addr,\n\t\t\t    hostname, BOOTH_NAME_LEN - 1);\n\t\t\tbreak;\n\t\t}\n\n\t\tif (ntop_res) {\n\t\t\t/* buffer overflow will not happen (IPv6 notation < 63 chars),\n\t\t\t   but suppress the warnings */\n\t\t\thostname[BOOTH_NAME_LEN - 1] = '\\0';\n\t\t\taddr_found = 1;\n\t\t}\n\t}\n\n\tif (!addr_found) {\n\t\tlog_error(\"no IP addresses found for the host \\\"%s\\\"\", hostname);\n\t}\n\n\tfreeaddrinfo(result);\n}",
+            3
+        ],
+        [
+            "src/booth.h",
+            "min",
+            "#define min(a__,b__) \\ /* <=== src/booth.h:373:376:min:2 */ \n\t({ typeof (a__) _a = (a__); \\\n\t typeof (b__) _b = (b__); \\\n\t _a < _b ? _a : _b; })",
+            2
+        ],
+        [
+            "src/config.c",
+            "read_config",
+            "int read_config(const char *path, int type) /* <=== read_config */ \n{\n\tchar line[1024];\n\tFILE *fp;\n\tchar *s, *key, *val, *end_of_key;\n\tconst char *error;\n\tchar *cp, *cp2;\n\tint i;\n\tint lineno = 0;\n\tint got_transport = 0;\n\tint min_timeout = 0;\n\tstruct ticket_config defaults = { { 0 } };\n\tstruct ticket_config *current_tk = NULL;\n\n\n\tfp = fopen(path, \"r\");\n\tif (!fp) {\n\t\tlog_error(\"failed to open %s: %s\", path, strerror(errno));\n\t\treturn -1;\n\t}\n\n\tbooth_conf = malloc(sizeof(struct booth_config)\n\t\t\t+ TICKET_ALLOC * sizeof(struct ticket_config));\n\tif (!booth_conf) {\n\t\tfclose(fp);\n\t\tlog_error(\"failed to alloc memory for booth config\");\n\t\treturn -ENOMEM;\n\t}\n\tmemset(booth_conf, 0, sizeof(struct booth_config)\n\t\t\t+ TICKET_ALLOC * sizeof(struct ticket_config));\n\tticket_size = TICKET_ALLOC;\n\n\n\tbooth_conf->proto = UDP;\n\tbooth_conf->port = BOOTH_DEFAULT_PORT;\n\tbooth_conf->maxtimeskew = BOOTH_DEFAULT_MAX_TIME_SKEW;\n\tbooth_conf->authkey[0] = '\\0';\n\n\n\t/* Provide safe defaults. -1 is reserved, though. */\n\tbooth_conf->uid = -2;\n\tbooth_conf->gid = -2;\n\tstrcpy(booth_conf->site_user,  \"hacluster\");\n\tstrcpy(booth_conf->site_group, \"haclient\");\n\tstrcpy(booth_conf->arb_user,   \"nobody\");\n\tstrcpy(booth_conf->arb_group,  \"nobody\");\n\n\tparse_weights(\"\", defaults.weight);\n\tdefaults.clu_test.path  = NULL;\n\tdefaults.clu_test.pid  = 0;\n\tdefaults.clu_test.status  = 0;\n\tdefaults.clu_test.progstate  = EXTPROG_IDLE;\n\tdefaults.term_duration        = DEFAULT_TICKET_EXPIRY;\n\tdefaults.timeout       = DEFAULT_TICKET_TIMEOUT;\n\tdefaults.retries       = DEFAULT_RETRIES;\n\tdefaults.acquire_after = 0;\n\tdefaults.mode          = TICKET_MODE_AUTO;\n\n\terror = \"\";\n\n\tlog_debug(\"reading config file %s\", path);\n\twhile (fgets(line, sizeof(line), fp)) {\n\t\tlineno++;\n\n\t\ts = skip_while(line, isspace);\n\t\tif (is_end_of_line(s) || *s == '#')\n\t\t\tcontinue;\n\t\tkey = s;\n\n\n\t\t/* Key */\n\t\tend_of_key = skip_while_in(key, isalnum, \"-_\");\n\t\tif (end_of_key == key) {\n\t\t\terror = \"No key\";\n\t\t\tgoto err;\n\t\t}\n\n\t\tif (!*end_of_key)\n\t\t\tgoto exp_equal;\n\n\n\t\t/* whitespace, and something else but nothing more? */\n\t\ts = skip_while(end_of_key, isspace);\n\n\n\t\tif (*s != '=') {\nexp_equal:\n\t\t\terror = \"Expected '=' after key\";\n\t\t\tgoto err;\n\t\t}\n\t\ts++;\n\n\t\t/* It's my buffer, and I terminate if I want to. */\n\t\t/* But not earlier than that, because we had to check for = */\n\t\t*end_of_key = 0;\n\n\n\t\t/* Value tokenizing */\n\t\ts = skip_while(s, isspace);\n\t\tswitch (*s) {\n\t\t\tcase '\"':\n\t\t\tcase '\\'':\n\t\t\t\tval = s+1;\n\t\t\t\ts = skip_until(val, *s);\n\t\t\t\t/* Terminate value */\n\t\t\t\tif (!*s) {\n\t\t\t\t\terror = \"Unterminated quoted string\";\n\t\t\t\t\tgoto err;\n\t\t\t\t}\n\n\t\t\t\t/* Remove and skip quote */\n\t\t\t\t*s = 0;\n\t\t\t\ts++;\n\t\t\t\tif (*(s = skip_while(s, isspace)) && *s != '#') {\n\t\t\t\t\terror = \"Surplus data after value\";\n\t\t\t\t\tgoto err;\n\t\t\t\t}\n\n\t\t\t\t*s = 0;\n\n\t\t\t\tbreak;\n\n\t\t\tcase 0:\nno_value:\n\t\t\t\terror = \"No value\";\n\t\t\t\tgoto err;\n\t\t\t\tbreak;\n\n\t\t\tdefault:\n\t\t\t\tval = s;\n\t\t\t\t/* Rest of line. */\n\t\t\t\ti = strlen(s);\n\t\t\t\t/* i > 0 because of \"case 0\" above. */\n\t\t\t\twhile (i > 0 && isspace(s[i-1]))\n\t\t\t\t\ti--;\n\t\t\t\ts += i;\n\t\t\t\t*s = 0;\n\t\t}\n\n\t\tif (val == s)\n\t\t\tgoto no_value;\n\n\n\t\tif (strlen(key) > BOOTH_NAME_LEN\n\t\t\t\t|| strlen(val) > BOOTH_NAME_LEN) {\n\t\t\terror = \"key/value too long\";\n\t\t\tgoto err;\n\t\t}\n\n\t\tif (strcmp(key, \"transport\") == 0) {\n\t\t\tif (got_transport) {\n\t\t\t\terror = \"config file has multiple transport lines\";\n\t\t\t\tgoto err;\n\t\t\t}\n\n\t\t\tif (strcasecmp(val, \"UDP\") == 0)\n\t\t\t\tbooth_conf->proto = UDP;\n\t\t\telse if (strcasecmp(val, \"SCTP\") == 0)\n\t\t\t\tbooth_conf->proto = SCTP;\n\t\t\telse {\n\t\t\t\terror = \"invalid transport protocol\";\n\t\t\t\tgoto err;\n\t\t\t}\n\t\t\tgot_transport = 1;\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"port\") == 0) {\n\t\t\tbooth_conf->port = atoi(val);\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"name\") == 0) {\n\t\t\tsafe_copy(booth_conf->name, \n\t\t\t\t\tval, BOOTH_NAME_LEN,\n\t\t\t\t\t\"name\");\n\t\t\tcontinue;\n\t\t}\n\n#if HAVE_LIBGCRYPT || HAVE_LIBMHASH\n\t\tif (strcmp(key, \"authfile\") == 0) {\n\t\t\tsafe_copy(booth_conf->authfile,\n\t\t\t\t\tval, BOOTH_PATH_LEN,\n\t\t\t\t\t\"authfile\");\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"maxtimeskew\") == 0) {\n\t\t\tbooth_conf->maxtimeskew = atoi(val);\n\t\t\tcontinue;\n\t\t}\n#endif\n\n\t\tif (strcmp(key, \"site\") == 0) {\n\t\t\tif (add_site(val, SITE))\n\t\t\t\tgoto err;\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"arbitrator\") == 0) {\n\t\t\tif (add_site(val, ARBITRATOR))\n\t\t\t\tgoto err;\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"site-user\") == 0) {\n\t\t\tsafe_copy(booth_conf->site_user, optarg, BOOTH_NAME_LEN,\n\t\t\t\t\t\"site-user\");\n\t\t\tcontinue;\n\t\t}\n\t\tif (strcmp(key, \"site-group\") == 0) {\n\t\t\tsafe_copy(booth_conf->site_group, optarg, BOOTH_NAME_LEN,\n\t\t\t\t\t\"site-group\");\n\t\t\tcontinue;\n\t\t}\n\t\tif (strcmp(key, \"arbitrator-user\") == 0) {\n\t\t\tsafe_copy(booth_conf->arb_user, optarg, BOOTH_NAME_LEN,\n\t\t\t\t\t\"arbitrator-user\");\n\t\t\tcontinue;\n\t\t}\n\t\tif (strcmp(key, \"arbitrator-group\") == 0) {\n\t\t\tsafe_copy(booth_conf->arb_group, optarg, BOOTH_NAME_LEN,\n\t\t\t\t\t\"arbitrator-group\");\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"debug\") == 0) {\n\t\t\tif (type != CLIENT && type != GEOSTORE)\n\t\t\t\tdebug_level = max(debug_level, atoi(val));\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"ticket\") == 0) {\n\t\t\tif (current_tk && strcmp(current_tk->name, \"__defaults__\")) {\n\t\t\t\tif (!postproc_ticket(current_tk)) {\n\t\t\t\t\tgoto err;\n\t\t\t\t}\n\t\t\t}\n\t\t\tif (!strcmp(val, \"__defaults__\")) {\n\t\t\t\tcurrent_tk = &defaults;\n\t\t\t} else if (add_ticket(val, &current_tk, &defaults)) {\n\t\t\t\tgoto err;\n\t\t\t}\n\t\t\tcontinue;\n\t\t}\n\n\t\t/* current_tk must be allocated at this point, otherwise\n\t\t * we don't know to which ticket the key refers\n\t\t */\n\t\tif (!current_tk) {\n\t\t\terror = \"Unexpected keyword\";\n\t\t\tgoto err;\n\t\t}\n\n\t\tif (strcmp(key, \"expire\") == 0) {\n\t\t\tcurrent_tk->term_duration = read_time(val);\n\t\t\tif (current_tk->term_duration <= 0) {\n\t\t\t\terror = \"Expected time >0 for expire\";\n\t\t\t\tgoto err;\n\t\t\t}\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"timeout\") == 0) {\n\t\t\tcurrent_tk->timeout = read_time(val);\n\t\t\tif (current_tk->timeout <= 0) {\n\t\t\t\terror = \"Expected time >0 for timeout\";\n\t\t\t\tgoto err;\n\t\t\t}\n\t\t\tif (!min_timeout) {\n\t\t\t\tmin_timeout = current_tk->timeout;\n\t\t\t} else {\n\t\t\t\tmin_timeout = min(min_timeout, current_tk->timeout);\n\t\t\t}\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"retries\") == 0) {\n\t\t\tcurrent_tk->retries = strtol(val, &s, 0);\n\t\t\tif (*s || s == val ||\n\t\t\t\t\tcurrent_tk->retries<3 || current_tk->retries > 100) {\n\t\t\t\terror = \"Expected plain integer value in the range [3, 100] for retries\";\n\t\t\t\tgoto err;\n\t\t\t}\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"renewal-freq\") == 0) {\n\t\t\tcurrent_tk->renewal_freq = read_time(val);\n\t\t\tif (current_tk->renewal_freq <= 0) {\n\t\t\t\terror = \"Expected time >0 for renewal-freq\";\n\t\t\t\tgoto err;\n\t\t\t}\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"acquire-after\") == 0) {\n\t\t\tcurrent_tk->acquire_after = read_time(val);\n\t\t\tif (current_tk->acquire_after < 0) {\n\t\t\t\terror = \"Expected time >=0 for acquire-after\";\n\t\t\t\tgoto err;\n\t\t\t}\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"before-acquire-handler\") == 0) {\n\t\t\tif (parse_extprog(val, current_tk)) {\n\t\t\t\tgoto err;\n\t\t\t}\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"attr-prereq\") == 0) {\n\t\t\tif (parse_attr_prereq(val, current_tk)) {\n\t\t\t\tgoto err;\n\t\t\t}\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"mode\") == 0) {\n\t\t\tcurrent_tk->mode = retrieve_ticket_mode(val);\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (strcmp(key, \"weights\") == 0) {\n\t\t\tif (parse_weights(val, current_tk->weight) < 0)\n\t\t\t\tgoto err;\n\t\t\tcontinue;\n\t\t}\n\n\t\terror = \"Unknown keyword\";\n\t\tgoto err;\n\t}\n\tfclose(fp);\n\n\tif ((booth_conf->site_count % 2) == 0) {\n\t\tlog_warn(\"Odd number of nodes is strongly recommended!\");\n\t}\n\n\t/* Default: make config name match config filename. */\n\tif (!booth_conf->name[0]) {\n\t\tcp = strrchr(path, '/');\n\t\tcp = cp ? cp+1 : (char *)path;\n\t\tcp2 = strrchr(cp, '.');\n\t\tif (!cp2)\n\t\t\tcp2 = cp + strlen(cp);\n\t\tif (cp2-cp >= BOOTH_NAME_LEN) {\n\t\t\tlog_error(\"booth config file name too long\");\n\t\t\tgoto out;\n\t\t}\n\t\tstrncpy(booth_conf->name, cp, cp2-cp);\n\t\t*(booth_conf->name+(cp2-cp)) = '\\0';\n\t}\n\n\tif (!postproc_ticket(current_tk)) {\n\t\tgoto out;\n\t}\n\n\tpoll_timeout = min(POLL_TIMEOUT, min_timeout/10);\n\tif (!poll_timeout)\n\t\tpoll_timeout = POLL_TIMEOUT;\n\n\treturn 0;\n\n\nerr:\n\tfclose(fp);\nout:\n\tlog_error(\"%s in config file line %d\",\n\t\t\terror, lineno);\n\n\tfree(booth_conf);\n\tbooth_conf = NULL;\n\treturn -1;\n}",
+            1
+        ],
+        [
+            "src/config.c",
+            "postproc_ticket",
+            "static int postproc_ticket(struct ticket_config *tk) /* <=== postproc_ticket */ \n{\n\tif (!tk)\n\t\treturn 1;\n\n\tif (!tk->renewal_freq) {\n\t\ttk->renewal_freq = tk->term_duration/2;\n\t}\n\n\tif (tk->timeout*(tk->retries+1) >= tk->renewal_freq) {\n\t\tlog_error(\"%s: total amount of time to \"\n\t\t\t\"retry sending packets cannot exceed \"\n\t\t\t\"renewal frequency \"\n\t\t\t\"(%d*(%d+1) >= %d)\",\n\t\t\ttk->name, tk->timeout, tk->retries, tk->renewal_freq);\n\t\treturn 0;\n\t}\n\treturn 1;\n}",
+            2
+        ],
+        [
+            "src/booth.h",
+            "BOOTH_NAME_LEN",
+            "#define BOOTH_NAME_LEN\t\t64 /* <=== src/booth.h:68:68:BOOTH_NAME_LEN:0 */ ",
+            2
+        ],
+        [
+            "src/config.c",
+            "is_end_of_line",
+            "static inline int is_end_of_line(char *cp) /* <=== is_end_of_line */ \n{\n\tchar c = *cp;\n\treturn c == '\\n' || c == 0 || c == '#';\n}",
+            2
+        ],
+        [
+            "src/config.h",
+            "TICKET_ALLOC",
+            "#define TICKET_ALLOC\t16 /* <=== src/config.h:36:36:TICKET_ALLOC:0 */ ",
+            2
+        ],
+        [
+            "src/transport.c",
+            "parse_rtattr",
+            "static void parse_rtattr(struct rtattr *tb[], /* <=== parse_rtattr */ \n\t\t\t int max, struct rtattr *rta, int len)\n{\n\twhile (RTA_OK(rta, len)) {\n\t\tif (rta->rta_type <= max)\n\t\t\ttb[rta->rta_type] = rta;\n\t\trta = RTA_NEXT(rta,len);\n\t}\n}",
+            3
+        ],
+        [
+            "src/booth.h",
+            "max",
+            "#define max(a__,b__) \\ /* <=== src/booth.h:377:380:max:2 */ \n\t({ typeof (a__) _a = (a__); \\\n\t typeof (b__) _b = (b__); \\\n\t _a > _b ? _a : _b; })",
+            2
+        ]
+    ],
+    "globalVars": [
+        "struct booth_config* booth_conf",
+        "struct command_line cl"
+    ],
+    "importContext": [
+        "#include \"handler.h\"",
+        "#include \"alt/nametag_libsystemd.h\"",
+        "#include <crm/services.h>",
+        "#include <clplumbing/coredumps.h>",
+        "#include <sys/poll.h>",
+        "#include <ctype.h>",
+        "#include <unistd.h>",
+        "#include <stdlib.h>",
+        "#include <assert.h>",
+        "#include <sys/socket.h>",
+        "#include \"pacemaker.h\"",
+        "#include <netdb.h>",
+        "#include \"ticket.h\"",
+        "#include <sys/prctl.h>",
+        "#include <gcrypt.h>",
+        "#include <clplumbing/setproctitle.h>",
+        "#include <sched.h>",
+        "#include <limits.h>",
+        "#include \"log.h\"",
+        "#include \"booth.h\"",
+        "#include <sys/wait.h>",
+        "#include \"attr.h\"",
+        "#include <sys/time.h>",
+        "#include <errno.h>",
+        "#include <sys/file.h>",
+        "#include <sys/stat.h>",
+        "#include <sys/resource.h>",
+        "#include <stdio.h>",
+        "#include \"inline-fn.h\"",
+        "#include <string.h>",
+        "#include <sys/mman.h>",
+        "#include \"request.h\"",
+        "#include <fcntl.h>",
+        "#include <sys/un.h>",
+        "#include <signal.h>",
+        "#include \"b_config.h\"",
+        "#include <arpa/inet.h>",
+        "#include <sys/types.h>",
+        "#include \"config.h\"",
+        "#include \"transport.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct command_line {\n\tint type;\t\t/* ACT_ */\n\tint op;\t\t\t/* OP_ */\n\tint options;\t/* OPT_ */\n\tchar configfile[BOOTH_PATH_LEN];\n\tchar lockfile[BOOTH_PATH_LEN];\n\n\tchar site[BOOTH_NAME_LEN];\n\tstruct boothc_ticket_msg msg;\n\tstruct boothc_attr_msg attr_msg;\n}",
+            "command_line"
+        ],
+        [
+            "struct booth_config {\n    char name[BOOTH_NAME_LEN];\n\n    /** File containing the authentication file. */\n\tchar authfile[BOOTH_PATH_LEN];\n\tstruct stat authstat;\n\tchar authkey[BOOTH_MAX_KEY_LEN];\n\tint authkey_len;\n    /** Maximum time skew between peers allowed */\n\tint maxtimeskew;\n\n    transport_layer_t proto;\n    uint16_t port;\n\n    /** Stores the OR of sites bitmasks. */\n    uint64_t sites_bits;\n    /** Stores the OR of all members' bitmasks. */\n    uint64_t all_bits;\n\n    char site_user[BOOTH_NAME_LEN];\n    char site_group[BOOTH_NAME_LEN];\n    char arb_user[BOOTH_NAME_LEN];\n    char arb_group[BOOTH_NAME_LEN];\n    uid_t uid;\n    gid_t gid;\n\n    int site_count;\n    struct booth_site site[MAX_NODES];\n\n    int ticket_count;\n    int ticket_allocated;\n    struct ticket_config *ticket;\n}",
+            "booth_config"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/main.c": [
+            359,
+            363,
+            364,
+            367,
+            368,
+            369,
+            383,
+            384,
+            385,
+            387,
+            389,
+            391,
+            394,
+            395,
+            401,
+            402,
+            403,
+            407
+        ]
+    },
+    "visitedLines_before": {
+        "src/main.c": [
+            359,
+            363,
+            364,
+            367,
+            368,
+            369,
+            383,
+            384,
+            385,
+            387,
+            389,
+            391,
+            394,
+            395,
+            401,
+            402,
+            403,
+            407
+        ]
+    },
+    "visitedParams": {
+        "src/main.c": [
+            [
+                "int type",
+                "setup_config"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/main.c",
+            "setup_config",
+            "static int setup_config(int type) /* <=== setup_config */ \n{\n\tint rv;\n\n\trv = read_config(cl.configfile, type);\n\tif (rv < 0)\n\t\tgoto out;\n\n\tif (booth_conf->authfile[0] != '\\0') {\n\t\trv = read_authkey();\n\t\tif (rv < 0)\n\t\t\tgoto out;\n#if HAVE_LIBGCRYPT\n\t\tif (!gcry_check_version(NULL)) {\n\t\t\tlog_error(\"gcry_check_version\");\n\t\t\trv = -ENOENT;\n\t\t\tgoto out;\n\t\t}\n\t\tgcry_control(GCRYCTL_DISABLE_SECMEM, 0);\n\t\tgcry_control(GCRYCTL_INITIALIZATION_FINISHED, 0);\n#endif\n\t}\n\n\t/* Set \"local\" pointer, ignoring errors. */\n\tif (cl.type == DAEMON && cl.site[0]) {\n\t\tif (!find_site_by_name(cl.site, &local, 1)) {\n\t\t\tlog_error(\"Cannot find \\\"%s\\\" in the configuration.\",\n\t\t\t\t\tcl.site);\n\t\t\treturn -EINVAL;\n\t\t}\n\t\tlocal->local = 1;\n\t} else\n\t\tfind_myself(NULL, type == CLIENT || type == GEOSTORE);\n\n\n\trv = check_config(type);\n\tif (rv < 0)\n\t\tgoto out;\n\n\n\t/* Per default the PID file name is derived from the\n\t * configuration name. */\n\tif (!cl.lockfile[0]) {\n\t\tsnprintf(cl.lockfile, sizeof(cl.lockfile)-1,\n\t\t\t\t\"%s/%s.pid\", BOOTH_RUN_DIR, booth_conf->name);\n\t}\n\nout:\n\treturn rv;\n}",
+            359
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/main.c",
+            "setup_config",
+            "static int setup_config(int type) /* <=== setup_config */ \n{\n\tint rv;\n\n\trv = read_config(cl.configfile, type);\n\tif (rv < 0)\n\t\tgoto out;\n\n\tif (is_auth_req()) {\n\t\trv = read_authkey();\n\t\tif (rv < 0)\n\t\t\tgoto out;\n#if HAVE_LIBGCRYPT\n\t\tif (!gcry_check_version(NULL)) {\n\t\t\tlog_error(\"gcry_check_version\");\n\t\t\trv = -ENOENT;\n\t\t\tgoto out;\n\t\t}\n\t\tgcry_control(GCRYCTL_DISABLE_SECMEM, 0);\n\t\tgcry_control(GCRYCTL_INITIALIZATION_FINISHED, 0);\n#endif\n\t}\n\n\t/* Set \"local\" pointer, ignoring errors. */\n\tif (cl.type == DAEMON && cl.site[0]) {\n\t\tif (!find_site_by_name(cl.site, &local, 1)) {\n\t\t\tlog_error(\"Cannot find \\\"%s\\\" in the configuration.\",\n\t\t\t\t\tcl.site);\n\t\t\treturn -EINVAL;\n\t\t}\n\t\tlocal->local = 1;\n\t} else\n\t\tfind_myself(NULL, type == CLIENT || type == GEOSTORE);\n\n\n\trv = check_config(type);\n\tif (rv < 0)\n\t\tgoto out;\n\n\n\t/* Per default the PID file name is derived from the\n\t * configuration name. */\n\tif (!cl.lockfile[0]) {\n\t\tsnprintf(cl.lockfile, sizeof(cl.lockfile)-1,\n\t\t\t\t\"%s/%s.pid\", BOOTH_RUN_DIR, booth_conf->name);\n\t}\n\nout:\n\treturn rv;\n}",
+            359
+        ]
+    ]
+}

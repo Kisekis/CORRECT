@@ -1,0 +1,485 @@
+{
+    "calleeMethods": [
+        [
+            "include/linux/security.h",
+            "security_tun_dev_post_create",
+            "static inline void security_tun_dev_post_create(struct sock *sk) /* <=== security_tun_dev_post_create */ \n{\n}",
+            2
+        ],
+        [
+            "include/net/sock.h",
+            "sk_change_net",
+            "static inline void sk_change_net(struct sock *sk, struct net *net) /* <=== sk_change_net */ \n{\n\tput_net(sock_net(sk));\n\tsock_net_set(sk, hold_net(net));\n}",
+            2
+        ],
+        [
+            "include/linux/security.h",
+            "security_tun_dev_attach",
+            "static inline int security_tun_dev_attach(struct sock *sk) /* <=== security_tun_dev_attach */ \n{\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_attach",
+            "static int tun_attach(struct tun_struct *tun, struct file *file) /* <=== tun_attach */ \n{\n\tstruct tun_file *tfile = file->private_data;\n\tint err;\n\n\tASSERT_RTNL();\n\n\tnetif_tx_lock_bh(tun->dev);\n\n\terr = -EINVAL;\n\tif (tfile->tun)\n\t\tgoto out;\n\n\terr = -EBUSY;\n\tif (tun->tfile)\n\t\tgoto out;\n\n\terr = 0;\n\ttfile->tun = tun;\n\ttun->tfile = tfile;\n\ttun->socket.file = file;\n\tnetif_carrier_on(tun->dev);\n\tdev_hold(tun->dev);\n\tsock_hold(tun->socket.sk);\n\tatomic_inc(&tfile->count);\n\nout:\n\tnetif_tx_unlock_bh(tun->dev);\n\treturn err;\n}",
+            2
+        ],
+        [
+            "include/net/sock.h",
+            "sock_init_data",
+            "extern void sock_init_data(struct socket *sock, struct sock *sk); /* <=== sock_init_data */ ",
+            2
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_set_iff",
+            "static int tun_set_iff(struct net *net, struct file *file, struct ifreq *ifr) /* <=== tun_set_iff */ \n{\n\tstruct sock *sk;\n\tstruct tun_struct *tun;\n\tstruct net_device *dev;\n\tint err;\n\n\tdev = __dev_get_by_name(net, ifr->ifr_name);\n\tif (dev) {\n\t\tconst struct cred *cred = current_cred();\n\n\t\tif (ifr->ifr_flags & IFF_TUN_EXCL)\n\t\t\treturn -EBUSY;\n\t\tif ((ifr->ifr_flags & IFF_TUN) && dev->netdev_ops == &tun_netdev_ops)\n\t\t\ttun = netdev_priv(dev);\n\t\telse if ((ifr->ifr_flags & IFF_TAP) && dev->netdev_ops == &tap_netdev_ops)\n\t\t\ttun = netdev_priv(dev);\n\t\telse\n\t\t\treturn -EINVAL;\n\n\t\tif (((tun->owner != -1 && cred->euid != tun->owner) ||\n\t\t     (tun->group != -1 && !in_egroup_p(tun->group))) &&\n\t\t    !capable(CAP_NET_ADMIN))\n\t\t\treturn -EPERM;\n\t\terr = security_tun_dev_attach(tun->socket.sk);\n\t\tif (err < 0)\n\t\t\treturn err;\n\n\t\terr = tun_attach(tun, file);\n\t\tif (err < 0)\n\t\t\treturn err;\n\t}\n\telse {\n\t\tchar *name;\n\t\tunsigned long flags = 0;\n\n\t\tif (!capable(CAP_NET_ADMIN))\n\t\t\treturn -EPERM;\n\t\terr = security_tun_dev_create();\n\t\tif (err < 0)\n\t\t\treturn err;\n\n\t\t/* Set dev type */\n\t\tif (ifr->ifr_flags & IFF_TUN) {\n\t\t\t/* TUN device */\n\t\t\tflags |= TUN_TUN_DEV;\n\t\t\tname = \"tun%d\";\n\t\t} else if (ifr->ifr_flags & IFF_TAP) {\n\t\t\t/* TAP device */\n\t\t\tflags |= TUN_TAP_DEV;\n\t\t\tname = \"tap%d\";\n\t\t} else\n\t\t\treturn -EINVAL;\n\n\t\tif (*ifr->ifr_name)\n\t\t\tname = ifr->ifr_name;\n\n\t\tdev = alloc_netdev(sizeof(struct tun_struct), name,\n\t\t\t\t   tun_setup);\n\t\tif (!dev)\n\t\t\treturn -ENOMEM;\n\n\t\tdev_net_set(dev, net);\n\t\tdev->rtnl_link_ops = &tun_link_ops;\n\n\t\ttun = netdev_priv(dev);\n\t\ttun->dev = dev;\n\t\ttun->flags = flags;\n\t\ttun->txflt.count = 0;\n\t\ttun->vnet_hdr_sz = sizeof(struct virtio_net_hdr);\n\t\tset_bit(SOCK_EXTERNALLY_ALLOCATED, &tun->socket.flags);\n\n\t\terr = -ENOMEM;\n\t\tsk = sk_alloc(&init_net, AF_UNSPEC, GFP_KERNEL, &tun_proto);\n\t\tif (!sk)\n\t\t\tgoto err_free_dev;\n\n\t\tsk_change_net(sk, net);\n\t\ttun->socket.wq = &tun->wq;\n\t\tinit_waitqueue_head(&tun->wq.wait);\n\t\ttun->socket.ops = &tun_socket_ops;\n\t\tsock_init_data(&tun->socket, sk);\n\t\tsk->sk_write_space = tun_sock_write_space;\n\t\tsk->sk_sndbuf = INT_MAX;\n\t\tsock_set_flag(sk, SOCK_ZEROCOPY);\n\n\t\ttun_sk(sk)->tun = tun;\n\n\t\tsecurity_tun_dev_post_create(sk);\n\n\t\ttun_net_init(dev);\n\n\t\tdev->hw_features = NETIF_F_SG | NETIF_F_FRAGLIST |\n\t\t\tTUN_USER_FEATURES;\n\t\tdev->features = dev->hw_features;\n\n\t\terr = register_netdevice(tun->dev);\n\t\tif (err < 0)\n\t\t\tgoto err_free_sk;\n\n\t\tif (device_create_file(&tun->dev->dev, &dev_attr_tun_flags) ||\n\t\t    device_create_file(&tun->dev->dev, &dev_attr_owner) ||\n\t\t    device_create_file(&tun->dev->dev, &dev_attr_group))\n\t\t\tpr_err(\"Failed to create tun sysfs files\\n\");\n\n\t\tsk->sk_destruct = tun_sock_destruct;\n\n\t\terr = tun_attach(tun, file);\n\t\tif (err < 0)\n\t\t\tgoto failed;\n\t}\n\n\ttun_debug(KERN_INFO, tun, \"tun_set_iff\\n\");\n\n\tif (ifr->ifr_flags & IFF_NO_PI)\n\t\ttun->flags |= TUN_NO_PI;\n\telse\n\t\ttun->flags &= ~TUN_NO_PI;\n\n\tif (ifr->ifr_flags & IFF_ONE_QUEUE)\n\t\ttun->flags |= TUN_ONE_QUEUE;\n\telse\n\t\ttun->flags &= ~TUN_ONE_QUEUE;\n\n\tif (ifr->ifr_flags & IFF_VNET_HDR)\n\t\ttun->flags |= TUN_VNET_HDR;\n\telse\n\t\ttun->flags &= ~TUN_VNET_HDR;\n\n\t/* Make sure persistent devices do not get stuck in\n\t * xoff state.\n\t */\n\tif (netif_running(tun->dev))\n\t\tnetif_wake_queue(tun->dev);\n\n\tstrcpy(ifr->ifr_name, tun->dev->name);\n\treturn 0;\n\n err_free_sk:\n\ttun_free_netdev(dev);\n err_free_dev:\n\tfree_netdev(dev);\n failed:\n\treturn err;\n}",
+            1
+        ],
+        [
+            "arch/score/include/asm/uaccess.h",
+            "__copy_tofrom_user",
+            "extern int __copy_tofrom_user(void *to, const void *from, unsigned long len); /* <=== __copy_tofrom_user */ ",
+            2
+        ],
+        [
+            "arch/openrisc/include/asm/uaccess.h",
+            "copy_to_user",
+            "static inline unsigned long /* <=== copy_to_user */ \ncopy_to_user(void *to, const void *from, unsigned long n)\n{\n\tunsigned long over;\n\n\tif (access_ok(VERIFY_WRITE, to, n))\n\t\treturn __copy_tofrom_user(to, from, n);\n\tif ((unsigned long)to < TASK_SIZE) {\n\t\tover = (unsigned long)to + n - TASK_SIZE;\n\t\treturn __copy_tofrom_user(to, from, n - over) + over;\n\t}\n\treturn n;\n}",
+            1
+        ],
+        [
+            "drivers/net/tun.c",
+            "__tun_detach",
+            "static void __tun_detach(struct tun_struct *tun) /* <=== __tun_detach */ \n{\n\t/* Detach from net device */\n\tnetif_tx_lock_bh(tun->dev);\n\tnetif_carrier_off(tun->dev);\n\ttun->tfile = NULL;\n\ttun->socket.file = NULL;\n\tnetif_tx_unlock_bh(tun->dev);\n\n\t/* Drop read queue */\n\tskb_queue_purge(&tun->socket.sk->sk_receive_queue);\n\n\t/* Drop the extra count on the net device */\n\tdev_put(tun->dev);\n}",
+            3
+        ],
+        [
+            "arch/openrisc/include/asm/uaccess.h",
+            "access_ok",
+            "#define access_ok(type, addr, size) \\ /* <=== arch/openrisc/include/asm/uaccess.h:65:66:access_ok:3 */ \n\t__range_ok((unsigned long)addr, (unsigned long)size)",
+            2
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_detach",
+            "static void tun_detach(struct tun_struct *tun) /* <=== tun_detach */ \n{\n\trtnl_lock();\n\t__tun_detach(tun);\n\trtnl_unlock();\n}",
+            2
+        ],
+        [
+            "include/net/sock.h",
+            "sock_hold",
+            "static inline void sock_hold(struct sock *sk) /* <=== sock_hold */ \n{\n\tatomic_inc(&sk->sk_refcnt);\n}",
+            3
+        ],
+        [
+            "include/net/sock.h",
+            "sk_release_kernel",
+            "extern void\t\t\tsk_release_kernel(struct sock *sk); /* <=== sk_release_kernel */ ",
+            3
+        ],
+        [
+            "include/net/net_namespace.h",
+            "hold_net",
+            "static inline struct net *hold_net(struct net *net) /* <=== hold_net */ \n{\n\treturn net;\n}",
+            3
+        ],
+        [
+            "drivers/net/tun.c",
+            "TUN_USER_FEATURES",
+            "#define TUN_USER_FEATURES (NETIF_F_HW_CSUM|NETIF_F_TSO_ECN|NETIF_F_TSO| \\ /* <=== drivers/net/tun.c:128:129:TUN_USER_FEATURES:0 */ \n\t\t\t  NETIF_F_TSO6|NETIF_F_UFO)",
+            2
+        ],
+        [
+            "include/net/sock.h",
+            "sock_net",
+            "static inline /* <=== sock_net */ \nstruct net *sock_net(const struct sock *sk)\n{\n\treturn read_pnet(&sk->sk_net);\n}",
+            3
+        ],
+        [
+            "include/net/sock.h",
+            "sock_net_set",
+            "static inline /* <=== sock_net_set */ \nvoid sock_net_set(struct sock *sk, struct net *net)\n{\n\twrite_pnet(&sk->sk_net, net);\n}",
+            3
+        ],
+        [
+            "drivers/net/tun.c",
+            "set_offload",
+            "static int set_offload(struct tun_struct *tun, unsigned long arg) /* <=== set_offload */ \n{\n\tnetdev_features_t features = 0;\n\n\tif (arg & TUN_F_CSUM) {\n\t\tfeatures |= NETIF_F_HW_CSUM;\n\t\targ &= ~TUN_F_CSUM;\n\n\t\tif (arg & (TUN_F_TSO4|TUN_F_TSO6)) {\n\t\t\tif (arg & TUN_F_TSO_ECN) {\n\t\t\t\tfeatures |= NETIF_F_TSO_ECN;\n\t\t\t\targ &= ~TUN_F_TSO_ECN;\n\t\t\t}\n\t\t\tif (arg & TUN_F_TSO4)\n\t\t\t\tfeatures |= NETIF_F_TSO;\n\t\t\tif (arg & TUN_F_TSO6)\n\t\t\t\tfeatures |= NETIF_F_TSO6;\n\t\t\targ &= ~(TUN_F_TSO4|TUN_F_TSO6);\n\t\t}\n\n\t\tif (arg & TUN_F_UFO) {\n\t\t\tfeatures |= NETIF_F_UFO;\n\t\t\targ &= ~TUN_F_UFO;\n\t\t}\n\t}\n\n\t/* This gives the user a way to test for new features in future by\n\t * trying to set them. */\n\tif (arg)\n\t\treturn -EINVAL;\n\n\ttun->set_features = features;\n\tnetdev_update_features(tun->dev);\n\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "tools/perf/util/include/linux/bitops.h",
+            "BITS_PER_LONG",
+            "#define BITS_PER_LONG __WORDSIZE /* <=== tools/perf/util/include/linux/bitops.h:8:8:BITS_PER_LONG:0 */ ",
+            3
+        ],
+        [
+            "arch/openrisc/include/asm/uaccess.h",
+            "copy_from_user",
+            "static inline unsigned long /* <=== copy_from_user */ \ncopy_from_user(void *to, const void *from, unsigned long n)\n{\n\tunsigned long over;\n\n\tif (access_ok(VERIFY_READ, from, n))\n\t\treturn __copy_tofrom_user(to, from, n);\n\tif ((unsigned long)from < TASK_SIZE) {\n\t\tover = (unsigned long)from + n - TASK_SIZE;\n\t\treturn __copy_tofrom_user(to, from, n - over) + over;\n\t}\n\treturn n;\n}",
+            1
+        ],
+        [
+            "include/linux/security.h",
+            "security_tun_dev_create",
+            "static inline int security_tun_dev_create(void) /* <=== security_tun_dev_create */ \n{\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_net_init",
+            "static void tun_net_init(struct net_device *dev) /* <=== tun_net_init */ \n{\n\tstruct tun_struct *tun = netdev_priv(dev);\n\n\tswitch (tun->flags & TUN_TYPE_MASK) {\n\tcase TUN_TUN_DEV:\n\t\tdev->netdev_ops = &tun_netdev_ops;\n\n\t\t/* Point-to-Point TUN Device */\n\t\tdev->hard_header_len = 0;\n\t\tdev->addr_len = 0;\n\t\tdev->mtu = 1500;\n\n\t\t/* Zero header length */\n\t\tdev->type = ARPHRD_NONE;\n\t\tdev->flags = IFF_POINTOPOINT | IFF_NOARP | IFF_MULTICAST;\n\t\tdev->tx_queue_len = TUN_READQ_SIZE;  /* We prefer our own queue length */\n\t\tbreak;\n\n\tcase TUN_TAP_DEV:\n\t\tdev->netdev_ops = &tap_netdev_ops;\n\t\t/* Ethernet TAP Device */\n\t\tether_setup(dev);\n\t\tdev->priv_flags &= ~IFF_TX_SKB_SHARING;\n\n\t\teth_hw_addr_random(dev);\n\n\t\tdev->tx_queue_len = TUN_READQ_SIZE;  /* We prefer our own queue length */\n\t\tbreak;\n\t}\n}",
+            2
+        ],
+        [
+            "arch/score/include/asm/uaccess.h",
+            "access_ok",
+            "#define access_ok(type, addr, size)\t\t\t\t\\ /* <=== arch/score/include/asm/uaccess.h:56:57:access_ok:3 */ \n\tlikely(__access_ok((unsigned long)(addr), (size)))",
+            2
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_put",
+            "static void tun_put(struct tun_struct *tun) /* <=== tun_put */ \n{\n\tstruct tun_file *tfile = tun->tfile;\n\n\tif (atomic_dec_and_test(&tfile->count))\n\t\ttun_detach(tfile->tun);\n}",
+            1
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_free_netdev",
+            "static void tun_free_netdev(struct net_device *dev) /* <=== tun_free_netdev */ \n{\n\tstruct tun_struct *tun = netdev_priv(dev);\n\n\tBUG_ON(!test_bit(SOCK_EXTERNALLY_ALLOCATED, &tun->socket.flags));\n\n\tsk_release_kernel(tun->socket.sk);\n}",
+            2
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_get_iff",
+            "static int tun_get_iff(struct net *net, struct tun_struct *tun, /* <=== tun_get_iff */ \n\t\t       struct ifreq *ifr)\n{\n\ttun_debug(KERN_INFO, tun, \"tun_get_iff\\n\");\n\n\tstrcpy(ifr->ifr_name, tun->dev->name);\n\n\tifr->ifr_flags = tun_flags(tun);\n\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "include/net/sock.h",
+            "sock_set_flag",
+            "static inline void sock_set_flag(struct sock *sk, enum sock_flags flag) /* <=== sock_set_flag */ \n{\n\t__set_bit(flag, &sk->sk_flags);\n}",
+            2
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_flags",
+            "static int tun_flags(struct tun_struct *tun) /* <=== tun_flags */ \n{\n\tint flags = 0;\n\n\tif (tun->flags & TUN_TUN_DEV)\n\t\tflags |= IFF_TUN;\n\telse\n\t\tflags |= IFF_TAP;\n\n\tif (tun->flags & TUN_NO_PI)\n\t\tflags |= IFF_NO_PI;\n\n\tif (tun->flags & TUN_ONE_QUEUE)\n\t\tflags |= IFF_ONE_QUEUE;\n\n\tif (tun->flags & TUN_VNET_HDR)\n\t\tflags |= IFF_VNET_HDR;\n\n\treturn flags;\n}",
+            2
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_debug",
+            "#define tun_debug(level, tun, fmt, args...)\t\t\t\\ /* <=== drivers/net/tun.c:91:95:tun_debug:4 */ \ndo {\t\t\t\t\t\t\t\t\\\n\tif (0)\t\t\t\t\t\t\t\\\n\t\tnetdev_printk(level, tun->dev, fmt, ##args);\t\\\n} while (0)",
+            1
+        ],
+        [
+            "arch/score/include/asm/uaccess.h",
+            "copy_to_user",
+            "static inline unsigned long /* <=== copy_to_user */ \ncopy_to_user(void *to, const void *from, unsigned long len)\n{\n\tunsigned long over;\n\n\tif (access_ok(VERIFY_WRITE, to, len))\n\t\treturn __copy_tofrom_user(to, from, len);\n\n\tif ((unsigned long)to < TASK_SIZE) {\n\t\tover = (unsigned long)to + len - TASK_SIZE;\n\t\treturn __copy_tofrom_user(to, from, len - over) + over;\n\t}\n\treturn len;\n}",
+            1
+        ],
+        [
+            "drivers/net/tun.c",
+            "__tun_get",
+            "static struct tun_struct *__tun_get(struct tun_file *tfile) /* <=== __tun_get */ \n{\n\tstruct tun_struct *tun = NULL;\n\n\tif (atomic_inc_not_zero(&tfile->count))\n\t\ttun = tfile->tun;\n\n\treturn tun;\n}",
+            1
+        ],
+        [
+            "include/net/net_namespace.h",
+            "put_net",
+            "static inline void put_net(struct net *net) /* <=== put_net */ \n{\n}",
+            3
+        ],
+        [
+            "tools/perf/util/include/linux/bitops.h",
+            "set_bit",
+            "static inline void set_bit(int nr, unsigned long *addr) /* <=== set_bit */ \n{\n\taddr[nr / BITS_PER_LONG] |= 1UL << (nr % BITS_PER_LONG);\n}",
+            2
+        ],
+        [
+            "arch/score/include/asm/uaccess.h",
+            "copy_from_user",
+            "static inline unsigned long /* <=== copy_from_user */ \ncopy_from_user(void *to, const void *from, unsigned long len)\n{\n\tunsigned long over;\n\n\tif (access_ok(VERIFY_READ, from, len))\n\t\treturn __copy_tofrom_user(to, from, len);\n\n\tif ((unsigned long)from < TASK_SIZE) {\n\t\tover = (unsigned long)from + len - TASK_SIZE;\n\t\treturn __copy_tofrom_user(to, from, len - over) + over;\n\t}\n\treturn len;\n}",
+            1
+        ],
+        [
+            "drivers/net/tun.c",
+            "tun_sk",
+            "static inline struct tun_sock *tun_sk(struct sock *sk) /* <=== tun_sk */ \n{\n\treturn container_of(sk, struct tun_sock, sk);\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/poll.h>",
+        "#include <linux/skbuff.h>",
+        "#include <linux/if_ether.h>",
+        "#include <linux/init.h>",
+        "#include <linux/slab.h>",
+        "#include <net/rtnetlink.h>",
+        "#include <linux/ethtool.h>",
+        "#include <linux/errno.h>",
+        "#include <asm/uaccess.h>",
+        "#include <linux/miscdevice.h>",
+        "#include <linux/if_tun.h>",
+        "#include <net/sock.h>",
+        "#include <linux/module.h>",
+        "#include <linux/if.h>",
+        "#include <linux/nsproxy.h>",
+        "#include <linux/rcupdate.h>",
+        "#include <linux/rtnetlink.h>",
+        "#include <linux/if_arp.h>",
+        "#include <linux/etherdevice.h>",
+        "#include <linux/major.h>",
+        "#include <linux/crc32.h>",
+        "#include <linux/fcntl.h>",
+        "#include <net/net_namespace.h>",
+        "#include <linux/compat.h>",
+        "#include <linux/kernel.h>",
+        "#include <linux/netdevice.h>",
+        "#include <linux/virtio_net.h>",
+        "#include <net/netns/generic.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct virtio_net_hdr {\n#define VIRTIO_NET_HDR_F_NEEDS_CSUM\t1\t// Use csum_start, csum_offset\n#define VIRTIO_NET_HDR_F_DATA_VALID\t2\t// Csum is valid\n\t__u8 flags;\n#define VIRTIO_NET_HDR_GSO_NONE\t\t0\t// Not a GSO frame\n#define VIRTIO_NET_HDR_GSO_TCPV4\t1\t// GSO frame, IPv4 TCP (TSO)\n#define VIRTIO_NET_HDR_GSO_UDP\t\t3\t// GSO frame, IPv4 UDP (UFO)\n#define VIRTIO_NET_HDR_GSO_TCPV6\t4\t// GSO frame, IPv6 TCP\n#define VIRTIO_NET_HDR_GSO_ECN\t\t0x80\t// TCP has ECN set\n\t__u8 gso_type;\n\t__u16 hdr_len;\t\t/* Ethernet + IP + tcp/udp hdrs */\n\t__u16 gso_size;\t\t/* Bytes to append to hdr_len per frame */\n\t__u16 csum_start;\t/* Position to start checksumming from */\n\t__u16 csum_offset;\t/* Offset after that to place checksum */\n}",
+            "virtio_net_hdr"
+        ],
+        [
+            "struct file",
+            "file"
+        ],
+        [
+            "struct tun_file {\n\tatomic_t count;\n\tstruct tun_struct *tun;\n\tstruct net *net;\n}",
+            "tun_file"
+        ],
+        [
+            "struct ifreq {\n#define IFHWADDRLEN\t6\n\tunion\n\t{\n\t\tchar\tifrn_name[IFNAMSIZ];\t\t/* if name, e.g. \"en0\" */\n\t} ifr_ifrn;\n\t\n\tunion {\n\t\tstruct\tsockaddr ifru_addr;\n\t\tstruct\tsockaddr ifru_dstaddr;\n\t\tstruct\tsockaddr ifru_broadaddr;\n\t\tstruct\tsockaddr ifru_netmask;\n\t\tstruct  sockaddr ifru_hwaddr;\n\t\tshort\tifru_flags;\n\t\tint\tifru_ivalue;\n\t\tint\tifru_mtu;\n\t\tstruct  ifmap ifru_map;\n\t\tchar\tifru_slave[IFNAMSIZ];\t/* Just fits the size */\n\t\tchar\tifru_newname[IFNAMSIZ];\n\t\tvoid __user *\tifru_data;\n\t\tstruct\tif_settings ifru_settings;\n\t} ifr_ifru;\n}",
+            "ifreq"
+        ],
+        [
+            "struct tun_struct {\n\tstruct tun_file\t\t*tfile;\n\tunsigned int \t\tflags;\n\tuid_t\t\t\towner;\n\tgid_t\t\t\tgroup;\n\n\tstruct net_device\t*dev;\n\tnetdev_features_t\tset_features;\n#define TUN_USER_FEATURES (NETIF_F_HW_CSUM|NETIF_F_TSO_ECN|NETIF_F_TSO| \\\n\t\t\t  NETIF_F_TSO6|NETIF_F_UFO)\n\tstruct fasync_struct\t*fasync;\n\n\tstruct tap_filter       txflt;\n\tstruct socket\t\tsocket;\n\tstruct socket_wq\twq;\n\n\tint\t\t\tvnet_hdr_sz;\n\n#ifdef TUN_DEBUG\n\tint debug;\n#endif\n}",
+            "tun_struct"
+        ],
+        [
+            "struct sock_fprog {\t/* Required for SO_ATTACH_FILTER. */\n\tunsigned short\t\tlen;\t/* Number of filter blocks */\n\tstruct sock_filter __user *filter;\n}",
+            "sock_fprog"
+        ]
+    ],
+    "visitedLines_after": {
+        "drivers/net/tun.c": [
+            1370,
+            1371,
+            1382,
+            1383,
+            1384,
+            1386,
+            1387,
+            1388,
+            1397,
+            1399,
+            1400,
+            1401,
+            1403,
+            1405,
+            1408,
+            1409,
+            1413,
+            1414,
+            1417,
+            1419,
+            1420,
+            1421,
+            1422,
+            1423,
+            1426,
+            1427,
+            1430,
+            1434,
+            1438,
+            1440,
+            1441,
+            1443,
+            1445,
+            1449,
+            1451,
+            1453,
+            1456,
+            1458,
+            1460,
+            1463,
+            1465,
+            1466,
+            1468,
+            1470,
+            1471,
+            1473,
+            1482,
+            1483,
+            1486,
+            1488,
+            1489,
+            1494,
+            1496,
+            1497,
+            1498,
+            1499,
+            1502,
+            1504,
+            1507,
+            1510,
+            1511,
+            1512,
+            1513,
+            1516,
+            1517,
+            1518,
+            1522,
+            1525,
+            1526,
+            1527,
+            1528,
+            1531,
+            1532,
+            1533,
+            1536,
+            1537,
+            1541,
+            1544,
+            1546,
+            1547,
+            1549,
+            1550,
+            1553,
+            1556,
+            1558,
+            1559,
+            1561,
+            1565,
+            1570,
+            1571,
+            1572,
+            1573
+        ]
+    },
+    "visitedLines_before": {
+        "drivers/net/tun.c": [
+            1370,
+            1371,
+            1382,
+            1383,
+            1384,
+            1386,
+            1395,
+            1397,
+            1398,
+            1399,
+            1401,
+            1403,
+            1406,
+            1407,
+            1411,
+            1412,
+            1415,
+            1417,
+            1418,
+            1419,
+            1420,
+            1421,
+            1424,
+            1425,
+            1428,
+            1432,
+            1436,
+            1438,
+            1439,
+            1441,
+            1443,
+            1447,
+            1449,
+            1451,
+            1454,
+            1456,
+            1458,
+            1461,
+            1463,
+            1464,
+            1466,
+            1468,
+            1469,
+            1471,
+            1480,
+            1481,
+            1484,
+            1486,
+            1487,
+            1492,
+            1494,
+            1495,
+            1496,
+            1497,
+            1500,
+            1502,
+            1505,
+            1508,
+            1509,
+            1510,
+            1511,
+            1514,
+            1515,
+            1516,
+            1520,
+            1523,
+            1524,
+            1525,
+            1526,
+            1529,
+            1530,
+            1531,
+            1534,
+            1535,
+            1539,
+            1542,
+            1544,
+            1545,
+            1547,
+            1548,
+            1551,
+            1554,
+            1556,
+            1557,
+            1559,
+            1563,
+            1568,
+            1569,
+            1570,
+            1571
+        ]
+    },
+    "visitedParams": {
+        "drivers/net/tun.c": [
+            [
+                "unsigned int cmd",
+                "__tun_chr_ioctl"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "drivers/net/tun.c",
+            "__tun_chr_ioctl",
+            "static long __tun_chr_ioctl(struct file *file, unsigned int cmd, /* <=== __tun_chr_ioctl */ \n\t\t\t    unsigned long arg, int ifreq_len)\n{\n\tstruct tun_file *tfile = file->private_data;\n\tstruct tun_struct *tun;\n\tvoid __user* argp = (void __user*)arg;\n\tstruct sock_fprog fprog;\n\tstruct ifreq ifr;\n\tint sndbuf;\n\tint vnet_hdr_sz;\n\tint ret;\n\n\tif (cmd == TUNSETIFF || _IOC_TYPE(cmd) == 0x89) {\n\t\tif (copy_from_user(&ifr, argp, ifreq_len))\n\t\t\treturn -EFAULT;\n\t} else\n\t\tmemset(&ifr, 0, sizeof(ifr));\n\n\tif (cmd == TUNGETFEATURES) {\n\t\t/* Currently this just means: \"what IFF flags are valid?\".\n\t\t * This is needed because we never checked for invalid flags on\n\t\t * TUNSETIFF. */\n\t\treturn put_user(IFF_TUN | IFF_TAP | IFF_NO_PI | IFF_ONE_QUEUE |\n\t\t\t\tIFF_VNET_HDR,\n\t\t\t\t(unsigned int __user*)argp);\n\t}\n\n\trtnl_lock();\n\n\ttun = __tun_get(tfile);\n\tif (cmd == TUNSETIFF && !tun) {\n\t\tifr.ifr_name[IFNAMSIZ-1] = '\\0';\n\n\t\tret = tun_set_iff(tfile->net, file, &ifr);\n\n\t\tif (ret)\n\t\t\tgoto unlock;\n\n\t\tif (copy_to_user(argp, &ifr, ifreq_len))\n\t\t\tret = -EFAULT;\n\t\tgoto unlock;\n\t}\n\n\tret = -EBADFD;\n\tif (!tun)\n\t\tgoto unlock;\n\n\ttun_debug(KERN_INFO, tun, \"tun_chr_ioctl cmd %d\\n\", cmd);\n\n\tret = 0;\n\tswitch (cmd) {\n\tcase TUNGETIFF:\n\t\tret = tun_get_iff(current->nsproxy->net_ns, tun, &ifr);\n\t\tif (ret)\n\t\t\tbreak;\n\n\t\tif (copy_to_user(argp, &ifr, ifreq_len))\n\t\t\tret = -EFAULT;\n\t\tbreak;\n\n\tcase TUNSETNOCSUM:\n\t\t/* Disable/Enable checksum */\n\n\t\t/* [unimplemented] */\n\t\ttun_debug(KERN_INFO, tun, \"ignored: set checksum %s\\n\",\n\t\t\t  arg ? \"disabled\" : \"enabled\");\n\t\tbreak;\n\n\tcase TUNSETPERSIST:\n\t\t/* Disable/Enable persist mode */\n\t\tif (arg)\n\t\t\ttun->flags |= TUN_PERSIST;\n\t\telse\n\t\t\ttun->flags &= ~TUN_PERSIST;\n\n\t\ttun_debug(KERN_INFO, tun, \"persist %s\\n\",\n\t\t\t  arg ? \"enabled\" : \"disabled\");\n\t\tbreak;\n\n\tcase TUNSETOWNER:\n\t\t/* Set owner of the device */\n\t\ttun->owner = (uid_t) arg;\n\n\t\ttun_debug(KERN_INFO, tun, \"owner set to %d\\n\", tun->owner);\n\t\tbreak;\n\n\tcase TUNSETGROUP:\n\t\t/* Set group of the device */\n\t\ttun->group= (gid_t) arg;\n\n\t\ttun_debug(KERN_INFO, tun, \"group set to %d\\n\", tun->group);\n\t\tbreak;\n\n\tcase TUNSETLINK:\n\t\t/* Only allow setting the type when the interface is down */\n\t\tif (tun->dev->flags & IFF_UP) {\n\t\t\ttun_debug(KERN_INFO, tun,\n\t\t\t\t  \"Linktype set failed because interface is up\\n\");\n\t\t\tret = -EBUSY;\n\t\t} else {\n\t\t\ttun->dev->type = (int) arg;\n\t\t\ttun_debug(KERN_INFO, tun, \"linktype set to %d\\n\",\n\t\t\t\t  tun->dev->type);\n\t\t\tret = 0;\n\t\t}\n\t\tbreak;\n\n#ifdef TUN_DEBUG\n\tcase TUNSETDEBUG:\n\t\ttun->debug = arg;\n\t\tbreak;\n#endif\n\tcase TUNSETOFFLOAD:\n\t\tret = set_offload(tun, arg);\n\t\tbreak;\n\n\tcase TUNSETTXFILTER:\n\t\t/* Can be set only for TAPs */\n\t\tret = -EINVAL;\n\t\tif ((tun->flags & TUN_TYPE_MASK) != TUN_TAP_DEV)\n\t\t\tbreak;\n\t\tret = update_filter(&tun->txflt, (void __user *)arg);\n\t\tbreak;\n\n\tcase SIOCGIFHWADDR:\n\t\t/* Get hw address */\n\t\tmemcpy(ifr.ifr_hwaddr.sa_data, tun->dev->dev_addr, ETH_ALEN);\n\t\tifr.ifr_hwaddr.sa_family = tun->dev->type;\n\t\tif (copy_to_user(argp, &ifr, ifreq_len))\n\t\t\tret = -EFAULT;\n\t\tbreak;\n\n\tcase SIOCSIFHWADDR:\n\t\t/* Set hw address */\n\t\ttun_debug(KERN_DEBUG, tun, \"set hw address: %pM\\n\",\n\t\t\t  ifr.ifr_hwaddr.sa_data);\n\n\t\tret = dev_set_mac_address(tun->dev, &ifr.ifr_hwaddr);\n\t\tbreak;\n\n\tcase TUNGETSNDBUF:\n\t\tsndbuf = tun->socket.sk->sk_sndbuf;\n\t\tif (copy_to_user(argp, &sndbuf, sizeof(sndbuf)))\n\t\t\tret = -EFAULT;\n\t\tbreak;\n\n\tcase TUNSETSNDBUF:\n\t\tif (copy_from_user(&sndbuf, argp, sizeof(sndbuf))) {\n\t\t\tret = -EFAULT;\n\t\t\tbreak;\n\t\t}\n\n\t\ttun->socket.sk->sk_sndbuf = sndbuf;\n\t\tbreak;\n\n\tcase TUNGETVNETHDRSZ:\n\t\tvnet_hdr_sz = tun->vnet_hdr_sz;\n\t\tif (copy_to_user(argp, &vnet_hdr_sz, sizeof(vnet_hdr_sz)))\n\t\t\tret = -EFAULT;\n\t\tbreak;\n\n\tcase TUNSETVNETHDRSZ:\n\t\tif (copy_from_user(&vnet_hdr_sz, argp, sizeof(vnet_hdr_sz))) {\n\t\t\tret = -EFAULT;\n\t\t\tbreak;\n\t\t}\n\t\tif (vnet_hdr_sz < (int)sizeof(struct virtio_net_hdr)) {\n\t\t\tret = -EINVAL;\n\t\t\tbreak;\n\t\t}\n\n\t\ttun->vnet_hdr_sz = vnet_hdr_sz;\n\t\tbreak;\n\n\tcase TUNATTACHFILTER:\n\t\t/* Can be set only for TAPs */\n\t\tret = -EINVAL;\n\t\tif ((tun->flags & TUN_TYPE_MASK) != TUN_TAP_DEV)\n\t\t\tbreak;\n\t\tret = -EFAULT;\n\t\tif (copy_from_user(&fprog, argp, sizeof(fprog)))\n\t\t\tbreak;\n\n\t\tret = sk_attach_filter(&fprog, tun->socket.sk);\n\t\tbreak;\n\n\tcase TUNDETACHFILTER:\n\t\t/* Can be set only for TAPs */\n\t\tret = -EINVAL;\n\t\tif ((tun->flags & TUN_TYPE_MASK) != TUN_TAP_DEV)\n\t\t\tbreak;\n\t\tret = sk_detach_filter(tun->socket.sk);\n\t\tbreak;\n\n\tdefault:\n\t\tret = -EINVAL;\n\t\tbreak;\n\t}\n\nunlock:\n\trtnl_unlock();\n\tif (tun)\n\t\ttun_put(tun);\n\treturn ret;\n}",
+            1370
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "drivers/net/tun.c",
+            "__tun_chr_ioctl",
+            "static long __tun_chr_ioctl(struct file *file, unsigned int cmd, /* <=== __tun_chr_ioctl */ \n\t\t\t    unsigned long arg, int ifreq_len)\n{\n\tstruct tun_file *tfile = file->private_data;\n\tstruct tun_struct *tun;\n\tvoid __user* argp = (void __user*)arg;\n\tstruct sock_fprog fprog;\n\tstruct ifreq ifr;\n\tint sndbuf;\n\tint vnet_hdr_sz;\n\tint ret;\n\n\tif (cmd == TUNSETIFF || _IOC_TYPE(cmd) == 0x89)\n\t\tif (copy_from_user(&ifr, argp, ifreq_len))\n\t\t\treturn -EFAULT;\n\n\tif (cmd == TUNGETFEATURES) {\n\t\t/* Currently this just means: \"what IFF flags are valid?\".\n\t\t * This is needed because we never checked for invalid flags on\n\t\t * TUNSETIFF. */\n\t\treturn put_user(IFF_TUN | IFF_TAP | IFF_NO_PI | IFF_ONE_QUEUE |\n\t\t\t\tIFF_VNET_HDR,\n\t\t\t\t(unsigned int __user*)argp);\n\t}\n\n\trtnl_lock();\n\n\ttun = __tun_get(tfile);\n\tif (cmd == TUNSETIFF && !tun) {\n\t\tifr.ifr_name[IFNAMSIZ-1] = '\\0';\n\n\t\tret = tun_set_iff(tfile->net, file, &ifr);\n\n\t\tif (ret)\n\t\t\tgoto unlock;\n\n\t\tif (copy_to_user(argp, &ifr, ifreq_len))\n\t\t\tret = -EFAULT;\n\t\tgoto unlock;\n\t}\n\n\tret = -EBADFD;\n\tif (!tun)\n\t\tgoto unlock;\n\n\ttun_debug(KERN_INFO, tun, \"tun_chr_ioctl cmd %d\\n\", cmd);\n\n\tret = 0;\n\tswitch (cmd) {\n\tcase TUNGETIFF:\n\t\tret = tun_get_iff(current->nsproxy->net_ns, tun, &ifr);\n\t\tif (ret)\n\t\t\tbreak;\n\n\t\tif (copy_to_user(argp, &ifr, ifreq_len))\n\t\t\tret = -EFAULT;\n\t\tbreak;\n\n\tcase TUNSETNOCSUM:\n\t\t/* Disable/Enable checksum */\n\n\t\t/* [unimplemented] */\n\t\ttun_debug(KERN_INFO, tun, \"ignored: set checksum %s\\n\",\n\t\t\t  arg ? \"disabled\" : \"enabled\");\n\t\tbreak;\n\n\tcase TUNSETPERSIST:\n\t\t/* Disable/Enable persist mode */\n\t\tif (arg)\n\t\t\ttun->flags |= TUN_PERSIST;\n\t\telse\n\t\t\ttun->flags &= ~TUN_PERSIST;\n\n\t\ttun_debug(KERN_INFO, tun, \"persist %s\\n\",\n\t\t\t  arg ? \"enabled\" : \"disabled\");\n\t\tbreak;\n\n\tcase TUNSETOWNER:\n\t\t/* Set owner of the device */\n\t\ttun->owner = (uid_t) arg;\n\n\t\ttun_debug(KERN_INFO, tun, \"owner set to %d\\n\", tun->owner);\n\t\tbreak;\n\n\tcase TUNSETGROUP:\n\t\t/* Set group of the device */\n\t\ttun->group= (gid_t) arg;\n\n\t\ttun_debug(KERN_INFO, tun, \"group set to %d\\n\", tun->group);\n\t\tbreak;\n\n\tcase TUNSETLINK:\n\t\t/* Only allow setting the type when the interface is down */\n\t\tif (tun->dev->flags & IFF_UP) {\n\t\t\ttun_debug(KERN_INFO, tun,\n\t\t\t\t  \"Linktype set failed because interface is up\\n\");\n\t\t\tret = -EBUSY;\n\t\t} else {\n\t\t\ttun->dev->type = (int) arg;\n\t\t\ttun_debug(KERN_INFO, tun, \"linktype set to %d\\n\",\n\t\t\t\t  tun->dev->type);\n\t\t\tret = 0;\n\t\t}\n\t\tbreak;\n\n#ifdef TUN_DEBUG\n\tcase TUNSETDEBUG:\n\t\ttun->debug = arg;\n\t\tbreak;\n#endif\n\tcase TUNSETOFFLOAD:\n\t\tret = set_offload(tun, arg);\n\t\tbreak;\n\n\tcase TUNSETTXFILTER:\n\t\t/* Can be set only for TAPs */\n\t\tret = -EINVAL;\n\t\tif ((tun->flags & TUN_TYPE_MASK) != TUN_TAP_DEV)\n\t\t\tbreak;\n\t\tret = update_filter(&tun->txflt, (void __user *)arg);\n\t\tbreak;\n\n\tcase SIOCGIFHWADDR:\n\t\t/* Get hw address */\n\t\tmemcpy(ifr.ifr_hwaddr.sa_data, tun->dev->dev_addr, ETH_ALEN);\n\t\tifr.ifr_hwaddr.sa_family = tun->dev->type;\n\t\tif (copy_to_user(argp, &ifr, ifreq_len))\n\t\t\tret = -EFAULT;\n\t\tbreak;\n\n\tcase SIOCSIFHWADDR:\n\t\t/* Set hw address */\n\t\ttun_debug(KERN_DEBUG, tun, \"set hw address: %pM\\n\",\n\t\t\t  ifr.ifr_hwaddr.sa_data);\n\n\t\tret = dev_set_mac_address(tun->dev, &ifr.ifr_hwaddr);\n\t\tbreak;\n\n\tcase TUNGETSNDBUF:\n\t\tsndbuf = tun->socket.sk->sk_sndbuf;\n\t\tif (copy_to_user(argp, &sndbuf, sizeof(sndbuf)))\n\t\t\tret = -EFAULT;\n\t\tbreak;\n\n\tcase TUNSETSNDBUF:\n\t\tif (copy_from_user(&sndbuf, argp, sizeof(sndbuf))) {\n\t\t\tret = -EFAULT;\n\t\t\tbreak;\n\t\t}\n\n\t\ttun->socket.sk->sk_sndbuf = sndbuf;\n\t\tbreak;\n\n\tcase TUNGETVNETHDRSZ:\n\t\tvnet_hdr_sz = tun->vnet_hdr_sz;\n\t\tif (copy_to_user(argp, &vnet_hdr_sz, sizeof(vnet_hdr_sz)))\n\t\t\tret = -EFAULT;\n\t\tbreak;\n\n\tcase TUNSETVNETHDRSZ:\n\t\tif (copy_from_user(&vnet_hdr_sz, argp, sizeof(vnet_hdr_sz))) {\n\t\t\tret = -EFAULT;\n\t\t\tbreak;\n\t\t}\n\t\tif (vnet_hdr_sz < (int)sizeof(struct virtio_net_hdr)) {\n\t\t\tret = -EINVAL;\n\t\t\tbreak;\n\t\t}\n\n\t\ttun->vnet_hdr_sz = vnet_hdr_sz;\n\t\tbreak;\n\n\tcase TUNATTACHFILTER:\n\t\t/* Can be set only for TAPs */\n\t\tret = -EINVAL;\n\t\tif ((tun->flags & TUN_TYPE_MASK) != TUN_TAP_DEV)\n\t\t\tbreak;\n\t\tret = -EFAULT;\n\t\tif (copy_from_user(&fprog, argp, sizeof(fprog)))\n\t\t\tbreak;\n\n\t\tret = sk_attach_filter(&fprog, tun->socket.sk);\n\t\tbreak;\n\n\tcase TUNDETACHFILTER:\n\t\t/* Can be set only for TAPs */\n\t\tret = -EINVAL;\n\t\tif ((tun->flags & TUN_TYPE_MASK) != TUN_TAP_DEV)\n\t\t\tbreak;\n\t\tret = sk_detach_filter(tun->socket.sk);\n\t\tbreak;\n\n\tdefault:\n\t\tret = -EINVAL;\n\t\tbreak;\n\t}\n\nunlock:\n\trtnl_unlock();\n\tif (tun)\n\t\ttun_put(tun);\n\treturn ret;\n}",
+            1370
+        ]
+    ]
+}

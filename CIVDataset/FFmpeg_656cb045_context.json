@@ -1,0 +1,1230 @@
+{
+    "calleeMethods": [
+        [
+            "libavcodec/vp3.c",
+            "vp3_dequant",
+            "static inline int vp3_dequant(Vp3DecodeContext *s, Vp3Fragment *frag, /* <=== vp3_dequant */ \n                              int plane, int inter, int16_t block[64])\n{\n    int16_t *dequantizer = s->qmat[frag->qpi][inter][plane];\n    uint8_t *perm = s->idct_scantable;\n    int i = 0;\n\n    do {\n        int token = *s->dct_tokens[plane][i];\n        switch (token & 3) {\n        case 0: // EOB\n            if (--token < 4) // 0-3 are token types so the EOB run must now be 0\n                s->dct_tokens[plane][i]++;\n            else\n                *s->dct_tokens[plane][i] = token & ~3;\n            goto end;\n        case 1: // zero run\n            s->dct_tokens[plane][i]++;\n            i += (token >> 2) & 0x7f;\n            if (i > 63) {\n                av_log(s->avctx, AV_LOG_ERROR, \"Coefficient index overflow\\n\");\n                return i;\n            }\n            block[perm[i]] = (token >> 9) * dequantizer[perm[i]];\n            i++;\n            break;\n        case 2: // coeff\n            block[perm[i]] = (token >> 2) * dequantizer[perm[i]];\n            s->dct_tokens[plane][i++]++;\n            break;\n        default: // shouldn't happen\n            return i;\n        }\n    } while (i < 64);\n    // return value is expected to be a valid level\n    i--;\nend:\n    // the actual DC+prediction is in the fragment structure\n    block[0] = frag->dc * s->qmat[0][inter][plane][0];\n    return i;\n}",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "update_frames",
+            "static int update_frames(AVCodecContext *avctx) /* <=== update_frames */ \n{\n    Vp3DecodeContext *s = avctx->priv_data;\n    int ret = 0;\n\n    /* shuffle frames (last = current) */\n    ff_thread_release_ext_buffer(avctx, &s->last_frame);\n    ret = ff_thread_ref_frame(&s->last_frame, &s->current_frame);\n    if (ret < 0)\n        goto fail;\n\n    if (s->keyframe) {\n        ff_thread_release_ext_buffer(avctx, &s->golden_frame);\n        ret = ff_thread_ref_frame(&s->golden_frame, &s->current_frame);\n    }\n\nfail:\n    ff_thread_release_ext_buffer(avctx, &s->current_frame);\n    return ret;\n}",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "CLOSE_READER",
+            "#define CLOSE_READER(name, gb) (gb)->index = name ## _index /* <=== libavcodec/get_bits.h:150:150:CLOSE_READER:2 */ ",
+            2
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "AV_GET_BUFFER_FLAG_REF",
+            "#define AV_GET_BUFFER_FLAG_REF (1 << 0) /* <=== libavcodec/avcodec.h:361:361:AV_GET_BUFFER_FLAG_REF:0 */ ",
+            1
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_DEBUG",
+            "#define AV_LOG_DEBUG    48 /* <=== libavutil/log.h:201:201:AV_LOG_DEBUG:0 */ ",
+            2
+        ],
+        [
+            "libavutil/frame.c",
+            "av_frame_ref",
+            "int av_frame_ref(AVFrame *dst, const AVFrame *src) /* <=== av_frame_ref */ \n{\n    int i, ret = 0;\n\n    av_assert1(dst->width == 0 && dst->height == 0);\n    av_assert1(dst->channels == 0);\n\n    dst->format         = src->format;\n    dst->width          = src->width;\n    dst->height         = src->height;\n    dst->channels       = src->channels;\n    dst->channel_layout = src->channel_layout;\n    dst->nb_samples     = src->nb_samples;\n\n    ret = frame_copy_props(dst, src, 0);\n    if (ret < 0)\n        goto fail;\n\n    /* duplicate the frame data if it's not refcounted */\n    if (!src->buf[0]) {\n        ret = av_frame_get_buffer(dst, 0);\n        if (ret < 0)\n            goto fail;\n\n        ret = av_frame_copy(dst, src);\n        if (ret < 0)\n            goto fail;\n\n        return 0;\n    }\n\n    /* ref the buffers */\n    for (i = 0; i < FF_ARRAY_ELEMS(src->buf); i++) {\n        if (!src->buf[i])\n            continue;\n        dst->buf[i] = av_buffer_ref(src->buf[i]);\n        if (!dst->buf[i]) {\n            ret = AVERROR(ENOMEM);\n            goto fail;\n        }\n    }\n\n    if (src->extended_buf) {\n        dst->extended_buf = av_calloc(src->nb_extended_buf,\n                                      sizeof(*dst->extended_buf));\n        if (!dst->extended_buf) {\n            ret = AVERROR(ENOMEM);\n            goto fail;\n        }\n        dst->nb_extended_buf = src->nb_extended_buf;\n\n        for (i = 0; i < src->nb_extended_buf; i++) {\n            dst->extended_buf[i] = av_buffer_ref(src->extended_buf[i]);\n            if (!dst->extended_buf[i]) {\n                ret = AVERROR(ENOMEM);\n                goto fail;\n            }\n        }\n    }\n\n    if (src->hw_frames_ctx) {\n        dst->hw_frames_ctx = av_buffer_ref(src->hw_frames_ctx);\n        if (!dst->hw_frames_ctx) {\n            ret = AVERROR(ENOMEM);\n            goto fail;\n        }\n    }\n\n    /* duplicate extended data */\n    if (src->extended_data != src->data) {\n        int ch = src->channels;\n\n        if (!ch) {\n            ret = AVERROR(EINVAL);\n            goto fail;\n        }\n        CHECK_CHANNELS_CONSISTENCY(src);\n\n        dst->extended_data = av_malloc_array(sizeof(*dst->extended_data), ch);\n        if (!dst->extended_data) {\n            ret = AVERROR(ENOMEM);\n            goto fail;\n        }\n        memcpy(dst->extended_data, src->extended_data, sizeof(*src->extended_data) * ch);\n    } else\n        dst->extended_data = dst->data;\n\n    memcpy(dst->data,     src->data,     sizeof(src->data));\n    memcpy(dst->linesize, src->linesize, sizeof(src->linesize));\n\n    return 0;\n\nfail:\n    av_frame_unref(dst);\n    return ret;\n}",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "OPEN_READER",
+            "#define OPEN_READER(name, gb) OPEN_READER_NOSIZE(name, gb) /* <=== libavcodec/get_bits.h:139:139:OPEN_READER:2 */ ",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_release_ext_buffer",
+            "void ff_thread_release_ext_buffer(AVCodecContext *avctx, ThreadFrame *f) /* <=== ff_thread_release_ext_buffer */ \n{\n    av_buffer_unref(&f->progress);\n    f->owner[0] = f->owner[1] = NULL;\n    ff_thread_release_buffer(avctx, f->f);\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "get_coeff",
+            "static inline int get_coeff(GetBitContext *gb, int token, int16_t *coeff) /* <=== get_coeff */ \n{\n    int bits_to_get, zero_run;\n\n    bits_to_get = coeff_get_bits[token];\n    if (bits_to_get)\n        bits_to_get = get_bits(gb, bits_to_get);\n    *coeff = coeff_tables[token][bits_to_get];\n\n    zero_run = zero_run_base[token];\n    if (zero_run_get_bits[token])\n        zero_run += get_bits(gb, zero_run_get_bits[token]);\n\n    return zero_run;\n}",
+            3
+        ],
+        [
+            "libavutil/frame.c",
+            "av_frame_get_buffer",
+            "int av_frame_get_buffer(AVFrame *frame, int align) /* <=== av_frame_get_buffer */ \n{\n    if (frame->format < 0)\n        return AVERROR(EINVAL);\n\n    if (frame->width > 0 && frame->height > 0)\n        return get_video_buffer(frame, align);\n    else if (frame->nb_samples > 0 && (frame->channel_layout || frame->channels > 0))\n        return get_audio_buffer(frame, align);\n\n    return AVERROR(EINVAL);\n}",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "await_reference_row",
+            "static void await_reference_row(Vp3DecodeContext *s, Vp3Fragment *fragment, /* <=== await_reference_row */ \n                                int motion_y, int y)\n{\n    ThreadFrame *ref_frame;\n    int ref_row;\n    int border = motion_y & 1;\n\n    if (fragment->coding_method == MODE_USING_GOLDEN ||\n        fragment->coding_method == MODE_GOLDEN_MV)\n        ref_frame = &s->golden_frame;\n    else\n        ref_frame = &s->last_frame;\n\n    ref_row = y + (motion_y >> 1);\n    ref_row = FFMAX(FFABS(ref_row), ref_row + 8 + border);\n\n    ff_thread_await_progress(ref_frame, ref_row, 0);\n}",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "BLOCK_X",
+            "#define BLOCK_X (2 * mb_x + (k & 1)) /* <=== libavcodec/vp3.c:644:644:BLOCK_X:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "init_get_bits_xe",
+            "static inline int init_get_bits_xe(GetBitContext *s, const uint8_t *buffer, /* <=== init_get_bits_xe */ \n                                   int bit_size, int is_le)\n{\n    int buffer_size;\n    int ret = 0;\n\n    if (bit_size >= INT_MAX - FFMAX(7, AV_INPUT_BUFFER_PADDING_SIZE*8) || bit_size < 0 || !buffer) {\n        bit_size    = 0;\n        buffer      = NULL;\n        ret         = AVERROR_INVALIDDATA;\n    }\n\n    buffer_size = (bit_size + 7) >> 3;\n\n    s->buffer             = buffer;\n    s->size_in_bits       = bit_size;\n    s->size_in_bits_plus8 = bit_size + 8;\n    s->buffer_end         = buffer + buffer_size;\n    s->index              = 0;\n\n#if CACHED_BITSTREAM_READER\n    s->cache              = 0;\n    s->bits_left          = 0;\n    refill_64(s, is_le);\n#endif\n\n    return ret;\n}",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits",
+            "static inline unsigned int get_bits(GetBitContext *s, int n) /* <=== get_bits */ \n{\n    register unsigned int tmp;\n#if CACHED_BITSTREAM_READER\n\n    av_assert2(n>0 && n<=32);\n    if (n > s->bits_left) {\n#ifdef BITSTREAM_READER_LE\n        refill_32(s, 1);\n#else\n        refill_32(s, 0);\n#endif\n        if (s->bits_left < 32)\n            s->bits_left = n;\n    }\n\n#ifdef BITSTREAM_READER_LE\n    tmp = get_val(s, n, 1);\n#else\n    tmp = get_val(s, n, 0);\n#endif\n#else\n    OPEN_READER(re, s);\n    av_assert2(n>0 && n<=25);\n    UPDATE_CACHE(re, s);\n    tmp = SHOW_UBITS(re, s, n);\n    LAST_SKIP_BITS(re, s, n);\n    CLOSE_READER(re, s);\n#endif\n    av_assert2(tmp < UINT64_C(1) << n);\n    return tmp;\n}",
+            1
+        ],
+        [
+            "libavutil/frame.c",
+            "get_frame_defaults",
+            "static void get_frame_defaults(AVFrame *frame) /* <=== get_frame_defaults */ \n{\n    memset(frame, 0, sizeof(*frame));\n\n    frame->pts                   =\n    frame->pkt_dts               = AV_NOPTS_VALUE;\n    frame->best_effort_timestamp = AV_NOPTS_VALUE;\n    frame->pkt_duration        = 0;\n    frame->pkt_pos             = -1;\n    frame->pkt_size            = -1;\n    frame->time_base           = (AVRational){ 0, 1 };\n    frame->key_frame           = 1;\n    frame->sample_aspect_ratio = (AVRational){ 0, 1 };\n    frame->format              = -1; /* unknown */\n    frame->extended_data       = frame->data;\n    frame->color_primaries     = AVCOL_PRI_UNSPECIFIED;\n    frame->color_trc           = AVCOL_TRC_UNSPECIFIED;\n    frame->colorspace          = AVCOL_SPC_UNSPECIFIED;\n    frame->color_range         = AVCOL_RANGE_UNSPECIFIED;\n    frame->chroma_location     = AVCHROMA_LOC_UNSPECIFIED;\n    frame->flags               = 0;\n}",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "vp4_get_mv",
+            "static int vp4_get_mv(Vp3DecodeContext *s, GetBitContext *gb, int axis, int last_motion) /* <=== vp4_get_mv */ \n{\n    int v = get_vlc2(gb, s->vp4_mv_vlc[axis][vp4_mv_table_selector[FFABS(last_motion)]].table,\n                     VP4_MV_VLC_BITS, 2);\n    return last_motion < 0 ? -v : v;\n}",
+            2
+        ],
+        [
+            "libavutil/mem.c",
+            "av_malloc",
+            "void *av_malloc(size_t size) /* <=== av_malloc */ \n{\n    void *ptr = NULL;\n\n    if (size > atomic_load_explicit(&max_alloc_size, memory_order_relaxed))\n        return NULL;\n\n#if HAVE_POSIX_MEMALIGN\n    if (size) //OS X on SDK 10.6 has a broken posix_memalign implementation\n    if (posix_memalign(&ptr, ALIGN, size))\n        ptr = NULL;\n#elif HAVE_ALIGNED_MALLOC\n    ptr = _aligned_malloc(size, ALIGN);\n#elif HAVE_MEMALIGN\n#ifndef __DJGPP__\n    ptr = memalign(ALIGN, size);\n#else\n    ptr = memalign(size, ALIGN);\n#endif\n    /* Why 64?\n     * Indeed, we should align it:\n     *   on  4 for 386\n     *   on 16 for 486\n     *   on 32 for 586, PPro - K6-III\n     *   on 64 for K7 (maybe for P3 too).\n     * Because L1 and L2 caches are aligned on those values.\n     * But I don't want to code such logic here!\n     */\n    /* Why 32?\n     * For AVX ASM. SSE / NEON needs only 16.\n     * Why not larger? Because I did not see a difference in benchmarks ...\n     */\n    /* benchmarks with P3\n     * memalign(64) + 1          3071, 3051, 3032\n     * memalign(64) + 2          3051, 3032, 3041\n     * memalign(64) + 4          2911, 2896, 2915\n     * memalign(64) + 8          2545, 2554, 2550\n     * memalign(64) + 16         2543, 2572, 2563\n     * memalign(64) + 32         2546, 2545, 2571\n     * memalign(64) + 64         2570, 2533, 2558\n     *\n     * BTW, malloc seems to do 8-byte alignment by default here.\n     */\n#else\n    ptr = malloc(size);\n#endif\n    if(!ptr && !size) {\n        size = 1;\n        ptr= av_malloc(1);\n    }\n#if CONFIG_MEMORY_POISONING\n    if (ptr)\n        memset(ptr, FF_MEMORY_POISON, size);\n#endif\n    return ptr;\n}",
+            1
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_ERROR",
+            "#define AV_LOG_ERROR    16 /* <=== libavutil/log.h:180:180:AV_LOG_ERROR:0 */ ",
+            1
+        ],
+        [
+            "libavutil/common.h",
+            "FFABS",
+            "#define FFABS(a) ((a) >= 0 ? (a) : (-(a))) /* <=== libavutil/common.h:65:65:FFABS:1 */ ",
+            1
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR",
+            "#define AVERROR(e) (e) /* <=== libavutil/error.h:45:45:AVERROR:1 */ ",
+            2
+        ],
+        [
+            "libavutil/mem.c",
+            "size_mult",
+            "static int size_mult(size_t a, size_t b, size_t *r) /* <=== size_mult */ \n{\n    size_t t;\n\n#if (!defined(__INTEL_COMPILER) && AV_GCC_VERSION_AT_LEAST(5,1)) || AV_HAS_BUILTIN(__builtin_mul_overflow)\n    if (__builtin_mul_overflow(a, b, &t))\n        return AVERROR(EINVAL);\n#else\n    t = a * b;\n    /* Hack inspired from glibc: don't try the division if nelem and elsize\n     * are both less than sqrt(SIZE_MAX). */\n    if ((a | b) >= ((size_t)1 << (sizeof(size_t) * 4)) && a && t / a != b)\n        return AVERROR(EINVAL);\n#endif\n    *r = t;\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavutil/frame.c",
+            "get_video_buffer",
+            "static int get_video_buffer(AVFrame *frame, int align) /* <=== get_video_buffer */ \n{\n    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);\n    int ret, i, padded_height, total_size;\n    int plane_padding = FFMAX(16 + 16/*STRIDE_ALIGN*/, align);\n    ptrdiff_t linesizes[4];\n    size_t sizes[4];\n\n    if (!desc)\n        return AVERROR(EINVAL);\n\n    if ((ret = av_image_check_size(frame->width, frame->height, 0, NULL)) < 0)\n        return ret;\n\n    if (!frame->linesize[0]) {\n        if (align <= 0)\n            align = 32; /* STRIDE_ALIGN. Should be av_cpu_max_align() */\n\n        for(i=1; i<=align; i+=i) {\n            ret = av_image_fill_linesizes(frame->linesize, frame->format,\n                                          FFALIGN(frame->width, i));\n            if (ret < 0)\n                return ret;\n            if (!(frame->linesize[0] & (align-1)))\n                break;\n        }\n\n        for (i = 0; i < 4 && frame->linesize[i]; i++)\n            frame->linesize[i] = FFALIGN(frame->linesize[i], align);\n    }\n\n    for (i = 0; i < 4; i++)\n        linesizes[i] = frame->linesize[i];\n\n    padded_height = FFALIGN(frame->height, 32);\n    if ((ret = av_image_fill_plane_sizes(sizes, frame->format,\n                                         padded_height, linesizes)) < 0)\n        return ret;\n\n    total_size = 4*plane_padding;\n    for (i = 0; i < 4; i++) {\n        if (sizes[i] > INT_MAX - total_size)\n            return AVERROR(EINVAL);\n        total_size += sizes[i];\n    }\n\n    frame->buf[0] = av_buffer_alloc(total_size);\n    if (!frame->buf[0]) {\n        ret = AVERROR(ENOMEM);\n        goto fail;\n    }\n\n    if ((ret = av_image_fill_pointers(frame->data, frame->format, padded_height,\n                                      frame->buf[0]->data, frame->linesize)) < 0)\n        goto fail;\n\n    for (i = 1; i < 4; i++) {\n        if (frame->data[i])\n            frame->data[i] += i * plane_padding;\n    }\n\n    frame->extended_data = frame->data;\n\n    return 0;\nfail:\n    av_frame_unref(frame);\n    return ret;\n}",
+            3
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_await_progress",
+            "void ff_thread_await_progress(ThreadFrame *f, int progress, int field) /* <=== ff_thread_await_progress */ \n{\n}",
+            3
+        ],
+        [
+            "libavutil/frame.c",
+            "av_frame_copy",
+            "int av_frame_copy(AVFrame *dst, const AVFrame *src) /* <=== av_frame_copy */ \n{\n    if (dst->format != src->format || dst->format < 0)\n        return AVERROR(EINVAL);\n\n    if (dst->width > 0 && dst->height > 0)\n        return frame_copy_video(dst, src);\n    else if (dst->nb_samples > 0 && dst->channels > 0)\n        return frame_copy_audio(dst, src);\n\n    return AVERROR(EINVAL);\n}",
+            2
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_finish_setup",
+            "void ff_thread_finish_setup(AVCodecContext *avctx) /* <=== ff_thread_finish_setup */ \n{\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "PUR",
+            "#define PUR 2 /* <=== libavcodec/vp3.c:1650:1650:PUR:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "get_eob_run",
+            "static inline int get_eob_run(GetBitContext *gb, int token) /* <=== get_eob_run */ \n{\n    int v = eob_run_table[token].base;\n    if (eob_run_table[token].bits)\n        v += get_bits(gb, eob_run_table[token].bits);\n    return v;\n}",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "init_get_bits8",
+            "static inline int init_get_bits8(GetBitContext *s, const uint8_t *buffer, /* <=== init_get_bits8 */ \n                                 int byte_size)\n{\n    if (byte_size > INT_MAX / 8 || byte_size < 0)\n        byte_size = -1;\n    return init_get_bits(s, buffer, byte_size * 8);\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "TOKEN_ZERO_RUN",
+            "#define TOKEN_ZERO_RUN(coeff, zero_run) (((coeff) * 512) + ((zero_run) << 2) + 1) /* <=== libavcodec/vp3.c:257:257:TOKEN_ZERO_RUN:2 */ ",
+            3
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert2",
+            "#define av_assert2(cond) ((void)0) /* <=== libavutil/avassert.h:64:64:av_assert2:1 */ ",
+            2
+        ],
+        [
+            "libavutil/macros.h",
+            "FFMAX",
+            "#define FFMAX(a,b) ((a) > (b) ? (a) : (b)) /* <=== libavutil/macros.h:47:47:FFMAX:2 */ ",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_calloc",
+            "void *av_calloc(size_t nmemb, size_t size) /* <=== av_calloc */ \n{\n    size_t result;\n    if (size_mult(nmemb, size, &result) < 0)\n        return NULL;\n    return av_mallocz(result);\n}",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "unpack_modes",
+            "static int unpack_modes(Vp3DecodeContext *s, GetBitContext *gb) /* <=== unpack_modes */ \n{\n    int i, j, k, sb_x, sb_y;\n    int scheme;\n    int current_macroblock;\n    int current_fragment;\n    int coding_mode;\n    int custom_mode_alphabet[CODING_MODE_COUNT];\n    const int *alphabet;\n    Vp3Fragment *frag;\n\n    if (s->keyframe) {\n        for (i = 0; i < s->fragment_count; i++)\n            s->all_fragments[i].coding_method = MODE_INTRA;\n    } else {\n        /* fetch the mode coding scheme for this frame */\n        scheme = get_bits(gb, 3);\n\n        /* is it a custom coding scheme? */\n        if (scheme == 0) {\n            for (i = 0; i < 8; i++)\n                custom_mode_alphabet[i] = MODE_INTER_NO_MV;\n            for (i = 0; i < 8; i++)\n                custom_mode_alphabet[get_bits(gb, 3)] = i;\n            alphabet = custom_mode_alphabet;\n        } else\n            alphabet = ModeAlphabet[scheme - 1];\n\n        /* iterate through all of the macroblocks that contain 1 or more\n         * coded fragments */\n        for (sb_y = 0; sb_y < s->y_superblock_height; sb_y++) {\n            for (sb_x = 0; sb_x < s->y_superblock_width; sb_x++) {\n                if (get_bits_left(gb) <= 0)\n                    return -1;\n\n                for (j = 0; j < 4; j++) {\n                    int mb_x = 2 * sb_x + (j >> 1);\n                    int mb_y = 2 * sb_y + (((j >> 1) + j) & 1);\n                    current_macroblock = mb_y * s->macroblock_width + mb_x;\n\n                    if (mb_x >= s->macroblock_width ||\n                        mb_y >= s->macroblock_height)\n                        continue;\n\n                    /* coding modes are only stored if the macroblock has\n                     * at least one luma block coded, otherwise it must be\n                     * INTER_NO_MV */\n                    for (k = 0; k < 4; k++) {\n                        current_fragment = BLOCK_Y *\n                                           s->fragment_width[0] + BLOCK_X;\n                        if (s->all_fragments[current_fragment].coding_method != MODE_COPY)\n                            break;\n                    }\n                    if (k == 4) {\n                        s->macroblock_coding[current_macroblock] = MODE_INTER_NO_MV;\n                        continue;\n                    }\n\n                    /* mode 7 means get 3 bits for each coding mode */\n                    if (scheme == 7)\n                        coding_mode = get_bits(gb, 3);\n                    else\n                        coding_mode = alphabet[get_vlc2(gb, s->mode_code_vlc.table, 3, 3)];\n\n                    s->macroblock_coding[current_macroblock] = coding_mode;\n                    for (k = 0; k < 4; k++) {\n                        frag = s->all_fragments + BLOCK_Y * s->fragment_width[0] + BLOCK_X;\n                        if (frag->coding_method != MODE_COPY)\n                            frag->coding_method = coding_mode;\n                    }\n\n#define SET_CHROMA_MODES                                                      \\\n    if (frag[s->fragment_start[1]].coding_method != MODE_COPY)                \\\n        frag[s->fragment_start[1]].coding_method = coding_mode;               \\\n    if (frag[s->fragment_start[2]].coding_method != MODE_COPY)                \\\n        frag[s->fragment_start[2]].coding_method = coding_mode;\n\n                    if (s->chroma_y_shift) {\n                        frag = s->all_fragments + mb_y *\n                               s->fragment_width[1] + mb_x;\n                        SET_CHROMA_MODES\n                    } else if (s->chroma_x_shift) {\n                        frag = s->all_fragments +\n                               2 * mb_y * s->fragment_width[1] + mb_x;\n                        for (k = 0; k < 2; k++) {\n                            SET_CHROMA_MODES\n                            frag += s->fragment_width[1];\n                        }\n                    } else {\n                        for (k = 0; k < 4; k++) {\n                            frag = s->all_fragments +\n                                   BLOCK_Y * s->fragment_width[1] + BLOCK_X;\n                            SET_CHROMA_MODES\n                        }\n                    }\n                }\n            }\n        }\n    }\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "TOKEN_COEFF",
+            "#define TOKEN_COEFF(coeff)              (((coeff) * 4) + 2) /* <=== libavcodec/vp3.c:258:258:TOKEN_COEFF:1 */ ",
+            3
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_release_buffer",
+            "void ff_thread_release_buffer(AVCodecContext *avctx, AVFrame *f) /* <=== ff_thread_release_buffer */ \n{\n    if (f)\n        av_frame_unref(f);\n}",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MODE_INTER_PRIOR_LAST",
+            "#define MODE_INTER_PRIOR_LAST 4 /* <=== libavcodec/vp3.c:79:79:MODE_INTER_PRIOR_LAST:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "SB_PARTIALLY_CODED",
+            "#define SB_PARTIALLY_CODED  1 /* <=== libavcodec/vp3.c:67:67:SB_PARTIALLY_CODED:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "unpack_block_qpis",
+            "static int unpack_block_qpis(Vp3DecodeContext *s, GetBitContext *gb) /* <=== unpack_block_qpis */ \n{\n    int qpi, i, j, bit, run_length, blocks_decoded, num_blocks_at_qpi;\n    int num_blocks = s->total_num_coded_frags;\n\n    for (qpi = 0; qpi < s->nqps - 1 && num_blocks > 0; qpi++) {\n        i = blocks_decoded = num_blocks_at_qpi = 0;\n\n        bit        = get_bits1(gb) ^ 1;\n        run_length = 0;\n\n        do {\n            if (run_length == MAXIMUM_LONG_BIT_RUN)\n                bit = get_bits1(gb);\n            else\n                bit ^= 1;\n\n            run_length = get_vlc2(gb, s->superblock_run_length_vlc.table,\n                                  SUPERBLOCK_VLC_BITS, 2);\n            if (run_length == 34)\n                run_length += get_bits(gb, 12);\n            blocks_decoded += run_length;\n\n            if (!bit)\n                num_blocks_at_qpi += run_length;\n\n            for (j = 0; j < run_length; i++) {\n                if (i >= s->total_num_coded_frags)\n                    return -1;\n\n                if (s->all_fragments[s->coded_fragment_list[0][i]].qpi == qpi) {\n                    s->all_fragments[s->coded_fragment_list[0][i]].qpi += bit;\n                    j++;\n                }\n            }\n        } while (blocks_decoded < num_blocks && get_bits_left(gb) > 0);\n\n        num_blocks -= num_blocks_at_qpi;\n    }\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavcodec/internal.h",
+            "FF_CODEC_CAP_ALLOCATE_PROGRESS",
+            "#define FF_CODEC_CAP_ALLOCATE_PROGRESS      (1 << 6) /* <=== libavcodec/internal.h:77:77:FF_CODEC_CAP_ALLOCATE_PROGRESS:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_report_progress",
+            "void ff_thread_report_progress(ThreadFrame *f, int n, int field) /* <=== ff_thread_report_progress */ \n{\n    PerThreadContext *p;\n    atomic_int *progress = f->progress ? (atomic_int*)f->progress->data : NULL;\n\n    if (!progress ||\n        atomic_load_explicit(&progress[field], memory_order_relaxed) >= n)\n        return;\n\n    p = f->owner[field]->internal->thread_ctx;\n\n    if (atomic_load_explicit(&p->debug_threads, memory_order_relaxed))\n        av_log(f->owner[field], AV_LOG_DEBUG,\n               \"%p finished %d field %d\\n\", progress, n, field);\n\n    pthread_mutex_lock(&p->progress_mutex);\n\n    atomic_store_explicit(&progress[field], n, memory_order_release);\n\n    pthread_cond_broadcast(&p->progress_cond);\n    pthread_mutex_unlock(&p->progress_mutex);\n}",
+            1
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_get_buffer",
+            "int ff_thread_get_buffer(AVCodecContext *avctx, AVFrame *f, int flags) /* <=== ff_thread_get_buffer */ \n{\n    return ff_get_buffer(avctx, f, flags);\n}",
+            2
+        ],
+        [
+            "libavutil/frame.h",
+            "AV_NUM_DATA_POINTERS",
+            "#define AV_NUM_DATA_POINTERS 8 /* <=== libavutil/frame.h:318:318:AV_NUM_DATA_POINTERS:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "VP3_MV_VLC_BITS",
+            "#define VP3_MV_VLC_BITS     6 /* <=== libavcodec/vp3.c:53:53:VP3_MV_VLC_BITS:0 */ ",
+            2
+        ],
+        [
+            "libavutil/macros.h",
+            "FF_ARRAY_ELEMS",
+            "#define FF_ARRAY_ELEMS(a) (sizeof(a) / sizeof((a)[0])) /* <=== libavutil/macros.h:53:53:FF_ARRAY_ELEMS:1 */ ",
+            2
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_FATAL",
+            "#define AV_LOG_FATAL     8 /* <=== libavutil/log.h:174:174:AV_LOG_FATAL:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "DC_COEFF",
+            "#define DC_COEFF(u) s->all_fragments[u].dc /* <=== libavcodec/vp3.c:1641:1641:DC_COEFF:1 */ ",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "vp3_draw_horiz_band",
+            "static void vp3_draw_horiz_band(Vp3DecodeContext *s, int y) /* <=== vp3_draw_horiz_band */ \n{\n    int h, cy, i;\n    int offset[AV_NUM_DATA_POINTERS];\n\n    if (HAVE_THREADS && s->avctx->active_thread_type & FF_THREAD_FRAME) {\n        int y_flipped = s->flipped_image ? s->height - y : y;\n\n        /* At the end of the frame, report INT_MAX instead of the height of\n         * the frame. This makes the other threads' ff_thread_await_progress()\n         * calls cheaper, because they don't have to clip their values. */\n        ff_thread_report_progress(&s->current_frame,\n                                  y_flipped == s->height ? INT_MAX\n                                                         : y_flipped - 1,\n                                  0);\n    }\n\n    if (!s->avctx->draw_horiz_band)\n        return;\n\n    h = y - s->last_slice_end;\n    s->last_slice_end = y;\n    y -= h;\n\n    if (!s->flipped_image)\n        y = s->height - y - h;\n\n    cy        = y >> s->chroma_y_shift;\n    offset[0] = s->current_frame.f->linesize[0] * y;\n    offset[1] = s->current_frame.f->linesize[1] * cy;\n    offset[2] = s->current_frame.f->linesize[2] * cy;\n    for (i = 3; i < AV_NUM_DATA_POINTERS; i++)\n        offset[i] = 0;\n\n    emms_c();\n    s->avctx->draw_horiz_band(s->avctx, s->current_frame.f, offset, y, 3, h);\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MODE_COPY",
+            "#define MODE_COPY             8 /* <=== libavcodec/vp3.c:86:86:MODE_COPY:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_release_buffer",
+            "void ff_thread_release_buffer(AVCodecContext *avctx, AVFrame *f) /* <=== ff_thread_release_buffer */ \n{\n#if FF_API_THREAD_SAFE_CALLBACKS\nFF_DISABLE_DEPRECATION_WARNINGS\n    PerThreadContext *p;\n    FrameThreadContext *fctx;\n    AVFrame *dst;\n    int ret = 0;\n    int can_direct_free = !(avctx->active_thread_type & FF_THREAD_FRAME) ||\n                          THREAD_SAFE_CALLBACKS(avctx);\nFF_ENABLE_DEPRECATION_WARNINGS\n#endif\n\n    if (!f)\n        return;\n\n    if (avctx->debug & FF_DEBUG_BUFFERS)\n        av_log(avctx, AV_LOG_DEBUG, \"thread_release_buffer called on pic %p\\n\", f);\n\n#if !FF_API_THREAD_SAFE_CALLBACKS\n    av_frame_unref(f->f);\n#else\n    // when the frame buffers are not allocated, just reset it to clean state\n    if (can_direct_free || !f->buf[0]) {\n        av_frame_unref(f);\n        return;\n    }\n\n    p    = avctx->internal->thread_ctx;\n    fctx = p->parent;\n    pthread_mutex_lock(&fctx->buffer_mutex);\n\n    if (p->num_released_buffers == p->released_buffers_allocated) {\n        AVFrame **tmp = av_realloc_array(p->released_buffers, p->released_buffers_allocated + 1,\n                                         sizeof(*p->released_buffers));\n        if (tmp) {\n            tmp[p->released_buffers_allocated] = av_frame_alloc();\n            p->released_buffers = tmp;\n        }\n\n        if (!tmp || !tmp[p->released_buffers_allocated]) {\n            ret = AVERROR(ENOMEM);\n            goto fail;\n        }\n        p->released_buffers_allocated++;\n    }\n\n    dst = p->released_buffers[p->num_released_buffers];\n    av_frame_move_ref(dst, f);\n\n    p->num_released_buffers++;\n\nfail:\n    pthread_mutex_unlock(&fctx->buffer_mutex);\n\n    // make sure the frame is clean even if we fail to free it\n    // this leaks, but it is better than crashing\n    if (ret < 0) {\n        av_log(avctx, AV_LOG_ERROR, \"Could not queue a frame for freeing, this will leak\\n\");\n        memset(f->buf, 0, sizeof(f->buf));\n        if (f->extended_buf)\n            memset(f->extended_buf, 0, f->nb_extended_buf * sizeof(*f->extended_buf));\n        av_frame_unref(f);\n    }\n#endif\n}",
+            3
+        ],
+        [
+            "libavutil/frame.c",
+            "get_audio_buffer",
+            "static int get_audio_buffer(AVFrame *frame, int align) /* <=== get_audio_buffer */ \n{\n    int channels;\n    int planar   = av_sample_fmt_is_planar(frame->format);\n    int planes;\n    int ret, i;\n\n    if (!frame->channels)\n        frame->channels = av_get_channel_layout_nb_channels(frame->channel_layout);\n\n    channels = frame->channels;\n    planes = planar ? channels : 1;\n\n    CHECK_CHANNELS_CONSISTENCY(frame);\n    if (!frame->linesize[0]) {\n        ret = av_samples_get_buffer_size(&frame->linesize[0], channels,\n                                         frame->nb_samples, frame->format,\n                                         align);\n        if (ret < 0)\n            return ret;\n    }\n\n    if (planes > AV_NUM_DATA_POINTERS) {\n        frame->extended_data = av_calloc(planes,\n                                          sizeof(*frame->extended_data));\n        frame->extended_buf  = av_calloc(planes - AV_NUM_DATA_POINTERS,\n                                          sizeof(*frame->extended_buf));\n        if (!frame->extended_data || !frame->extended_buf) {\n            av_freep(&frame->extended_data);\n            av_freep(&frame->extended_buf);\n            return AVERROR(ENOMEM);\n        }\n        frame->nb_extended_buf = planes - AV_NUM_DATA_POINTERS;\n    } else\n        frame->extended_data = frame->data;\n\n    for (i = 0; i < FFMIN(planes, AV_NUM_DATA_POINTERS); i++) {\n        frame->buf[i] = av_buffer_alloc(frame->linesize[0]);\n        if (!frame->buf[i]) {\n            av_frame_unref(frame);\n            return AVERROR(ENOMEM);\n        }\n        frame->extended_data[i] = frame->data[i] = frame->buf[i]->data;\n    }\n    for (i = 0; i < planes - AV_NUM_DATA_POINTERS; i++) {\n        frame->extended_buf[i] = av_buffer_alloc(frame->linesize[0]);\n        if (!frame->extended_buf[i]) {\n            av_frame_unref(frame);\n            return AVERROR(ENOMEM);\n        }\n        frame->extended_data[i + AV_NUM_DATA_POINTERS] = frame->extended_buf[i]->data;\n    }\n    return 0;\n\n}",
+            3
+        ],
+        [
+            "libavutil/buffer.h",
+            "av_buffer_unref",
+            "void av_buffer_unref(AVBufferRef **buf); /* <=== av_buffer_unref */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "unpack_dct_coeffs",
+            "static int unpack_dct_coeffs(Vp3DecodeContext *s, GetBitContext *gb) /* <=== unpack_dct_coeffs */ \n{\n    int i;\n    int dc_y_table;\n    int dc_c_table;\n    int ac_y_table;\n    int ac_c_table;\n    int residual_eob_run = 0;\n    VLC *y_tables[64];\n    VLC *c_tables[64];\n\n    s->dct_tokens[0][0] = s->dct_tokens_base;\n\n    if (get_bits_left(gb) < 16)\n        return AVERROR_INVALIDDATA;\n\n    /* fetch the DC table indexes */\n    dc_y_table = get_bits(gb, 4);\n    dc_c_table = get_bits(gb, 4);\n\n    /* unpack the Y plane DC coefficients */\n    residual_eob_run = unpack_vlcs(s, gb, &s->coeff_vlc[dc_y_table], 0,\n                                   0, residual_eob_run);\n    if (residual_eob_run < 0)\n        return residual_eob_run;\n    if (get_bits_left(gb) < 8)\n        return AVERROR_INVALIDDATA;\n\n    /* reverse prediction of the Y-plane DC coefficients */\n    reverse_dc_prediction(s, 0, s->fragment_width[0], s->fragment_height[0]);\n\n    /* unpack the C plane DC coefficients */\n    residual_eob_run = unpack_vlcs(s, gb, &s->coeff_vlc[dc_c_table], 0,\n                                   1, residual_eob_run);\n    if (residual_eob_run < 0)\n        return residual_eob_run;\n    residual_eob_run = unpack_vlcs(s, gb, &s->coeff_vlc[dc_c_table], 0,\n                                   2, residual_eob_run);\n    if (residual_eob_run < 0)\n        return residual_eob_run;\n\n    /* reverse prediction of the C-plane DC coefficients */\n    if (!(s->avctx->flags & AV_CODEC_FLAG_GRAY)) {\n        reverse_dc_prediction(s, s->fragment_start[1],\n                              s->fragment_width[1], s->fragment_height[1]);\n        reverse_dc_prediction(s, s->fragment_start[2],\n                              s->fragment_width[1], s->fragment_height[1]);\n    }\n\n    if (get_bits_left(gb) < 8)\n        return AVERROR_INVALIDDATA;\n    /* fetch the AC table indexes */\n    ac_y_table = get_bits(gb, 4);\n    ac_c_table = get_bits(gb, 4);\n\n    /* build tables of AC VLC tables */\n    for (i = 1; i <= 5; i++) {\n        /* AC VLC table group 1 */\n        y_tables[i] = &s->coeff_vlc[ac_y_table + 16];\n        c_tables[i] = &s->coeff_vlc[ac_c_table + 16];\n    }\n    for (i = 6; i <= 14; i++) {\n        /* AC VLC table group 2 */\n        y_tables[i] = &s->coeff_vlc[ac_y_table + 32];\n        c_tables[i] = &s->coeff_vlc[ac_c_table + 32];\n    }\n    for (i = 15; i <= 27; i++) {\n        /* AC VLC table group 3 */\n        y_tables[i] = &s->coeff_vlc[ac_y_table + 48];\n        c_tables[i] = &s->coeff_vlc[ac_c_table + 48];\n    }\n    for (i = 28; i <= 63; i++) {\n        /* AC VLC table group 4 */\n        y_tables[i] = &s->coeff_vlc[ac_y_table + 64];\n        c_tables[i] = &s->coeff_vlc[ac_c_table + 64];\n    }\n\n    /* decode all AC coefficients */\n    for (i = 1; i <= 63; i++) {\n        residual_eob_run = unpack_vlcs(s, gb, y_tables[i], i,\n                                       0, residual_eob_run);\n        if (residual_eob_run < 0)\n            return residual_eob_run;\n\n        residual_eob_run = unpack_vlcs(s, gb, c_tables[i], i,\n                                       1, residual_eob_run);\n        if (residual_eob_run < 0)\n            return residual_eob_run;\n        residual_eob_run = unpack_vlcs(s, gb, c_tables[i], i,\n                                       2, residual_eob_run);\n        if (residual_eob_run < 0)\n            return residual_eob_run;\n    }\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "VP4_MV_VLC_BITS",
+            "#define VP4_MV_VLC_BITS     6 /* <=== libavcodec/vp3.c:54:54:VP4_MV_VLC_BITS:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "SB_NOT_CODED",
+            "#define SB_NOT_CODED        0 /* <=== libavcodec/vp3.c:66:66:SB_NOT_CODED:0 */ ",
+            2
+        ],
+        [
+            "libavutil/mem.c",
+            "av_realloc_array",
+            "void *av_realloc_array(void *ptr, size_t nmemb, size_t size) /* <=== av_realloc_array */ \n{\n    size_t result;\n    if (size_mult(nmemb, size, &result) < 0)\n        return NULL;\n    return av_realloc(ptr, result);\n}",
+            3
+        ],
+        [
+            "libavutil/buffer.h",
+            "av_buffer_replace",
+            "int av_buffer_replace(AVBufferRef **dst, const AVBufferRef *src); /* <=== av_buffer_replace */ ",
+            3
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_WARNING",
+            "#define AV_LOG_WARNING  24 /* <=== libavutil/log.h:186:186:AV_LOG_WARNING:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "AV_CODEC_FLAG_GRAY",
+            "#define AV_CODEC_FLAG_GRAY            (1 << 13) /* <=== libavcodec/avcodec.h:243:243:AV_CODEC_FLAG_GRAY:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/decode.c",
+            "validate_avframe_allocation",
+            "static void validate_avframe_allocation(AVCodecContext *avctx, AVFrame *frame) /* <=== validate_avframe_allocation */ \n{\n    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {\n        int i;\n        int num_planes = av_pix_fmt_count_planes(frame->format);\n        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);\n        int flags = desc ? desc->flags : 0;\n        if (num_planes == 1 && (flags & AV_PIX_FMT_FLAG_PAL))\n            num_planes = 2;\n        for (i = 0; i < num_planes; i++) {\n            av_assert0(frame->data[i]);\n        }\n        // For formats without data like hwaccel allow unused pointers to be non-NULL.\n        for (i = num_planes; num_planes > 0 && i < FF_ARRAY_ELEMS(frame->data); i++) {\n            if (frame->data[i])\n                av_log(avctx, AV_LOG_ERROR, \"Buffer returned by get_buffer2() did not zero unused plane pointers\\n\");\n            frame->data[i] = NULL;\n        }\n    }\n}",
+            3
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "THREAD_SAFE_CALLBACKS",
+            "#define THREAD_SAFE_CALLBACKS(avctx) \\ /* <=== libavcodec/pthread_frame.c:152:153:THREAD_SAFE_CALLBACKS:1 */ \n((avctx)->thread_safe_callbacks || (avctx)->get_buffer2 == avcodec_default_get_buffer2)",
+            3
+        ],
+        [
+            "libavutil/macros.h",
+            "FFALIGN",
+            "#define FFALIGN(x, a) (((x)+(a)-1)&~((a)-1)) /* <=== libavutil/macros.h:78:78:FFALIGN:2 */ ",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_mallocz",
+            "void *av_mallocz(size_t size) /* <=== av_mallocz */ \n{\n    void *ptr = av_malloc(size);\n    if (ptr)\n        memset(ptr, 0, size);\n    return ptr;\n}",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "UPDATE_CACHE",
+            "# define UPDATE_CACHE(name, gb) UPDATE_CACHE_BE(name, gb) /* <=== libavcodec/get_bits.h:179:179:UPDATE_CACHE:2 */ ",
+            2
+        ],
+        [
+            "libavutil/frame.c",
+            "CHECK_CHANNELS_CONSISTENCY",
+            "#define CHECK_CHANNELS_CONSISTENCY(frame) \\ /* <=== libavutil/frame.c:31:34:CHECK_CHANNELS_CONSISTENCY:1 */ \n    av_assert2(!(frame)->channel_layout || \\\n               (frame)->channels == \\\n               av_get_channel_layout_nb_channels((frame)->channel_layout))",
+            2
+        ],
+        [
+            "libavutil/frame.c",
+            "frame_copy_props",
+            "static int frame_copy_props(AVFrame *dst, const AVFrame *src, int force_copy) /* <=== frame_copy_props */ \n{\n    int ret, i;\n\n    dst->key_frame              = src->key_frame;\n    dst->pict_type              = src->pict_type;\n    dst->sample_aspect_ratio    = src->sample_aspect_ratio;\n    dst->crop_top               = src->crop_top;\n    dst->crop_bottom            = src->crop_bottom;\n    dst->crop_left              = src->crop_left;\n    dst->crop_right             = src->crop_right;\n    dst->pts                    = src->pts;\n    dst->repeat_pict            = src->repeat_pict;\n    dst->interlaced_frame       = src->interlaced_frame;\n    dst->top_field_first        = src->top_field_first;\n    dst->palette_has_changed    = src->palette_has_changed;\n    dst->sample_rate            = src->sample_rate;\n    dst->opaque                 = src->opaque;\n    dst->pkt_dts                = src->pkt_dts;\n    dst->pkt_pos                = src->pkt_pos;\n    dst->pkt_size               = src->pkt_size;\n    dst->pkt_duration           = src->pkt_duration;\n    dst->time_base              = src->time_base;\n    dst->reordered_opaque       = src->reordered_opaque;\n    dst->quality                = src->quality;\n    dst->best_effort_timestamp  = src->best_effort_timestamp;\n    dst->coded_picture_number   = src->coded_picture_number;\n    dst->display_picture_number = src->display_picture_number;\n    dst->flags                  = src->flags;\n    dst->decode_error_flags     = src->decode_error_flags;\n    dst->color_primaries        = src->color_primaries;\n    dst->color_trc              = src->color_trc;\n    dst->colorspace             = src->colorspace;\n    dst->color_range            = src->color_range;\n    dst->chroma_location        = src->chroma_location;\n\n    av_dict_copy(&dst->metadata, src->metadata, 0);\n\n    for (i = 0; i < src->nb_side_data; i++) {\n        const AVFrameSideData *sd_src = src->side_data[i];\n        AVFrameSideData *sd_dst;\n        if (   sd_src->type == AV_FRAME_DATA_PANSCAN\n            && (src->width != dst->width || src->height != dst->height))\n            continue;\n        if (force_copy) {\n            sd_dst = av_frame_new_side_data(dst, sd_src->type,\n                                            sd_src->size);\n            if (!sd_dst) {\n                wipe_side_data(dst);\n                return AVERROR(ENOMEM);\n            }\n            memcpy(sd_dst->data, sd_src->data, sd_src->size);\n        } else {\n            AVBufferRef *ref = av_buffer_ref(sd_src->buf);\n            sd_dst = av_frame_new_side_data_from_buf(dst, sd_src->type, ref);\n            if (!sd_dst) {\n                av_buffer_unref(&ref);\n                wipe_side_data(dst);\n                return AVERROR(ENOMEM);\n            }\n        }\n        av_dict_copy(&sd_dst->metadata, sd_src->metadata, 0);\n    }\n\n    ret = av_buffer_replace(&dst->opaque_ref, src->opaque_ref);\n    ret |= av_buffer_replace(&dst->private_ref, src->private_ref);\n    return ret;\n}",
+            2
+        ],
+        [
+            "libavutil/frame.c",
+            "av_frame_new_side_data_from_buf",
+            "AVFrameSideData *av_frame_new_side_data_from_buf(AVFrame *frame, /* <=== av_frame_new_side_data_from_buf */ \n                                                 enum AVFrameSideDataType type,\n                                                 AVBufferRef *buf)\n{\n    AVFrameSideData *ret, **tmp;\n\n    if (!buf)\n        return NULL;\n\n    if (frame->nb_side_data > INT_MAX / sizeof(*frame->side_data) - 1)\n        return NULL;\n\n    tmp = av_realloc(frame->side_data,\n                     (frame->nb_side_data + 1) * sizeof(*frame->side_data));\n    if (!tmp)\n        return NULL;\n    frame->side_data = tmp;\n\n    ret = av_mallocz(sizeof(*ret));\n    if (!ret)\n        return NULL;\n\n    ret->buf = buf;\n    ret->data = ret->buf->data;\n    ret->size = buf->size;\n    ret->type = type;\n\n    frame->side_data[frame->nb_side_data++] = ret;\n\n    return ret;\n}",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "PU",
+            "#define PU 4 /* <=== libavcodec/vp3.c:1649:1649:PU:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_ref_frame",
+            "int ff_thread_ref_frame(ThreadFrame *dst, const ThreadFrame *src) /* <=== ff_thread_ref_frame */ \n{\n    int ret;\n\n    dst->owner[0] = src->owner[0];\n    dst->owner[1] = src->owner[1];\n\n    ret = av_frame_ref(dst->f, src->f);\n    if (ret < 0)\n        return ret;\n\n    av_assert0(!dst->progress);\n\n    if (src->progress &&\n        !(dst->progress = av_buffer_ref(src->progress))) {\n        ff_thread_release_ext_buffer(dst->owner[0], dst);\n        return AVERROR(ENOMEM);\n    }\n\n    return 0;\n}",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "render_slice",
+            "static void render_slice(Vp3DecodeContext *s, int slice) /* <=== render_slice */ \n{\n    int x, y, i, j, fragment;\n    int16_t *block = s->block;\n    int motion_x = 0xdeadbeef, motion_y = 0xdeadbeef;\n    int motion_halfpel_index;\n    uint8_t *motion_source;\n    int plane, first_pixel;\n\n    if (slice >= s->c_superblock_height)\n        return;\n\n    for (plane = 0; plane < 3; plane++) {\n        uint8_t *output_plane = s->current_frame.f->data[plane] +\n                                s->data_offset[plane];\n        uint8_t *last_plane = s->last_frame.f->data[plane] +\n                              s->data_offset[plane];\n        uint8_t *golden_plane = s->golden_frame.f->data[plane] +\n                                s->data_offset[plane];\n        ptrdiff_t stride = s->current_frame.f->linesize[plane];\n        int plane_width  = s->width  >> (plane && s->chroma_x_shift);\n        int plane_height = s->height >> (plane && s->chroma_y_shift);\n        int8_t(*motion_val)[2] = s->motion_val[!!plane];\n\n        int sb_x, sb_y = slice << (!plane && s->chroma_y_shift);\n        int slice_height = sb_y + 1 + (!plane && s->chroma_y_shift);\n        int slice_width  = plane ? s->c_superblock_width\n                                 : s->y_superblock_width;\n\n        int fragment_width  = s->fragment_width[!!plane];\n        int fragment_height = s->fragment_height[!!plane];\n        int fragment_start  = s->fragment_start[plane];\n\n        int do_await = !plane && HAVE_THREADS &&\n                       (s->avctx->active_thread_type & FF_THREAD_FRAME);\n\n        if (!s->flipped_image)\n            stride = -stride;\n        if (CONFIG_GRAY && plane && (s->avctx->flags & AV_CODEC_FLAG_GRAY))\n            continue;\n\n        /* for each superblock row in the slice (both of them)... */\n        for (; sb_y < slice_height; sb_y++) {\n            /* for each superblock in a row... */\n            for (sb_x = 0; sb_x < slice_width; sb_x++) {\n                /* for each block in a superblock... */\n                for (j = 0; j < 16; j++) {\n                    x        = 4 * sb_x + hilbert_offset[j][0];\n                    y        = 4 * sb_y + hilbert_offset[j][1];\n                    fragment = y * fragment_width + x;\n\n                    i = fragment_start + fragment;\n\n                    // bounds check\n                    if (x >= fragment_width || y >= fragment_height)\n                        continue;\n\n                    first_pixel = 8 * y * stride + 8 * x;\n\n                    if (do_await &&\n                        s->all_fragments[i].coding_method != MODE_INTRA)\n                        await_reference_row(s, &s->all_fragments[i],\n                                            motion_val[fragment][1],\n                                            (16 * y) >> s->chroma_y_shift);\n\n                    /* transform if this block was coded */\n                    if (s->all_fragments[i].coding_method != MODE_COPY) {\n                        if ((s->all_fragments[i].coding_method == MODE_USING_GOLDEN) ||\n                            (s->all_fragments[i].coding_method == MODE_GOLDEN_MV))\n                            motion_source = golden_plane;\n                        else\n                            motion_source = last_plane;\n\n                        motion_source       += first_pixel;\n                        motion_halfpel_index = 0;\n\n                        /* sort out the motion vector if this fragment is coded\n                         * using a motion vector method */\n                        if ((s->all_fragments[i].coding_method > MODE_INTRA) &&\n                            (s->all_fragments[i].coding_method != MODE_USING_GOLDEN)) {\n                            int src_x, src_y;\n                            int standard_mc = 1;\n                            motion_x = motion_val[fragment][0];\n                            motion_y = motion_val[fragment][1];\n#if CONFIG_VP4_DECODER\n                            if (plane && s->version >= 2) {\n                                motion_x = (motion_x >> 1) | (motion_x & 1);\n                                motion_y = (motion_y >> 1) | (motion_y & 1);\n                            }\n#endif\n\n                            src_x = (motion_x >> 1) + 8 * x;\n                            src_y = (motion_y >> 1) + 8 * y;\n\n                            motion_halfpel_index = motion_x & 0x01;\n                            motion_source       += (motion_x >> 1);\n\n                            motion_halfpel_index |= (motion_y & 0x01) << 1;\n                            motion_source        += ((motion_y >> 1) * stride);\n\n#if CONFIG_VP4_DECODER\n                            if (s->version >= 2) {\n                                uint8_t *temp = s->edge_emu_buffer;\n                                if (stride < 0)\n                                    temp -= 8 * stride;\n                                if (vp4_mc_loop_filter(s, plane, motion_val[fragment][0], motion_val[fragment][1], x, y, motion_source, stride, src_x, src_y, temp)) {\n                                    motion_source = temp;\n                                    standard_mc = 0;\n                                }\n                            }\n#endif\n\n                            if (standard_mc && (\n                                src_x < 0 || src_y < 0 ||\n                                src_x + 9 >= plane_width ||\n                                src_y + 9 >= plane_height)) {\n                                uint8_t *temp = s->edge_emu_buffer;\n                                if (stride < 0)\n                                    temp -= 8 * stride;\n\n                                s->vdsp.emulated_edge_mc(temp, motion_source,\n                                                         stride, stride,\n                                                         9, 9, src_x, src_y,\n                                                         plane_width,\n                                                         plane_height);\n                                motion_source = temp;\n                            }\n                        }\n\n                        /* first, take care of copying a block from either the\n                         * previous or the golden frame */\n                        if (s->all_fragments[i].coding_method != MODE_INTRA) {\n                            /* Note, it is possible to implement all MC cases\n                             * with put_no_rnd_pixels_l2 which would look more\n                             * like the VP3 source but this would be slower as\n                             * put_no_rnd_pixels_tab is better optimized */\n                            if (motion_halfpel_index != 3) {\n                                s->hdsp.put_no_rnd_pixels_tab[1][motion_halfpel_index](\n                                    output_plane + first_pixel,\n                                    motion_source, stride, 8);\n                            } else {\n                                /* d is 0 if motion_x and _y have the same sign,\n                                 * else -1 */\n                                int d = (motion_x ^ motion_y) >> 31;\n                                s->vp3dsp.put_no_rnd_pixels_l2(output_plane + first_pixel,\n                                                               motion_source - d,\n                                                               motion_source + stride + 1 + d,\n                                                               stride, 8);\n                            }\n                        }\n\n                        /* invert DCT and place (or add) in final output */\n\n                        if (s->all_fragments[i].coding_method == MODE_INTRA) {\n                            vp3_dequant(s, s->all_fragments + i,\n                                        plane, 0, block);\n                            s->vp3dsp.idct_put(output_plane + first_pixel,\n                                               stride,\n                                               block);\n                        } else {\n                            if (vp3_dequant(s, s->all_fragments + i,\n                                            plane, 1, block)) {\n                                s->vp3dsp.idct_add(output_plane + first_pixel,\n                                                   stride,\n                                                   block);\n                            } else {\n                                s->vp3dsp.idct_dc_add(output_plane + first_pixel,\n                                                      stride, block);\n                            }\n                        }\n                    } else {\n                        /* copy directly from the previous frame */\n                        s->hdsp.put_pixels_tab[1][0](\n                            output_plane + first_pixel,\n                            last_plane + first_pixel,\n                            stride, 8);\n                    }\n                }\n            }\n\n            // Filter up to the last row in the superblock row\n            if (s->version < 2 && !s->skip_loop_filter)\n                apply_loop_filter(s, plane, 4 * sb_y - !!sb_y,\n                                  FFMIN(4 * sb_y + 3, fragment_height - 1));\n        }\n    }\n\n    /* this looks like a good place for slice dispatch... */\n    /* algorithm:\n     *   if (slice == s->macroblock_height - 1)\n     *     dispatch (both last slice & 2nd-to-last slice);\n     *   else if (slice > 0)\n     *     dispatch (slice - 1);\n     */\n\n    vp3_draw_horiz_band(s, FFMIN((32 << s->chroma_y_shift) * (slice + 1) - 16,\n                                 s->height - 16));\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MODE_GOLDEN_MV",
+            "#define MODE_GOLDEN_MV        6 /* <=== libavcodec/vp3.c:81:81:MODE_GOLDEN_MV:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MODE_INTER_FOURMV",
+            "#define MODE_INTER_FOURMV     7 /* <=== libavcodec/vp3.c:82:82:MODE_INTER_FOURMV:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_release_buffer",
+            "void ff_thread_release_buffer(AVCodecContext *avctx, AVFrame *f) /* <=== ff_thread_release_buffer */ \n{\n    if (f)\n        av_frame_unref(f);\n}",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits_count",
+            "static inline int get_bits_count(const GetBitContext *s) /* <=== get_bits_count */ \n{\n#if CACHED_BITSTREAM_READER\n    return s->index - s->bits_left;\n#else\n    return s->index;\n#endif\n}",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits1",
+            "static inline unsigned int get_bits1(GetBitContext *s) /* <=== get_bits1 */ \n{\n#if CACHED_BITSTREAM_READER\n    if (!s->bits_left)\n#ifdef BITSTREAM_READER_LE\n        refill_64(s, 1);\n#else\n        refill_64(s, 0);\n#endif\n\n#ifdef BITSTREAM_READER_LE\n    return get_val(s, 1, 1);\n#else\n    return get_val(s, 1, 0);\n#endif\n#else\n    unsigned int index = s->index;\n    uint8_t result     = s->buffer[index >> 3];\n#ifdef BITSTREAM_READER_LE\n    result >>= index & 7;\n    result  &= 1;\n#else\n    result <<= index & 7;\n    result >>= 8 - 1;\n#endif\n#if !UNCHECKED_BITSTREAM_READER\n    if (s->index < s->size_in_bits_plus8)\n#endif\n        index++;\n    s->index = index;\n\n    return result;\n#endif\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MODE_INTER_NO_MV",
+            "#define MODE_INTER_NO_MV      0 /* <=== libavcodec/vp3.c:75:75:MODE_INTER_NO_MV:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MAXIMUM_LONG_BIT_RUN",
+            "#define MAXIMUM_LONG_BIT_RUN 4129 /* <=== libavcodec/vp3.c:73:73:MAXIMUM_LONG_BIT_RUN:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "FF_DEBUG_BUFFERS",
+            "#define FF_DEBUG_BUFFERS     0x00008000 /* <=== libavcodec/avcodec.h:1314:1314:FF_DEBUG_BUFFERS:0 */ ",
+            3
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert0",
+            "#define av_assert0(cond) do {                                           \\ /* <=== libavutil/avassert.h:37:43:av_assert0:1 */ \n    if (!(cond)) {                                                      \\\n        av_log(NULL, AV_LOG_PANIC, \"Assertion %s failed at %s:%d\\n\",    \\\n               AV_STRINGIFY(cond), __FILE__, __LINE__);                 \\\n        abort();                                                        \\\n    }                                                                   \\\n} while (0)",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "BLOCK_Y",
+            "#define BLOCK_Y (2 * mb_y + (k >> 1)) /* <=== libavcodec/vp3.c:645:645:BLOCK_Y:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "PUL",
+            "#define PUL 8 /* <=== libavcodec/vp3.c:1648:1648:PUL:0 */ ",
+            3
+        ],
+        [
+            "libavutil/avutil.h",
+            "AV_NOPTS_VALUE",
+            "#define AV_NOPTS_VALUE          ((int64_t)UINT64_C(0x8000000000000000)) /* <=== libavutil/avutil.h:248:248:AV_NOPTS_VALUE:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_release_ext_buffer",
+            "void ff_thread_release_ext_buffer(AVCodecContext *avctx, ThreadFrame *f) /* <=== ff_thread_release_ext_buffer */ \n{\n    f->owner[0] = f->owner[1] = NULL;\n    if (f->f)\n        av_frame_unref(f->f);\n}",
+            1
+        ],
+        [
+            "libavutil/frame.c",
+            "av_frame_move_ref",
+            "void av_frame_move_ref(AVFrame *dst, AVFrame *src) /* <=== av_frame_move_ref */ \n{\n    av_assert1(dst->width == 0 && dst->height == 0);\n    av_assert1(dst->channels == 0);\n\n    *dst = *src;\n    if (src->extended_data == src->data)\n        dst->extended_data = dst->data;\n    get_frame_defaults(src);\n}",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_free",
+            "void av_free(void *ptr) /* <=== av_free */ \n{\n#if HAVE_ALIGNED_MALLOC\n    _aligned_free(ptr);\n#else\n    free(ptr);\n#endif\n}",
+            3
+        ],
+        [
+            "libavcodec/internal.h",
+            "STRIDE_ALIGN",
+            "#   define STRIDE_ALIGN 8 /* <=== libavcodec/internal.h:112:112:STRIDE_ALIGN:0 */ ",
+            3
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_DEBUG",
+            "#define AV_LOG_DEBUG    48 /* <=== libavutil/log.h:201:201:AV_LOG_DEBUG:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/vlc.h",
+            "VLC_TYPE",
+            "#define VLC_TYPE int16_t /* <=== libavcodec/vlc.h:24:24:VLC_TYPE:0 */ ",
+            3
+        ],
+        [
+            "libavutil/macros.h",
+            "FFMIN",
+            "#define FFMIN(a,b) ((a) > (b) ? (b) : (a)) /* <=== libavutil/macros.h:49:49:FFMIN:2 */ ",
+            2
+        ],
+        [
+            "libavcodec/decode.c",
+            "ff_attach_decode_data",
+            "int ff_attach_decode_data(AVFrame *frame) /* <=== ff_attach_decode_data */ \n{\n    AVBufferRef *fdd_buf;\n    FrameDecodeData *fdd;\n\n    av_assert1(!frame->private_ref);\n    av_buffer_unref(&frame->private_ref);\n\n    fdd = av_mallocz(sizeof(*fdd));\n    if (!fdd)\n        return AVERROR(ENOMEM);\n\n    fdd_buf = av_buffer_create((uint8_t*)fdd, sizeof(*fdd), decode_data_free,\n                               NULL, AV_BUFFER_FLAG_READONLY);\n    if (!fdd_buf) {\n        av_freep(&fdd);\n        return AVERROR(ENOMEM);\n    }\n\n    frame->private_ref = fdd_buf;\n\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "reverse_dc_prediction",
+            "static void reverse_dc_prediction(Vp3DecodeContext *s, /* <=== reverse_dc_prediction */ \n                                  int first_fragment,\n                                  int fragment_width,\n                                  int fragment_height)\n{\n#define PUL 8\n#define PU 4\n#define PUR 2\n#define PL 1\n\n    int x, y;\n    int i = first_fragment;\n\n    int predicted_dc;\n\n    /* DC values for the left, up-left, up, and up-right fragments */\n    int vl, vul, vu, vur;\n\n    /* indexes for the left, up-left, up, and up-right fragments */\n    int l, ul, u, ur;\n\n    /*\n     * The 6 fields mean:\n     *   0: up-left multiplier\n     *   1: up multiplier\n     *   2: up-right multiplier\n     *   3: left multiplier\n     */\n    static const int predictor_transform[16][4] = {\n        {    0,   0,   0,   0 },\n        {    0,   0,   0, 128 }, // PL\n        {    0,   0, 128,   0 }, // PUR\n        {    0,   0,  53,  75 }, // PUR|PL\n        {    0, 128,   0,   0 }, // PU\n        {    0,  64,   0,  64 }, // PU |PL\n        {    0, 128,   0,   0 }, // PU |PUR\n        {    0,   0,  53,  75 }, // PU |PUR|PL\n        {  128,   0,   0,   0 }, // PUL\n        {    0,   0,   0, 128 }, // PUL|PL\n        {   64,   0,  64,   0 }, // PUL|PUR\n        {    0,   0,  53,  75 }, // PUL|PUR|PL\n        {    0, 128,   0,   0 }, // PUL|PU\n        { -104, 116,   0, 116 }, // PUL|PU |PL\n        {   24,  80,  24,   0 }, // PUL|PU |PUR\n        { -104, 116,   0, 116 }  // PUL|PU |PUR|PL\n    };\n\n    /* This table shows which types of blocks can use other blocks for\n     * prediction. For example, INTRA is the only mode in this table to\n     * have a frame number of 0. That means INTRA blocks can only predict\n     * from other INTRA blocks. There are 2 golden frame coding types;\n     * blocks encoding in these modes can only predict from other blocks\n     * that were encoded with these 1 of these 2 modes. */\n    static const unsigned char compatible_frame[9] = {\n        1,    /* MODE_INTER_NO_MV */\n        0,    /* MODE_INTRA */\n        1,    /* MODE_INTER_PLUS_MV */\n        1,    /* MODE_INTER_LAST_MV */\n        1,    /* MODE_INTER_PRIOR_MV */\n        2,    /* MODE_USING_GOLDEN */\n        2,    /* MODE_GOLDEN_MV */\n        1,    /* MODE_INTER_FOUR_MV */\n        3     /* MODE_COPY */\n    };\n    int current_frame_type;\n\n    /* there is a last DC predictor for each of the 3 frame types */\n    short last_dc[3];\n\n    int transform = 0;\n\n    vul =\n    vu  =\n    vur =\n    vl  = 0;\n    last_dc[0] =\n    last_dc[1] =\n    last_dc[2] = 0;\n\n    /* for each fragment row... */\n    for (y = 0; y < fragment_height; y++) {\n        /* for each fragment in a row... */\n        for (x = 0; x < fragment_width; x++, i++) {\n\n            /* reverse prediction if this block was coded */\n            if (s->all_fragments[i].coding_method != MODE_COPY) {\n                current_frame_type =\n                    compatible_frame[s->all_fragments[i].coding_method];\n\n                transform = 0;\n                if (x) {\n                    l  = i - 1;\n                    vl = DC_COEFF(l);\n                    if (COMPATIBLE_FRAME(l))\n                        transform |= PL;\n                }\n                if (y) {\n                    u  = i - fragment_width;\n                    vu = DC_COEFF(u);\n                    if (COMPATIBLE_FRAME(u))\n                        transform |= PU;\n                    if (x) {\n                        ul  = i - fragment_width - 1;\n                        vul = DC_COEFF(ul);\n                        if (COMPATIBLE_FRAME(ul))\n                            transform |= PUL;\n                    }\n                    if (x + 1 < fragment_width) {\n                        ur  = i - fragment_width + 1;\n                        vur = DC_COEFF(ur);\n                        if (COMPATIBLE_FRAME(ur))\n                            transform |= PUR;\n                    }\n                }\n\n                if (transform == 0) {\n                    /* if there were no fragments to predict from, use last\n                     * DC saved */\n                    predicted_dc = last_dc[current_frame_type];\n                } else {\n                    /* apply the appropriate predictor transform */\n                    predicted_dc =\n                        (predictor_transform[transform][0] * vul) +\n                        (predictor_transform[transform][1] * vu) +\n                        (predictor_transform[transform][2] * vur) +\n                        (predictor_transform[transform][3] * vl);\n\n                    predicted_dc /= 128;\n\n                    /* check for outranging on the [ul u l] and\n                     * [ul u ur l] predictors */\n                    if ((transform == 15) || (transform == 13)) {\n                        if (FFABS(predicted_dc - vu) > 128)\n                            predicted_dc = vu;\n                        else if (FFABS(predicted_dc - vl) > 128)\n                            predicted_dc = vl;\n                        else if (FFABS(predicted_dc - vul) > 128)\n                            predicted_dc = vul;\n                    }\n                }\n\n                /* at long last, apply the predictor */\n                DC_COEFF(i) += predicted_dc;\n                /* save the DC */\n                last_dc[current_frame_type] = DC_COEFF(i);\n            }\n        }\n    }\n}",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "async_lock",
+            "static void async_lock(FrameThreadContext *fctx) /* <=== async_lock */ \n{\n    pthread_mutex_lock(&fctx->async_mutex);\n    while (fctx->async_lock)\n        pthread_cond_wait(&fctx->async_cond, &fctx->async_mutex);\n    fctx->async_lock = 1;\n    pthread_mutex_unlock(&fctx->async_mutex);\n}",
+            2
+        ],
+        [
+            "libavcodec/hwconfig.h",
+            "HWACCEL_CAP_ASYNC_SAFE",
+            "#define HWACCEL_CAP_ASYNC_SAFE      (1 << 0) /* <=== libavcodec/hwconfig.h:26:26:HWACCEL_CAP_ASYNC_SAFE:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "GET_VLC",
+            "#define GET_VLC(code, name, gb, table, bits, max_depth)         \\ /* <=== libavcodec/get_bits.h:707:737:GET_VLC:6 */ \n    do {                                                        \\\n        int n, nb_bits;                                         \\\n        unsigned int index;                                     \\\n                                                                \\\n        index = SHOW_UBITS(name, gb, bits);                     \\\n        code  = table[index][0];                                \\\n        n     = table[index][1];                                \\\n                                                                \\\n        if (max_depth > 1 && n < 0) {                           \\\n            LAST_SKIP_BITS(name, gb, bits);                     \\\n            UPDATE_CACHE(name, gb);                             \\\n                                                                \\\n            nb_bits = -n;                                       \\\n                                                                \\\n            index = SHOW_UBITS(name, gb, nb_bits) + code;       \\\n            code  = table[index][0];                            \\\n            n     = table[index][1];                            \\\n            if (max_depth > 2 && n < 0) {                       \\\n                LAST_SKIP_BITS(name, gb, nb_bits);              \\\n                UPDATE_CACHE(name, gb);                         \\\n                                                                \\\n                nb_bits = -n;                                   \\\n                                                                \\\n                index = SHOW_UBITS(name, gb, nb_bits) + code;   \\\n                code  = table[index][0];                        \\\n                n     = table[index][1];                        \\\n            }                                                   \\\n        }                                                       \\\n        SKIP_BITS(name, gb, n);                                 \\\n    } while (0)",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MODE_USING_GOLDEN",
+            "#define MODE_USING_GOLDEN     5 /* <=== libavcodec/vp3.c:80:80:MODE_USING_GOLDEN:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "unpack_superblocks",
+            "static int unpack_superblocks(Vp3DecodeContext *s, GetBitContext *gb) /* <=== unpack_superblocks */ \n{\n    int superblock_starts[3] = {\n        0, s->u_superblock_start, s->v_superblock_start\n    };\n    int bit = 0;\n    int current_superblock = 0;\n    int current_run = 0;\n    int num_partial_superblocks = 0;\n\n    int i, j;\n    int current_fragment;\n    int plane;\n    int plane0_num_coded_frags = 0;\n\n    if (s->keyframe) {\n        memset(s->superblock_coding, SB_FULLY_CODED, s->superblock_count);\n    } else {\n        /* unpack the list of partially-coded superblocks */\n        bit         = get_bits1(gb) ^ 1;\n        current_run = 0;\n\n        while (current_superblock < s->superblock_count && get_bits_left(gb) > 0) {\n            if (s->theora && current_run == MAXIMUM_LONG_BIT_RUN)\n                bit = get_bits1(gb);\n            else\n                bit ^= 1;\n\n            current_run = get_vlc2(gb, s->superblock_run_length_vlc.table,\n                                   SUPERBLOCK_VLC_BITS, 2);\n            if (current_run == 34)\n                current_run += get_bits(gb, 12);\n\n            if (current_run > s->superblock_count - current_superblock) {\n                av_log(s->avctx, AV_LOG_ERROR,\n                       \"Invalid partially coded superblock run length\\n\");\n                return -1;\n            }\n\n            memset(s->superblock_coding + current_superblock, bit, current_run);\n\n            current_superblock += current_run;\n            if (bit)\n                num_partial_superblocks += current_run;\n        }\n\n        /* unpack the list of fully coded superblocks if any of the blocks were\n         * not marked as partially coded in the previous step */\n        if (num_partial_superblocks < s->superblock_count) {\n            int superblocks_decoded = 0;\n\n            current_superblock = 0;\n            bit                = get_bits1(gb) ^ 1;\n            current_run        = 0;\n\n            while (superblocks_decoded < s->superblock_count - num_partial_superblocks &&\n                   get_bits_left(gb) > 0) {\n                if (s->theora && current_run == MAXIMUM_LONG_BIT_RUN)\n                    bit = get_bits1(gb);\n                else\n                    bit ^= 1;\n\n                current_run = get_vlc2(gb, s->superblock_run_length_vlc.table,\n                                       SUPERBLOCK_VLC_BITS, 2);\n                if (current_run == 34)\n                    current_run += get_bits(gb, 12);\n\n                for (j = 0; j < current_run; current_superblock++) {\n                    if (current_superblock >= s->superblock_count) {\n                        av_log(s->avctx, AV_LOG_ERROR,\n                               \"Invalid fully coded superblock run length\\n\");\n                        return -1;\n                    }\n\n                    /* skip any superblocks already marked as partially coded */\n                    if (s->superblock_coding[current_superblock] == SB_NOT_CODED) {\n                        s->superblock_coding[current_superblock] = 2 * bit;\n                        j++;\n                    }\n                }\n                superblocks_decoded += current_run;\n            }\n        }\n\n        /* if there were partial blocks, initialize bitstream for\n         * unpacking fragment codings */\n        if (num_partial_superblocks) {\n            current_run = 0;\n            bit         = get_bits1(gb);\n            /* toggle the bit because as soon as the first run length is\n             * fetched the bit will be toggled again */\n            bit ^= 1;\n        }\n    }\n\n    /* figure out which fragments are coded; iterate through each\n     * superblock (all planes) */\n    s->total_num_coded_frags = 0;\n    memset(s->macroblock_coding, MODE_COPY, s->macroblock_count);\n\n    s->coded_fragment_list[0] = s->keyframe ? s->kf_coded_fragment_list\n                                            : s->nkf_coded_fragment_list;\n\n    for (plane = 0; plane < 3; plane++) {\n        int sb_start = superblock_starts[plane];\n        int sb_end   = sb_start + (plane ? s->c_superblock_count\n                                         : s->y_superblock_count);\n        int num_coded_frags = 0;\n\n        if (s->keyframe) {\n            if (s->num_kf_coded_fragment[plane] == -1) {\n                for (i = sb_start; i < sb_end; i++) {\n                    /* iterate through all 16 fragments in a superblock */\n                    for (j = 0; j < 16; j++) {\n                        /* if the fragment is in bounds, check its coding status */\n                        current_fragment = s->superblock_fragments[i * 16 + j];\n                        if (current_fragment != -1) {\n                            s->coded_fragment_list[plane][num_coded_frags++] =\n                                current_fragment;\n                        }\n                    }\n                }\n                s->num_kf_coded_fragment[plane] = num_coded_frags;\n            } else\n                num_coded_frags = s->num_kf_coded_fragment[plane];\n        } else {\n            for (i = sb_start; i < sb_end && get_bits_left(gb) > 0; i++) {\n                if (get_bits_left(gb) < plane0_num_coded_frags >> 2) {\n                    return AVERROR_INVALIDDATA;\n                }\n                /* iterate through all 16 fragments in a superblock */\n                for (j = 0; j < 16; j++) {\n                    /* if the fragment is in bounds, check its coding status */\n                    current_fragment = s->superblock_fragments[i * 16 + j];\n                    if (current_fragment != -1) {\n                        int coded = s->superblock_coding[i];\n\n                        if (coded == SB_PARTIALLY_CODED) {\n                            /* fragment may or may not be coded; this is the case\n                             * that cares about the fragment coding runs */\n                            if (current_run-- == 0) {\n                                bit        ^= 1;\n                                current_run = get_vlc2(gb, s->fragment_run_length_vlc.table, 5, 2);\n                            }\n                            coded = bit;\n                        }\n\n                        if (coded) {\n                            /* default mode; actual mode will be decoded in\n                             * the next phase */\n                            s->all_fragments[current_fragment].coding_method =\n                                MODE_INTER_NO_MV;\n                            s->coded_fragment_list[plane][num_coded_frags++] =\n                                current_fragment;\n                        } else {\n                            /* not coded; copy this fragment from the prior frame */\n                            s->all_fragments[current_fragment].coding_method =\n                                MODE_COPY;\n                        }\n                    }\n                }\n            }\n        }\n        if (!plane)\n            plane0_num_coded_frags = num_coded_frags;\n        s->total_num_coded_frags += num_coded_frags;\n        for (i = 0; i < 64; i++)\n            s->num_coded_frags[plane][i] = num_coded_frags;\n        if (plane < 2)\n            s->coded_fragment_list[plane + 1] = s->coded_fragment_list[plane] +\n                                                num_coded_frags;\n    }\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_vlc2",
+            "static av_always_inline int get_vlc2(GetBitContext *s, VLC_TYPE (*table)[2], /* <=== get_vlc2 */ \n                                     int bits, int max_depth)\n{\n#if CACHED_BITSTREAM_READER\n    int nb_bits;\n    unsigned idx = show_bits(s, bits);\n    int code = table[idx][0];\n    int n    = table[idx][1];\n\n    if (max_depth > 1 && n < 0) {\n        skip_remaining(s, bits);\n        code = set_idx(s, code, &n, &nb_bits, table);\n        if (max_depth > 2 && n < 0) {\n            skip_remaining(s, nb_bits);\n            code = set_idx(s, code, &n, &nb_bits, table);\n        }\n    }\n    skip_remaining(s, n);\n\n    return code;\n#else\n    int code;\n\n    OPEN_READER(re, s);\n    UPDATE_CACHE(re, s);\n\n    GET_VLC(code, re, s, table, bits, max_depth);\n\n    CLOSE_READER(re, s);\n\n    return code;\n#endif\n}",
+            2
+        ],
+        [
+            "libavutil/frame.c",
+            "av_frame_alloc",
+            "AVFrame *av_frame_alloc(void) /* <=== av_frame_alloc */ \n{\n    AVFrame *frame = av_malloc(sizeof(*frame));\n\n    if (!frame)\n        return NULL;\n\n    get_frame_defaults(frame);\n\n    return frame;\n}",
+            3
+        ],
+        [
+            "libavcodec/jpeg2000dec.c",
+            "get_bits",
+            "static int get_bits(Jpeg2000DecoderContext *s, int n) /* <=== get_bits */ \n{\n    int res = 0;\n\n    while (--n >= 0) {\n        res <<= 1;\n        if (s->bit_index == 0) {\n            s->bit_index = 7 + (bytestream2_get_byte(&s->g) != 0xFFu);\n        }\n        s->bit_index--;\n        res |= (bytestream2_peek_byte(&s->g) >> s->bit_index) & 1;\n    }\n    return res;\n}",
+            1
+        ],
+        [
+            "libavutil/frame.c",
+            "av_frame_new_side_data",
+            "AVFrameSideData *av_frame_new_side_data(AVFrame *frame, /* <=== av_frame_new_side_data */ \n                                        enum AVFrameSideDataType type,\n                                        size_t size)\n{\n    AVFrameSideData *ret;\n    AVBufferRef *buf = av_buffer_alloc(size);\n    ret = av_frame_new_side_data_from_buf(frame, type, buf);\n    if (!ret)\n        av_buffer_unref(&buf);\n    return ret;\n}",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "COMPATIBLE_FRAME",
+            "#define COMPATIBLE_FRAME(x)                                                   \\ /* <=== libavcodec/vp3.c:1639:1640:COMPATIBLE_FRAME:1 */ \n    (compatible_frame[s->all_fragments[x].coding_method] == current_frame_type)",
+            3
+        ],
+        [
+            "libavutil/common.h",
+            "RSHIFT",
+            "#define RSHIFT(a,b) ((a) > 0 ? ((a) + ((1<<(b))>>1))>>(b) : ((a) + ((1<<(b))>>1)-1)>>(b)) /* <=== libavutil/common.h:47:47:RSHIFT:2 */ ",
+            2
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR",
+            "#define AVERROR(e) (e) /* <=== libavutil/error.h:45:45:AVERROR:1 */ ",
+            1
+        ],
+        [
+            "libavutil/frame.c",
+            "av_frame_unref",
+            "void av_frame_unref(AVFrame *frame) /* <=== av_frame_unref */ \n{\n    int i;\n\n    if (!frame)\n        return;\n\n    wipe_side_data(frame);\n\n    for (i = 0; i < FF_ARRAY_ELEMS(frame->buf); i++)\n        av_buffer_unref(&frame->buf[i]);\n    for (i = 0; i < frame->nb_extended_buf; i++)\n        av_buffer_unref(&frame->extended_buf[i]);\n    av_freep(&frame->extended_buf);\n    av_dict_free(&frame->metadata);\n\n    av_buffer_unref(&frame->hw_frames_ctx);\n\n    av_buffer_unref(&frame->opaque_ref);\n    av_buffer_unref(&frame->private_ref);\n\n    if (frame->extended_data != frame->data)\n        av_freep(&frame->extended_data);\n\n    get_frame_defaults(frame);\n}",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "skip_bits",
+            "static inline void skip_bits(GetBitContext *s, int n) /* <=== skip_bits */ \n{\n#if CACHED_BITSTREAM_READER\n    if (n < s->bits_left)\n        skip_remaining(s, n);\n    else {\n        n -= s->bits_left;\n        s->cache = 0;\n        s->bits_left = 0;\n\n        if (n >= 64) {\n            unsigned skip = (n / 8) * 8;\n\n            n -= skip;\n            s->index += skip;\n        }\n#ifdef BITSTREAM_READER_LE\n        refill_64(s, 1);\n#else\n        refill_64(s, 0);\n#endif\n        if (n)\n            skip_remaining(s, n);\n    }\n#else\n    OPEN_READER(re, s);\n    LAST_SKIP_BITS(re, s, n);\n    CLOSE_READER(re, s);\n#endif\n}",
+            1
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_release_ext_buffer",
+            "void ff_thread_release_ext_buffer(AVCodecContext *avctx, ThreadFrame *f) /* <=== ff_thread_release_ext_buffer */ \n{\n    av_buffer_unref(&f->progress);\n    f->owner[0] = f->owner[1] = NULL;\n    ff_thread_release_buffer(avctx, f->f);\n}",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "TOKEN_EOB",
+            "#define TOKEN_EOB(eob_run)              ((eob_run) << 2) /* <=== libavcodec/vp3.c:256:256:TOKEN_EOB:1 */ ",
+            3
+        ],
+        [
+            "libavutil/log.c",
+            "av_vlog",
+            "void av_vlog(void* avcl, int level, const char *fmt, va_list vl) /* <=== av_vlog */ \n{\n    AVClass* avc = avcl ? *(AVClass **) avcl : NULL;\n    void (*log_callback)(void*, int, const char*, va_list) = av_log_callback;\n    if (avc && avc->version >= (50 << 16 | 15 << 8 | 2) &&\n        avc->log_level_offset_offset && level >= AV_LOG_FATAL)\n        level += *(int *) (((uint8_t *) avcl) + avc->log_level_offset_offset);\n    if (log_callback)\n        log_callback(avcl, level, fmt, vl);\n}",
+            2
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert1",
+            "#define av_assert1(cond) ((void)0) /* <=== libavutil/avassert.h:53:53:av_assert1:1 */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "SUPERBLOCK_VLC_BITS",
+            "#define SUPERBLOCK_VLC_BITS 6 /* <=== libavcodec/vp3.c:55:55:SUPERBLOCK_VLC_BITS:0 */ ",
+            2
+        ],
+        [
+            "libavutil/dict.h",
+            "av_dict_copy",
+            "int av_dict_copy(AVDictionary **dst, const AVDictionary *src, int flags); /* <=== av_dict_copy */ ",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_freep",
+            "void av_freep(void *arg) /* <=== av_freep */ \n{\n    void *val;\n\n    memcpy(&val, arg, sizeof(val));\n    memcpy(arg, &(void *){ NULL }, sizeof(val));\n    av_free(val);\n}",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "thread_get_buffer_internal",
+            "static int thread_get_buffer_internal(AVCodecContext *avctx, AVFrame *f, int flags) /* <=== thread_get_buffer_internal */ \n{\n    PerThreadContext *p;\n    int err;\n\n    if (!(avctx->active_thread_type & FF_THREAD_FRAME))\n        return ff_get_buffer(avctx, f, flags);\n\n    p = avctx->internal->thread_ctx;\nFF_DISABLE_DEPRECATION_WARNINGS\n    if (atomic_load(&p->state) != STATE_SETTING_UP &&\n        (avctx->codec->update_thread_context\n#if FF_API_THREAD_SAFE_CALLBACKS\n         || !THREAD_SAFE_CALLBACKS(avctx)\n#endif\n         )) {\nFF_ENABLE_DEPRECATION_WARNINGS\n        av_log(avctx, AV_LOG_ERROR, \"get_buffer() cannot be called after ff_thread_finish_setup()\\n\");\n        return -1;\n    }\n\n    pthread_mutex_lock(&p->parent->buffer_mutex);\n#if !FF_API_THREAD_SAFE_CALLBACKS\n    err = ff_get_buffer(avctx, f->f, flags);\n#else\nFF_DISABLE_DEPRECATION_WARNINGS\n    if (THREAD_SAFE_CALLBACKS(avctx)) {\n        err = ff_get_buffer(avctx, f, flags);\n    } else {\n        pthread_mutex_lock(&p->progress_mutex);\n        p->requested_frame = f;\n        p->requested_flags = flags;\n        atomic_store_explicit(&p->state, STATE_GET_BUFFER, memory_order_release);\n        pthread_cond_broadcast(&p->progress_cond);\n\n        while (atomic_load(&p->state) != STATE_SETTING_UP)\n            pthread_cond_wait(&p->progress_cond, &p->progress_mutex);\n\n        err = p->result;\n\n        pthread_mutex_unlock(&p->progress_mutex);\n\n    }\n    if (!THREAD_SAFE_CALLBACKS(avctx) && !avctx->codec->update_thread_context)\n        ff_thread_finish_setup(avctx);\nFF_ENABLE_DEPRECATION_WARNINGS\n#endif\n\n    pthread_mutex_unlock(&p->parent->buffer_mutex);\n\n    return err;\n}",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MODE_INTER_LAST_MV",
+            "#define MODE_INTER_LAST_MV    3 /* <=== libavcodec/vp3.c:78:78:MODE_INTER_LAST_MV:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_await_progress",
+            "void ff_thread_await_progress(ThreadFrame *f, int n, int field) /* <=== ff_thread_await_progress */ \n{\n    PerThreadContext *p;\n    atomic_int *progress = f->progress ? (atomic_int*)f->progress->data : NULL;\n\n    if (!progress ||\n        atomic_load_explicit(&progress[field], memory_order_acquire) >= n)\n        return;\n\n    p = f->owner[field]->internal->thread_ctx;\n\n    if (atomic_load_explicit(&p->debug_threads, memory_order_relaxed))\n        av_log(f->owner[field], AV_LOG_DEBUG,\n               \"thread awaiting %d field %d from %p\\n\", n, field, progress);\n\n    pthread_mutex_lock(&p->progress_mutex);\n    while (atomic_load_explicit(&progress[field], memory_order_relaxed) < n)\n        pthread_cond_wait(&p->progress_cond, &p->progress_mutex);\n    pthread_mutex_unlock(&p->progress_mutex);\n}",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "apply_loop_filter",
+            "static void apply_loop_filter(Vp3DecodeContext *s, int plane, /* <=== apply_loop_filter */ \n                              int ystart, int yend)\n{\n    int x, y;\n    int *bounding_values = s->bounding_values_array + 127;\n\n    int width           = s->fragment_width[!!plane];\n    int height          = s->fragment_height[!!plane];\n    int fragment        = s->fragment_start[plane] + ystart * width;\n    ptrdiff_t stride    = s->current_frame.f->linesize[plane];\n    uint8_t *plane_data = s->current_frame.f->data[plane];\n    if (!s->flipped_image)\n        stride = -stride;\n    plane_data += s->data_offset[plane] + 8 * ystart * stride;\n\n    for (y = ystart; y < yend; y++) {\n        for (x = 0; x < width; x++) {\n            /* This code basically just deblocks on the edges of coded blocks.\n             * However, it has to be much more complicated because of the\n             * brain damaged deblock ordering used in VP3/Theora. Order matters\n             * because some pixels get filtered twice. */\n            if (s->all_fragments[fragment].coding_method != MODE_COPY) {\n                /* do not perform left edge filter for left columns frags */\n                if (x > 0) {\n                    s->vp3dsp.h_loop_filter(\n                        plane_data + 8 * x,\n                        stride, bounding_values);\n                }\n\n                /* do not perform top edge filter for top row fragments */\n                if (y > 0) {\n                    s->vp3dsp.v_loop_filter(\n                        plane_data + 8 * x,\n                        stride, bounding_values);\n                }\n\n                /* do not perform right edge filter for right column\n                 * fragments or if right fragment neighbor is also coded\n                 * in this frame (it will be filtered in next iteration) */\n                if ((x < width - 1) &&\n                    (s->all_fragments[fragment + 1].coding_method == MODE_COPY)) {\n                    s->vp3dsp.h_loop_filter(\n                        plane_data + 8 * x + 8,\n                        stride, bounding_values);\n                }\n\n                /* do not perform bottom edge filter for bottom row\n                 * fragments or if bottom fragment neighbor is also coded\n                 * in this frame (it will be filtered in the next row) */\n                if ((y < height - 1) &&\n                    (s->all_fragments[fragment + width].coding_method == MODE_COPY)) {\n                    s->vp3dsp.v_loop_filter(\n                        plane_data + 8 * x + 8 * stride,\n                        stride, bounding_values);\n                }\n            }\n\n            fragment++;\n        }\n        plane_data += 8 * stride;\n    }\n}",
+            1
+        ],
+        [
+            "libavutil/frame.c",
+            "wipe_side_data",
+            "static void wipe_side_data(AVFrame *frame) /* <=== wipe_side_data */ \n{\n    int i;\n\n    for (i = 0; i < frame->nb_side_data; i++) {\n        free_side_data(&frame->side_data[i]);\n    }\n    frame->nb_side_data = 0;\n\n    av_freep(&frame->side_data);\n}",
+            2
+        ],
+        [
+            "libavutil/mem.c",
+            "av_malloc_array",
+            "void *av_malloc_array(size_t nmemb, size_t size) /* <=== av_malloc_array */ \n{\n    size_t result;\n    if (size_mult(nmemb, size, &result) < 0)\n        return NULL;\n    return av_malloc(result);\n}",
+            2
+        ],
+        [
+            "libavutil/log.c",
+            "av_log",
+            "void av_log(void* avcl, int level, const char *fmt, ...) /* <=== av_log */ \n{\n    va_list vl;\n    va_start(vl, fmt);\n    av_vlog(avcl, level, fmt, vl);\n    va_end(vl);\n}",
+            1
+        ],
+        [
+            "libavutil/buffer.h",
+            "av_buffer_alloc",
+            "AVBufferRef *av_buffer_alloc(size_t size); /* <=== av_buffer_alloc */ ",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_finish_setup",
+            "void ff_thread_finish_setup(AVCodecContext *avctx) { /* <=== ff_thread_finish_setup */ \n    PerThreadContext *p = avctx->internal->thread_ctx;\n\n    if (!(avctx->active_thread_type&FF_THREAD_FRAME)) return;\n\n    if (avctx->hwaccel && !p->hwaccel_serializing) {\n        pthread_mutex_lock(&p->parent->hwaccel_mutex);\n        p->hwaccel_serializing = 1;\n    }\n\n    /* this assumes that no hwaccel calls happen before ff_thread_finish_setup() */\n    if (avctx->hwaccel &&\n        !(avctx->hwaccel->caps_internal & HWACCEL_CAP_ASYNC_SAFE)) {\n        p->async_serializing = 1;\n\n        async_lock(p->parent);\n    }\n\n    pthread_mutex_lock(&p->progress_mutex);\n    if(atomic_load(&p->state) == STATE_SETUP_FINISHED){\n        av_log(avctx, AV_LOG_WARNING, \"Multiple ff_thread_finish_setup() calls\\n\");\n    }\n\n    atomic_store(&p->state, STATE_SETUP_FINISHED);\n\n    pthread_cond_broadcast(&p->progress_cond);\n    pthread_mutex_unlock(&p->progress_mutex);\n}",
+            1
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_get_ext_buffer",
+            "int ff_thread_get_ext_buffer(AVCodecContext *avctx, ThreadFrame *f, int flags) /* <=== ff_thread_get_ext_buffer */ \n{\n    int ret;\n\n    f->owner[0] = f->owner[1] = avctx;\n    /* Hint: It is possible for this function to be called with codecs\n     * that don't support frame threading at all, namely in case\n     * a frame-threaded decoder shares code with codecs that are not.\n     * This currently affects non-MPEG-4 mpegvideo codecs and and VP7.\n     * The following check will always be true for them. */\n    if (!(avctx->active_thread_type & FF_THREAD_FRAME))\n        return ff_get_buffer(avctx, f->f, flags);\n\n    if (avctx->codec->caps_internal & FF_CODEC_CAP_ALLOCATE_PROGRESS) {\n        atomic_int *progress;\n        f->progress = av_buffer_alloc(2 * sizeof(*progress));\n        if (!f->progress) {\n            return AVERROR(ENOMEM);\n        }\n        progress = (atomic_int*)f->progress->data;\n\n        atomic_init(&progress[0], -1);\n        atomic_init(&progress[1], -1);\n    }\n\n    ret = ff_thread_get_buffer(avctx, f->f, flags);\n    if (ret)\n        av_buffer_unref(&f->progress);\n    return ret;\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "unpack_vlcs",
+            "static int unpack_vlcs(Vp3DecodeContext *s, GetBitContext *gb, /* <=== unpack_vlcs */ \n                       VLC *table, int coeff_index,\n                       int plane,\n                       int eob_run)\n{\n    int i, j = 0;\n    int token;\n    int zero_run  = 0;\n    int16_t coeff = 0;\n    int blocks_ended;\n    int coeff_i = 0;\n    int num_coeffs      = s->num_coded_frags[plane][coeff_index];\n    int16_t *dct_tokens = s->dct_tokens[plane][coeff_index];\n\n    /* local references to structure members to avoid repeated dereferences */\n    int *coded_fragment_list   = s->coded_fragment_list[plane];\n    Vp3Fragment *all_fragments = s->all_fragments;\n    VLC_TYPE(*vlc_table)[2] = table->table;\n\n    if (num_coeffs < 0) {\n        av_log(s->avctx, AV_LOG_ERROR,\n               \"Invalid number of coefficients at level %d\\n\", coeff_index);\n        return AVERROR_INVALIDDATA;\n    }\n\n    if (eob_run > num_coeffs) {\n        coeff_i      =\n        blocks_ended = num_coeffs;\n        eob_run     -= num_coeffs;\n    } else {\n        coeff_i      =\n        blocks_ended = eob_run;\n        eob_run      = 0;\n    }\n\n    // insert fake EOB token to cover the split between planes or zzi\n    if (blocks_ended)\n        dct_tokens[j++] = blocks_ended << 2;\n\n    while (coeff_i < num_coeffs && get_bits_left(gb) > 0) {\n        /* decode a VLC into a token */\n        token = get_vlc2(gb, vlc_table, 11, 3);\n        /* use the token to get a zero run, a coefficient, and an eob run */\n        if ((unsigned) token <= 6U) {\n            eob_run = get_eob_run(gb, token);\n            if (!eob_run)\n                eob_run = INT_MAX;\n\n            // record only the number of blocks ended in this plane,\n            // any spill will be recorded in the next plane.\n            if (eob_run > num_coeffs - coeff_i) {\n                dct_tokens[j++] = TOKEN_EOB(num_coeffs - coeff_i);\n                blocks_ended   += num_coeffs - coeff_i;\n                eob_run        -= num_coeffs - coeff_i;\n                coeff_i         = num_coeffs;\n            } else {\n                dct_tokens[j++] = TOKEN_EOB(eob_run);\n                blocks_ended   += eob_run;\n                coeff_i        += eob_run;\n                eob_run         = 0;\n            }\n        } else if (token >= 0) {\n            zero_run = get_coeff(gb, token, &coeff);\n\n            if (zero_run) {\n                dct_tokens[j++] = TOKEN_ZERO_RUN(coeff, zero_run);\n            } else {\n                // Save DC into the fragment structure. DC prediction is\n                // done in raster order, so the actual DC can't be in with\n                // other tokens. We still need the token in dct_tokens[]\n                // however, or else the structure collapses on itself.\n                if (!coeff_index)\n                    all_fragments[coded_fragment_list[coeff_i]].dc = coeff;\n\n                dct_tokens[j++] = TOKEN_COEFF(coeff);\n            }\n\n            if (coeff_index + zero_run > 64) {\n                av_log(s->avctx, AV_LOG_DEBUG,\n                       \"Invalid zero run of %d with %d coeffs left\\n\",\n                       zero_run, 64 - coeff_index);\n                zero_run = 64 - coeff_index;\n            }\n\n            // zero runs code multiple coefficients,\n            // so don't try to decode coeffs for those higher levels\n            for (i = coeff_index + 1; i <= coeff_index + zero_run; i++)\n                s->num_coded_frags[plane][i]--;\n            coeff_i++;\n        } else {\n            av_log(s->avctx, AV_LOG_ERROR, \"Invalid token %d\\n\", token);\n            return -1;\n        }\n    }\n\n    if (blocks_ended > s->num_coded_frags[plane][coeff_index])\n        av_log(s->avctx, AV_LOG_ERROR, \"More blocks ended than coded!\\n\");\n\n    // decrement the number of blocks that have higher coefficients for each\n    // EOB run at this level\n    if (blocks_ended)\n        for (i = coeff_index + 1; i < 64; i++)\n            s->num_coded_frags[plane][i] -= blocks_ended;\n\n    // setup the next buffer\n    if (plane < 2)\n        s->dct_tokens[plane + 1][coeff_index] = dct_tokens + j;\n    else if (coeff_index < 63)\n        s->dct_tokens[0][coeff_index + 1] = dct_tokens + j;\n\n    return eob_run;\n}",
+            2
+        ],
+        [
+            "libavcodec/decode.c",
+            "ff_decode_frame_props",
+            "int ff_decode_frame_props(AVCodecContext *avctx, AVFrame *frame) /* <=== ff_decode_frame_props */ \n{\n    AVPacket *pkt = avctx->internal->last_pkt_props;\n    static const struct {\n        enum AVPacketSideDataType packet;\n        enum AVFrameSideDataType frame;\n    } sd[] = {\n        { AV_PKT_DATA_REPLAYGAIN ,                AV_FRAME_DATA_REPLAYGAIN },\n        { AV_PKT_DATA_DISPLAYMATRIX,              AV_FRAME_DATA_DISPLAYMATRIX },\n        { AV_PKT_DATA_SPHERICAL,                  AV_FRAME_DATA_SPHERICAL },\n        { AV_PKT_DATA_STEREO3D,                   AV_FRAME_DATA_STEREO3D },\n        { AV_PKT_DATA_AUDIO_SERVICE_TYPE,         AV_FRAME_DATA_AUDIO_SERVICE_TYPE },\n        { AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA },\n        { AV_PKT_DATA_CONTENT_LIGHT_LEVEL,        AV_FRAME_DATA_CONTENT_LIGHT_LEVEL },\n        { AV_PKT_DATA_A53_CC,                     AV_FRAME_DATA_A53_CC },\n        { AV_PKT_DATA_ICC_PROFILE,                AV_FRAME_DATA_ICC_PROFILE },\n        { AV_PKT_DATA_S12M_TIMECODE,              AV_FRAME_DATA_S12M_TIMECODE },\n        { AV_PKT_DATA_DYNAMIC_HDR10_PLUS,         AV_FRAME_DATA_DYNAMIC_HDR_PLUS },\n    };\n\n    if (!(avctx->codec->caps_internal & FF_CODEC_CAP_SETS_FRAME_PROPS)) {\n        frame->pts = pkt->pts;\n        frame->pkt_pos      = pkt->pos;\n        frame->pkt_duration = pkt->duration;\n        frame->pkt_size     = pkt->size;\n\n        for (int i = 0; i < FF_ARRAY_ELEMS(sd); i++) {\n            size_t size;\n            uint8_t *packet_sd = av_packet_get_side_data(pkt, sd[i].packet, &size);\n            if (packet_sd) {\n                AVFrameSideData *frame_sd = av_frame_new_side_data(frame,\n                                                                   sd[i].frame,\n                                                                   size);\n                if (!frame_sd)\n                    return AVERROR(ENOMEM);\n\n                memcpy(frame_sd->data, packet_sd, size);\n            }\n        }\n        add_metadata_from_side_data(pkt, frame);\n\n        if (pkt->flags & AV_PKT_FLAG_DISCARD) {\n            frame->flags |= AV_FRAME_FLAG_DISCARD;\n        } else {\n            frame->flags = (frame->flags & ~AV_FRAME_FLAG_DISCARD);\n        }\n    }\n    frame->reordered_opaque = avctx->reordered_opaque;\n\n    if (frame->color_primaries == AVCOL_PRI_UNSPECIFIED)\n        frame->color_primaries = avctx->color_primaries;\n    if (frame->color_trc == AVCOL_TRC_UNSPECIFIED)\n        frame->color_trc = avctx->color_trc;\n    if (frame->colorspace == AVCOL_SPC_UNSPECIFIED)\n        frame->colorspace = avctx->colorspace;\n    if (frame->color_range == AVCOL_RANGE_UNSPECIFIED)\n        frame->color_range = avctx->color_range;\n    if (frame->chroma_location == AVCHROMA_LOC_UNSPECIFIED)\n        frame->chroma_location = avctx->chroma_sample_location;\n\n    switch (avctx->codec->type) {\n    case AVMEDIA_TYPE_VIDEO:\n        frame->format              = avctx->pix_fmt;\n        if (!frame->sample_aspect_ratio.num)\n            frame->sample_aspect_ratio = avctx->sample_aspect_ratio;\n\n        if (frame->width && frame->height &&\n            av_image_check_sar(frame->width, frame->height,\n                               frame->sample_aspect_ratio) < 0) {\n            av_log(avctx, AV_LOG_WARNING, \"ignoring invalid SAR: %u/%u\\n\",\n                   frame->sample_aspect_ratio.num,\n                   frame->sample_aspect_ratio.den);\n            frame->sample_aspect_ratio = (AVRational){ 0, 1 };\n        }\n\n        break;\n    case AVMEDIA_TYPE_AUDIO:\n        if (!frame->sample_rate)\n            frame->sample_rate    = avctx->sample_rate;\n        if (frame->format < 0)\n            frame->format         = avctx->sample_fmt;\n        if (!frame->channel_layout) {\n            if (avctx->channel_layout) {\n                 if (av_get_channel_layout_nb_channels(avctx->channel_layout) !=\n                     avctx->channels) {\n                     av_log(avctx, AV_LOG_ERROR, \"Inconsistent channel \"\n                            \"configuration.\\n\");\n                     return AVERROR(EINVAL);\n                 }\n\n                frame->channel_layout = avctx->channel_layout;\n            } else {\n                if (avctx->channels > FF_SANE_NB_CHANNELS) {\n                    av_log(avctx, AV_LOG_ERROR, \"Too many channels: %d.\\n\",\n                           avctx->channels);\n                    return AVERROR(ENOSYS);\n                }\n            }\n        }\n        frame->channels = avctx->channels;\n        break;\n    }\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_INVALIDDATA",
+            "#define AVERROR_INVALIDDATA        FFERRTAG( 'I','N','D','A') ///< Invalid data found when processing input /* <=== libavutil/error.h:61:61:AVERROR_INVALIDDATA:0 */ ",
+            2
+        ],
+        [
+            "libavutil/frame.c",
+            "frame_copy_audio",
+            "static int frame_copy_audio(AVFrame *dst, const AVFrame *src) /* <=== frame_copy_audio */ \n{\n    int planar   = av_sample_fmt_is_planar(dst->format);\n    int channels = dst->channels;\n    int planes   = planar ? channels : 1;\n    int i;\n\n    if (dst->nb_samples     != src->nb_samples ||\n        dst->channels       != src->channels ||\n        dst->channel_layout != src->channel_layout)\n        return AVERROR(EINVAL);\n\n    CHECK_CHANNELS_CONSISTENCY(src);\n\n    for (i = 0; i < planes; i++)\n        if (!dst->extended_data[i] || !src->extended_data[i])\n            return AVERROR(EINVAL);\n\n    av_samples_copy(dst->extended_data, src->extended_data, 0, 0,\n                    dst->nb_samples, channels, dst->format);\n\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_ref_frame",
+            "int ff_thread_ref_frame(ThreadFrame *dst, const ThreadFrame *src) /* <=== ff_thread_ref_frame */ \n{\n    int ret;\n\n    dst->owner[0] = src->owner[0];\n    dst->owner[1] = src->owner[1];\n\n    ret = av_frame_ref(dst->f, src->f);\n    if (ret < 0)\n        return ret;\n\n    av_assert0(!dst->progress);\n\n    if (src->progress &&\n        !(dst->progress = av_buffer_ref(src->progress))) {\n        ff_thread_release_ext_buffer(dst->owner[0], dst);\n        return AVERROR(ENOMEM);\n    }\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "SHOW_UBITS",
+            "#   define SHOW_UBITS(name, gb, num) SHOW_UBITS_BE(name, gb, num) /* <=== libavcodec/get_bits.h:212:212:SHOW_UBITS:3 */ ",
+            2
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_report_progress",
+            "void ff_thread_report_progress(ThreadFrame *f, int progress, int field) /* <=== ff_thread_report_progress */ \n{\n}",
+            1
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_get_buffer",
+            "int ff_thread_get_buffer(AVCodecContext *avctx, AVFrame *f, int flags) /* <=== ff_thread_get_buffer */ \n{\n    int ret = thread_get_buffer_internal(avctx, f, flags);\n    if (ret < 0)\n        av_log(avctx, AV_LOG_ERROR, \"thread_get_buffer() failed\\n\");\n    return ret;\n}",
+            2
+        ],
+        [
+            "libavcodec/decode.c",
+            "ff_get_buffer",
+            "int ff_get_buffer(AVCodecContext *avctx, AVFrame *frame, int flags) /* <=== ff_get_buffer */ \n{\n    const AVHWAccel *hwaccel = avctx->hwaccel;\n    int override_dimensions = 1;\n    int ret;\n\n    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {\n        if ((unsigned)avctx->width > INT_MAX - STRIDE_ALIGN ||\n            (ret = av_image_check_size2(FFALIGN(avctx->width, STRIDE_ALIGN), avctx->height, avctx->max_pixels, AV_PIX_FMT_NONE, 0, avctx)) < 0 || avctx->pix_fmt<0) {\n            av_log(avctx, AV_LOG_ERROR, \"video_get_buffer: image parameters invalid\\n\");\n            ret = AVERROR(EINVAL);\n            goto fail;\n        }\n\n        if (frame->width <= 0 || frame->height <= 0) {\n            frame->width  = FFMAX(avctx->width,  AV_CEIL_RSHIFT(avctx->coded_width,  avctx->lowres));\n            frame->height = FFMAX(avctx->height, AV_CEIL_RSHIFT(avctx->coded_height, avctx->lowres));\n            override_dimensions = 0;\n        }\n\n        if (frame->data[0] || frame->data[1] || frame->data[2] || frame->data[3]) {\n            av_log(avctx, AV_LOG_ERROR, \"pic->data[*]!=NULL in get_buffer_internal\\n\");\n            ret = AVERROR(EINVAL);\n            goto fail;\n        }\n    } else if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {\n        if (frame->nb_samples * (int64_t)avctx->channels > avctx->max_samples) {\n            av_log(avctx, AV_LOG_ERROR, \"samples per frame %d, exceeds max_samples %\"PRId64\"\\n\", frame->nb_samples, avctx->max_samples);\n            ret = AVERROR(EINVAL);\n            goto fail;\n        }\n    }\n    ret = ff_decode_frame_props(avctx, frame);\n    if (ret < 0)\n        goto fail;\n\n    if (hwaccel) {\n        if (hwaccel->alloc_frame) {\n            ret = hwaccel->alloc_frame(avctx, frame);\n            goto end;\n        }\n    } else\n        avctx->sw_pix_fmt = avctx->pix_fmt;\n\n    ret = avctx->get_buffer2(avctx, frame, flags);\n    if (ret < 0)\n        goto fail;\n\n    validate_avframe_allocation(avctx, frame);\n\n    ret = ff_attach_decode_data(frame);\n    if (ret < 0)\n        goto fail;\n\nend:\n    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO && !override_dimensions &&\n        !(avctx->codec->caps_internal & FF_CODEC_CAP_EXPORTS_CROPPING)) {\n        frame->width  = avctx->width;\n        frame->height = avctx->height;\n    }\n\nfail:\n    if (ret < 0) {\n        av_log(avctx, AV_LOG_ERROR, \"get_buffer() failed\\n\");\n        av_frame_unref(frame);\n    }\n\n    return ret;\n}",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MODE_INTRA",
+            "#define MODE_INTRA            1 /* <=== libavcodec/vp3.c:76:76:MODE_INTRA:0 */ ",
+            2
+        ],
+        [
+            "libavutil/dict.h",
+            "av_dict_free",
+            "void av_dict_free(AVDictionary **m); /* <=== av_dict_free */ ",
+            2
+        ],
+        [
+            "libavutil/buffer.h",
+            "av_buffer_ref",
+            "AVBufferRef *av_buffer_ref(const AVBufferRef *buf); /* <=== av_buffer_ref */ ",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "LAST_SKIP_BITS",
+            "#define LAST_SKIP_BITS(name, gb, num) SKIP_COUNTER(name, gb, num) /* <=== libavcodec/get_bits.h:200:200:LAST_SKIP_BITS:3 */ ",
+            2
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "FF_THREAD_FRAME",
+            "#define FF_THREAD_FRAME   1 ///< Decode more than one frame at once /* <=== libavcodec/avcodec.h:1454:1454:FF_THREAD_FRAME:0 */ ",
+            1
+        ],
+        [
+            "libavutil/frame.c",
+            "free_side_data",
+            "static void free_side_data(AVFrameSideData **ptr_sd) /* <=== free_side_data */ \n{\n    AVFrameSideData *sd = *ptr_sd;\n\n    av_buffer_unref(&sd->buf);\n    av_dict_free(&sd->metadata);\n    av_freep(ptr_sd);\n}",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "SB_FULLY_CODED",
+            "#define SB_FULLY_CODED      2 /* <=== libavcodec/vp3.c:68:68:SB_FULLY_CODED:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "PL",
+            "#define PL 1 /* <=== libavcodec/vp3.c:1651:1651:PL:0 */ ",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_DECODER_NOT_FOUND",
+            "#define AVERROR_DECODER_NOT_FOUND  FFERRTAG(0xF8,'D','E','C') ///< Decoder not found /* <=== libavutil/error.h:54:54:AVERROR_DECODER_NOT_FOUND:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "CODING_MODE_COUNT",
+            "#define CODING_MODE_COUNT     8 /* <=== libavcodec/vp3.c:83:83:CODING_MODE_COUNT:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits_left",
+            "static inline int get_bits_left(GetBitContext *gb) /* <=== get_bits_left */ \n{\n    return gb->size_in_bits - get_bits_count(gb);\n}",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_release_buffer",
+            "void ff_thread_release_buffer(AVCodecContext *avctx, AVFrame *f) /* <=== ff_thread_release_buffer */ \n{\n#if FF_API_THREAD_SAFE_CALLBACKS\nFF_DISABLE_DEPRECATION_WARNINGS\n    PerThreadContext *p;\n    FrameThreadContext *fctx;\n    AVFrame *dst;\n    int ret = 0;\n    int can_direct_free = !(avctx->active_thread_type & FF_THREAD_FRAME) ||\n                          THREAD_SAFE_CALLBACKS(avctx);\nFF_ENABLE_DEPRECATION_WARNINGS\n#endif\n\n    if (!f)\n        return;\n\n    if (avctx->debug & FF_DEBUG_BUFFERS)\n        av_log(avctx, AV_LOG_DEBUG, \"thread_release_buffer called on pic %p\\n\", f);\n\n#if !FF_API_THREAD_SAFE_CALLBACKS\n    av_frame_unref(f->f);\n#else\n    // when the frame buffers are not allocated, just reset it to clean state\n    if (can_direct_free || !f->buf[0]) {\n        av_frame_unref(f);\n        return;\n    }\n\n    p    = avctx->internal->thread_ctx;\n    fctx = p->parent;\n    pthread_mutex_lock(&fctx->buffer_mutex);\n\n    if (p->num_released_buffers == p->released_buffers_allocated) {\n        AVFrame **tmp = av_realloc_array(p->released_buffers, p->released_buffers_allocated + 1,\n                                         sizeof(*p->released_buffers));\n        if (tmp) {\n            tmp[p->released_buffers_allocated] = av_frame_alloc();\n            p->released_buffers = tmp;\n        }\n\n        if (!tmp || !tmp[p->released_buffers_allocated]) {\n            ret = AVERROR(ENOMEM);\n            goto fail;\n        }\n        p->released_buffers_allocated++;\n    }\n\n    dst = p->released_buffers[p->num_released_buffers];\n    av_frame_move_ref(dst, f);\n\n    p->num_released_buffers++;\n\nfail:\n    pthread_mutex_unlock(&fctx->buffer_mutex);\n\n    // make sure the frame is clean even if we fail to free it\n    // this leaks, but it is better than crashing\n    if (ret < 0) {\n        av_log(avctx, AV_LOG_ERROR, \"Could not queue a frame for freeing, this will leak\\n\");\n        memset(f->buf, 0, sizeof(f->buf));\n        if (f->extended_buf)\n            memset(f->extended_buf, 0, f->nb_extended_buf * sizeof(*f->extended_buf));\n        av_frame_unref(f);\n    }\n#endif\n}",
+            2
+        ],
+        [
+            "libavcodec/vp3.c",
+            "unpack_vectors",
+            "static int unpack_vectors(Vp3DecodeContext *s, GetBitContext *gb) /* <=== unpack_vectors */ \n{\n    int j, k, sb_x, sb_y;\n    int coding_mode;\n    int motion_x[4];\n    int motion_y[4];\n    int last_motion_x = 0;\n    int last_motion_y = 0;\n    int prior_last_motion_x = 0;\n    int prior_last_motion_y = 0;\n    int last_gold_motion_x = 0;\n    int last_gold_motion_y = 0;\n    int current_macroblock;\n    int current_fragment;\n    int frag;\n\n    if (s->keyframe)\n        return 0;\n\n    /* coding mode 0 is the VLC scheme; 1 is the fixed code scheme; 2 is VP4 code scheme */\n    coding_mode = s->version < 2 ? get_bits1(gb) : 2;\n\n    /* iterate through all of the macroblocks that contain 1 or more\n     * coded fragments */\n    for (sb_y = 0; sb_y < s->y_superblock_height; sb_y++) {\n        for (sb_x = 0; sb_x < s->y_superblock_width; sb_x++) {\n            if (get_bits_left(gb) <= 0)\n                return -1;\n\n            for (j = 0; j < 4; j++) {\n                int mb_x = 2 * sb_x + (j >> 1);\n                int mb_y = 2 * sb_y + (((j >> 1) + j) & 1);\n                current_macroblock = mb_y * s->macroblock_width + mb_x;\n\n                if (mb_x >= s->macroblock_width  ||\n                    mb_y >= s->macroblock_height ||\n                    s->macroblock_coding[current_macroblock] == MODE_COPY)\n                    continue;\n\n                switch (s->macroblock_coding[current_macroblock]) {\n                case MODE_GOLDEN_MV:\n                    if (coding_mode == 2) { /* VP4 */\n                        last_gold_motion_x = motion_x[0] = vp4_get_mv(s, gb, 0, last_gold_motion_x);\n                        last_gold_motion_y = motion_y[0] = vp4_get_mv(s, gb, 1, last_gold_motion_y);\n                        break;\n                    } /* otherwise fall through */\n                case MODE_INTER_PLUS_MV:\n                    /* all 6 fragments use the same motion vector */\n                    if (coding_mode == 0) {\n                        motion_x[0] = get_vlc2(gb, s->motion_vector_vlc.table,\n                                               VP3_MV_VLC_BITS, 2);\n                        motion_y[0] = get_vlc2(gb, s->motion_vector_vlc.table,\n                                               VP3_MV_VLC_BITS, 2);\n                    } else if (coding_mode == 1) {\n                        motion_x[0] = fixed_motion_vector_table[get_bits(gb, 6)];\n                        motion_y[0] = fixed_motion_vector_table[get_bits(gb, 6)];\n                    } else { /* VP4 */\n                        motion_x[0] = vp4_get_mv(s, gb, 0, last_motion_x);\n                        motion_y[0] = vp4_get_mv(s, gb, 1, last_motion_y);\n                    }\n\n                    /* vector maintenance, only on MODE_INTER_PLUS_MV */\n                    if (s->macroblock_coding[current_macroblock] == MODE_INTER_PLUS_MV) {\n                        prior_last_motion_x = last_motion_x;\n                        prior_last_motion_y = last_motion_y;\n                        last_motion_x       = motion_x[0];\n                        last_motion_y       = motion_y[0];\n                    }\n                    break;\n\n                case MODE_INTER_FOURMV:\n                    /* vector maintenance */\n                    prior_last_motion_x = last_motion_x;\n                    prior_last_motion_y = last_motion_y;\n\n                    /* fetch 4 vectors from the bitstream, one for each\n                     * Y fragment, then average for the C fragment vectors */\n                    for (k = 0; k < 4; k++) {\n                        current_fragment = BLOCK_Y * s->fragment_width[0] + BLOCK_X;\n                        if (s->all_fragments[current_fragment].coding_method != MODE_COPY) {\n                            if (coding_mode == 0) {\n                                motion_x[k] = get_vlc2(gb, s->motion_vector_vlc.table,\n                                                       VP3_MV_VLC_BITS, 2);\n                                motion_y[k] = get_vlc2(gb, s->motion_vector_vlc.table,\n                                                       VP3_MV_VLC_BITS, 2);\n                            } else if (coding_mode == 1) {\n                                motion_x[k] = fixed_motion_vector_table[get_bits(gb, 6)];\n                                motion_y[k] = fixed_motion_vector_table[get_bits(gb, 6)];\n                            } else { /* VP4 */\n                                motion_x[k] = vp4_get_mv(s, gb, 0, prior_last_motion_x);\n                                motion_y[k] = vp4_get_mv(s, gb, 1, prior_last_motion_y);\n                            }\n                            last_motion_x = motion_x[k];\n                            last_motion_y = motion_y[k];\n                        } else {\n                            motion_x[k] = 0;\n                            motion_y[k] = 0;\n                        }\n                    }\n                    break;\n\n                case MODE_INTER_LAST_MV:\n                    /* all 6 fragments use the last motion vector */\n                    motion_x[0] = last_motion_x;\n                    motion_y[0] = last_motion_y;\n\n                    /* no vector maintenance (last vector remains the\n                     * last vector) */\n                    break;\n\n                case MODE_INTER_PRIOR_LAST:\n                    /* all 6 fragments use the motion vector prior to the\n                     * last motion vector */\n                    motion_x[0] = prior_last_motion_x;\n                    motion_y[0] = prior_last_motion_y;\n\n                    /* vector maintenance */\n                    prior_last_motion_x = last_motion_x;\n                    prior_last_motion_y = last_motion_y;\n                    last_motion_x       = motion_x[0];\n                    last_motion_y       = motion_y[0];\n                    break;\n\n                default:\n                    /* covers intra, inter without MV, golden without MV */\n                    motion_x[0] = 0;\n                    motion_y[0] = 0;\n\n                    /* no vector maintenance */\n                    break;\n                }\n\n                /* assign the motion vectors to the correct fragments */\n                for (k = 0; k < 4; k++) {\n                    current_fragment =\n                        BLOCK_Y * s->fragment_width[0] + BLOCK_X;\n                    if (s->macroblock_coding[current_macroblock] == MODE_INTER_FOURMV) {\n                        s->motion_val[0][current_fragment][0] = motion_x[k];\n                        s->motion_val[0][current_fragment][1] = motion_y[k];\n                    } else {\n                        s->motion_val[0][current_fragment][0] = motion_x[0];\n                        s->motion_val[0][current_fragment][1] = motion_y[0];\n                    }\n                }\n\n                if (s->chroma_y_shift) {\n                    if (s->macroblock_coding[current_macroblock] == MODE_INTER_FOURMV) {\n                        motion_x[0] = RSHIFT(motion_x[0] + motion_x[1] +\n                                             motion_x[2] + motion_x[3], 2);\n                        motion_y[0] = RSHIFT(motion_y[0] + motion_y[1] +\n                                             motion_y[2] + motion_y[3], 2);\n                    }\n                    if (s->version <= 2) {\n                        motion_x[0] = (motion_x[0] >> 1) | (motion_x[0] & 1);\n                        motion_y[0] = (motion_y[0] >> 1) | (motion_y[0] & 1);\n                    }\n                    frag = mb_y * s->fragment_width[1] + mb_x;\n                    s->motion_val[1][frag][0] = motion_x[0];\n                    s->motion_val[1][frag][1] = motion_y[0];\n                } else if (s->chroma_x_shift) {\n                    if (s->macroblock_coding[current_macroblock] == MODE_INTER_FOURMV) {\n                        motion_x[0] = RSHIFT(motion_x[0] + motion_x[1], 1);\n                        motion_y[0] = RSHIFT(motion_y[0] + motion_y[1], 1);\n                        motion_x[1] = RSHIFT(motion_x[2] + motion_x[3], 1);\n                        motion_y[1] = RSHIFT(motion_y[2] + motion_y[3], 1);\n                    } else {\n                        motion_x[1] = motion_x[0];\n                        motion_y[1] = motion_y[0];\n                    }\n                    if (s->version <= 2) {\n                        motion_x[0] = (motion_x[0] >> 1) | (motion_x[0] & 1);\n                        motion_x[1] = (motion_x[1] >> 1) | (motion_x[1] & 1);\n                    }\n                    frag = 2 * mb_y * s->fragment_width[1] + mb_x;\n                    for (k = 0; k < 2; k++) {\n                        s->motion_val[1][frag][0] = motion_x[k];\n                        s->motion_val[1][frag][1] = motion_y[k];\n                        frag += s->fragment_width[1];\n                    }\n                } else {\n                    for (k = 0; k < 4; k++) {\n                        frag = BLOCK_Y * s->fragment_width[1] + BLOCK_X;\n                        if (s->macroblock_coding[current_macroblock] == MODE_INTER_FOURMV) {\n                            s->motion_val[1][frag][0] = motion_x[k];\n                            s->motion_val[1][frag][1] = motion_y[k];\n                        } else {\n                            s->motion_val[1][frag][0] = motion_x[0];\n                            s->motion_val[1][frag][1] = motion_y[0];\n                        }\n                    }\n                }\n            }\n        }\n    }\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavutil/imgutils.c",
+            "av_image_check_size2",
+            "int av_image_check_size2(unsigned int w, unsigned int h, int64_t max_pixels, enum AVPixelFormat pix_fmt, int log_offset, void *log_ctx) /* <=== av_image_check_size2 */ \n{\n    ImgUtils imgutils = {\n        .class      = &imgutils_class,\n        .log_offset = log_offset,\n        .log_ctx    = log_ctx,\n    };\n    int64_t stride = av_image_get_linesize(pix_fmt, w, 0);\n    if (stride <= 0)\n        stride = 8LL*w;\n    stride += 128*8;\n\n    if ((int)w<=0 || (int)h<=0 || stride >= INT_MAX || stride*(uint64_t)(h+128) >= INT_MAX) {\n        av_log(&imgutils, AV_LOG_ERROR, \"Picture size %ux%u is invalid\\n\", w, h);\n        return AVERROR(EINVAL);\n    }\n\n    if (max_pixels < INT64_MAX) {\n        if (w*(int64_t)h > max_pixels) {\n            av_log(&imgutils, AV_LOG_ERROR,\n                    \"Picture size %ux%u exceeds specified max pixel count %\"PRId64\", see the documentation if you wish to increase it\\n\",\n                    w, h, max_pixels);\n            return AVERROR(EINVAL);\n        }\n    }\n\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavcodec/internal.h",
+            "FF_CODEC_CAP_EXPORTS_CROPPING",
+            "#define FF_CODEC_CAP_EXPORTS_CROPPING       (1 << 4) /* <=== libavcodec/internal.h:68:68:FF_CODEC_CAP_EXPORTS_CROPPING:0 */ ",
+            3
+        ],
+        [
+            "libavutil/frame.c",
+            "frame_copy_video",
+            "static int frame_copy_video(AVFrame *dst, const AVFrame *src) /* <=== frame_copy_video */ \n{\n    const uint8_t *src_data[4];\n    int i, planes;\n\n    if (dst->width  < src->width ||\n        dst->height < src->height)\n        return AVERROR(EINVAL);\n\n    if (src->hw_frames_ctx || dst->hw_frames_ctx)\n        return av_hwframe_transfer_data(dst, src, 0);\n\n    planes = av_pix_fmt_count_planes(dst->format);\n    for (i = 0; i < planes; i++)\n        if (!dst->data[i] || !src->data[i])\n            return AVERROR(EINVAL);\n\n    memcpy(src_data, src->data, sizeof(src_data));\n    av_image_copy(dst->data, dst->linesize,\n                  src_data, src->linesize,\n                  dst->format, src->width, src->height);\n\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_get_ext_buffer",
+            "int ff_thread_get_ext_buffer(AVCodecContext *avctx, ThreadFrame *f, int flags) /* <=== ff_thread_get_ext_buffer */ \n{\n    f->owner[0] = f->owner[1] = avctx;\n    return ff_get_buffer(avctx, f->f, flags);\n}",
+            1
+        ],
+        [
+            "libavcodec/vp3.c",
+            "MODE_INTER_PLUS_MV",
+            "#define MODE_INTER_PLUS_MV    2 /* <=== libavcodec/vp3.c:77:77:MODE_INTER_PLUS_MV:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "init_get_bits",
+            "static inline int init_get_bits(GetBitContext *s, const uint8_t *buffer, /* <=== init_get_bits */ \n                                int bit_size)\n{\n#ifdef BITSTREAM_READER_LE\n    return init_get_bits_xe(s, buffer, bit_size, 1);\n#else\n    return init_get_bits_xe(s, buffer, bit_size, 0);\n#endif\n}",
+            2
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "FF_DEBUG_PICT_INFO",
+            "#define FF_DEBUG_PICT_INFO   1 /* <=== libavcodec/avcodec.h:1303:1303:FF_DEBUG_PICT_INFO:0 */ ",
+            1
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert0",
+            "#define av_assert0(cond) do {                                           \\ /* <=== libavutil/avassert.h:37:43:av_assert0:1 */ \n    if (!(cond)) {                                                      \\\n        av_log(NULL, AV_LOG_PANIC, \"Assertion %s failed at %s:%d\\n\",    \\\n               AV_STRINGIFY(cond), __FILE__, __LINE__);                 \\\n        abort();                                                        \\\n    }                                                                   \\\n} while (0)",
+            3
+        ],
+        [
+            "libavcodec/vp3.c",
+            "SET_CHROMA_MODES",
+            "#define SET_CHROMA_MODES                                                      \\ /* <=== libavcodec/vp3.c:860:864:SET_CHROMA_MODES:0 */ \n    if (frag[s->fragment_start[1]].coding_method != MODE_COPY)                \\\n        frag[s->fragment_start[1]].coding_method = coding_mode;               \\\n    if (frag[s->fragment_start[2]].coding_method != MODE_COPY)                \\\n        frag[s->fragment_start[2]].coding_method = coding_mode;",
+            2
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_release_ext_buffer",
+            "void ff_thread_release_ext_buffer(AVCodecContext *avctx, ThreadFrame *f) /* <=== ff_thread_release_ext_buffer */ \n{\n    f->owner[0] = f->owner[1] = NULL;\n    if (f->f)\n        av_frame_unref(f->f);\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"hpeldsp.h\"",
+        "#include \"mathops.h\"",
+        "#include \"libavutil/imgutils.h\"",
+        "#include \"vp3data.h\"",
+        "#include <stdlib.h>",
+        "#include <stdio.h>",
+        "#include \"libavutil/mem_internal.h\"",
+        "#include \"vp3dsp.h\"",
+        "#include \"avcodec.h\"",
+        "#include <string.h>",
+        "#include \"internal.h\"",
+        "#include \"xiph.h\"",
+        "#include \"get_bits.h\"",
+        "#include \"vp4data.h\"",
+        "#include \"videodsp.h\"",
+        "#include \"thread.h\"",
+        "#include \"threadframe.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct AVPacket",
+            "AVPacket"
+        ],
+        [
+            "typedef struct AVFrame {\n#define AV_NUM_DATA_POINTERS 8\n    /**\n     * pointer to the picture/channel planes.\n     * This might be different from the first allocated byte. For video,\n     * it could even point to the end of the image data.\n     *\n     * All pointers in data and extended_data must point into one of the\n     * AVBufferRef in buf or extended_buf.\n     *\n     * Some decoders access areas outside 0,0 - width,height, please\n     * see avcodec_align_dimensions2(). Some filters and swscale can read\n     * up to 16 bytes beyond the planes, if these filters are to be used,\n     * then 16 extra bytes must be allocated.\n     *\n     * NOTE: Pointers not needed by the format MUST be set to NULL.\n     *\n     * @attention In case of video, the data[] pointers can point to the\n     * end of image data in order to reverse line order, when used in\n     * combination with negative values in the linesize[] array.\n     */\n    uint8_t *data[AV_NUM_DATA_POINTERS];\n\n    /**\n     * For video, a positive or negative value, which is typically indicating\n     * the size in bytes of each picture line, but it can also be:\n     * - the negative byte size of lines for vertical flipping\n     *   (with data[n] pointing to the end of the data\n     * - a positive or negative multiple of the byte size as for accessing\n     *   even and odd fields of a frame (possibly flipped)\n     *\n     * For audio, only linesize[0] may be set. For planar audio, each channel\n     * plane must be the same size.\n     *\n     * For video the linesizes should be multiples of the CPUs alignment\n     * preference, this is 16 or 32 for modern desktop CPUs.\n     * Some code requires such alignment other code can be slower without\n     * correct alignment, for yet other it makes no difference.\n     *\n     * @note The linesize may be larger than the size of usable data -- there\n     * may be extra padding present for performance reasons.\n     *\n     * @attention In case of video, line size values can be negative to achieve\n     * a vertically inverted iteration over image lines.\n     */\n    int linesize[AV_NUM_DATA_POINTERS];\n\n    /**\n     * pointers to the data planes/channels.\n     *\n     * For video, this should simply point to data[].\n     *\n     * For planar audio, each channel has a separate data pointer, and\n     * linesize[0] contains the size of each channel buffer.\n     * For packed audio, there is just one data pointer, and linesize[0]\n     * contains the total size of the buffer for all channels.\n     *\n     * Note: Both data and extended_data should always be set in a valid frame,\n     * but for planar audio with more channels that can fit in data,\n     * extended_data must be used in order to access all channels.\n     */\n    uint8_t **extended_data;\n\n    /**\n     * @name Video dimensions\n     * Video frames only. The coded dimensions (in pixels) of the video frame,\n     * i.e. the size of the rectangle that contains some well-defined values.\n     *\n     * @note The part of the frame intended for display/presentation is further\n     * restricted by the @ref cropping \"Cropping rectangle\".\n     * @{\n     */\n    int width, height;\n    /**\n     * @}\n     */\n\n    /**\n     * number of audio samples (per channel) described by this frame\n     */\n    int nb_samples;\n\n    /**\n     * format of the frame, -1 if unknown or unset\n     * Values correspond to enum AVPixelFormat for video frames,\n     * enum AVSampleFormat for audio)\n     */\n    int format;\n\n    /**\n     * 1 -> keyframe, 0-> not\n     */\n    int key_frame;\n\n    /**\n     * Picture type of the frame.\n     */\n    enum AVPictureType pict_type;\n\n    /**\n     * Sample aspect ratio for the video frame, 0/1 if unknown/unspecified.\n     */\n    AVRational sample_aspect_ratio;\n\n    /**\n     * Presentation timestamp in time_base units (time when frame should be shown to user).\n     */\n    int64_t pts;\n\n    /**\n     * DTS copied from the AVPacket that triggered returning this frame. (if frame threading isn't used)\n     * This is also the Presentation time of this AVFrame calculated from\n     * only AVPacket.dts values without pts values.\n     */\n    int64_t pkt_dts;\n\n    /**\n     * Time base for the timestamps in this frame.\n     * In the future, this field may be set on frames output by decoders or\n     * filters, but its value will be by default ignored on input to encoders\n     * or filters.\n     */\n    AVRational time_base;\n\n    /**\n     * picture number in bitstream order\n     */\n    int coded_picture_number;\n    /**\n     * picture number in display order\n     */\n    int display_picture_number;\n\n    /**\n     * quality (between 1 (good) and FF_LAMBDA_MAX (bad))\n     */\n    int quality;\n\n    /**\n     * for some private data of the user\n     */\n    void *opaque;\n\n    /**\n     * When decoding, this signals how much the picture must be delayed.\n     * extra_delay = repeat_pict / (2*fps)\n     */\n    int repeat_pict;\n\n    /**\n     * The content of the picture is interlaced.\n     */\n    int interlaced_frame;\n\n    /**\n     * If the content is interlaced, is top field displayed first.\n     */\n    int top_field_first;\n\n    /**\n     * Tell user application that palette has changed from previous frame.\n     */\n    int palette_has_changed;\n\n    /**\n     * reordered opaque 64 bits (generally an integer or a double precision float\n     * PTS but can be anything).\n     * The user sets AVCodecContext.reordered_opaque to represent the input at\n     * that time,\n     * the decoder reorders values as needed and sets AVFrame.reordered_opaque\n     * to exactly one of the values provided by the user through AVCodecContext.reordered_opaque\n     */\n    int64_t reordered_opaque;\n\n    /**\n     * Sample rate of the audio data.\n     */\n    int sample_rate;\n\n    /**\n     * Channel layout of the audio data.\n     */\n    uint64_t channel_layout;\n\n    /**\n     * AVBuffer references backing the data for this frame. All the pointers in\n     * data and extended_data must point inside one of the buffers in buf or\n     * extended_buf. This array must be filled contiguously -- if buf[i] is\n     * non-NULL then buf[j] must also be non-NULL for all j < i.\n     *\n     * There may be at most one AVBuffer per data plane, so for video this array\n     * always contains all the references. For planar audio with more than\n     * AV_NUM_DATA_POINTERS channels, there may be more buffers than can fit in\n     * this array. Then the extra AVBufferRef pointers are stored in the\n     * extended_buf array.\n     */\n    AVBufferRef *buf[AV_NUM_DATA_POINTERS];\n\n    /**\n     * For planar audio which requires more than AV_NUM_DATA_POINTERS\n     * AVBufferRef pointers, this array will hold all the references which\n     * cannot fit into AVFrame.buf.\n     *\n     * Note that this is different from AVFrame.extended_data, which always\n     * contains all the pointers. This array only contains the extra pointers,\n     * which cannot fit into AVFrame.buf.\n     *\n     * This array is always allocated using av_malloc() by whoever constructs\n     * the frame. It is freed in av_frame_unref().\n     */\n    AVBufferRef **extended_buf;\n    /**\n     * Number of elements in extended_buf.\n     */\n    int        nb_extended_buf;\n\n    AVFrameSideData **side_data;\n    int            nb_side_data;\n\n/**\n * @defgroup lavu_frame_flags AV_FRAME_FLAGS\n * @ingroup lavu_frame\n * Flags describing additional frame properties.\n *\n * @{\n */\n\n/**\n * The frame data may be corrupted, e.g. due to decoding errors.\n */\n#define AV_FRAME_FLAG_CORRUPT       (1 << 0)\n/**\n * A flag to mark the frames which need to be decoded, but shouldn't be output.\n */\n#define AV_FRAME_FLAG_DISCARD   (1 << 2)\n/**\n * @}\n */\n\n    /**\n     * Frame flags, a combination of @ref lavu_frame_flags\n     */\n    int flags;\n\n    /**\n     * MPEG vs JPEG YUV range.\n     * - encoding: Set by user\n     * - decoding: Set by libavcodec\n     */\n    enum AVColorRange color_range;\n\n    enum AVColorPrimaries color_primaries;\n\n    enum AVColorTransferCharacteristic color_trc;\n\n    /**\n     * YUV colorspace type.\n     * - encoding: Set by user\n     * - decoding: Set by libavcodec\n     */\n    enum AVColorSpace colorspace;\n\n    enum AVChromaLocation chroma_location;\n\n    /**\n     * frame timestamp estimated using various heuristics, in stream time base\n     * - encoding: unused\n     * - decoding: set by libavcodec, read by user.\n     */\n    int64_t best_effort_timestamp;\n\n    /**\n     * reordered pos from the last AVPacket that has been input into the decoder\n     * - encoding: unused\n     * - decoding: Read by user.\n     */\n    int64_t pkt_pos;\n\n    /**\n     * duration of the corresponding packet, expressed in\n     * AVStream->time_base units, 0 if unknown.\n     * - encoding: unused\n     * - decoding: Read by user.\n     */\n    int64_t pkt_duration;\n\n    /**\n     * metadata.\n     * - encoding: Set by user.\n     * - decoding: Set by libavcodec.\n     */\n    AVDictionary *metadata;\n\n    /**\n     * decode error flags of the frame, set to a combination of\n     * FF_DECODE_ERROR_xxx flags if the decoder produced a frame, but there\n     * were errors during the decoding.\n     * - encoding: unused\n     * - decoding: set by libavcodec, read by user.\n     */\n    int decode_error_flags;\n#define FF_DECODE_ERROR_INVALID_BITSTREAM   1\n#define FF_DECODE_ERROR_MISSING_REFERENCE   2\n#define FF_DECODE_ERROR_CONCEALMENT_ACTIVE  4\n#define FF_DECODE_ERROR_DECODE_SLICES       8\n\n    /**\n     * number of audio channels, only used for audio.\n     * - encoding: unused\n     * - decoding: Read by user.\n     */\n    int channels;\n\n    /**\n     * size of the corresponding packet containing the compressed\n     * frame.\n     * It is set to a negative value if unknown.\n     * - encoding: unused\n     * - decoding: set by libavcodec, read by user.\n     */\n    int pkt_size;\n\n    /**\n     * For hwaccel-format frames, this should be a reference to the\n     * AVHWFramesContext describing the frame.\n     */\n    AVBufferRef *hw_frames_ctx;\n\n    /**\n     * AVBufferRef for free use by t...",
+            "AVFrame"
+        ],
+        [
+            "typedef struct {\n    int start;          ///< timecode frame start (first base frame number)\n    uint32_t flags;     ///< flags such as drop frame, +24 hours support, ...\n    AVRational rate;    ///< frame rate in rational form\n    unsigned fps;       ///< frame per second; must be consistent with the rate field\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct AVCodecContext {\n    /**\n     * information on struct for av_log\n     * - set by avcodec_alloc_context3\n     */\n    const AVClass *av_class;\n    int log_level_offset;\n\n    enum AVMediaType codec_type; /* see AVMEDIA_TYPE_xxx */\n    const struct AVCodec  *codec;\n    enum AVCodecID     codec_id; /* see AV_CODEC_ID_xxx */\n\n    /**\n     * fourcc (LSB first, so \"ABCD\" -> ('D'<<24) + ('C'<<16) + ('B'<<8) + 'A').\n     * This is used to work around some encoder bugs.\n     * A demuxer should set this to what is stored in the field used to identify the codec.\n     * If there are multiple such fields in a container then the demuxer should choose the one\n     * which maximizes the information about the used codec.\n     * If the codec tag field in a container is larger than 32 bits then the demuxer should\n     * remap the longer ID to 32 bits with a table or other structure. Alternatively a new\n     * extra_codec_tag + size could be added but for this a clear advantage must be demonstrated\n     * first.\n     * - encoding: Set by user, if not then the default based on codec_id will be used.\n     * - decoding: Set by user, will be converted to uppercase by libavcodec during init.\n     */\n    unsigned int codec_tag;\n\n    void *priv_data;\n\n    /**\n     * Private context used for internal data.\n     *\n     * Unlike priv_data, this is not codec-specific. It is used in general\n     * libavcodec functions.\n     */\n    struct AVCodecInternal *internal;\n\n    /**\n     * Private data of the user, can be used to carry app specific stuff.\n     * - encoding: Set by user.\n     * - decoding: Set by user.\n     */\n    void *opaque;\n\n    /**\n     * the average bitrate\n     * - encoding: Set by user; unused for constant quantizer encoding.\n     * - decoding: Set by user, may be overwritten by libavcodec\n     *             if this info is available in the stream\n     */\n    int64_t bit_rate;\n\n    /**\n     * number of bits the bitstream is allowed to diverge from the reference.\n     *           the reference can be CBR (for CBR pass1) or VBR (for pass2)\n     * - encoding: Set by user; unused for constant quantizer encoding.\n     * - decoding: unused\n     */\n    int bit_rate_tolerance;\n\n    /**\n     * Global quality for codecs which cannot change it per frame.\n     * This should be proportional to MPEG-1/2/4 qscale.\n     * - encoding: Set by user.\n     * - decoding: unused\n     */\n    int global_quality;\n\n    /**\n     * - encoding: Set by user.\n     * - decoding: unused\n     */\n    int compression_level;\n#define FF_COMPRESSION_DEFAULT -1\n\n    /**\n     * AV_CODEC_FLAG_*.\n     * - encoding: Set by user.\n     * - decoding: Set by user.\n     */\n    int flags;\n\n    /**\n     * AV_CODEC_FLAG2_*\n     * - encoding: Set by user.\n     * - decoding: Set by user.\n     */\n    int flags2;\n\n    /**\n     * some codecs need / can use extradata like Huffman tables.\n     * MJPEG: Huffman tables\n     * rv10: additional flags\n     * MPEG-4: global headers (they can be in the bitstream or here)\n     * The allocated memory should be AV_INPUT_BUFFER_PADDING_SIZE bytes larger\n     * than extradata_size to avoid problems if it is read with the bitstream reader.\n     * The bytewise contents of extradata must not depend on the architecture or CPU endianness.\n     * Must be allocated with the av_malloc() family of functions.\n     * - encoding: Set/allocated/freed by libavcodec.\n     * - decoding: Set/allocated/freed by user.\n     */\n    uint8_t *extradata;\n    int extradata_size;\n\n    /**\n     * This is the fundamental unit of time (in seconds) in terms\n     * of which frame timestamps are represented. For fixed-fps content,\n     * timebase should be 1/framerate and timestamp increments should be\n     * identically 1.\n     * This often, but not always is the inverse of the frame rate or field rate\n     * for video. 1/time_base is not the average frame rate if the frame rate is not\n     * constant.\n     *\n     * Like containers, elementary streams also can store timestamps, 1/time_base\n     * is the unit in which these timestamps are specified.\n     * As example of such codec time base see ISO/IEC 14496-2:2001(E)\n     * vop_time_increment_resolution and fixed_vop_rate\n     * (fixed_vop_rate == 0 implies that it is different from the framerate)\n     *\n     * - encoding: MUST be set by user.\n     * - decoding: the use of this field for decoding is deprecated.\n     *             Use framerate instead.\n     */\n    AVRational time_base;\n\n    /**\n     * For some codecs, the time base is closer to the field rate than the frame rate.\n     * Most notably, H.264 and MPEG-2 specify time_base as half of frame duration\n     * if no telecine is used ...\n     *\n     * Set to time_base ticks per frame. Default 1, e.g., H.264/MPEG-2 set it to 2.\n     */\n    int ticks_per_frame;\n\n    /**\n     * Codec delay.\n     *\n     * Encoding: Number of frames delay there will be from the encoder input to\n     *           the decoder output. (we assume the decoder matches the spec)\n     * Decoding: Number of frames delay in addition to what a standard decoder\n     *           as specified in the spec would produce.\n     *\n     * Video:\n     *   Number of frames the decoded output will be delayed relative to the\n     *   encoded input.\n     *\n     * Audio:\n     *   For encoding, this field is unused (see initial_padding).\n     *\n     *   For decoding, this is the number of samples the decoder needs to\n     *   output before the decoder's output is valid. When seeking, you should\n     *   start decoding this many samples prior to your desired seek point.\n     *\n     * - encoding: Set by libavcodec.\n     * - decoding: Set by libavcodec.\n     */\n    int delay;\n\n\n    /* video only */\n    /**\n     * picture width / height.\n     *\n     * @note Those fields may not match the values of the last\n     * AVFrame output by avcodec_receive_frame() due frame\n     * reordering.\n     *\n     * - encoding: MUST be set by user.\n     * - decoding: May be set by the user before opening the decoder if known e.g.\n     *             from the container. Some decoders will require the dimensions\n     *             to be set by the caller. During decoding, the decoder may\n     *             overwrite those values as required while parsing the data.\n     */\n    int width, height;\n\n    /**\n     * Bitstream width / height, may be different from width/height e.g. when\n     * the decoded frame is cropped before being output or lowres is enabled.\n     *\n     * @note Those field may not match the value of the last\n     * AVFrame output by avcodec_receive_frame() due frame\n     * reordering.\n     *\n     * - encoding: unused\n     * - decoding: May be set by the user before opening the decoder if known\n     *             e.g. from the container. During decoding, the decoder may\n     *             overwrite those values as required while parsing the data.\n     */\n    int coded_width, coded_height;\n\n    /**\n     * the number of pictures in a group of pictures, or 0 for intra_only\n     * - encoding: Set by user.\n     * - decoding: unused\n     */\n    int gop_size;\n\n    /**\n     * Pixel format, see AV_PIX_FMT_xxx.\n     * May be set by the demuxer if known from headers.\n     * May be overridden by the decoder if it knows better.\n     *\n     * @note This field may not match the value of the last\n     * AVFrame output by avcodec_receive_frame() due frame\n     * reordering.\n     *\n     * - encoding: Set by user.\n     * - decoding: Set by user if known, overridden by libavcodec while\n     *             parsing the data.\n     */\n    enum AVPixelFormat pix_fmt;\n\n    /**\n     * If non NULL, 'draw_horiz_band' is called by the libavcodec\n     * decoder to draw a horizontal band. It improves cache usage. Not\n     * all codecs can do that. You must check the codec capabilities\n     * beforehand.\n     * When multithreading is used, it may be called from multiple threads\n     * at the same time; threads might draw different parts of the same AVFrame,\n     * or multiple AVFrames, and there is no guarantee that slices will be drawn\n     * in order.\n     * The function is also used by hardware acceleration APIs.\n     * It is called at least once during frame decoding to pass\n     * the data needed for hardware render.\n     * In that mode instead of pixel data, AVFrame points to\n     * a structure specific to the acceleration API. The application\n     * reads the structure and can change some fields to indicate progress\n     * or mark state.\n     * - encoding: unused\n     * - decoding: Set by user.\n     * @param height the height of the slice\n     * @param y the y position of the slice\n     * @param type 1->top field, 2->bottom field, 3->frame\n     * @param offset offset into the AVFrame.data from which the slice should be read\n     */\n    void (*draw_horiz_band)(struct AVCodecContext *s,\n                            const AVFrame *src, int offset[AV_NUM_DATA_POINTERS],\n                            int y, int type, int height);\n\n    /**\n     * Callback to negotiate the pixel format. Decoding only, may be set by the\n     * caller before avcodec_open2().\n     *\n     * Called by some decoders to select the pixel format that will be used for\n     * the output frames. This is mainly used to set up hardware acceleration,\n     * then the provided format list contains the corresponding hwaccel pixel\n     * formats alongside the \"software\" one. The software pixel format may also\n     * be retrieved from \\ref sw_pix_fmt.\n     *\n     * This callback will be called when the coded frame properties (such as\n     * resolution, pixel format, etc.) change and more than one output format is\n     * supported for those new properties. If a hardware pixel format is chosen\n     * and initialization for it fails, the callback may be called again\n     * immediately.\n     *\n     * This callback may be called from different threads if the decoder is\n     * multi-threaded, but not from more than one thread simultaneously.\n     *\n     * @param fmt list of formats which may be u...",
+            "AVCodecContext"
+        ],
+        [
+            "typedef struct GetBitContext {\n    const uint8_t *buffer, *buffer_end;\n#if CACHED_BITSTREAM_READER\n    uint64_t cache;\n    unsigned bits_left;\n#endif\n    int index;\n    int size_in_bits;\n    int size_in_bits_plus8;\n} GetBitContext;",
+            "GetBitContext"
+        ],
+        [
+            "typedef struct GetBitContext {\n    const uint8_t *buffer, *buffer_end;\n#if CACHED_BITSTREAM_READER\n    uint64_t cache;\n    unsigned bits_left;\n#endif\n    int index;\n    int size_in_bits;\n    int size_in_bits_plus8;\n}",
+            "GetBitContext"
+        ],
+        [
+            "typedef struct Vp3Fragment {\n    int16_t dc;\n    uint8_t coding_method;\n    uint8_t qpi;\n} Vp3Fragment;",
+            "Vp3Fragment"
+        ],
+        [
+            "typedef struct Vp3DecodeContext {\n    AVCodecContext *avctx;\n    int theora, theora_tables, theora_header;\n    int version;\n    int width, height;\n    int chroma_x_shift, chroma_y_shift;\n    ThreadFrame golden_frame;\n    ThreadFrame last_frame;\n    ThreadFrame current_frame;\n    int keyframe;\n    uint8_t idct_permutation[64];\n    uint8_t idct_scantable[64];\n    HpelDSPContext hdsp;\n    VideoDSPContext vdsp;\n    VP3DSPContext vp3dsp;\n    DECLARE_ALIGNED(16, int16_t, block)[64];\n    int flipped_image;\n    int last_slice_end;\n    int skip_loop_filter;\n\n    int qps[3];\n    int nqps;\n    int last_qps[3];\n\n    int superblock_count;\n    int y_superblock_width;\n    int y_superblock_height;\n    int y_superblock_count;\n    int c_superblock_width;\n    int c_superblock_height;\n    int c_superblock_count;\n    int u_superblock_start;\n    int v_superblock_start;\n    unsigned char *superblock_coding;\n\n    int macroblock_count; /* y macroblock count */\n    int macroblock_width;\n    int macroblock_height;\n    int c_macroblock_count;\n    int c_macroblock_width;\n    int c_macroblock_height;\n    int yuv_macroblock_count; /* y+u+v macroblock count */\n\n    int fragment_count;\n    int fragment_width[2];\n    int fragment_height[2];\n\n    Vp3Fragment *all_fragments;\n    int fragment_start[3];\n    int data_offset[3];\n    uint8_t offset_x;\n    uint8_t offset_y;\n    int offset_x_warned;\n\n    int8_t (*motion_val[2])[2];\n\n    /* tables */\n    uint16_t coded_dc_scale_factor[2][64];\n    uint32_t coded_ac_scale_factor[64];\n    uint8_t base_matrix[384][64];\n    uint8_t qr_count[2][3];\n    uint8_t qr_size[2][3][64];\n    uint16_t qr_base[2][3][64];\n\n    /**\n     * This is a list of all tokens in bitstream order. Reordering takes place\n     * by pulling from each level during IDCT. As a consequence, IDCT must be\n     * in Hilbert order, making the minimum slice height 64 for 4:2:0 and 32\n     * otherwise. The 32 different tokens with up to 12 bits of extradata are\n     * collapsed into 3 types, packed as follows:\n     *   (from the low to high bits)\n     *\n     * 2 bits: type (0,1,2)\n     *   0: EOB run, 14 bits for run length (12 needed)\n     *   1: zero run, 7 bits for run length\n     *                7 bits for the next coefficient (3 needed)\n     *   2: coefficient, 14 bits (11 needed)\n     *\n     * Coefficients are signed, so are packed in the highest bits for automatic\n     * sign extension.\n     */\n    int16_t *dct_tokens[3][64];\n    int16_t *dct_tokens_base;\n#define TOKEN_EOB(eob_run)              ((eob_run) << 2)\n#define TOKEN_ZERO_RUN(coeff, zero_run) (((coeff) * 512) + ((zero_run) << 2) + 1)\n#define TOKEN_COEFF(coeff)              (((coeff) * 4) + 2)\n\n    /**\n     * number of blocks that contain DCT coefficients at\n     * the given level or higher\n     */\n    int num_coded_frags[3][64];\n    int total_num_coded_frags;\n\n    /* this is a list of indexes into the all_fragments array indicating\n     * which of the fragments are coded */\n    int *coded_fragment_list[3];\n\n    int *kf_coded_fragment_list;\n    int *nkf_coded_fragment_list;\n    int num_kf_coded_fragment[3];\n\n    /* The first 16 of the following VLCs are for the dc coefficients;\n       the others are four groups of 16 VLCs each for ac coefficients. */\n    VLC coeff_vlc[5 * 16];\n\n    VLC superblock_run_length_vlc; /* version < 2 */\n    VLC fragment_run_length_vlc; /* version < 2 */\n    VLC block_pattern_vlc[2]; /* version >= 2*/\n    VLC mode_code_vlc;\n    VLC motion_vector_vlc; /* version < 2 */\n    VLC vp4_mv_vlc[2][7]; /* version >=2 */\n\n    /* these arrays need to be on 16-byte boundaries since SSE2 operations\n     * index into them */\n    DECLARE_ALIGNED(16, int16_t, qmat)[3][2][3][64];     ///< qmat[qpi][is_inter][plane]\n\n    /* This table contains superblock_count * 16 entries. Each set of 16\n     * numbers corresponds to the fragment indexes 0..15 of the superblock.\n     * An entry will be -1 to indicate that no entry corresponds to that\n     * index. */\n    int *superblock_fragments;\n\n    /* This is an array that indicates how a particular macroblock\n     * is coded. */\n    unsigned char *macroblock_coding;\n\n    uint8_t *edge_emu_buffer;\n\n    /* Huffman decode */\n    HuffTable huffman_table[5 * 16];\n\n    uint8_t filter_limit_values[64];\n    DECLARE_ALIGNED(8, int, bounding_values_array)[256 + 2];\n\n    VP4Predictor * dc_pred_row; /* dc_pred_row[y_superblock_width * 4] */\n}",
+            "Vp3DecodeContext"
+        ]
+    ],
+    "visitedLines_after": {
+        "libavcodec/vp3.c": [
+            2586,
+            2588,
+            2591,
+            2592,
+            2593,
+            2597,
+            2638,
+            2639,
+            2643,
+            2644,
+            2645,
+            2646,
+            2648,
+            2650,
+            2651,
+            2652,
+            2653,
+            2655,
+            2656,
+            2657,
+            2659,
+            2660,
+            2661,
+            2663,
+            2664,
+            2666,
+            2669,
+            2670,
+            2672,
+            2675,
+            2676,
+            2677,
+            2678,
+            2679,
+            2682,
+            2683,
+            2684,
+            2685,
+            2686,
+            2688,
+            2690,
+            2691,
+            2692,
+            2693,
+            2694,
+            2695,
+            2697,
+            2698,
+            2699,
+            2702,
+            2703,
+            2704,
+            2705,
+            2708,
+            2709,
+            2710,
+            2711,
+            2712,
+            2738,
+            2739,
+            2740,
+            2742,
+            2743,
+            2744,
+            2746,
+            2747,
+            2748,
+            2750,
+            2754,
+            2755,
+            2757,
+            2758,
+            2759,
+            2770,
+            2771,
+            2774,
+            2775,
+            2778,
+            2779,
+            2783,
+            2784,
+            2785,
+            2797,
+            2798,
+            2799,
+            2800,
+            2802,
+            2805,
+            2806,
+            2807,
+            2810,
+            2811,
+            2812,
+            2813,
+            2815,
+            2818,
+            2819,
+            2821,
+            2822,
+            2823,
+            2824,
+            2826,
+            2828,
+            2829,
+            2830,
+            2831,
+            2834,
+            2837,
+            2839,
+            2840,
+            2842
+        ]
+    },
+    "visitedLines_before": {
+        "libavcodec/vp3.c": [
+            2586,
+            2588,
+            2591,
+            2592,
+            2593,
+            2597,
+            2638,
+            2639,
+            2643,
+            2644,
+            2645,
+            2646,
+            2648,
+            2650,
+            2651,
+            2652,
+            2653,
+            2655,
+            2656,
+            2657,
+            2659,
+            2660,
+            2661,
+            2663,
+            2664,
+            2666,
+            2669,
+            2670,
+            2672,
+            2675,
+            2676,
+            2677,
+            2678,
+            2679,
+            2682,
+            2683,
+            2685,
+            2686,
+            2687,
+            2688,
+            2689,
+            2690,
+            2692,
+            2693,
+            2694,
+            2697,
+            2698,
+            2699,
+            2700,
+            2703,
+            2704,
+            2705,
+            2706,
+            2707,
+            2733,
+            2734,
+            2735,
+            2737,
+            2738,
+            2739,
+            2741,
+            2742,
+            2743,
+            2745,
+            2749,
+            2750,
+            2752,
+            2753,
+            2754,
+            2765,
+            2766,
+            2769,
+            2770,
+            2773,
+            2774,
+            2778,
+            2779,
+            2780,
+            2792,
+            2793,
+            2794,
+            2795,
+            2797,
+            2800,
+            2801,
+            2802,
+            2805,
+            2806,
+            2807,
+            2808,
+            2810,
+            2813,
+            2814,
+            2816,
+            2817,
+            2818,
+            2819,
+            2821,
+            2823,
+            2824,
+            2825,
+            2826,
+            2829,
+            2832,
+            2834,
+            2835,
+            2837
+        ]
+    },
+    "visitedParams": {
+        "libavcodec/vp3.c": [
+            [
+                "AVCodecContext *avctx",
+                "vp3_decode_frame"
+            ],
+            [
+                "AVPacket *avpkt",
+                "vp3_decode_frame"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libavcodec/vp3.c",
+            "vp3_decode_frame",
+            "static int vp3_decode_frame(AVCodecContext *avctx, /* <=== vp3_decode_frame */ \n                            void *data, int *got_frame,\n                            AVPacket *avpkt)\n{\n    AVFrame     *frame  = data;\n    const uint8_t *buf  = avpkt->data;\n    int buf_size        = avpkt->size;\n    Vp3DecodeContext *s = avctx->priv_data;\n    GetBitContext gb;\n    int i, ret;\n\n    if ((ret = init_get_bits8(&gb, buf, buf_size)) < 0)\n        return ret;\n\n#if CONFIG_THEORA_DECODER\n    if (s->theora && get_bits1(&gb)) {\n        int type = get_bits(&gb, 7);\n        skip_bits_long(&gb, 6*8); /* \"theora\" */\n\n        if (s->avctx->active_thread_type&FF_THREAD_FRAME) {\n            av_log(avctx, AV_LOG_ERROR, \"midstream reconfiguration with multithreading is unsupported, try -threads 1\\n\");\n            return AVERROR_PATCHWELCOME;\n        }\n        if (type == 0) {\n            vp3_decode_end(avctx);\n            ret = theora_decode_header(avctx, &gb);\n\n            if (ret >= 0)\n                ret = vp3_decode_init(avctx);\n            if (ret < 0) {\n                vp3_decode_end(avctx);\n                return ret;\n            }\n            return buf_size;\n        } else if (type == 2) {\n            vp3_decode_end(avctx);\n            ret = theora_decode_tables(avctx, &gb);\n            if (ret >= 0)\n                ret = vp3_decode_init(avctx);\n            if (ret < 0) {\n                vp3_decode_end(avctx);\n                return ret;\n            }\n            return buf_size;\n        }\n\n        av_log(avctx, AV_LOG_ERROR,\n               \"Header packet passed to frame decoder, skipping\\n\");\n        return -1;\n    }\n#endif\n\n    s->keyframe = !get_bits1(&gb);\n    if (!s->all_fragments) {\n        av_log(avctx, AV_LOG_ERROR, \"Data packet without prior valid headers\\n\");\n        return -1;\n    }\n    if (!s->theora)\n        skip_bits(&gb, 1);\n    for (i = 0; i < 3; i++)\n        s->last_qps[i] = s->qps[i];\n\n    s->nqps = 0;\n    do {\n        s->qps[s->nqps++] = get_bits(&gb, 6);\n    } while (s->theora >= 0x030200 && s->nqps < 3 && get_bits1(&gb));\n    for (i = s->nqps; i < 3; i++)\n        s->qps[i] = -1;\n\n    if (s->avctx->debug & FF_DEBUG_PICT_INFO)\n        av_log(s->avctx, AV_LOG_INFO, \" VP3 %sframe #%d: Q index = %d\\n\",\n               s->keyframe ? \"key\" : \"\", avctx->frame_number + 1, s->qps[0]);\n\n    s->skip_loop_filter = !s->filter_limit_values[s->qps[0]] ||\n                          avctx->skip_loop_filter >= (s->keyframe ? AVDISCARD_ALL\n                                                                  : AVDISCARD_NONKEY);\n\n    if (s->qps[0] != s->last_qps[0])\n        init_loop_filter(s);\n\n    for (i = 0; i < s->nqps; i++)\n        // reinit all dequantizers if the first one changed, because\n        // the DC of the first quantizer must be used for all matrices\n        if (s->qps[i] != s->last_qps[i] || s->qps[0] != s->last_qps[0])\n            init_dequantizer(s, i);\n\n    if (avctx->skip_frame >= AVDISCARD_NONKEY && !s->keyframe)\n        return buf_size;\n\n    s->current_frame.f->pict_type = s->keyframe ? AV_PICTURE_TYPE_I\n                                                : AV_PICTURE_TYPE_P;\n    s->current_frame.f->key_frame = s->keyframe;\n    if ((ret = ff_thread_get_ext_buffer(avctx, &s->current_frame,\n                                        AV_GET_BUFFER_FLAG_REF)) < 0)\n        goto error;\n\n    if (!s->edge_emu_buffer) {\n        s->edge_emu_buffer = av_malloc(9 * FFABS(s->current_frame.f->linesize[0]));\n        if (!s->edge_emu_buffer) {\n            ret = AVERROR(ENOMEM);\n            goto error;\n        }\n    }\n\n    if (s->keyframe) {\n        if (!s->theora) {\n            skip_bits(&gb, 4); /* width code */\n            skip_bits(&gb, 4); /* height code */\n            if (s->version) {\n                int version = get_bits(&gb, 5);\n#if !CONFIG_VP4_DECODER\n                if (version >= 2) {\n                    av_log(avctx, AV_LOG_ERROR, \"This build does not support decoding VP4.\\n\");\n                    return AVERROR_DECODER_NOT_FOUND;\n                }\n#endif\n                s->version = version;\n                if (avctx->frame_number == 0)\n                    av_log(s->avctx, AV_LOG_DEBUG,\n                           \"VP version: %d\\n\", s->version);\n            }\n        }\n        if (s->version || s->theora) {\n            if (get_bits1(&gb))\n                av_log(s->avctx, AV_LOG_ERROR,\n                       \"Warning, unsupported keyframe coding type?!\\n\");\n            skip_bits(&gb, 2); /* reserved? */\n\n#if CONFIG_VP4_DECODER\n            if (s->version >= 2) {\n                int mb_height, mb_width;\n                int mb_width_mul, mb_width_div, mb_height_mul, mb_height_div;\n\n                mb_height = get_bits(&gb, 8);\n                mb_width  = get_bits(&gb, 8);\n                if (mb_height != s->macroblock_height ||\n                    mb_width != s->macroblock_width)\n                    avpriv_request_sample(s->avctx, \"macroblock dimension mismatch\");\n\n                mb_width_mul = get_bits(&gb, 5);\n                mb_width_div = get_bits(&gb, 3);\n                mb_height_mul = get_bits(&gb, 5);\n                mb_height_div = get_bits(&gb, 3);\n                if (mb_width_mul != 1 || mb_width_div != 1 || mb_height_mul != 1 || mb_height_div != 1)\n                    avpriv_request_sample(s->avctx, \"unexpected macroblock dimension multipler/divider\");\n\n                if (get_bits(&gb, 2))\n                    avpriv_request_sample(s->avctx, \"unknown bits\");\n            }\n#endif\n        }\n    } else {\n        if (!s->golden_frame.f->data[0]) {\n            av_log(s->avctx, AV_LOG_WARNING,\n                   \"vp3: first frame not a keyframe\\n\");\n\n            s->golden_frame.f->pict_type = AV_PICTURE_TYPE_I;\n            if ((ret = ff_thread_get_ext_buffer(avctx, &s->golden_frame,\n                                                AV_GET_BUFFER_FLAG_REF)) < 0)\n                goto error;\n            ff_thread_release_ext_buffer(avctx, &s->last_frame);\n            if ((ret = ff_thread_ref_frame(&s->last_frame,\n                                           &s->golden_frame)) < 0)\n                goto error;\n            ff_thread_report_progress(&s->last_frame, INT_MAX, 0);\n        }\n    }\n\n    memset(s->all_fragments, 0, s->fragment_count * sizeof(Vp3Fragment));\n    ff_thread_finish_setup(avctx);\n\n    if (s->version < 2) {\n        if ((ret = unpack_superblocks(s, &gb)) < 0) {\n            av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_superblocks\\n\");\n            goto error;\n        }\n#if CONFIG_VP4_DECODER\n    } else {\n        if ((ret = vp4_unpack_macroblocks(s, &gb)) < 0) {\n            av_log(s->avctx, AV_LOG_ERROR, \"error in vp4_unpack_macroblocks\\n\");\n            goto error;\n    }\n#endif\n    }\n    if ((ret = unpack_modes(s, &gb)) < 0) {\n        av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_modes\\n\");\n        goto error;\n    }\n    if (ret = unpack_vectors(s, &gb)) {\n        av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_vectors\\n\");\n        goto error;\n    }\n    if ((ret = unpack_block_qpis(s, &gb)) < 0) {\n        av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_block_qpis\\n\");\n        goto error;\n    }\n\n    if (s->version < 2) {\n        if ((ret = unpack_dct_coeffs(s, &gb)) < 0) {\n            av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_dct_coeffs\\n\");\n            goto error;\n        }\n#if CONFIG_VP4_DECODER\n    } else {\n        if ((ret = vp4_unpack_dct_coeffs(s, &gb)) < 0) {\n            av_log(s->avctx, AV_LOG_ERROR, \"error in vp4_unpack_dct_coeffs\\n\");\n            goto error;\n        }\n#endif\n    }\n\n    for (i = 0; i < 3; i++) {\n        int height = s->height >> (i && s->chroma_y_shift);\n        if (s->flipped_image)\n            s->data_offset[i] = 0;\n        else\n            s->data_offset[i] = (height - 1) * s->current_frame.f->linesize[i];\n    }\n\n    s->last_slice_end = 0;\n    for (i = 0; i < s->c_superblock_height; i++)\n        render_slice(s, i);\n\n    // filter the last row\n    if (s->version < 2)\n        for (i = 0; i < 3; i++) {\n            int row = (s->height >> (3 + (i && s->chroma_y_shift))) - 1;\n            apply_loop_filter(s, i, row, row + 1);\n        }\n    vp3_draw_horiz_band(s, s->height);\n\n    /* output frame, offset as needed */\n    if ((ret = av_frame_ref(data, s->current_frame.f)) < 0)\n        return ret;\n\n    frame->crop_left   = s->offset_x;\n    frame->crop_right  = avctx->coded_width - avctx->width - s->offset_x;\n    frame->crop_top    = s->offset_y;\n    frame->crop_bottom = avctx->coded_height - avctx->height - s->offset_y;\n\n    *got_frame = 1;\n\n    if (!HAVE_THREADS || !(s->avctx->active_thread_type & FF_THREAD_FRAME)) {\n        ret = update_frames(avctx);\n        if (ret < 0)\n            return ret;\n    }\n\n    return buf_size;\n\nerror:\n    ff_thread_report_progress(&s->current_frame, INT_MAX, 0);\n\n    if (!HAVE_THREADS || !(s->avctx->active_thread_type & FF_THREAD_FRAME))\n        av_frame_unref(s->current_frame.f);\n\n    return ret;\n}",
+            2586
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libavcodec/vp3.c",
+            "vp3_decode_frame",
+            "static int vp3_decode_frame(AVCodecContext *avctx, /* <=== vp3_decode_frame */ \n                            void *data, int *got_frame,\n                            AVPacket *avpkt)\n{\n    AVFrame     *frame  = data;\n    const uint8_t *buf  = avpkt->data;\n    int buf_size        = avpkt->size;\n    Vp3DecodeContext *s = avctx->priv_data;\n    GetBitContext gb;\n    int i, ret;\n\n    if ((ret = init_get_bits8(&gb, buf, buf_size)) < 0)\n        return ret;\n\n#if CONFIG_THEORA_DECODER\n    if (s->theora && get_bits1(&gb)) {\n        int type = get_bits(&gb, 7);\n        skip_bits_long(&gb, 6*8); /* \"theora\" */\n\n        if (s->avctx->active_thread_type&FF_THREAD_FRAME) {\n            av_log(avctx, AV_LOG_ERROR, \"midstream reconfiguration with multithreading is unsupported, try -threads 1\\n\");\n            return AVERROR_PATCHWELCOME;\n        }\n        if (type == 0) {\n            vp3_decode_end(avctx);\n            ret = theora_decode_header(avctx, &gb);\n\n            if (ret >= 0)\n                ret = vp3_decode_init(avctx);\n            if (ret < 0) {\n                vp3_decode_end(avctx);\n                return ret;\n            }\n            return buf_size;\n        } else if (type == 2) {\n            vp3_decode_end(avctx);\n            ret = theora_decode_tables(avctx, &gb);\n            if (ret >= 0)\n                ret = vp3_decode_init(avctx);\n            if (ret < 0) {\n                vp3_decode_end(avctx);\n                return ret;\n            }\n            return buf_size;\n        }\n\n        av_log(avctx, AV_LOG_ERROR,\n               \"Header packet passed to frame decoder, skipping\\n\");\n        return -1;\n    }\n#endif\n\n    s->keyframe = !get_bits1(&gb);\n    if (!s->all_fragments) {\n        av_log(avctx, AV_LOG_ERROR, \"Data packet without prior valid headers\\n\");\n        return -1;\n    }\n    if (!s->theora)\n        skip_bits(&gb, 1);\n    for (i = 0; i < 3; i++)\n        s->last_qps[i] = s->qps[i];\n\n    s->nqps = 0;\n    do {\n        s->qps[s->nqps++] = get_bits(&gb, 6);\n    } while (s->theora >= 0x030200 && s->nqps < 3 && get_bits1(&gb));\n    for (i = s->nqps; i < 3; i++)\n        s->qps[i] = -1;\n\n    if (s->avctx->debug & FF_DEBUG_PICT_INFO)\n        av_log(s->avctx, AV_LOG_INFO, \" VP3 %sframe #%d: Q index = %d\\n\",\n               s->keyframe ? \"key\" : \"\", avctx->frame_number + 1, s->qps[0]);\n\n    s->skip_loop_filter = !s->filter_limit_values[s->qps[0]] ||\n                          avctx->skip_loop_filter >= (s->keyframe ? AVDISCARD_ALL\n                                                                  : AVDISCARD_NONKEY);\n\n    if (s->qps[0] != s->last_qps[0])\n        init_loop_filter(s);\n\n    for (i = 0; i < s->nqps; i++)\n        // reinit all dequantizers if the first one changed, because\n        // the DC of the first quantizer must be used for all matrices\n        if (s->qps[i] != s->last_qps[i] || s->qps[0] != s->last_qps[0])\n            init_dequantizer(s, i);\n\n    if (avctx->skip_frame >= AVDISCARD_NONKEY && !s->keyframe)\n        return buf_size;\n\n    s->current_frame.f->pict_type = s->keyframe ? AV_PICTURE_TYPE_I\n                                                : AV_PICTURE_TYPE_P;\n    s->current_frame.f->key_frame = s->keyframe;\n    if ((ret = ff_thread_get_ext_buffer(avctx, &s->current_frame,\n                                        AV_GET_BUFFER_FLAG_REF)) < 0)\n        goto error;\n\n    if (!s->edge_emu_buffer)\n        s->edge_emu_buffer = av_malloc(9 * FFABS(s->current_frame.f->linesize[0]));\n\n    if (s->keyframe) {\n        if (!s->theora) {\n            skip_bits(&gb, 4); /* width code */\n            skip_bits(&gb, 4); /* height code */\n            if (s->version) {\n                int version = get_bits(&gb, 5);\n#if !CONFIG_VP4_DECODER\n                if (version >= 2) {\n                    av_log(avctx, AV_LOG_ERROR, \"This build does not support decoding VP4.\\n\");\n                    return AVERROR_DECODER_NOT_FOUND;\n                }\n#endif\n                s->version = version;\n                if (avctx->frame_number == 0)\n                    av_log(s->avctx, AV_LOG_DEBUG,\n                           \"VP version: %d\\n\", s->version);\n            }\n        }\n        if (s->version || s->theora) {\n            if (get_bits1(&gb))\n                av_log(s->avctx, AV_LOG_ERROR,\n                       \"Warning, unsupported keyframe coding type?!\\n\");\n            skip_bits(&gb, 2); /* reserved? */\n\n#if CONFIG_VP4_DECODER\n            if (s->version >= 2) {\n                int mb_height, mb_width;\n                int mb_width_mul, mb_width_div, mb_height_mul, mb_height_div;\n\n                mb_height = get_bits(&gb, 8);\n                mb_width  = get_bits(&gb, 8);\n                if (mb_height != s->macroblock_height ||\n                    mb_width != s->macroblock_width)\n                    avpriv_request_sample(s->avctx, \"macroblock dimension mismatch\");\n\n                mb_width_mul = get_bits(&gb, 5);\n                mb_width_div = get_bits(&gb, 3);\n                mb_height_mul = get_bits(&gb, 5);\n                mb_height_div = get_bits(&gb, 3);\n                if (mb_width_mul != 1 || mb_width_div != 1 || mb_height_mul != 1 || mb_height_div != 1)\n                    avpriv_request_sample(s->avctx, \"unexpected macroblock dimension multipler/divider\");\n\n                if (get_bits(&gb, 2))\n                    avpriv_request_sample(s->avctx, \"unknown bits\");\n            }\n#endif\n        }\n    } else {\n        if (!s->golden_frame.f->data[0]) {\n            av_log(s->avctx, AV_LOG_WARNING,\n                   \"vp3: first frame not a keyframe\\n\");\n\n            s->golden_frame.f->pict_type = AV_PICTURE_TYPE_I;\n            if ((ret = ff_thread_get_ext_buffer(avctx, &s->golden_frame,\n                                                AV_GET_BUFFER_FLAG_REF)) < 0)\n                goto error;\n            ff_thread_release_ext_buffer(avctx, &s->last_frame);\n            if ((ret = ff_thread_ref_frame(&s->last_frame,\n                                           &s->golden_frame)) < 0)\n                goto error;\n            ff_thread_report_progress(&s->last_frame, INT_MAX, 0);\n        }\n    }\n\n    memset(s->all_fragments, 0, s->fragment_count * sizeof(Vp3Fragment));\n    ff_thread_finish_setup(avctx);\n\n    if (s->version < 2) {\n        if ((ret = unpack_superblocks(s, &gb)) < 0) {\n            av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_superblocks\\n\");\n            goto error;\n        }\n#if CONFIG_VP4_DECODER\n    } else {\n        if ((ret = vp4_unpack_macroblocks(s, &gb)) < 0) {\n            av_log(s->avctx, AV_LOG_ERROR, \"error in vp4_unpack_macroblocks\\n\");\n            goto error;\n    }\n#endif\n    }\n    if ((ret = unpack_modes(s, &gb)) < 0) {\n        av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_modes\\n\");\n        goto error;\n    }\n    if (ret = unpack_vectors(s, &gb)) {\n        av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_vectors\\n\");\n        goto error;\n    }\n    if ((ret = unpack_block_qpis(s, &gb)) < 0) {\n        av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_block_qpis\\n\");\n        goto error;\n    }\n\n    if (s->version < 2) {\n        if ((ret = unpack_dct_coeffs(s, &gb)) < 0) {\n            av_log(s->avctx, AV_LOG_ERROR, \"error in unpack_dct_coeffs\\n\");\n            goto error;\n        }\n#if CONFIG_VP4_DECODER\n    } else {\n        if ((ret = vp4_unpack_dct_coeffs(s, &gb)) < 0) {\n            av_log(s->avctx, AV_LOG_ERROR, \"error in vp4_unpack_dct_coeffs\\n\");\n            goto error;\n        }\n#endif\n    }\n\n    for (i = 0; i < 3; i++) {\n        int height = s->height >> (i && s->chroma_y_shift);\n        if (s->flipped_image)\n            s->data_offset[i] = 0;\n        else\n            s->data_offset[i] = (height - 1) * s->current_frame.f->linesize[i];\n    }\n\n    s->last_slice_end = 0;\n    for (i = 0; i < s->c_superblock_height; i++)\n        render_slice(s, i);\n\n    // filter the last row\n    if (s->version < 2)\n        for (i = 0; i < 3; i++) {\n            int row = (s->height >> (3 + (i && s->chroma_y_shift))) - 1;\n            apply_loop_filter(s, i, row, row + 1);\n        }\n    vp3_draw_horiz_band(s, s->height);\n\n    /* output frame, offset as needed */\n    if ((ret = av_frame_ref(data, s->current_frame.f)) < 0)\n        return ret;\n\n    frame->crop_left   = s->offset_x;\n    frame->crop_right  = avctx->coded_width - avctx->width - s->offset_x;\n    frame->crop_top    = s->offset_y;\n    frame->crop_bottom = avctx->coded_height - avctx->height - s->offset_y;\n\n    *got_frame = 1;\n\n    if (!HAVE_THREADS || !(s->avctx->active_thread_type & FF_THREAD_FRAME)) {\n        ret = update_frames(avctx);\n        if (ret < 0)\n            return ret;\n    }\n\n    return buf_size;\n\nerror:\n    ff_thread_report_progress(&s->current_frame, INT_MAX, 0);\n\n    if (!HAVE_THREADS || !(s->avctx->active_thread_type & FF_THREAD_FRAME))\n        av_frame_unref(s->current_frame.f);\n\n    return ret;\n}",
+            2586
+        ]
+    ]
+}

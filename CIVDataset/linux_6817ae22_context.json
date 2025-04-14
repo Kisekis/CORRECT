@@ -1,0 +1,240 @@
+{
+    "calleeMethods": [
+        [
+            "drivers/usb/serial/whiteheat.h",
+            "WHITEHEAT_CMD_FAILURE",
+            "#define WHITEHEAT_CMD_FAILURE\t\t17\t/* reply for failed commands */ /* <=== drivers/usb/serial/whiteheat.h:44:44:WHITEHEAT_CMD_FAILURE:0 */ ",
+            1
+        ],
+        [
+            "drivers/usb/core/urb.c",
+            "usb_submit_urb",
+            "int usb_submit_urb(struct urb *urb, gfp_t mem_flags) /* <=== usb_submit_urb */ \n{\n\tstatic int\t\t\tpipetypes[4] = {\n\t\tPIPE_CONTROL, PIPE_ISOCHRONOUS, PIPE_BULK, PIPE_INTERRUPT\n\t};\n\tint\t\t\t\txfertype, max;\n\tstruct usb_device\t\t*dev;\n\tstruct usb_host_endpoint\t*ep;\n\tint\t\t\t\tis_out;\n\tunsigned int\t\t\tallowed;\n\n\tif (!urb || !urb->complete)\n\t\treturn -EINVAL;\n\tif (urb->hcpriv) {\n\t\tWARN_ONCE(1, \"URB %p submitted while active\\n\", urb);\n\t\treturn -EBUSY;\n\t}\n\n\tdev = urb->dev;\n\tif ((!dev) || (dev->state < USB_STATE_UNAUTHENTICATED))\n\t\treturn -ENODEV;\n\n\t/* For now, get the endpoint from the pipe.  Eventually drivers\n\t * will be required to set urb->ep directly and we will eliminate\n\t * urb->pipe.\n\t */\n\tep = usb_pipe_endpoint(dev, urb->pipe);\n\tif (!ep)\n\t\treturn -ENOENT;\n\n\turb->ep = ep;\n\turb->status = -EINPROGRESS;\n\turb->actual_length = 0;\n\n\t/* Lots of sanity checks, so HCDs can rely on clean data\n\t * and don't need to duplicate tests\n\t */\n\txfertype = usb_endpoint_type(&ep->desc);\n\tif (xfertype == USB_ENDPOINT_XFER_CONTROL) {\n\t\tstruct usb_ctrlrequest *setup =\n\t\t\t\t(struct usb_ctrlrequest *) urb->setup_packet;\n\n\t\tif (!setup)\n\t\t\treturn -ENOEXEC;\n\t\tis_out = !(setup->bRequestType & USB_DIR_IN) ||\n\t\t\t\t!setup->wLength;\n\t} else {\n\t\tis_out = usb_endpoint_dir_out(&ep->desc);\n\t}\n\n\t/* Clear the internal flags and cache the direction for later use */\n\turb->transfer_flags &= ~(URB_DIR_MASK | URB_DMA_MAP_SINGLE |\n\t\t\tURB_DMA_MAP_PAGE | URB_DMA_MAP_SG | URB_MAP_LOCAL |\n\t\t\tURB_SETUP_MAP_SINGLE | URB_SETUP_MAP_LOCAL |\n\t\t\tURB_DMA_SG_COMBINED);\n\turb->transfer_flags |= (is_out ? URB_DIR_OUT : URB_DIR_IN);\n\n\tif (xfertype != USB_ENDPOINT_XFER_CONTROL &&\n\t\t\tdev->state < USB_STATE_CONFIGURED)\n\t\treturn -ENODEV;\n\n\tmax = usb_endpoint_maxp(&ep->desc);\n\tif (max <= 0) {\n\t\tdev_dbg(&dev->dev,\n\t\t\t\"bogus endpoint ep%d%s in %s (bad maxpacket %d)\\n\",\n\t\t\tusb_endpoint_num(&ep->desc), is_out ? \"out\" : \"in\",\n\t\t\t__func__, max);\n\t\treturn -EMSGSIZE;\n\t}\n\n\t/* periodic transfers limit size per frame/uframe,\n\t * but drivers only control those sizes for ISO.\n\t * while we're checking, initialize return status.\n\t */\n\tif (xfertype == USB_ENDPOINT_XFER_ISOC) {\n\t\tint\tn, len;\n\n\t\t/* SuperSpeed isoc endpoints have up to 16 bursts of up to\n\t\t * 3 packets each\n\t\t */\n\t\tif (dev->speed == USB_SPEED_SUPER) {\n\t\t\tint     burst = 1 + ep->ss_ep_comp.bMaxBurst;\n\t\t\tint     mult = USB_SS_MULT(ep->ss_ep_comp.bmAttributes);\n\t\t\tmax *= burst;\n\t\t\tmax *= mult;\n\t\t}\n\n\t\t/* \"high bandwidth\" mode, 1-3 packets/uframe? */\n\t\tif (dev->speed == USB_SPEED_HIGH) {\n\t\t\tint\tmult = 1 + ((max >> 11) & 0x03);\n\t\t\tmax &= 0x07ff;\n\t\t\tmax *= mult;\n\t\t}\n\n\t\tif (urb->number_of_packets <= 0)\n\t\t\treturn -EINVAL;\n\t\tfor (n = 0; n < urb->number_of_packets; n++) {\n\t\t\tlen = urb->iso_frame_desc[n].length;\n\t\t\tif (len < 0 || len > max)\n\t\t\t\treturn -EMSGSIZE;\n\t\t\turb->iso_frame_desc[n].status = -EXDEV;\n\t\t\turb->iso_frame_desc[n].actual_length = 0;\n\t\t}\n\t} else if (urb->num_sgs && !urb->dev->bus->no_sg_constraint &&\n\t\t\tdev->speed != USB_SPEED_WIRELESS) {\n\t\tstruct scatterlist *sg;\n\t\tint i;\n\n\t\tfor_each_sg(urb->sg, sg, urb->num_sgs - 1, i)\n\t\t\tif (sg->length % max)\n\t\t\t\treturn -EINVAL;\n\t}\n\n\t/* the I/O buffer must be mapped/unmapped, except when length=0 */\n\tif (urb->transfer_buffer_length > INT_MAX)\n\t\treturn -EMSGSIZE;\n\n\t/*\n\t * stuff that drivers shouldn't do, but which shouldn't\n\t * cause problems in HCDs if they get it wrong.\n\t */\n\n\t/* Check that the pipe's type matches the endpoint's type */\n\tif (usb_pipetype(urb->pipe) != pipetypes[xfertype])\n\t\tdev_WARN(&dev->dev, \"BOGUS urb xfer, pipe %x != type %x\\n\",\n\t\t\tusb_pipetype(urb->pipe), pipetypes[xfertype]);\n\n\t/* Check against a simple/standard policy */\n\tallowed = (URB_NO_TRANSFER_DMA_MAP | URB_NO_INTERRUPT | URB_DIR_MASK |\n\t\t\tURB_FREE_BUFFER);\n\tswitch (xfertype) {\n\tcase USB_ENDPOINT_XFER_BULK:\n\tcase USB_ENDPOINT_XFER_INT:\n\t\tif (is_out)\n\t\t\tallowed |= URB_ZERO_PACKET;\n\t\t/* FALLTHROUGH */\n\tcase USB_ENDPOINT_XFER_CONTROL:\n\t\tallowed |= URB_NO_FSBR;\t/* only affects UHCI */\n\t\t/* FALLTHROUGH */\n\tdefault:\t\t\t/* all non-iso endpoints */\n\t\tif (!is_out)\n\t\t\tallowed |= URB_SHORT_NOT_OK;\n\t\tbreak;\n\tcase USB_ENDPOINT_XFER_ISOC:\n\t\tallowed |= URB_ISO_ASAP;\n\t\tbreak;\n\t}\n\tallowed &= urb->transfer_flags;\n\n\t/* warn if submitter gave bogus flags */\n\tif (allowed != urb->transfer_flags)\n\t\tdev_WARN(&dev->dev, \"BOGUS urb flags, %x --> %x\\n\",\n\t\t\turb->transfer_flags, allowed);\n\n\t/*\n\t * Force periodic transfer intervals to be legal values that are\n\t * a power of two (so HCDs don't need to).\n\t *\n\t * FIXME want bus->{intr,iso}_sched_horizon values here.  Each HC\n\t * supports different values... this uses EHCI/UHCI defaults (and\n\t * EHCI can use smaller non-default values).\n\t */\n\tswitch (xfertype) {\n\tcase USB_ENDPOINT_XFER_ISOC:\n\tcase USB_ENDPOINT_XFER_INT:\n\t\t/* too small? */\n\t\tswitch (dev->speed) {\n\t\tcase USB_SPEED_WIRELESS:\n\t\t\tif ((urb->interval < 6)\n\t\t\t\t&& (xfertype == USB_ENDPOINT_XFER_INT))\n\t\t\t\treturn -EINVAL;\n\t\tdefault:\n\t\t\tif (urb->interval <= 0)\n\t\t\t\treturn -EINVAL;\n\t\t\tbreak;\n\t\t}\n\t\t/* too big? */\n\t\tswitch (dev->speed) {\n\t\tcase USB_SPEED_SUPER:\t/* units are 125us */\n\t\t\t/* Handle up to 2^(16-1) microframes */\n\t\t\tif (urb->interval > (1 << 15))\n\t\t\t\treturn -EINVAL;\n\t\t\tmax = 1 << 15;\n\t\t\tbreak;\n\t\tcase USB_SPEED_WIRELESS:\n\t\t\tif (urb->interval > 16)\n\t\t\t\treturn -EINVAL;\n\t\t\tbreak;\n\t\tcase USB_SPEED_HIGH:\t/* units are microframes */\n\t\t\t/* NOTE usb handles 2^15 */\n\t\t\tif (urb->interval > (1024 * 8))\n\t\t\t\turb->interval = 1024 * 8;\n\t\t\tmax = 1024 * 8;\n\t\t\tbreak;\n\t\tcase USB_SPEED_FULL:\t/* units are frames/msec */\n\t\tcase USB_SPEED_LOW:\n\t\t\tif (xfertype == USB_ENDPOINT_XFER_INT) {\n\t\t\t\tif (urb->interval > 255)\n\t\t\t\t\treturn -EINVAL;\n\t\t\t\t/* NOTE ohci only handles up to 32 */\n\t\t\t\tmax = 128;\n\t\t\t} else {\n\t\t\t\tif (urb->interval > 1024)\n\t\t\t\t\turb->interval = 1024;\n\t\t\t\t/* NOTE usb and ohci handle up to 2^15 */\n\t\t\t\tmax = 1024;\n\t\t\t}\n\t\t\tbreak;\n\t\tdefault:\n\t\t\treturn -EINVAL;\n\t\t}\n\t\tif (dev->speed != USB_SPEED_WIRELESS) {\n\t\t\t/* Round down to a power of 2, no more than max */\n\t\t\turb->interval = min(max, 1 << ilog2(urb->interval));\n\t\t}\n\t}\n\n\treturn usb_hcd_submit_urb(urb, mem_flags);\n}",
+            1
+        ],
+        [
+            "include/linux/usb/serial.h",
+            "usb_get_serial_port_data",
+            "static inline void *usb_get_serial_port_data(struct usb_serial_port *port) /* <=== usb_get_serial_port_data */ \n{\n\treturn dev_get_drvdata(&port->dev);\n}",
+            1
+        ],
+        [
+            "arch/arm/include/asm/string.h",
+            "memcpy",
+            "extern void * memcpy(void *, const void *, __kernel_size_t); /* <=== memcpy */ ",
+            1
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "usb_endpoint_maxp",
+            "static inline int usb_endpoint_maxp(const struct usb_endpoint_descriptor *epd) /* <=== usb_endpoint_maxp */ \n{\n\treturn __le16_to_cpu(epd->wMaxPacketSize);\n}",
+            2
+        ],
+        [
+            "arch/x86/boot/string.h",
+            "memcpy",
+            "void *memcpy(void *dst, const void *src, size_t len); /* <=== memcpy */ ",
+            1
+        ],
+        [
+            "drivers/usb/serial/whiteheat.h",
+            "WHITEHEAT_CMD_COMPLETE",
+            "#define WHITEHEAT_CMD_COMPLETE\t\t16\t/* reply for some commands */ /* <=== drivers/usb/serial/whiteheat.h:43:43:WHITEHEAT_CMD_COMPLETE:0 */ ",
+            1
+        ],
+        [
+            "include/linux/device.h",
+            "dev_get_drvdata",
+            "static inline void *dev_get_drvdata(const struct device *dev) /* <=== dev_get_drvdata */ \n{\n\treturn dev->driver_data;\n}",
+            2
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "usb_endpoint_num",
+            "static inline int usb_endpoint_num(const struct usb_endpoint_descriptor *epd) /* <=== usb_endpoint_num */ \n{\n\treturn epd->bEndpointAddress & USB_ENDPOINT_NUMBER_MASK;\n}",
+            2
+        ],
+        [
+            "include/linux/usb/serial.h",
+            "usb_serial_debug_data",
+            "static inline void usb_serial_debug_data(struct device *dev, /* <=== usb_serial_debug_data */ \n\t\t\t\t\t const char *function, int size,\n\t\t\t\t\t const unsigned char *data)\n{\n\tdev_dbg(dev, \"%s - length = %d, data = %*ph\\n\",\n\t\tfunction, size, size, data);\n}",
+            1
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "USB_ENDPOINT_XFERTYPE_MASK",
+            "#define USB_ENDPOINT_XFERTYPE_MASK\t0x03\t/* in bmAttributes */ /* <=== include/uapi/linux/usb/ch9.h:394:394:USB_ENDPOINT_XFERTYPE_MASK:0 */ ",
+            3
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "USB_ENDPOINT_DIR_MASK",
+            "#define USB_ENDPOINT_DIR_MASK\t\t0x80 /* <=== include/uapi/linux/usb/ch9.h:392:392:USB_ENDPOINT_DIR_MASK:0 */ ",
+            3
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "USB_ENDPOINT_NUMBER_MASK",
+            "#define USB_ENDPOINT_NUMBER_MASK\t0x0f\t/* in bEndpointAddress */ /* <=== include/uapi/linux/usb/ch9.h:391:391:USB_ENDPOINT_NUMBER_MASK:0 */ ",
+            3
+        ],
+        [
+            "drivers/usb/serial/whiteheat.h",
+            "WHITEHEAT_GET_DTR_RTS",
+            "#define WHITEHEAT_GET_DTR_RTS\t\t10\t/* get the state of DTR and RTS /* <=== drivers/usb/serial/whiteheat.h:34:34:WHITEHEAT_GET_DTR_RTS:0 */ ",
+            1
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "usb_endpoint_type",
+            "static inline int usb_endpoint_type(const struct usb_endpoint_descriptor *epd) /* <=== usb_endpoint_type */ \n{\n\treturn epd->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK;\n}",
+            2
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "usb_endpoint_dir_out",
+            "static inline int usb_endpoint_dir_out( /* <=== usb_endpoint_dir_out */ \n\t\t\t\tconst struct usb_endpoint_descriptor *epd)\n{\n\treturn ((epd->bEndpointAddress & USB_ENDPOINT_DIR_MASK) == USB_DIR_OUT);\n}",
+            2
+        ],
+        [
+            "include/uapi/linux/usb/ch9.h",
+            "USB_DIR_OUT",
+            "#define USB_DIR_OUT\t\t\t0\t\t/* to device */ /* <=== include/uapi/linux/usb/ch9.h:49:49:USB_DIR_OUT:0 */ ",
+            3
+        ],
+        [
+            "drivers/usb/serial/whiteheat.h",
+            "WHITEHEAT_EVENT",
+            "#define WHITEHEAT_EVENT\t\t\t13\t/* unsolicited status events */ /* <=== drivers/usb/serial/whiteheat.h:39:39:WHITEHEAT_EVENT:0 */ ",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/tty_driver.h>",
+        "#include <linux/tty_flip.h>",
+        "#include <linux/uaccess.h>",
+        "#include <linux/serial.h>",
+        "#include <linux/usb/serial.h>",
+        "#include <linux/usb.h>",
+        "#include <linux/serial_reg.h>",
+        "#include \"whiteheat.h\"",
+        "#include <linux/module.h>",
+        "#include <linux/usb/ezusb.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/spinlock.h>",
+        "#include <linux/tty.h>",
+        "#include <linux/mutex.h>",
+        "#include <linux/kernel.h>",
+        "#include <asm/termbits.h>",
+        "#include <linux/errno.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct usb_serial_port {\n\tstruct usb_serial\t*serial;\n\tstruct tty_port\t\tport;\n\tspinlock_t\t\tlock;\n\tu32\t\t\tminor;\n\tu8\t\t\tport_number;\n\n\tunsigned char\t\t*interrupt_in_buffer;\n\tstruct urb\t\t*interrupt_in_urb;\n\t__u8\t\t\tinterrupt_in_endpointAddress;\n\n\tunsigned char\t\t*interrupt_out_buffer;\n\tint\t\t\tinterrupt_out_size;\n\tstruct urb\t\t*interrupt_out_urb;\n\t__u8\t\t\tinterrupt_out_endpointAddress;\n\n\tunsigned char\t\t*bulk_in_buffer;\n\tint\t\t\tbulk_in_size;\n\tstruct urb\t\t*read_urb;\n\t__u8\t\t\tbulk_in_endpointAddress;\n\n\tunsigned char\t\t*bulk_in_buffers[2];\n\tstruct urb\t\t*read_urbs[2];\n\tunsigned long\t\tread_urbs_free;\n\n\tunsigned char\t\t*bulk_out_buffer;\n\tint\t\t\tbulk_out_size;\n\tstruct urb\t\t*write_urb;\n\tstruct kfifo\t\twrite_fifo;\n\n\tunsigned char\t\t*bulk_out_buffers[2];\n\tstruct urb\t\t*write_urbs[2];\n\tunsigned long\t\twrite_urbs_free;\n\t__u8\t\t\tbulk_out_endpointAddress;\n\n\tstruct async_icount\ticount;\n\tint\t\t\ttx_bytes;\n\n\tunsigned long\t\tflags;\n\twait_queue_head_t\twrite_wait;\n\tstruct work_struct\twork;\n\tchar\t\t\tthrottled;\n\tchar\t\t\tthrottle_req;\n\tunsigned long\t\tsysrq; /* sysrq timeout */\n\tstruct device\t\tdev;\n}",
+            "usb_serial_port"
+        ],
+        [
+            "struct whiteheat_command_private {\n\tstruct mutex\t\tmutex;\n\t__u8\t\t\tport_running;\n\t__u8\t\t\tcommand_finished;\n\twait_queue_head_t\twait_command; /* for handling sleeping whilst\n\t\t\t\t\t\t waiting for a command to\n\t\t\t\t\t\t finish */\n\t__u8\t\t\tresult_buffer[64];\n}",
+            "whiteheat_command_private"
+        ],
+        [
+            "struct urb",
+            "urb"
+        ]
+    ],
+    "visitedLines_after": {
+        "drivers/usb/serial/whiteheat.c": [
+            504,
+            506,
+            508,
+            509,
+            512,
+            513,
+            517,
+            518,
+            521,
+            522,
+            523,
+            524,
+            525,
+            529,
+            531,
+            532,
+            533,
+            534,
+            535,
+            536,
+            537,
+            540,
+            541,
+            542,
+            543,
+            544,
+            545,
+            546,
+            548,
+            551,
+            552,
+            553,
+            554
+        ]
+    },
+    "visitedLines_before": {
+        "drivers/usb/serial/whiteheat.c": [
+            504,
+            506,
+            508,
+            509,
+            512,
+            513,
+            517,
+            518,
+            519,
+            520,
+            521,
+            525,
+            527,
+            528,
+            529,
+            530,
+            531,
+            532,
+            533,
+            537,
+            538,
+            539,
+            540,
+            541,
+            543,
+            546,
+            547,
+            548,
+            549
+        ]
+    },
+    "visitedParams": {
+        "drivers/usb/serial/whiteheat.c": [
+            [
+                "struct urb *urb",
+                "command_port_read_callback"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "drivers/usb/serial/whiteheat.c",
+            "command_port_read_callback",
+            "static void command_port_read_callback(struct urb *urb) /* <=== command_port_read_callback */ \n{\n\tstruct usb_serial_port *command_port = urb->context;\n\tstruct whiteheat_command_private *command_info;\n\tint status = urb->status;\n\tunsigned char *data = urb->transfer_buffer;\n\tint result;\n\n\tcommand_info = usb_get_serial_port_data(command_port);\n\tif (!command_info) {\n\t\tdev_dbg(&urb->dev->dev, \"%s - command_info is NULL, exiting.\\n\", __func__);\n\t\treturn;\n\t}\n\tif (!urb->actual_length) {\n\t\tdev_dbg(&urb->dev->dev, \"%s - empty response, exiting.\\n\", __func__);\n\t\treturn;\n\t}\n\tif (status) {\n\t\tdev_dbg(&urb->dev->dev, \"%s - nonzero urb status: %d\\n\", __func__, status);\n\t\tif (status != -ENOENT)\n\t\t\tcommand_info->command_finished = WHITEHEAT_CMD_FAILURE;\n\t\twake_up(&command_info->wait_command);\n\t\treturn;\n\t}\n\n\tusb_serial_debug_data(&command_port->dev, __func__, urb->actual_length, data);\n\n\tif (data[0] == WHITEHEAT_CMD_COMPLETE) {\n\t\tcommand_info->command_finished = WHITEHEAT_CMD_COMPLETE;\n\t\twake_up(&command_info->wait_command);\n\t} else if (data[0] == WHITEHEAT_CMD_FAILURE) {\n\t\tcommand_info->command_finished = WHITEHEAT_CMD_FAILURE;\n\t\twake_up(&command_info->wait_command);\n\t} else if (data[0] == WHITEHEAT_EVENT) {\n\t\t/* These are unsolicited reports from the firmware, hence no\n\t\t   waiting command to wakeup */\n\t\tdev_dbg(&urb->dev->dev, \"%s - event received\\n\", __func__);\n\t} else if ((data[0] == WHITEHEAT_GET_DTR_RTS) &&\n\t\t(urb->actual_length - 1 <= sizeof(command_info->result_buffer))) {\n\t\tmemcpy(command_info->result_buffer, &data[1],\n\t\t\t\t\t\turb->actual_length - 1);\n\t\tcommand_info->command_finished = WHITEHEAT_CMD_COMPLETE;\n\t\twake_up(&command_info->wait_command);\n\t} else\n\t\tdev_dbg(&urb->dev->dev, \"%s - bad reply from firmware\\n\", __func__);\n\n\t/* Continue trying to always read */\n\tresult = usb_submit_urb(command_port->read_urb, GFP_ATOMIC);\n\tif (result)\n\t\tdev_dbg(&urb->dev->dev, \"%s - failed resubmitting read urb, error %d\\n\",\n\t\t\t__func__, result);\n}",
+            504
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "drivers/usb/serial/whiteheat.c",
+            "command_port_read_callback",
+            "static void command_port_read_callback(struct urb *urb) /* <=== command_port_read_callback */ \n{\n\tstruct usb_serial_port *command_port = urb->context;\n\tstruct whiteheat_command_private *command_info;\n\tint status = urb->status;\n\tunsigned char *data = urb->transfer_buffer;\n\tint result;\n\n\tcommand_info = usb_get_serial_port_data(command_port);\n\tif (!command_info) {\n\t\tdev_dbg(&urb->dev->dev, \"%s - command_info is NULL, exiting.\\n\", __func__);\n\t\treturn;\n\t}\n\tif (status) {\n\t\tdev_dbg(&urb->dev->dev, \"%s - nonzero urb status: %d\\n\", __func__, status);\n\t\tif (status != -ENOENT)\n\t\t\tcommand_info->command_finished = WHITEHEAT_CMD_FAILURE;\n\t\twake_up(&command_info->wait_command);\n\t\treturn;\n\t}\n\n\tusb_serial_debug_data(&command_port->dev, __func__, urb->actual_length, data);\n\n\tif (data[0] == WHITEHEAT_CMD_COMPLETE) {\n\t\tcommand_info->command_finished = WHITEHEAT_CMD_COMPLETE;\n\t\twake_up(&command_info->wait_command);\n\t} else if (data[0] == WHITEHEAT_CMD_FAILURE) {\n\t\tcommand_info->command_finished = WHITEHEAT_CMD_FAILURE;\n\t\twake_up(&command_info->wait_command);\n\t} else if (data[0] == WHITEHEAT_EVENT) {\n\t\t/* These are unsolicited reports from the firmware, hence no\n\t\t   waiting command to wakeup */\n\t\tdev_dbg(&urb->dev->dev, \"%s - event received\\n\", __func__);\n\t} else if (data[0] == WHITEHEAT_GET_DTR_RTS) {\n\t\tmemcpy(command_info->result_buffer, &data[1],\n\t\t\t\t\t\turb->actual_length - 1);\n\t\tcommand_info->command_finished = WHITEHEAT_CMD_COMPLETE;\n\t\twake_up(&command_info->wait_command);\n\t} else\n\t\tdev_dbg(&urb->dev->dev, \"%s - bad reply from firmware\\n\", __func__);\n\n\t/* Continue trying to always read */\n\tresult = usb_submit_urb(command_port->read_urb, GFP_ATOMIC);\n\tif (result)\n\t\tdev_dbg(&urb->dev->dev, \"%s - failed resubmitting read urb, error %d\\n\",\n\t\t\t__func__, result);\n}",
+            504
+        ]
+    ]
+}

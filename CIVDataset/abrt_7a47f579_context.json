@@ -1,0 +1,313 @@
+{
+    "calleeMethods": [
+        [
+            "src/include/libabrt.h",
+            "g_settings_nMaxCrashReportsSize",
+            "#define g_settings_nMaxCrashReportsSize abrt_g_settings_nMaxCrashReportsSize /* <=== src/include/libabrt.h:57:57:g_settings_nMaxCrashReportsSize:0 */ ",
+            1
+        ],
+        [
+            "src/dbus/abrt-dbus.c",
+            "get_caller_uid",
+            "static uid_t get_caller_uid(GDBusConnection *connection, GDBusMethodInvocation *invocation, const char *caller) /* <=== get_caller_uid */ \n{\n    GError *error = NULL;\n    guint caller_uid;\n\n    GDBusProxy * proxy = g_dbus_proxy_new_sync(connection,\n                                     G_DBUS_PROXY_FLAGS_NONE,\n                                     NULL,\n                                     \"org.freedesktop.DBus\",\n                                     \"/org/freedesktop/DBus\",\n                                     \"org.freedesktop.DBus\",\n                                     NULL,\n                                     &error);\n\n    GVariant *result = g_dbus_proxy_call_sync(proxy,\n                                     \"GetConnectionUnixUser\",\n                                     g_variant_new (\"(s)\", caller),\n                                     G_DBUS_CALL_FLAGS_NONE,\n                                     -1,\n                                     NULL,\n                                     &error);\n\n    if (result == NULL)\n    {\n        /* we failed to get the uid, so return (uid_t) -1 to indicate the error\n         */\n        if (error)\n        {\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                      \"org.freedesktop.problems.InvalidUser\",\n                                      error->message);\n            g_error_free(error);\n        }\n        else\n        {\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                      \"org.freedesktop.problems.InvalidUser\",\n                                      _(\"Unknown error\"));\n        }\n        return (uid_t) -1;\n    }\n\n    g_variant_get(result, \"(u)\", &caller_uid);\n    g_variant_unref(result);\n\n    log_info(\"Caller uid: %i\", caller_uid);\n    return caller_uid;\n}",
+            1
+        ],
+        [
+            "src/lib/hooklib.c",
+            "abrt_dir_is_in_dump_location",
+            "bool dir_is_in_dump_location(const char *dir_name) /* <=== abrt_dir_is_in_dump_location */ \n{\n    unsigned len = strlen(g_settings_dump_location);\n\n    /* The path must start with \"g_settings_dump_location\" */\n    if (strncmp(dir_name, g_settings_dump_location, len) != 0)\n    {\n        log_debug(\"Bad parent directory: '%s' not in '%s'\", g_settings_dump_location, dir_name);\n        return false;\n    }\n\n    /* and must be a sub-directory of the g_settings_dump_location dir */\n    const char *base_name = dir_name + len;\n    while (*base_name && *base_name == '/')\n        ++base_name;\n\n    if (*(base_name - 1) != '/' || !str_is_correct_filename(base_name))\n    {\n        log_debug(\"Invalid dump directory name: '%s'\", base_name);\n        return false;\n    }\n\n    /* and we are sure it is a directory */\n    struct stat sb;\n    if (lstat(dir_name, &sb) < 0)\n    {\n        VERB2 perror_msg(\"stat('%s')\", dir_name);\n        return errno== ENOENT;\n    }\n\n    return S_ISDIR(sb.st_mode);\n}",
+            2
+        ],
+        [
+            "src/dbus/abrt-dbus.c",
+            "allowed_problem_dir",
+            "bool allowed_problem_dir(const char *dir_name) /* <=== allowed_problem_dir */ \n{\n    if (!dir_is_in_dump_location(dir_name))\n    {\n        error_msg(\"Bad problem directory name '%s', should start with: '%s'\", dir_name, g_settings_dump_location);\n        return false;\n    }\n\n    /* We cannot test correct permissions yet because we still need to chown\n     * dump directories before reporting and Chowing changes the file owner to\n     * the reporter, which causes this test to fail and prevents users from\n     * getting problem data after reporting it.\n     *\n     * Fortunately, libreport has been hardened against hard link and symbolic\n     * link attacks and refuses to work with such files, so this test isn't\n     * really necessary, however, we will use it once we get rid of the\n     * chowning files.\n     *\n     * abrt-server refuses to run post-create on directories that have\n     * incorrect owner (not \"root:(abrt|root)\"), incorrect permissions (other\n     * bits are not 0) and are complete (post-create finished). So, there is no\n     * way to run security sensitive event scripts (post-create) on crafted\n     * problem directories.\n     */\n#if 0\n    if (!dir_has_correct_permissions(dir_name))\n    {\n        error_msg(\"Problem directory '%s' isn't owned by root:abrt or others are not restricted from access\", dir_name);\n        return false;\n    }\n#endif\n    return true;\n}",
+            1
+        ],
+        [
+            "src/dbus/abrt-dbus.c",
+            "return_InvalidProblemDir_error",
+            "static void return_InvalidProblemDir_error(GDBusMethodInvocation *invocation, const char *dir_name) /* <=== return_InvalidProblemDir_error */ \n{\n    char *msg = xasprintf(_(\"'%s' is not a valid problem directory\"), dir_name);\n    g_dbus_method_invocation_return_dbus_error(invocation,\n                                      \"org.freedesktop.problems.InvalidProblemDir\",\n                                      msg);\n\n    free(msg);\n}",
+            1
+        ],
+        [
+            "src/include/libabrt.h",
+            "dir_is_in_dump_location",
+            "#define dir_is_in_dump_location abrt_dir_is_in_dump_location /* <=== src/include/libabrt.h:50:50:dir_is_in_dump_location:0 */ ",
+            2
+        ],
+        [
+            "src/lib/problem_api.c",
+            "for_each_problem_in_dir",
+            "int for_each_problem_in_dir(const char *path, /* <=== for_each_problem_in_dir */ \n                        uid_t caller_uid,\n                        int (*callback)(struct dump_dir *dd, void *arg),\n                        void *arg)\n{\n    DIR *dp = opendir(path);\n    if (!dp)\n    {\n        /* We don't want to yell if, say, $XDG_CACHE_DIR/abrt/spool doesn't exist */\n        //perror_msg(\"Can't open directory '%s'\", path);\n        return 0;\n    }\n\n    int brk = 0;\n    struct dirent *dent;\n    while ((dent = readdir(dp)) != NULL)\n    {\n        if (dot_or_dotdot(dent->d_name))\n            continue; /* skip \".\" and \"..\" */\n\n        char *full_name = concat_path_file(path, dent->d_name);\n\n        int dir_fd = dd_openfd(full_name);\n        if (dir_fd < 0)\n        {\n            VERB2 perror_msg(\"can't open problem directory '%s'\", full_name);\n            continue;\n        }\n\n        if (caller_uid == -1 || fdump_dir_accessible_by_uid(dir_fd, caller_uid))\n        {\n            /* Silently ignore *any* errors, not only EACCES.\n             * We saw \"lock file is locked by process PID\" error\n             * when we raced with wizard.\n             */\n            int sv_logmode = logmode;\n            logmode = 0;\n            struct dump_dir *dd = dd_fdopendir(dir_fd, full_name, DD_OPEN_READONLY | DD_FAIL_QUIETLY_EACCES | DD_DONT_WAIT_FOR_LOCK);\n            logmode = sv_logmode;\n            if (dd)\n            {\n                brk = callback ? callback(dd, arg) : 0;\n                dd_close(dd);\n            }\n        }\n        else\n            close(dir_fd);\n\n        free(full_name);\n        if (brk)\n            break;\n    }\n    closedir(dp);\n\n    return brk;\n}",
+            2
+        ],
+        [
+            "src/dbus/abrt-polkit.c",
+            "do_check",
+            "static PolkitResult do_check(PolkitSubject *subject, const char *action_id) /* <=== do_check */ \n{\n    PolkitAuthority *authority;\n    PolkitAuthorizationResult *auth_result;\n    PolkitResult result = PolkitNo;\n    GError *error = NULL;\n    GCancellable * cancellable;\n\n    cancellable = g_cancellable_new();\n\n    /* we ignore the error for now .. */\n    authority = polkit_authority_get_sync(cancellable, NULL);\n\n    guint cancel_timeout = g_timeout_add(POLKIT_TIMEOUT * 1000,\n                   (GSourceFunc) do_cancel,\n                   cancellable);\n\n    auth_result = polkit_authority_check_authorization_sync(authority,\n                subject,\n                action_id,\n                NULL,\n                POLKIT_CHECK_AUTHORIZATION_FLAGS_ALLOW_USER_INTERACTION,\n                cancellable,\n                &error);\n    g_object_unref(authority);\n    g_source_remove(cancel_timeout);\n    if (error)\n    {\n        g_error_free(error);\n        return PolkitUnknown;\n    }\n\n    if (!auth_result)\n        return PolkitUnknown;\n\n    if (polkit_authorization_result_get_is_challenge(auth_result))\n    {\n        /* Can't happen (happens only with\n         * POLKIT_CHECK_AUTHORIZATION_FLAGS_NONE flag) */\n        result = PolkitChallenge;\n        goto out;\n    }\n\n    if (polkit_authorization_result_get_is_authorized(auth_result))\n    {\n        result = PolkitYes;\n        goto out;\n    }\n\nout:\n    g_object_unref(auth_result);\n    return result;\n}",
+            2
+        ],
+        [
+            "src/dbus/abrt-dbus.c",
+            "get_problem_dirs_for_element_in_time",
+            "static GList *get_problem_dirs_for_element_in_time(uid_t uid, /* <=== get_problem_dirs_for_element_in_time */ \n                const char *element,\n                const char *value,\n                unsigned long timestamp_from,\n                unsigned long timestamp_to)\n{\n    if (timestamp_to == 0) /* not sure this is possible, but... */\n        timestamp_to = time(NULL);\n\n    struct field_and_time_range me = {\n        .list = NULL,\n        .element = element,\n        .value = value,\n        .timestamp_from = timestamp_from,\n        .timestamp_to = timestamp_to,\n    };\n\n    for_each_problem_in_dir(g_settings_dump_location, uid, add_dirname_to_GList_if_matches, &me);\n\n    return g_list_reverse(me.list);\n}",
+            1
+        ],
+        [
+            "src/dbus/abrt-polkit.c",
+            "polkit_check_authorization_dname",
+            "PolkitResult polkit_check_authorization_dname(const char *dbus_name, const char *action_id) /* <=== polkit_check_authorization_dname */ \n{\n    glib_init();\n\n    PolkitSubject *subject = polkit_system_bus_name_new(dbus_name);\n    return do_check(subject, action_id);\n}",
+            1
+        ],
+        [
+            "src/lib/abrt_glib.c",
+            "variant_from_string_list",
+            "GVariant *variant_from_string_list(const GList *strings) /* <=== variant_from_string_list */ \n{\n    GVariantBuilder *builder;\n    builder = g_variant_builder_new(G_VARIANT_TYPE(\"as\"));\n\n    while (strings)\n    {\n        g_variant_builder_add(builder, \"s\", (char*)strings->data);\n        strings = strings->next;\n    }\n\n    GVariant *variant = g_variant_new(\"(as)\", builder);\n    g_variant_builder_unref(builder);\n\n    return variant;\n}",
+            1
+        ],
+        [
+            "src/dbus/abrt-dbus.c",
+            "open_directory_for_modification_of_element",
+            "static struct dump_dir *open_directory_for_modification_of_element( /* <=== open_directory_for_modification_of_element */ \n    GDBusMethodInvocation *invocation,\n    uid_t caller_uid,\n    const char *problem_id,\n    const char *element)\n{\n    static const char *const protected_elements[] = {\n        FILENAME_TIME,\n        FILENAME_UID,\n        NULL,\n    };\n\n    for (const char *const *protected = protected_elements; *protected; ++protected)\n    {\n        if (strcmp(*protected, element) == 0)\n        {\n            log_notice(\"'%s' element of '%s' can't be modified\", element, problem_id);\n            char *error = xasprintf(_(\"'%s' element can't be modified\"), element);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                        \"org.freedesktop.problems.ProtectedElement\",\n                                        error);\n            free(error);\n            return NULL;\n        }\n    }\n\n    int dir_fd = dd_openfd(problem_id);\n    if (dir_fd < 0)\n    {\n        perror_msg(\"can't open problem directory '%s'\", problem_id);\n        return_InvalidProblemDir_error(invocation, problem_id);\n        return NULL;\n    }\n\n    if (!fdump_dir_accessible_by_uid(dir_fd, caller_uid))\n    {\n        if (errno == ENOTDIR)\n        {\n            log_notice(\"'%s' is not a valid problem directory\", problem_id);\n            return_InvalidProblemDir_error(invocation, problem_id);\n        }\n        else\n        {\n            log_notice(\"UID(%d) is not Authorized to access '%s'\", caller_uid, problem_id);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                \"org.freedesktop.problems.AuthFailure\",\n                                _(\"Not Authorized\"));\n        }\n\n        close(dir_fd);\n        return NULL;\n    }\n\n    struct dump_dir *dd = dd_fdopendir(dir_fd, problem_id, /* flags : */ 0);\n    if (!dd)\n    {   /* This should not happen because of the access check above */\n        log_notice(\"Can't access the problem '%s' for modification\", problem_id);\n        g_dbus_method_invocation_return_dbus_error(invocation,\n                                \"org.freedesktop.problems.Failure\",\n                                _(\"Can't access the problem for modification\"));\n        return NULL;\n    }\n\n    return dd;\n}",
+            1
+        ],
+        [
+            "src/include/libabrt.h",
+            "g_settings_dump_location",
+            "#define g_settings_dump_location abrt_g_settings_dump_location /* <=== src/include/libabrt.h:61:61:g_settings_dump_location:0 */ ",
+            1
+        ],
+        [
+            "src/dbus/abrt-polkit.c",
+            "POLKIT_TIMEOUT",
+            "#define POLKIT_TIMEOUT 20 /* <=== src/dbus/abrt-polkit.c:28:28:POLKIT_TIMEOUT:0 */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"libabrt.h\"",
+        "#include <stdlib.h>",
+        "#include \"abrt-polkit.h\"",
+        "#include \"problem_api.h\"",
+        "#include <sys/types.h>",
+        "#include <pwd.h>",
+        "#include <grp.h>",
+        "#include <gio/gio.h>",
+        "#include \"abrt_glib.h\"",
+        "#include <libreport/dump_dir.h>"
+    ],
+    "typeDefs": [],
+    "visitedLines_after": {
+        "src/dbus/abrt-dbus.c": [
+            352,
+            353,
+            356,
+            357,
+            358,
+            366,
+            368,
+            370,
+            373,
+            393,
+            405,
+            427,
+            437,
+            513,
+            602,
+            608,
+            610,
+            612,
+            616,
+            618,
+            619,
+            620,
+            621,
+            622,
+            624,
+            628,
+            629,
+            630,
+            635,
+            636,
+            637,
+            639,
+            640,
+            641,
+            642,
+            643,
+            647,
+            649,
+            650,
+            652,
+            653,
+            654,
+            655,
+            659,
+            660,
+            663,
+            668,
+            673,
+            675,
+            677,
+            681,
+            683,
+            684,
+            685,
+            686,
+            687,
+            689,
+            693,
+            694,
+            695,
+            699,
+            700,
+            702,
+            704,
+            705,
+            706,
+            707,
+            708,
+            709,
+            714,
+            718,
+            784,
+            792,
+            798,
+            800,
+            801,
+            802,
+            803,
+            804,
+            806,
+            810,
+            811,
+            813,
+            814,
+            815,
+            816,
+            818
+        ]
+    },
+    "visitedLines_before": {
+        "src/dbus/abrt-dbus.c": [
+            352,
+            353,
+            356,
+            357,
+            358,
+            366,
+            368,
+            370,
+            373,
+            393,
+            405,
+            427,
+            437,
+            513,
+            602,
+            608,
+            610,
+            612,
+            613,
+            614,
+            615,
+            616,
+            618,
+            622,
+            623,
+            624,
+            629,
+            630,
+            631,
+            633,
+            634,
+            635,
+            636,
+            637,
+            641,
+            643,
+            644,
+            646,
+            647,
+            648,
+            649,
+            653,
+            654,
+            657,
+            662,
+            667,
+            669,
+            671,
+            672,
+            673,
+            674,
+            675,
+            677,
+            681,
+            682,
+            683,
+            687,
+            688,
+            690,
+            692,
+            693,
+            694,
+            695,
+            696,
+            697,
+            702,
+            706,
+            772,
+            780,
+            786,
+            787,
+            789,
+            790,
+            791,
+            792,
+            794
+        ]
+    },
+    "visitedParams": {
+        "src/dbus/abrt-dbus.c": [
+            [
+                "GDBusConnection *connection",
+                "handle_method_call"
+            ],
+            [
+                "GDBusMethodInvocation *invocation",
+                "handle_method_call"
+            ],
+            [
+                "GVariant    *parameters",
+                "handle_method_call"
+            ],
+            [
+                "const gchar *caller",
+                "handle_method_call"
+            ],
+            [
+                "const gchar *method_name",
+                "handle_method_call"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/dbus/abrt-dbus.c",
+            "handle_method_call",
+            "static void handle_method_call(GDBusConnection *connection, /* <=== handle_method_call */ \n                        const gchar *caller,\n                        const gchar *object_path,\n                        const gchar *interface_name,\n                        const gchar *method_name,\n                        GVariant    *parameters,\n                        GDBusMethodInvocation *invocation,\n                        gpointer    user_data)\n{\n    reset_timeout();\n\n    uid_t caller_uid;\n    GVariant *response;\n\n    caller_uid = get_caller_uid(connection, invocation, caller);\n\n    log_notice(\"caller_uid:%ld method:'%s'\", (long)caller_uid, method_name);\n\n    if (caller_uid == (uid_t) -1)\n        return;\n\n    if (g_strcmp0(method_name, \"NewProblem\") == 0)\n    {\n        char *error = NULL;\n        char *problem_id = handle_new_problem(g_variant_get_child_value(parameters, 0), caller_uid, &error);\n        if (!problem_id)\n        {\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                                      \"org.freedesktop.problems.Failure\",\n                                                      error);\n            free(error);\n            return;\n        }\n        /* else */\n        response = g_variant_new(\"(s)\", problem_id);\n        g_dbus_method_invocation_return_value(invocation, response);\n        free(problem_id);\n\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"GetProblems\") == 0)\n    {\n        GList *dirs = get_problem_dirs_for_uid(caller_uid, g_settings_dump_location);\n        response = variant_from_string_list(dirs);\n        list_free_with_free(dirs);\n\n        g_dbus_method_invocation_return_value(invocation, response);\n        //I was told that g_dbus_method frees the response\n        //g_variant_unref(response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"GetAllProblems\") == 0)\n    {\n        /*\n        - so, we have UID,\n        - if it's 0, then we don't have to check anything and just return all directories\n        - if uid != 0 then we want to ask for authorization\n        */\n        if (caller_uid != 0)\n        {\n            if (polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") == PolkitYes)\n                caller_uid = 0;\n        }\n\n        GList * dirs = get_problem_dirs_for_uid(caller_uid, g_settings_dump_location);\n        response = variant_from_string_list(dirs);\n\n        list_free_with_free(dirs);\n\n        g_dbus_method_invocation_return_value(invocation, response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"GetForeignProblems\") == 0)\n    {\n        GList * dirs = get_problem_dirs_not_accessible_by_uid(caller_uid, g_settings_dump_location);\n        response = variant_from_string_list(dirs);\n        list_free_with_free(dirs);\n\n        g_dbus_method_invocation_return_value(invocation, response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"ChownProblemDir\") == 0)\n    {\n        const gchar *problem_dir;\n        g_variant_get(parameters, \"(&s)\", &problem_dir);\n        log_notice(\"problem_dir:'%s'\", problem_dir);\n\n        if (!allowed_problem_dir(problem_dir))\n        {\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        int dir_fd = dd_openfd(problem_dir);\n        if (dir_fd < 0)\n        {\n            perror_msg(\"can't open problem directory '%s'\", problem_dir);\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        int ddstat = fdump_dir_stat_for_uid(dir_fd, caller_uid);\n        if (ddstat < 0)\n        {\n            if (errno == ENOTDIR)\n            {\n                log_notice(\"requested directory does not exist '%s'\", problem_dir);\n            }\n            else\n            {\n                perror_msg(\"can't get stat of '%s'\", problem_dir);\n            }\n\n            return_InvalidProblemDir_error(invocation, problem_dir);\n\n            close(dir_fd);\n            return;\n        }\n\n        if (ddstat & DD_STAT_OWNED_BY_UID)\n        {   //caller seems to be in group with access to this dir, so no action needed\n            log_notice(\"caller has access to the requested directory %s\", problem_dir);\n            g_dbus_method_invocation_return_value(invocation, NULL);\n            close(dir_fd);\n            return;\n        }\n\n        if ((ddstat & DD_STAT_ACCESSIBLE_BY_UID) == 0 &&\n                polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") != PolkitYes)\n        {\n            log_notice(\"not authorized\");\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                              \"org.freedesktop.problems.AuthFailure\",\n                                              _(\"Not Authorized\"));\n            close(dir_fd);\n            return;\n        }\n\n        struct dump_dir *dd = dd_fdopendir(dir_fd, problem_dir, DD_OPEN_READONLY | DD_FAIL_QUIETLY_EACCES);\n        if (!dd)\n        {\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        int chown_res = dd_chown(dd, caller_uid);\n        if (chown_res != 0)\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                              \"org.freedesktop.problems.ChownError\",\n                                              _(\"Chowning directory failed. Check system logs for more details.\"));\n        else\n            g_dbus_method_invocation_return_value(invocation, NULL);\n\n        dd_close(dd);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"GetInfo\") == 0)\n    {\n        /* Parameter tuple is (sas) */\n\n\t/* Get 1st param - problem dir name */\n        const gchar *problem_dir;\n        g_variant_get_child(parameters, 0, \"&s\", &problem_dir);\n        log_notice(\"problem_dir:'%s'\", problem_dir);\n\n        if (!allowed_problem_dir(problem_dir))\n        {\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        int dir_fd = dd_openfd(problem_dir);\n        if (dir_fd < 0)\n        {\n            perror_msg(\"can't open problem directory '%s'\", problem_dir);\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        if (!fdump_dir_accessible_by_uid(dir_fd, caller_uid))\n        {\n            if (errno == ENOTDIR)\n            {\n                log_notice(\"Requested directory does not exist '%s'\", problem_dir);\n                return_InvalidProblemDir_error(invocation, problem_dir);\n                close(dir_fd);\n                return;\n            }\n\n            if (polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") != PolkitYes)\n            {\n                log_notice(\"not authorized\");\n                g_dbus_method_invocation_return_dbus_error(invocation,\n                                                  \"org.freedesktop.problems.AuthFailure\",\n                                                  _(\"Not Authorized\"));\n                close(dir_fd);\n                return;\n            }\n        }\n\n        struct dump_dir *dd = dd_fdopendir(dir_fd, problem_dir, DD_OPEN_READONLY | DD_FAIL_QUIETLY_EACCES);\n        if (!dd)\n        {\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n\t/* Get 2nd param - vector of element names */\n        GVariant *array = g_variant_get_child_value(parameters, 1);\n        GList *elements = string_list_from_variant(array);\n        g_variant_unref(array);\n\n        GVariantBuilder *builder = NULL;\n        for (GList *l = elements; l; l = l->next)\n        {\n            const char *element_name = (const char*)l->data;\n            char *value = dd_load_text_ext(dd, element_name, 0\n                                                | DD_LOAD_TEXT_RETURN_NULL_ON_FAILURE\n                                                | DD_FAIL_QUIETLY_ENOENT\n                                                | DD_FAIL_QUIETLY_EACCES);\n            log_notice(\"element '%s' %s\", element_name, value ? \"fetched\" : \"not found\");\n            if (value)\n            {\n                if (!builder)\n                    builder = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);\n\n                /* g_variant_builder_add makes a copy. No need to xstrdup here */\n                g_variant_builder_add(builder, \"{ss}\", element_name, value);\n                free(value);\n            }\n        }\n        list_free_with_free(elements);\n        dd_close(dd);\n        /* It is OK to call g_variant_new(\"(a{ss})\", NULL) because */\n        /* G_VARIANT_TYPE_TUPLE allows NULL value */\n        GVariant *response = g_variant_new(\"(a{ss})\", builder);\n\n        if (builder)\n            g_variant_builder_unref(builder);\n\n        log_info(\"GetInfo: returning value for '%s'\", problem_dir);\n        g_dbus_method_invocation_return_value(invocation, response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"SetElement\") == 0)\n    {\n        const char *problem_id;\n        const char *element;\n        const char *value;\n\n        g_variant_get(parameters, \"(&s&s&s)\", &problem_id, &element, &value);\n\n        if (!allowed_problem_dir(problem_id))\n        {\n            return_InvalidProblemDir_error(invocation, problem_id);\n            return;\n        }\n\n        if (!str_is_correct_filename(element))\n        {\n            log_notice(\"'%s' is not a valid element name of '%s'\", element, problem_id);\n            char *error = xasprintf(_(\"'%s' is not a valid element name\"), element);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                              \"org.freedesktop.problems.InvalidElement\",\n                                              error);\n\n            free(error);\n            return;\n        }\n\n        struct dump_dir *dd = open_directory_for_modification_of_element(\n                                    invocation, caller_uid, problem_id, element);\n        if (!dd)\n            /* Already logged from open_directory_for_modification_of_element() */\n            return;\n\n        /* Is it good idea to make it static? Is it possible to change the max size while a single run? */\n        const double max_dir_size = g_settings_nMaxCrashReportsSize * (1024 * 1024);\n        const long item_size = dd_get_item_size(dd, element);\n        if (item_size < 0)\n        {\n            log_notice(\"Can't get size of '%s/%s'\", problem_id, element);\n            char *error = xasprintf(_(\"Can't get size of '%s'\"), element);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                                      \"org.freedesktop.problems.Failure\",\n                                                      error);\n            return;\n        }\n\n        const double requested_size = (double)strlen(value) - item_size;\n        /* Don't want to check the size limit in case of reducing of size */\n        if (requested_size > 0\n            && requested_size > (max_dir_size - get_dirsize(g_settings_dump_location)))\n        {\n            log_notice(\"No problem space left in '%s' (requested Bytes %f)\", problem_id, requested_size);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                                      \"org.freedesktop.problems.Failure\",\n                                                      _(\"No problem space left\"));\n        }\n        else\n        {\n            dd_save_text(dd, element, value);\n            g_dbus_method_invocation_return_value(invocation, NULL);\n        }\n\n        dd_close(dd);\n\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"DeleteElement\") == 0)\n    {\n        const char *problem_id;\n        const char *element;\n\n        g_variant_get(parameters, \"(&s&s)\", &problem_id, &element);\n\n        if (!allowed_problem_dir(problem_id))\n        {\n            return_InvalidProblemDir_error(invocation, problem_id);\n            return;\n        }\n\n        if (!str_is_correct_filename(element))\n        {\n            log_notice(\"'%s' is not a valid element name of '%s'\", element, problem_id);\n            char *error = xasprintf(_(\"'%s' is not a valid element name\"), element);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                              \"org.freedesktop.problems.InvalidElement\",\n                                              error);\n\n            free(error);\n            return;\n        }\n\n        struct dump_dir *dd = open_directory_for_modification_of_element(\n                                    invocation, caller_uid, problem_id, element);\n        if (!dd)\n            /* Already logged from open_directory_for_modification_of_element() */\n            return;\n\n        const int res = dd_delete_item(dd, element);\n        dd_close(dd);\n\n        if (res != 0)\n        {\n            log_notice(\"Can't delete the element '%s' from the problem directory '%s'\", element, problem_id);\n            char *error = xasprintf(_(\"Can't delete the element '%s' from the problem directory '%s'\"), element, problem_id);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                          \"org.freedesktop.problems.Failure\",\n                                          error);\n            free(error);\n            return;\n        }\n\n\n        g_dbus_method_invocation_return_value(invocation, NULL);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"DeleteProblem\") == 0)\n    {\n        /* Dbus parameters are always tuples.\n         * In this case, it's (as) - a tuple of one element (array of strings).\n         * Need to fetch the array:\n         */\n        GVariant *array = g_variant_get_child_value(parameters, 0);\n        GList *problem_dirs = string_list_from_variant(array);\n        g_variant_unref(array);\n\n        for (GList *l = problem_dirs; l; l = l->next)\n        {\n            const char *dir_name = (const char*)l->data;\n            log_notice(\"dir_name:'%s'\", dir_name);\n            if (!allowed_problem_dir(dir_name))\n            {\n                return_InvalidProblemDir_error(invocation, dir_name);\n                goto ret;\n            }\n        }\n\n        for (GList *l = problem_dirs; l; l = l->next)\n        {\n            const char *dir_name = (const char*)l->data;\n\n            int dir_fd = dd_openfd(dir_name);\n            if (dir_fd < 0)\n            {\n                perror_msg(\"can't open problem directory '%s'\", dir_name);\n                return_InvalidProblemDir_error(invocation, dir_name);\n                return;\n            }\n\n            if (!fdump_dir_accessible_by_uid(dir_fd, caller_uid))\n            {\n                if (errno == ENOTDIR)\n                {\n                    log_notice(\"Requested directory does not exist '%s'\", dir_name);\n                    close(dir_fd);\n                    continue;\n                }\n\n                if (polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") != PolkitYes)\n                { // if user didn't provide correct credentials, just move to the next dir\n                    close(dir_fd);\n                    continue;\n                }\n            }\n\n            struct dump_dir *dd = dd_fdopendir(dir_fd, dir_name, /*flags:*/ 0);\n            if (dd)\n            {\n                if (dd_delete(dd) != 0)\n                {\n                    error_msg(\"Failed to delete problem directory '%s'\", dir_name);\n                    dd_close(dd);\n                }\n            }\n        }\n\n        g_dbus_method_invocation_return_value(invocation, NULL);\n ret:\n        list_free_with_free(problem_dirs);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"FindProblemByElementInTimeRange\") == 0)\n    {\n        const gchar *element;\n        const gchar *value;\n        glong timestamp_from;\n        glong timestamp_to;\n        gboolean all;\n\n        g_variant_get_child(parameters, 0, \"&s\", &element);\n        g_variant_get_child(parameters, 1, \"&s\", &value);\n        g_variant_get_child(parameters, 2, \"x\", &timestamp_from);\n        g_variant_get_child(parameters, 3, \"x\", &timestamp_to);\n        g_variant_get_child(parameters, 4, \"b\", &all);\n\n        if (!str_is_correct_filename(element))\n        {\n            log_notice(\"'%s' is not a valid element name\", element);\n            char *error = xasprintf(_(\"'%s' is not a valid element name\"), element);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                              \"org.freedesktop.problems.InvalidElement\",\n                                              error);\n\n            free(error);\n            return;\n        }\n\n        if (all && polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") == PolkitYes)\n            caller_uid = 0;\n\n        GList *dirs = get_problem_dirs_for_element_in_time(caller_uid, element, value, timestamp_from,\n                                                        timestamp_to);\n        response = variant_from_string_list(dirs);\n        list_free_with_free(dirs);\n\n        g_dbus_method_invocation_return_value(invocation, response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"Quit\") == 0)\n    {\n        g_dbus_method_invocation_return_value(invocation, NULL);\n        g_main_loop_quit(loop);\n        return;\n    }\n}",
+            352
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/dbus/abrt-dbus.c",
+            "handle_method_call",
+            "static void handle_method_call(GDBusConnection *connection, /* <=== handle_method_call */ \n                        const gchar *caller,\n                        const gchar *object_path,\n                        const gchar *interface_name,\n                        const gchar *method_name,\n                        GVariant    *parameters,\n                        GDBusMethodInvocation *invocation,\n                        gpointer    user_data)\n{\n    reset_timeout();\n\n    uid_t caller_uid;\n    GVariant *response;\n\n    caller_uid = get_caller_uid(connection, invocation, caller);\n\n    log_notice(\"caller_uid:%ld method:'%s'\", (long)caller_uid, method_name);\n\n    if (caller_uid == (uid_t) -1)\n        return;\n\n    if (g_strcmp0(method_name, \"NewProblem\") == 0)\n    {\n        char *error = NULL;\n        char *problem_id = handle_new_problem(g_variant_get_child_value(parameters, 0), caller_uid, &error);\n        if (!problem_id)\n        {\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                                      \"org.freedesktop.problems.Failure\",\n                                                      error);\n            free(error);\n            return;\n        }\n        /* else */\n        response = g_variant_new(\"(s)\", problem_id);\n        g_dbus_method_invocation_return_value(invocation, response);\n        free(problem_id);\n\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"GetProblems\") == 0)\n    {\n        GList *dirs = get_problem_dirs_for_uid(caller_uid, g_settings_dump_location);\n        response = variant_from_string_list(dirs);\n        list_free_with_free(dirs);\n\n        g_dbus_method_invocation_return_value(invocation, response);\n        //I was told that g_dbus_method frees the response\n        //g_variant_unref(response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"GetAllProblems\") == 0)\n    {\n        /*\n        - so, we have UID,\n        - if it's 0, then we don't have to check anything and just return all directories\n        - if uid != 0 then we want to ask for authorization\n        */\n        if (caller_uid != 0)\n        {\n            if (polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") == PolkitYes)\n                caller_uid = 0;\n        }\n\n        GList * dirs = get_problem_dirs_for_uid(caller_uid, g_settings_dump_location);\n        response = variant_from_string_list(dirs);\n\n        list_free_with_free(dirs);\n\n        g_dbus_method_invocation_return_value(invocation, response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"GetForeignProblems\") == 0)\n    {\n        GList * dirs = get_problem_dirs_not_accessible_by_uid(caller_uid, g_settings_dump_location);\n        response = variant_from_string_list(dirs);\n        list_free_with_free(dirs);\n\n        g_dbus_method_invocation_return_value(invocation, response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"ChownProblemDir\") == 0)\n    {\n        const gchar *problem_dir;\n        g_variant_get(parameters, \"(&s)\", &problem_dir);\n        log_notice(\"problem_dir:'%s'\", problem_dir);\n\n        if (!allowed_problem_dir(problem_dir))\n        {\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        int dir_fd = dd_openfd(problem_dir);\n        if (dir_fd < 0)\n        {\n            perror_msg(\"can't open problem directory '%s'\", problem_dir);\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        int ddstat = fdump_dir_stat_for_uid(dir_fd, caller_uid);\n        if (ddstat < 0)\n        {\n            if (errno == ENOTDIR)\n            {\n                log_notice(\"requested directory does not exist '%s'\", problem_dir);\n            }\n            else\n            {\n                perror_msg(\"can't get stat of '%s'\", problem_dir);\n            }\n\n            return_InvalidProblemDir_error(invocation, problem_dir);\n\n            close(dir_fd);\n            return;\n        }\n\n        if (ddstat & DD_STAT_OWNED_BY_UID)\n        {   //caller seems to be in group with access to this dir, so no action needed\n            log_notice(\"caller has access to the requested directory %s\", problem_dir);\n            g_dbus_method_invocation_return_value(invocation, NULL);\n            close(dir_fd);\n            return;\n        }\n\n        if ((ddstat & DD_STAT_ACCESSIBLE_BY_UID) == 0 &&\n                polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") != PolkitYes)\n        {\n            log_notice(\"not authorized\");\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                              \"org.freedesktop.problems.AuthFailure\",\n                                              _(\"Not Authorized\"));\n            close(dir_fd);\n            return;\n        }\n\n        struct dump_dir *dd = dd_fdopendir(dir_fd, problem_dir, DD_OPEN_READONLY | DD_FAIL_QUIETLY_EACCES);\n        if (!dd)\n        {\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        int chown_res = dd_chown(dd, caller_uid);\n        if (chown_res != 0)\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                              \"org.freedesktop.problems.ChownError\",\n                                              _(\"Chowning directory failed. Check system logs for more details.\"));\n        else\n            g_dbus_method_invocation_return_value(invocation, NULL);\n\n        dd_close(dd);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"GetInfo\") == 0)\n    {\n        /* Parameter tuple is (sas) */\n\n\t/* Get 1st param - problem dir name */\n        const gchar *problem_dir;\n        g_variant_get_child(parameters, 0, \"&s\", &problem_dir);\n        log_notice(\"problem_dir:'%s'\", problem_dir);\n\n        if (!allowed_problem_dir(problem_dir))\n        {\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        int dir_fd = dd_openfd(problem_dir);\n        if (dir_fd < 0)\n        {\n            perror_msg(\"can't open problem directory '%s'\", problem_dir);\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n        if (!fdump_dir_accessible_by_uid(dir_fd, caller_uid))\n        {\n            if (errno == ENOTDIR)\n            {\n                log_notice(\"Requested directory does not exist '%s'\", problem_dir);\n                return_InvalidProblemDir_error(invocation, problem_dir);\n                close(dir_fd);\n                return;\n            }\n\n            if (polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") != PolkitYes)\n            {\n                log_notice(\"not authorized\");\n                g_dbus_method_invocation_return_dbus_error(invocation,\n                                                  \"org.freedesktop.problems.AuthFailure\",\n                                                  _(\"Not Authorized\"));\n                close(dir_fd);\n                return;\n            }\n        }\n\n        struct dump_dir *dd = dd_fdopendir(dir_fd, problem_dir, DD_OPEN_READONLY | DD_FAIL_QUIETLY_EACCES);\n        if (!dd)\n        {\n            return_InvalidProblemDir_error(invocation, problem_dir);\n            return;\n        }\n\n\t/* Get 2nd param - vector of element names */\n        GVariant *array = g_variant_get_child_value(parameters, 1);\n        GList *elements = string_list_from_variant(array);\n        g_variant_unref(array);\n\n        GVariantBuilder *builder = NULL;\n        for (GList *l = elements; l; l = l->next)\n        {\n            const char *element_name = (const char*)l->data;\n            char *value = dd_load_text_ext(dd, element_name, 0\n                                                | DD_LOAD_TEXT_RETURN_NULL_ON_FAILURE\n                                                | DD_FAIL_QUIETLY_ENOENT\n                                                | DD_FAIL_QUIETLY_EACCES);\n            log_notice(\"element '%s' %s\", element_name, value ? \"fetched\" : \"not found\");\n            if (value)\n            {\n                if (!builder)\n                    builder = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);\n\n                /* g_variant_builder_add makes a copy. No need to xstrdup here */\n                g_variant_builder_add(builder, \"{ss}\", element_name, value);\n                free(value);\n            }\n        }\n        list_free_with_free(elements);\n        dd_close(dd);\n        /* It is OK to call g_variant_new(\"(a{ss})\", NULL) because */\n        /* G_VARIANT_TYPE_TUPLE allows NULL value */\n        GVariant *response = g_variant_new(\"(a{ss})\", builder);\n\n        if (builder)\n            g_variant_builder_unref(builder);\n\n        log_info(\"GetInfo: returning value for '%s'\", problem_dir);\n        g_dbus_method_invocation_return_value(invocation, response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"SetElement\") == 0)\n    {\n        const char *problem_id;\n        const char *element;\n        const char *value;\n\n        g_variant_get(parameters, \"(&s&s&s)\", &problem_id, &element, &value);\n\n        if (!str_is_correct_filename(element))\n        {\n            log_notice(\"'%s' is not a valid element name of '%s'\", element, problem_id);\n            char *error = xasprintf(_(\"'%s' is not a valid element name\"), element);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                              \"org.freedesktop.problems.InvalidElement\",\n                                              error);\n\n            free(error);\n            return;\n        }\n\n        struct dump_dir *dd = open_directory_for_modification_of_element(\n                                    invocation, caller_uid, problem_id, element);\n        if (!dd)\n            /* Already logged from open_directory_for_modification_of_element() */\n            return;\n\n        /* Is it good idea to make it static? Is it possible to change the max size while a single run? */\n        const double max_dir_size = g_settings_nMaxCrashReportsSize * (1024 * 1024);\n        const long item_size = dd_get_item_size(dd, element);\n        if (item_size < 0)\n        {\n            log_notice(\"Can't get size of '%s/%s'\", problem_id, element);\n            char *error = xasprintf(_(\"Can't get size of '%s'\"), element);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                                      \"org.freedesktop.problems.Failure\",\n                                                      error);\n            return;\n        }\n\n        const double requested_size = (double)strlen(value) - item_size;\n        /* Don't want to check the size limit in case of reducing of size */\n        if (requested_size > 0\n            && requested_size > (max_dir_size - get_dirsize(g_settings_dump_location)))\n        {\n            log_notice(\"No problem space left in '%s' (requested Bytes %f)\", problem_id, requested_size);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                                      \"org.freedesktop.problems.Failure\",\n                                                      _(\"No problem space left\"));\n        }\n        else\n        {\n            dd_save_text(dd, element, value);\n            g_dbus_method_invocation_return_value(invocation, NULL);\n        }\n\n        dd_close(dd);\n\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"DeleteElement\") == 0)\n    {\n        const char *problem_id;\n        const char *element;\n\n        g_variant_get(parameters, \"(&s&s)\", &problem_id, &element);\n\n        if (!str_is_correct_filename(element))\n        {\n            log_notice(\"'%s' is not a valid element name of '%s'\", element, problem_id);\n            char *error = xasprintf(_(\"'%s' is not a valid element name\"), element);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                              \"org.freedesktop.problems.InvalidElement\",\n                                              error);\n\n            free(error);\n            return;\n        }\n\n        struct dump_dir *dd = open_directory_for_modification_of_element(\n                                    invocation, caller_uid, problem_id, element);\n        if (!dd)\n            /* Already logged from open_directory_for_modification_of_element() */\n            return;\n\n        const int res = dd_delete_item(dd, element);\n        dd_close(dd);\n\n        if (res != 0)\n        {\n            log_notice(\"Can't delete the element '%s' from the problem directory '%s'\", element, problem_id);\n            char *error = xasprintf(_(\"Can't delete the element '%s' from the problem directory '%s'\"), element, problem_id);\n            g_dbus_method_invocation_return_dbus_error(invocation,\n                                          \"org.freedesktop.problems.Failure\",\n                                          error);\n            free(error);\n            return;\n        }\n\n\n        g_dbus_method_invocation_return_value(invocation, NULL);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"DeleteProblem\") == 0)\n    {\n        /* Dbus parameters are always tuples.\n         * In this case, it's (as) - a tuple of one element (array of strings).\n         * Need to fetch the array:\n         */\n        GVariant *array = g_variant_get_child_value(parameters, 0);\n        GList *problem_dirs = string_list_from_variant(array);\n        g_variant_unref(array);\n\n        for (GList *l = problem_dirs; l; l = l->next)\n        {\n            const char *dir_name = (const char*)l->data;\n            log_notice(\"dir_name:'%s'\", dir_name);\n            if (!allowed_problem_dir(dir_name))\n            {\n                return_InvalidProblemDir_error(invocation, dir_name);\n                goto ret;\n            }\n        }\n\n        for (GList *l = problem_dirs; l; l = l->next)\n        {\n            const char *dir_name = (const char*)l->data;\n\n            int dir_fd = dd_openfd(dir_name);\n            if (dir_fd < 0)\n            {\n                perror_msg(\"can't open problem directory '%s'\", dir_name);\n                return_InvalidProblemDir_error(invocation, dir_name);\n                return;\n            }\n\n            if (!fdump_dir_accessible_by_uid(dir_fd, caller_uid))\n            {\n                if (errno == ENOTDIR)\n                {\n                    log_notice(\"Requested directory does not exist '%s'\", dir_name);\n                    close(dir_fd);\n                    continue;\n                }\n\n                if (polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") != PolkitYes)\n                { // if user didn't provide correct credentials, just move to the next dir\n                    close(dir_fd);\n                    continue;\n                }\n            }\n\n            struct dump_dir *dd = dd_fdopendir(dir_fd, dir_name, /*flags:*/ 0);\n            if (dd)\n            {\n                if (dd_delete(dd) != 0)\n                {\n                    error_msg(\"Failed to delete problem directory '%s'\", dir_name);\n                    dd_close(dd);\n                }\n            }\n        }\n\n        g_dbus_method_invocation_return_value(invocation, NULL);\n ret:\n        list_free_with_free(problem_dirs);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"FindProblemByElementInTimeRange\") == 0)\n    {\n        const gchar *element;\n        const gchar *value;\n        glong timestamp_from;\n        glong timestamp_to;\n        gboolean all;\n\n        g_variant_get_child(parameters, 0, \"&s\", &element);\n        g_variant_get_child(parameters, 1, \"&s\", &value);\n        g_variant_get_child(parameters, 2, \"x\", &timestamp_from);\n        g_variant_get_child(parameters, 3, \"x\", &timestamp_to);\n        g_variant_get_child(parameters, 4, \"b\", &all);\n\n        if (all && polkit_check_authorization_dname(caller, \"org.freedesktop.problems.getall\") == PolkitYes)\n            caller_uid = 0;\n\n        GList *dirs = get_problem_dirs_for_element_in_time(caller_uid, element, value, timestamp_from,\n                                                        timestamp_to);\n        response = variant_from_string_list(dirs);\n        list_free_with_free(dirs);\n\n        g_dbus_method_invocation_return_value(invocation, response);\n        return;\n    }\n\n    if (g_strcmp0(method_name, \"Quit\") == 0)\n    {\n        g_dbus_method_invocation_return_value(invocation, NULL);\n        g_main_loop_quit(loop);\n        return;\n    }\n}",
+            352
+        ]
+    ]
+}

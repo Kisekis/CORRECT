@@ -1,0 +1,170 @@
+{
+    "calleeMethods": [
+        [
+            "lib/eal/common/eal_common_log.c",
+            "rte_log_get_stream",
+            "FILE * /* <=== rte_log_get_stream */ \nrte_log_get_stream(void)\n{\n\tFILE *f = rte_logs.file;\n\n\tif (f == NULL) {\n\t\t/*\n\t\t * Grab the current value of stderr here, rather than\n\t\t * just initializing default_log_stream to stderr. This\n\t\t * ensures that we will always use the current value\n\t\t * of stderr, even if the application closes and\n\t\t * reopens it.\n\t\t */\n\t\treturn default_log_stream ? : stderr;\n\t}\n\treturn f;\n}",
+            3
+        ],
+        [
+            "lib/eal/common/rte_malloc.c",
+            "rte_zmalloc_socket",
+            "void * /* <=== rte_zmalloc_socket */ \nrte_zmalloc_socket(const char *type, size_t size, unsigned align, int socket)\n{\n\tvoid *ptr = rte_malloc_socket(type, size, align, socket);\n\n\tif (ptr != NULL) {\n\t\tstruct malloc_elem *elem = malloc_elem_from_data(ptr);\n\n\t\tif (elem->dirty) {\n\t\t\tmemset(ptr, 0, size);\n\t\t} else {\n#ifdef RTE_MALLOC_DEBUG\n\t\t\t/*\n\t\t\t * If DEBUG is enabled, then freed memory is marked\n\t\t\t * with a poison value and set to zero on allocation.\n\t\t\t * If DEBUG is disabled then memory is already zeroed.\n\t\t\t */\n\t\t\tmemset(ptr, 0, size);\n#endif\n\t\t}\n\t}\n\n\trte_eal_trace_mem_zmalloc(type, size, align, socket, ptr);\n\treturn ptr;\n}",
+            3
+        ],
+        [
+            "lib/vhost/vhost.c",
+            "alloc_vring_queue",
+            "int /* <=== alloc_vring_queue */ \nalloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx)\n{\n\tstruct vhost_virtqueue *vq;\n\tuint32_t i;\n\n\t/* Also allocate holes, if any, up to requested vring index. */\n\tfor (i = 0; i <= vring_idx; i++) {\n\t\tif (dev->virtqueue[i])\n\t\t\tcontinue;\n\n\t\tvq = rte_zmalloc(NULL, sizeof(struct vhost_virtqueue), 0);\n\t\tif (vq == NULL) {\n\t\t\tVHOST_LOG_CONFIG(ERR, \"(%s) failed to allocate memory for vring %u.\\n\",\n\t\t\t\t\tdev->ifname, i);\n\t\t\treturn -1;\n\t\t}\n\n\t\tdev->virtqueue[i] = vq;\n\t\tinit_vring_queue(dev, i);\n\t\trte_spinlock_init(&vq->access_lock);\n\t\tvq->avail_wrap_counter = 1;\n\t\tvq->used_wrap_counter = 1;\n\t\tvq->signalled_used_valid = false;\n\t}\n\n\tdev->nr_vring = RTE_MAX(dev->nr_vring, vring_idx + 1);\n\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "lib/vhost/iotlb.c",
+            "vhost_user_iotlb_init",
+            "int /* <=== vhost_user_iotlb_init */ \nvhost_user_iotlb_init(struct virtio_net *dev, int vq_index)\n{\n\tchar pool_name[RTE_MEMPOOL_NAMESIZE];\n\tstruct vhost_virtqueue *vq = dev->virtqueue[vq_index];\n\tint socket = 0;\n\n\tif (vq->iotlb_pool) {\n\t\t/*\n\t\t * The cache has already been initialized,\n\t\t * just drop all cached and pending entries.\n\t\t */\n\t\tvhost_user_iotlb_flush_all(vq);\n\t}\n\n#ifdef RTE_LIBRTE_VHOST_NUMA\n\tif (get_mempolicy(&socket, NULL, 0, vq, MPOL_F_NODE | MPOL_F_ADDR) != 0)\n\t\tsocket = 0;\n#endif\n\n\trte_rwlock_init(&vq->iotlb_lock);\n\trte_rwlock_init(&vq->iotlb_pending_lock);\n\n\tTAILQ_INIT(&vq->iotlb_list);\n\tTAILQ_INIT(&vq->iotlb_pending_list);\n\n\tsnprintf(pool_name, sizeof(pool_name), \"iotlb_%u_%d_%d\",\n\t\t\tgetpid(), dev->vid, vq_index);\n\tVHOST_LOG_CONFIG(DEBUG, \"(%s) IOTLB cache name: %s\\n\", dev->ifname, pool_name);\n\n\t/* If already created, free it and recreate */\n\tvq->iotlb_pool = rte_mempool_lookup(pool_name);\n\trte_mempool_free(vq->iotlb_pool);\n\n\tvq->iotlb_pool = rte_mempool_create(pool_name,\n\t\t\tIOTLB_CACHE_SIZE, sizeof(struct vhost_iotlb_entry), 0,\n\t\t\t0, 0, NULL, NULL, NULL, socket,\n\t\t\tRTE_MEMPOOL_F_NO_CACHE_ALIGN |\n\t\t\tRTE_MEMPOOL_F_SP_PUT);\n\tif (!vq->iotlb_pool) {\n\t\tVHOST_LOG_CONFIG(ERR, \"(%s) Failed to create IOTLB cache pool %s\\n\",\n\t\t\t\tdev->ifname, pool_name);\n\t\treturn -1;\n\t}\n\n\tvq->iotlb_cache_nr = 0;\n\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "lib/vhost/vhost.c",
+            "init_vring_queue",
+            "static void /* <=== init_vring_queue */ \ninit_vring_queue(struct virtio_net *dev, uint32_t vring_idx)\n{\n\tstruct vhost_virtqueue *vq;\n\tint numa_node = SOCKET_ID_ANY;\n\n\tif (vring_idx >= VHOST_MAX_VRING) {\n\t\tVHOST_LOG_CONFIG(ERR, \"(%s) failed to init vring, out of bound (%d)\\n\",\n\t\t\t\tdev->ifname, vring_idx);\n\t\treturn;\n\t}\n\n\tvq = dev->virtqueue[vring_idx];\n\tif (!vq) {\n\t\tVHOST_LOG_CONFIG(ERR, \"(%s) virtqueue not allocated (%d)\\n\",\n\t\t\t\tdev->ifname, vring_idx);\n\t\treturn;\n\t}\n\n\tmemset(vq, 0, sizeof(struct vhost_virtqueue));\n\n\tvq->kickfd = VIRTIO_UNINITIALIZED_EVENTFD;\n\tvq->callfd = VIRTIO_UNINITIALIZED_EVENTFD;\n\tvq->notif_enable = VIRTIO_UNINITIALIZED_NOTIF;\n\n#ifdef RTE_LIBRTE_VHOST_NUMA\n\tif (get_mempolicy(&numa_node, NULL, 0, vq, MPOL_F_NODE | MPOL_F_ADDR)) {\n\t\tVHOST_LOG_CONFIG(ERR, \"(%s) failed to query numa node: %s\\n\",\n\t\t\tdev->ifname, rte_strerror(errno));\n\t\tnuma_node = SOCKET_ID_ANY;\n\t}\n#endif\n\tvq->numa_node = numa_node;\n\n\tvhost_user_iotlb_init(dev, vring_idx);\n}",
+            2
+        ],
+        [
+            "lib/eal/common/rte_malloc.c",
+            "rte_zmalloc",
+            "void * /* <=== rte_zmalloc */ \nrte_zmalloc(const char *type, size_t size, unsigned align)\n{\n\treturn rte_zmalloc_socket(type, size, align, SOCKET_ID_ANY);\n}",
+            2
+        ],
+        [
+            "lib/eal/common/eal_common_log.c",
+            "rte_log",
+            "int /* <=== rte_log */ \nrte_log(uint32_t level, uint32_t logtype, const char *format, ...)\n{\n\tva_list ap;\n\tint ret;\n\n\tva_start(ap, format);\n\tret = rte_vlog(level, logtype, format, ap);\n\tva_end(ap);\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "lib/eal/common/eal_common_log.c",
+            "rte_vlog",
+            "int /* <=== rte_vlog */ \nrte_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap)\n{\n\tFILE *f = rte_log_get_stream();\n\tint ret;\n\n\tif (logtype >= rte_logs.dynamic_types_len)\n\t\treturn -1;\n\tif (!rte_log_can_log(logtype, level))\n\t\treturn 0;\n\n\t/* save loglevel and logtype in a global per-lcore variable */\n\tRTE_PER_LCORE(log_cur_msg).loglevel = level;\n\tRTE_PER_LCORE(log_cur_msg).logtype = logtype;\n\n\tret = vfprintf(f, format, ap);\n\tfflush(f);\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "lib/eal/common/eal_common_log.c",
+            "rte_log_can_log",
+            "bool /* <=== rte_log_can_log */ \nrte_log_can_log(uint32_t logtype, uint32_t level)\n{\n\tint log_level;\n\n\tif (level > rte_log_get_global_level())\n\t\treturn false;\n\n\tlog_level = rte_log_get_level(logtype);\n\tif (log_level < 0)\n\t\treturn false;\n\n\tif (level > (uint32_t)log_level)\n\t\treturn false;\n\n\treturn true;\n}",
+            3
+        ],
+        [
+            "lib/vhost/vhost.h",
+            "VHOST_MAX_VRING",
+            "#define VHOST_MAX_VRING\t\t\t0x100 /* <=== lib/vhost/vhost.h:319:319:VHOST_MAX_VRING:0 */ ",
+            1
+        ],
+        [
+            "lib/vhost/vhost.h",
+            "VHOST_LOG_CONFIG",
+            "#define VHOST_LOG_CONFIG(level, fmt, args...)\t\t\t\\ /* <=== lib/vhost/vhost.h:609:611:VHOST_LOG_CONFIG:3 */ \n\trte_log(RTE_LOG_ ## level, vhost_config_log_level,\t\\\n\t\t\"VHOST_CONFIG: \" fmt, ##args)",
+            1
+        ],
+        [
+            "lib/eal/include/generic/rte_spinlock.h",
+            "rte_spinlock_init",
+            "static inline void /* <=== rte_spinlock_init */ \nrte_spinlock_init(rte_spinlock_t *sl)\n{\n\tsl->locked = 0;\n}",
+            2
+        ],
+        [
+            "lib/vhost/vhost.h",
+            "VIRTIO_UNINITIALIZED_EVENTFD",
+            "#define VIRTIO_UNINITIALIZED_EVENTFD\t(-2) /* <=== lib/vhost/vhost.h:252:252:VIRTIO_UNINITIALIZED_EVENTFD:0 */ ",
+            3
+        ],
+        [
+            "lib/vhost/vhost.h",
+            "VIRTIO_UNINITIALIZED_NOTIF",
+            "#define VIRTIO_UNINITIALIZED_NOTIF\t(-1) /* <=== lib/vhost/vhost.h:305:305:VIRTIO_UNINITIALIZED_NOTIF:0 */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <sys/syscall.h>",
+        "#include <string.h>",
+        "#include <stdint.h>",
+        "#include \"iotlb.h\"",
+        "#include <rte_vfio.h>",
+        "#include <sys/stat.h>",
+        "#include <fcntl.h>",
+        "#include <stdlib.h>",
+        "#include <rte_common.h>",
+        "#include <sys/ioctl.h>",
+        "#include <linux/userfaultfd.h>",
+        "#include <numaif.h>",
+        "#include <linux/memfd.h>",
+        "#include \"vhost_user.h\"",
+        "#include <sys/mman.h>",
+        "#include <unistd.h>",
+        "#include <stdio.h>",
+        "#include <rte_errno.h>",
+        "#include \"vhost.h\"",
+        "#include <rte_malloc.h>",
+        "#include <rte_log.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct virtio_net {\n\t/* Frontend (QEMU) memory and memory region information */\n\tstruct rte_vhost_memory\t*mem;\n\tuint64_t\t\tfeatures;\n\tuint64_t\t\tprotocol_features;\n\tint\t\t\tvid;\n\tuint32_t\t\tflags;\n\tuint16_t\t\tvhost_hlen;\n\t/* to tell if we need broadcast rarp packet */\n\tint16_t\t\t\tbroadcast_rarp;\n\tuint32_t\t\tnr_vring;\n\tint\t\t\tasync_copy;\n\n\tint\t\t\textbuf;\n\tint\t\t\tlinearbuf;\n\tstruct vhost_virtqueue\t*virtqueue[VHOST_MAX_QUEUE_PAIRS * 2];\n\tstruct inflight_mem_info *inflight_info;\n#define IF_NAME_SZ (PATH_MAX > IFNAMSIZ ? PATH_MAX : IFNAMSIZ)\n\tchar\t\t\tifname[IF_NAME_SZ];\n\tuint64_t\t\tlog_size;\n\tuint64_t\t\tlog_base;\n\tuint64_t\t\tlog_addr;\n\tstruct rte_ether_addr\tmac;\n\tuint16_t\t\tmtu;\n\tuint8_t\t\t\tstatus;\n\n\tstruct rte_vhost_device_ops const *notify_ops;\n\n\tuint32_t\t\tnr_guest_pages;\n\tuint32_t\t\tmax_guest_pages;\n\tstruct guest_page       *guest_pages;\n\n\tint\t\t\tslave_req_fd;\n\trte_spinlock_t\t\tslave_req_lock;\n\n\tint\t\t\tpostcopy_ufd;\n\tint\t\t\tpostcopy_listening;\n\n\tstruct rte_vdpa_device *vdpa_dev;\n\n\t/* context data for the external message handlers */\n\tvoid\t\t\t*extern_data;\n\t/* pre and post vhost user message handlers for the device */\n\tstruct rte_vhost_user_extern_ops extern_ops;\n}",
+            "virtio_net"
+        ]
+    ],
+    "visitedLines_after": {
+        "lib/vhost/vhost_user.c": [
+            2865,
+            2867,
+            2871,
+            2886,
+            2887,
+            2893,
+            2894,
+            2895,
+            2898,
+            2899,
+            2901
+        ]
+    },
+    "visitedLines_before": {
+        "lib/vhost/vhost_user.c": [
+            2865,
+            2867,
+            2871,
+            2890,
+            2891,
+            2892,
+            2895,
+            2896,
+            2898
+        ]
+    },
+    "visitedParams": {
+        "lib/vhost/vhost_user.c": [
+            [
+                "struct vhu_msg_context *ctx",
+                "vhost_user_check_and_alloc_queue_pair"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "lib/vhost/vhost_user.c",
+            "vhost_user_check_and_alloc_queue_pair",
+            "static int /* <=== vhost_user_check_and_alloc_queue_pair */ \nvhost_user_check_and_alloc_queue_pair(struct virtio_net *dev,\n\t\t\tstruct vhu_msg_context *ctx)\n{\n\tuint32_t vring_idx;\n\n\tswitch (ctx->msg.request.master) {\n\tcase VHOST_USER_SET_VRING_KICK:\n\tcase VHOST_USER_SET_VRING_CALL:\n\tcase VHOST_USER_SET_VRING_ERR:\n\t\tvring_idx = ctx->msg.payload.u64 & VHOST_USER_VRING_IDX_MASK;\n\t\tbreak;\n\tcase VHOST_USER_SET_VRING_NUM:\n\tcase VHOST_USER_SET_VRING_BASE:\n\tcase VHOST_USER_GET_VRING_BASE:\n\tcase VHOST_USER_SET_VRING_ENABLE:\n\t\tvring_idx = ctx->msg.payload.state.index;\n\t\tbreak;\n\tcase VHOST_USER_SET_VRING_ADDR:\n\t\tvring_idx = ctx->msg.payload.addr.index;\n\t\tbreak;\n\tcase VHOST_USER_SET_INFLIGHT_FD:\n\t\tvring_idx = ctx->msg.payload.inflight.num_queues - 1;\n\t\tbreak;\n\tdefault:\n\t\treturn 0;\n\t}\n\n\tif (vring_idx >= VHOST_MAX_VRING) {\n\t\tVHOST_LOG_CONFIG(ERR, \"(%s) invalid vring index: %u\\n\", dev->ifname, vring_idx);\n\t\treturn -1;\n\t}\n\n\tif (dev->virtqueue[vring_idx])\n\t\treturn 0;\n\n\treturn alloc_vring_queue(dev, vring_idx);\n}",
+            2865
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "lib/vhost/vhost_user.c",
+            "vhost_user_check_and_alloc_queue_pair",
+            "static int /* <=== vhost_user_check_and_alloc_queue_pair */ \nvhost_user_check_and_alloc_queue_pair(struct virtio_net *dev,\n\t\t\tstruct vhu_msg_context *ctx)\n{\n\tuint32_t vring_idx;\n\n\tswitch (ctx->msg.request.master) {\n\tcase VHOST_USER_SET_VRING_KICK:\n\tcase VHOST_USER_SET_VRING_CALL:\n\tcase VHOST_USER_SET_VRING_ERR:\n\t\tvring_idx = ctx->msg.payload.u64 & VHOST_USER_VRING_IDX_MASK;\n\t\tbreak;\n\tcase VHOST_USER_SET_VRING_NUM:\n\tcase VHOST_USER_SET_VRING_BASE:\n\tcase VHOST_USER_GET_VRING_BASE:\n\tcase VHOST_USER_SET_VRING_ENABLE:\n\t\tvring_idx = ctx->msg.payload.state.index;\n\t\tbreak;\n\tcase VHOST_USER_SET_VRING_ADDR:\n\t\tvring_idx = ctx->msg.payload.addr.index;\n\t\tbreak;\n\tdefault:\n\t\treturn 0;\n\t}\n\n\tif (vring_idx >= VHOST_MAX_VRING) {\n\t\tVHOST_LOG_CONFIG(ERR, \"(%s) invalid vring index: %u\\n\", dev->ifname, vring_idx);\n\t\treturn -1;\n\t}\n\n\tif (dev->virtqueue[vring_idx])\n\t\treturn 0;\n\n\treturn alloc_vring_queue(dev, vring_idx);\n}",
+            2865
+        ]
+    ]
+}

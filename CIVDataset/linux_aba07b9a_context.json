@@ -1,0 +1,289 @@
+{
+    "calleeMethods": [
+        [
+            "drivers/gpu/drm/ttm/ttm_bo.c",
+            "ttm_bo_bounce_temp_buffer",
+            "static int ttm_bo_bounce_temp_buffer(struct ttm_buffer_object *bo, /* <=== ttm_bo_bounce_temp_buffer */ \n\t\t\t\t     struct ttm_operation_ctx *ctx,\n\t\t\t\t     struct ttm_place *hop)\n{\n\tstruct ttm_placement hop_placement;\n\tstruct ttm_resource *hop_mem;\n\tint ret;\n\n\thop_placement.num_placement = 1;\n\thop_placement.placement = hop;\n\n\t/* find space in the bounce domain */\n\tret = ttm_bo_mem_space(bo, &hop_placement, &hop_mem, ctx);\n\tif (ret)\n\t\treturn ret;\n\t/* move to the bounce domain */\n\tret = ttm_bo_handle_move_mem(bo, hop_mem, false, ctx, NULL);\n\tif (ret) {\n\t\tttm_resource_free(bo, &hop_mem);\n\t\treturn ret;\n\t}\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "include/drm/ttm/ttm_bo.h",
+            "ttm_bo_move_to_lru_tail_unlocked",
+            "static inline void /* <=== ttm_bo_move_to_lru_tail_unlocked */ \nttm_bo_move_to_lru_tail_unlocked(struct ttm_buffer_object *bo)\n{\n\tspin_lock(&bo->bdev->lru_lock);\n\tttm_bo_move_to_lru_tail(bo);\n\tspin_unlock(&bo->bdev->lru_lock);\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c",
+            "vmw_bo_placement_set",
+            "void vmw_bo_placement_set(struct vmw_bo *bo, u32 domain, u32 busy_domain) /* <=== vmw_bo_placement_set */ \n{\n\tstruct ttm_device *bdev = bo->tbo.bdev;\n\tstruct vmw_private *vmw = vmw_priv_from_ttm(bdev);\n\tstruct ttm_placement *pl = &bo->placement;\n\tbool mem_compatible = false;\n\tu32 i;\n\n\tpl->placement = bo->places;\n\tpl->num_placement = set_placement_list(bo->places, domain, busy_domain);\n\n\tif (drm_debug_enabled(DRM_UT_DRIVER) && bo->tbo.resource) {\n\t\tfor (i = 0; i < pl->num_placement; ++i) {\n\t\t\tif (bo->tbo.resource->mem_type == TTM_PL_SYSTEM ||\n\t\t\t    bo->tbo.resource->mem_type == pl->placement[i].mem_type)\n\t\t\t\tmem_compatible = true;\n\t\t}\n\t\tif (!mem_compatible)\n\t\t\tdrm_warn(&vmw->drm,\n\t\t\t\t \"%s: Incompatible transition from \"\n\t\t\t\t \"bo->base.resource->mem_type = %u to domain = %u\\n\",\n\t\t\t\t __func__, bo->tbo.resource->mem_type, domain);\n\t}\n\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo.c",
+            "ttm_bo_put",
+            "void ttm_bo_put(struct ttm_buffer_object *bo) /* <=== ttm_bo_put */ \n{\n\tkref_put(&bo->kref, ttm_bo_release);\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo.c",
+            "ttm_bo_validate",
+            "int ttm_bo_validate(struct ttm_buffer_object *bo, /* <=== ttm_bo_validate */ \n\t\t    struct ttm_placement *placement,\n\t\t    struct ttm_operation_ctx *ctx)\n{\n\tstruct ttm_resource *res;\n\tstruct ttm_place hop;\n\tbool force_space;\n\tint ret;\n\n\tdma_resv_assert_held(bo->base.resv);\n\n\t/*\n\t * Remove the backing store if no placement is given.\n\t */\n\tif (!placement->num_placement)\n\t\treturn ttm_bo_pipeline_gutting(bo);\n\n\tforce_space = false;\n\tdo {\n\t\t/* Check whether we need to move buffer. */\n\t\tif (bo->resource &&\n\t\t    ttm_resource_compatible(bo->resource, placement,\n\t\t\t\t\t    force_space))\n\t\t\treturn 0;\n\n\t\t/* Moving of pinned BOs is forbidden */\n\t\tif (bo->pin_count)\n\t\t\treturn -EINVAL;\n\n\t\t/*\n\t\t * Determine where to move the buffer.\n\t\t *\n\t\t * If driver determines move is going to need\n\t\t * an extra step then it will return -EMULTIHOP\n\t\t * and the buffer will be moved to the temporary\n\t\t * stop and the driver will be called to make\n\t\t * the second hop.\n\t\t */\n\t\tret = ttm_bo_alloc_resource(bo, placement, ctx, force_space,\n\t\t\t\t\t    &res);\n\t\tforce_space = !force_space;\n\t\tif (ret == -ENOSPC)\n\t\t\tcontinue;\n\t\tif (ret)\n\t\t\treturn ret;\n\nbounce:\n\t\tret = ttm_bo_handle_move_mem(bo, res, false, ctx, &hop);\n\t\tif (ret == -EMULTIHOP) {\n\t\t\tret = ttm_bo_bounce_temp_buffer(bo, ctx, &hop);\n\t\t\t/* try and move to final place now. */\n\t\t\tif (!ret)\n\t\t\t\tgoto bounce;\n\t\t}\n\t\tif (ret) {\n\t\t\tttm_resource_free(bo, &res);\n\t\t\treturn ret;\n\t\t}\n\n\t} while (ret && force_space);\n\n\t/* For backward compatibility with userspace */\n\tif (ret == -ENOSPC)\n\t\treturn -ENOMEM;\n\n\t/*\n\t * We might need to add a TTM.\n\t */\n\tif (!bo->resource || bo->resource->mem_type == TTM_PL_SYSTEM) {\n\t\tret = ttm_tt_create(bo, true);\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo_util.c",
+            "ttm_mem_io_free",
+            "void ttm_mem_io_free(struct ttm_device *bdev, /* <=== ttm_mem_io_free */ \n\t\t     struct ttm_resource *mem)\n{\n\tif (!mem)\n\t\treturn;\n\n\tif (!mem->bus.offset && !mem->bus.addr)\n\t\treturn;\n\n\tif (bdev->funcs->io_mem_free)\n\t\tbdev->funcs->io_mem_free(bdev, mem);\n\n\tmem->bus.offset = 0;\n\tmem->bus.addr = NULL;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c",
+            "set_placement_list",
+            "static u32 /* <=== set_placement_list */ \nset_placement_list(struct ttm_place *pl, u32 desired, u32 fallback)\n{\n\tu32 domain = desired | fallback;\n\tu32 n = 0;\n\n\t/*\n\t * The placements are ordered according to our preferences\n\t */\n\tif (domain & VMW_BO_DOMAIN_MOB) {\n\t\tpl[n].mem_type = VMW_PL_MOB;\n\t\tpl[n].flags = placement_flags(VMW_BO_DOMAIN_MOB, desired,\n\t\t\t\t\t      fallback);\n\t\tpl[n].fpfn = 0;\n\t\tpl[n].lpfn = 0;\n\t\tn++;\n\t}\n\tif (domain & VMW_BO_DOMAIN_GMR) {\n\t\tpl[n].mem_type = VMW_PL_GMR;\n\t\tpl[n].flags = placement_flags(VMW_BO_DOMAIN_GMR, desired,\n\t\t\t\t\t      fallback);\n\t\tpl[n].fpfn = 0;\n\t\tpl[n].lpfn = 0;\n\t\tn++;\n\t}\n\tif (domain & VMW_BO_DOMAIN_VRAM) {\n\t\tpl[n].mem_type = TTM_PL_VRAM;\n\t\tpl[n].flags = placement_flags(VMW_BO_DOMAIN_VRAM, desired,\n\t\t\t\t\t      fallback);\n\t\tpl[n].fpfn = 0;\n\t\tpl[n].lpfn = 0;\n\t\tn++;\n\t}\n\tif (domain & VMW_BO_DOMAIN_WAITABLE_SYS) {\n\t\tpl[n].mem_type = VMW_PL_SYSTEM;\n\t\tpl[n].flags = placement_flags(VMW_BO_DOMAIN_WAITABLE_SYS,\n\t\t\t\t\t      desired, fallback);\n\t\tpl[n].fpfn = 0;\n\t\tpl[n].lpfn = 0;\n\t\tn++;\n\t}\n\tif (domain & VMW_BO_DOMAIN_SYS) {\n\t\tpl[n].mem_type = TTM_PL_SYSTEM;\n\t\tpl[n].flags = placement_flags(VMW_BO_DOMAIN_SYS, desired,\n\t\t\t\t\t      fallback);\n\t\tpl[n].fpfn = 0;\n\t\tpl[n].lpfn = 0;\n\t\tn++;\n\t}\n\n\tWARN_ON(!n);\n\tif (!n) {\n\t\tpl[n].mem_type = TTM_PL_SYSTEM;\n\t\tpl[n].flags = 0;\n\t\tpl[n].fpfn = 0;\n\t\tpl[n].lpfn = 0;\n\t\tn++;\n\t}\n\treturn n;\n}",
+            2
+        ],
+        [
+            "include/drm/ttm/ttm_tt.h",
+            "ttm_tt_create",
+            "int ttm_tt_create(struct ttm_buffer_object *bo, bool zero_alloc); /* <=== ttm_tt_create */ ",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c",
+            "placement_flags",
+            "static u32 placement_flags(u32 domain, u32 desired, u32 fallback) /* <=== placement_flags */ \n{\n\tif (desired & fallback & domain)\n\t\treturn 0;\n\n\tif (desired & domain)\n\t\treturn TTM_PL_FLAG_DESIRED;\n\n\treturn TTM_PL_FLAG_FALLBACK;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "VMW_PL_MOB",
+            "#define VMW_PL_MOB      (TTM_PL_PRIV + 1) /* <=== drivers/gpu/drm/vmwgfx/vmwgfx_drv.h:94:94:VMW_PL_MOB:0 */ ",
+            3
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo.c",
+            "ttm_bo_alloc_resource",
+            "static int ttm_bo_alloc_resource(struct ttm_buffer_object *bo, /* <=== ttm_bo_alloc_resource */ \n\t\t\t\t struct ttm_placement *placement,\n\t\t\t\t struct ttm_operation_ctx *ctx,\n\t\t\t\t bool force_space,\n\t\t\t\t struct ttm_resource **res)\n{\n\tstruct ttm_device *bdev = bo->bdev;\n\tstruct ww_acquire_ctx *ticket;\n\tint i, ret;\n\n\tticket = dma_resv_locking_ctx(bo->base.resv);\n\tret = dma_resv_reserve_fences(bo->base.resv, 1);\n\tif (unlikely(ret))\n\t\treturn ret;\n\n\tfor (i = 0; i < placement->num_placement; ++i) {\n\t\tconst struct ttm_place *place = &placement->placement[i];\n\t\tstruct ttm_resource_manager *man;\n\n\t\tman = ttm_manager_type(bdev, place->mem_type);\n\t\tif (!man || !ttm_resource_manager_used(man))\n\t\t\tcontinue;\n\n\t\tif (place->flags & (force_space ? TTM_PL_FLAG_DESIRED :\n\t\t\t\t    TTM_PL_FLAG_FALLBACK))\n\t\t\tcontinue;\n\n\t\tdo {\n\t\t\tret = ttm_resource_alloc(bo, place, res);\n\t\t\tif (unlikely(ret && ret != -ENOSPC))\n\t\t\t\treturn ret;\n\t\t\tif (likely(!ret) || !force_space)\n\t\t\t\tbreak;\n\n\t\t\tret = ttm_mem_evict_first(bdev, man, place, ctx,\n\t\t\t\t\t\t  ticket);\n\t\t\tif (unlikely(ret == -EBUSY))\n\t\t\t\tbreak;\n\t\t\tif (unlikely(ret))\n\t\t\t\treturn ret;\n\t\t} while (1);\n\t\tif (ret)\n\t\t\tcontinue;\n\n\t\tret = ttm_bo_add_move_fence(bo, man, ctx->no_wait_gpu);\n\t\tif (unlikely(ret)) {\n\t\t\tttm_resource_free(bo, res);\n\t\t\tif (ret == -EBUSY)\n\t\t\t\tcontinue;\n\n\t\t\treturn ret;\n\t\t}\n\t\treturn 0;\n\t}\n\n\treturn -ENOSPC;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo_util.c",
+            "ttm_bo_pipeline_gutting",
+            "int ttm_bo_pipeline_gutting(struct ttm_buffer_object *bo) /* <=== ttm_bo_pipeline_gutting */ \n{\n\tstruct ttm_buffer_object *ghost;\n\tstruct ttm_tt *ttm;\n\tint ret;\n\n\t/* If already idle, no need for ghost object dance. */\n\tif (dma_resv_test_signaled(bo->base.resv, DMA_RESV_USAGE_BOOKKEEP)) {\n\t\tif (!bo->ttm) {\n\t\t\t/* See comment below about clearing. */\n\t\t\tret = ttm_tt_create(bo, true);\n\t\t\tif (ret)\n\t\t\t\treturn ret;\n\t\t} else {\n\t\t\tttm_tt_unpopulate(bo->bdev, bo->ttm);\n\t\t\tif (bo->type == ttm_bo_type_device)\n\t\t\t\tttm_tt_mark_for_clear(bo->ttm);\n\t\t}\n\t\tttm_resource_free(bo, &bo->resource);\n\t\treturn 0;\n\t}\n\n\t/*\n\t * We need an unpopulated ttm_tt after giving our current one,\n\t * if any, to the ghost object. And we can't afford to fail\n\t * creating one *after* the operation. If the bo subsequently gets\n\t * resurrected, make sure it's cleared (if ttm_bo_type_device)\n\t * to avoid leaking sensitive information to user-space.\n\t */\n\n\tttm = bo->ttm;\n\tbo->ttm = NULL;\n\tret = ttm_tt_create(bo, true);\n\tswap(bo->ttm, ttm);\n\tif (ret)\n\t\treturn ret;\n\n\tret = ttm_buffer_object_transfer(bo, &ghost);\n\tif (ret)\n\t\tgoto error_destroy_tt;\n\n\tret = dma_resv_copy_fences(&ghost->base._resv, bo->base.resv);\n\t/* Last resort, wait for the BO to be idle when we are OOM */\n\tif (ret) {\n\t\tdma_resv_wait_timeout(bo->base.resv, DMA_RESV_USAGE_BOOKKEEP,\n\t\t\t\t      false, MAX_SCHEDULE_TIMEOUT);\n\t}\n\n\tdma_resv_unlock(&ghost->base._resv);\n\tttm_bo_put(ghost);\n\tbo->ttm = ttm;\n\treturn 0;\n\nerror_destroy_tt:\n\tttm_tt_destroy(bo->bdev, ttm);\n\treturn ret;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "VMW_PL_GMR",
+            "#define VMW_PL_GMR      (TTM_PL_PRIV + 0) /* <=== drivers/gpu/drm/vmwgfx/vmwgfx_drv.h:93:93:VMW_PL_GMR:0 */ ",
+            3
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo_util.c",
+            "ttm_bo_kunmap",
+            "void ttm_bo_kunmap(struct ttm_bo_kmap_obj *map) /* <=== ttm_bo_kunmap */ \n{\n\tif (!map->virtual)\n\t\treturn;\n\tswitch (map->bo_kmap_type) {\n\tcase ttm_bo_map_iomap:\n\t\tiounmap(map->virtual);\n\t\tbreak;\n\tcase ttm_bo_map_vmap:\n\t\tvunmap(map->virtual);\n\t\tbreak;\n\tcase ttm_bo_map_kmap:\n\t\tkunmap(map->page);\n\t\tbreak;\n\tcase ttm_bo_map_premapped:\n\t\tbreak;\n\tdefault:\n\t\tBUG();\n\t}\n\tttm_mem_io_free(map->bo->bdev, map->bo->resource);\n\tmap->virtual = NULL;\n\tmap->page = NULL;\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo.c",
+            "ttm_bo_init_reserved",
+            "int ttm_bo_init_reserved(struct ttm_device *bdev, struct ttm_buffer_object *bo, /* <=== ttm_bo_init_reserved */ \n\t\t\t enum ttm_bo_type type, struct ttm_placement *placement,\n\t\t\t uint32_t alignment, struct ttm_operation_ctx *ctx,\n\t\t\t struct sg_table *sg, struct dma_resv *resv,\n\t\t\t void (*destroy) (struct ttm_buffer_object *))\n{\n\tint ret;\n\n\tkref_init(&bo->kref);\n\tbo->bdev = bdev;\n\tbo->type = type;\n\tbo->page_alignment = alignment;\n\tbo->destroy = destroy;\n\tbo->pin_count = 0;\n\tbo->sg = sg;\n\tbo->bulk_move = NULL;\n\tif (resv)\n\t\tbo->base.resv = resv;\n\telse\n\t\tbo->base.resv = &bo->base._resv;\n\tatomic_inc(&ttm_glob.bo_count);\n\n\t/*\n\t * For ttm_bo_type_device buffers, allocate\n\t * address space from the device.\n\t */\n\tif (bo->type == ttm_bo_type_device || bo->type == ttm_bo_type_sg) {\n\t\tret = drm_vma_offset_add(bdev->vma_manager, &bo->base.vma_node,\n\t\t\t\t\t PFN_UP(bo->base.size));\n\t\tif (ret)\n\t\t\tgoto err_put;\n\t}\n\n\t/* passed reservation objects should already be locked,\n\t * since otherwise lockdep will be angered in radeon.\n\t */\n\tif (!resv)\n\t\tWARN_ON(!dma_resv_trylock(bo->base.resv));\n\telse\n\t\tdma_resv_assert_held(resv);\n\n\tret = ttm_bo_validate(bo, placement, ctx);\n\tif (unlikely(ret))\n\t\tgoto err_unlock;\n\n\treturn 0;\n\nerr_unlock:\n\tif (!resv)\n\t\tdma_resv_unlock(bo->base.resv);\n\nerr_put:\n\tttm_bo_put(bo);\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "include/drm/ttm/ttm_bo.h",
+            "ttm_bo_unreserve",
+            "static inline void ttm_bo_unreserve(struct ttm_buffer_object *bo) /* <=== ttm_bo_unreserve */ \n{\n\tttm_bo_move_to_lru_tail_unlocked(bo);\n\tdma_resv_unlock(bo->base.resv);\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "VMW_PL_SYSTEM",
+            "#define VMW_PL_SYSTEM   (TTM_PL_PRIV + 2) /* <=== drivers/gpu/drm/vmwgfx/vmwgfx_drv.h:95:95:VMW_PL_SYSTEM:0 */ ",
+            3
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo.c",
+            "ttm_bo_pin",
+            "void ttm_bo_pin(struct ttm_buffer_object *bo) /* <=== ttm_bo_pin */ \n{\n\tdma_resv_assert_held(bo->base.resv);\n\tWARN_ON_ONCE(!kref_read(&bo->kref));\n\tspin_lock(&bo->bdev->lru_lock);\n\tif (bo->resource)\n\t\tttm_resource_del_bulk_move(bo->resource, bo);\n\t++bo->pin_count;\n\tspin_unlock(&bo->bdev->lru_lock);\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo.c",
+            "ttm_bo_handle_move_mem",
+            "static int ttm_bo_handle_move_mem(struct ttm_buffer_object *bo, /* <=== ttm_bo_handle_move_mem */ \n\t\t\t\t  struct ttm_resource *mem, bool evict,\n\t\t\t\t  struct ttm_operation_ctx *ctx,\n\t\t\t\t  struct ttm_place *hop)\n{\n\tstruct ttm_device *bdev = bo->bdev;\n\tbool old_use_tt, new_use_tt;\n\tint ret;\n\n\told_use_tt = !bo->resource || ttm_manager_type(bdev, bo->resource->mem_type)->use_tt;\n\tnew_use_tt = ttm_manager_type(bdev, mem->mem_type)->use_tt;\n\n\tttm_bo_unmap_virtual(bo);\n\n\t/*\n\t * Create and bind a ttm if required.\n\t */\n\n\tif (new_use_tt) {\n\t\t/* Zero init the new TTM structure if the old location should\n\t\t * have used one as well.\n\t\t */\n\t\tret = ttm_tt_create(bo, old_use_tt);\n\t\tif (ret)\n\t\t\tgoto out_err;\n\n\t\tif (mem->mem_type != TTM_PL_SYSTEM) {\n\t\t\tret = ttm_tt_populate(bo->bdev, bo->ttm, ctx);\n\t\t\tif (ret)\n\t\t\t\tgoto out_err;\n\t\t}\n\t}\n\n\tret = dma_resv_reserve_fences(bo->base.resv, 1);\n\tif (ret)\n\t\tgoto out_err;\n\n\tret = bdev->funcs->move(bo, evict, ctx, mem, hop);\n\tif (ret) {\n\t\tif (ret == -EMULTIHOP)\n\t\t\treturn ret;\n\t\tgoto out_err;\n\t}\n\n\tctx->bytes_moved += bo->base.size;\n\treturn 0;\n\nout_err:\n\tif (!old_use_tt)\n\t\tttm_bo_tt_destroy(bo);\n\n\treturn ret;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "vmw_priv_from_ttm",
+            "static inline struct vmw_private *vmw_priv_from_ttm(struct ttm_device *bdev) /* <=== vmw_priv_from_ttm */ \n{\n\treturn container_of(bdev, struct vmw_private, bdev);\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_bo.c",
+            "ttm_bo_move_to_lru_tail",
+            "void ttm_bo_move_to_lru_tail(struct ttm_buffer_object *bo) /* <=== ttm_bo_move_to_lru_tail */ \n{\n\tdma_resv_assert_held(bo->base.resv);\n\n\tif (bo->resource)\n\t\tttm_resource_move_to_lru_tail(bo->resource);\n}",
+            3
+        ],
+        [
+            "include/linux/vmalloc.h",
+            "vunmap",
+            "extern void vunmap(const void *addr); /* <=== vunmap */ ",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"vmwgfx_bo.h\"",
+        "#include <drm/ttm/ttm_placement.h>",
+        "#include \"vmwgfx_resource_priv.h\"",
+        "#include \"vmwgfx_drv.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct vmw_bo {\n\tstruct ttm_buffer_object tbo;\n\n\tstruct ttm_placement placement;\n\tstruct ttm_place places[5];\n\tstruct ttm_place busy_places[5];\n\n\t/* Protected by reservation */\n\tstruct ttm_bo_kmap_obj map;\n\n\tstruct rb_root res_tree;\n\tu32 res_prios[TTM_MAX_BO_PRIORITY];\n\tstruct xarray detached_resources;\n\n\tatomic_t cpu_writers;\n\t/* Not ref-counted.  Protected by binding_mutex */\n\tstruct vmw_resource *dx_query_ctx;\n\tstruct vmw_bo_dirty *dirty;\n\n\tbool is_dumb;\n\tstruct vmw_surface *dumb_surface;\n}",
+            "vmw_bo"
+        ],
+        [
+            "struct ttm_device",
+            "ttm_device"
+        ],
+        [
+            "struct ttm_operation_ctx {\n\tbool interruptible;\n\tbool no_wait_gpu;\n\tbool gfp_retry_mayfail;\n\tbool allow_res_evict;\n\tbool force_alloc;\n\tstruct dma_resv *resv;\n\tuint64_t bytes_moved;\n}",
+            "ttm_operation_ctx"
+        ],
+        [
+            "struct vmw_bo_params {\n\tu32 domain;\n\tu32 busy_domain;\n\tenum ttm_bo_type bo_type;\n\tsize_t size;\n\tbool pin;\n\tstruct dma_resv *resv;\n\tstruct sg_table *sg;\n}",
+            "vmw_bo_params"
+        ],
+        [
+            "struct vmw_bo {\n\tstruct ttm_buffer_object tbo;\n\n\tstruct ttm_placement placement;\n\tstruct ttm_place places[5];\n\tstruct ttm_place busy_places[5];\n\n\t/* Protected by reservation */\n\tstruct ttm_bo_kmap_obj map;\n\n\tstruct rb_root res_tree;\n\tu32 res_prios[TTM_MAX_BO_PRIORITY];\n\tstruct xarray detached_resources;\n\n\tatomic_t map_count;\n\tatomic_t cpu_writers;\n\t/* Not ref-counted.  Protected by binding_mutex */\n\tstruct vmw_resource *dx_query_ctx;\n\tstruct vmw_bo_dirty *dirty;\n\n\tbool is_dumb;\n\tstruct vmw_surface *dumb_surface;\n}",
+            "vmw_bo"
+        ]
+    ],
+    "visitedLines_after": {
+        "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c": [
+            356,
+            358,
+            363,
+            365,
+            369,
+            374,
+            386,
+            388,
+            390,
+            393,
+            395,
+            396,
+            397,
+            412,
+            413,
+            414,
+            415,
+            426,
+            430,
+            431,
+            432,
+            435,
+            437,
+            438,
+            439,
+            440,
+            441,
+            442,
+            444,
+            445,
+            446,
+            448
+        ]
+    },
+    "visitedLines_before": {
+        "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c": [
+            356,
+            358,
+            363,
+            367,
+            372,
+            384,
+            386,
+            387,
+            389,
+            390,
+            404,
+            405,
+            406,
+            407,
+            418,
+            422,
+            423,
+            426,
+            428,
+            429,
+            430,
+            431,
+            432,
+            433,
+            435,
+            436,
+            437,
+            439
+        ]
+    },
+    "visitedParams": {
+        "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c": [
+            [
+                "struct vmw_bo *vbo",
+                "vmw_bo_map_and_cache_size"
+            ],
+            [
+                "struct vmw_bo *vbo",
+                "vmw_bo_unmap"
+            ],
+            [
+                "struct vmw_bo *vmw_bo",
+                "vmw_bo_init"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c",
+            "vmw_bo_map_and_cache_size",
+            "void *vmw_bo_map_and_cache_size(struct vmw_bo *vbo, size_t size) /* <=== vmw_bo_map_and_cache_size */ \n{\n\tstruct ttm_buffer_object *bo = &vbo->tbo;\n\tbool not_used;\n\tvoid *virtual;\n\tint ret;\n\n\tatomic_inc(&vbo->map_count);\n\n\tvirtual = ttm_kmap_obj_virtual(&vbo->map, &not_used);\n\tif (virtual)\n\t\treturn virtual;\n\n\tret = ttm_bo_kmap(bo, 0, PFN_UP(size), &vbo->map);\n\tif (ret)\n\t\tDRM_ERROR(\"Buffer object map failed: %d (size: bo = %zu, map = %zu).\\n\",\n\t\t\t  ret, bo->base.size, size);\n\n\treturn ttm_kmap_obj_virtual(&vbo->map, &not_used);\n}",
+            356
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c",
+            "vmw_bo_unmap",
+            "void vmw_bo_unmap(struct vmw_bo *vbo) /* <=== vmw_bo_unmap */ \n{\n\tint map_count;\n\n\tif (vbo->map.bo == NULL)\n\t\treturn;\n\n\tmap_count = atomic_dec_return(&vbo->map_count);\n\n\tif (!map_count) {\n\t\tttm_bo_kunmap(&vbo->map);\n\t\tvbo->map.bo = NULL;\n\t}\n}",
+            386
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c",
+            "vmw_bo_init",
+            "static int vmw_bo_init(struct vmw_private *dev_priv, /* <=== vmw_bo_init */ \n\t\t       struct vmw_bo *vmw_bo,\n\t\t       struct vmw_bo_params *params,\n\t\t       void (*destroy)(struct ttm_buffer_object *))\n{\n\tstruct ttm_operation_ctx ctx = {\n\t\t.interruptible = params->bo_type != ttm_bo_type_kernel,\n\t\t.no_wait_gpu = false,\n\t\t.resv = params->resv,\n\t};\n\tstruct ttm_device *bdev = &dev_priv->bdev;\n\tstruct drm_device *vdev = &dev_priv->drm;\n\tint ret;\n\n\tmemset(vmw_bo, 0, sizeof(*vmw_bo));\n\n\tBUILD_BUG_ON(TTM_MAX_BO_PRIORITY <= 3);\n\tvmw_bo->tbo.priority = 3;\n\tvmw_bo->res_tree = RB_ROOT;\n\txa_init(&vmw_bo->detached_resources);\n\tatomic_set(&vmw_bo->map_count, 0);\n\n\tparams->size = ALIGN(params->size, PAGE_SIZE);\n\tdrm_gem_private_object_init(vdev, &vmw_bo->tbo.base, params->size);\n\n\tvmw_bo_placement_set(vmw_bo, params->domain, params->busy_domain);\n\tret = ttm_bo_init_reserved(bdev, &vmw_bo->tbo, params->bo_type,\n\t\t\t\t   &vmw_bo->placement, 0, &ctx,\n\t\t\t\t   params->sg, params->resv, destroy);\n\tif (unlikely(ret))\n\t\treturn ret;\n\n\tif (params->pin)\n\t\tttm_bo_pin(&vmw_bo->tbo);\n\tttm_bo_unreserve(&vmw_bo->tbo);\n\n\treturn 0;\n}",
+            412
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c",
+            "vmw_bo_map_and_cache_size",
+            "void *vmw_bo_map_and_cache_size(struct vmw_bo *vbo, size_t size) /* <=== vmw_bo_map_and_cache_size */ \n{\n\tstruct ttm_buffer_object *bo = &vbo->tbo;\n\tbool not_used;\n\tvoid *virtual;\n\tint ret;\n\n\tvirtual = ttm_kmap_obj_virtual(&vbo->map, &not_used);\n\tif (virtual)\n\t\treturn virtual;\n\n\tret = ttm_bo_kmap(bo, 0, PFN_UP(size), &vbo->map);\n\tif (ret)\n\t\tDRM_ERROR(\"Buffer object map failed: %d (size: bo = %zu, map = %zu).\\n\",\n\t\t\t  ret, bo->base.size, size);\n\n\treturn ttm_kmap_obj_virtual(&vbo->map, &not_used);\n}",
+            356
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c",
+            "vmw_bo_unmap",
+            "void vmw_bo_unmap(struct vmw_bo *vbo) /* <=== vmw_bo_unmap */ \n{\n\tif (vbo->map.bo == NULL)\n\t\treturn;\n\n\tttm_bo_kunmap(&vbo->map);\n\tvbo->map.bo = NULL;\n}",
+            384
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_bo.c",
+            "vmw_bo_init",
+            "static int vmw_bo_init(struct vmw_private *dev_priv, /* <=== vmw_bo_init */ \n\t\t       struct vmw_bo *vmw_bo,\n\t\t       struct vmw_bo_params *params,\n\t\t       void (*destroy)(struct ttm_buffer_object *))\n{\n\tstruct ttm_operation_ctx ctx = {\n\t\t.interruptible = params->bo_type != ttm_bo_type_kernel,\n\t\t.no_wait_gpu = false,\n\t\t.resv = params->resv,\n\t};\n\tstruct ttm_device *bdev = &dev_priv->bdev;\n\tstruct drm_device *vdev = &dev_priv->drm;\n\tint ret;\n\n\tmemset(vmw_bo, 0, sizeof(*vmw_bo));\n\n\tBUILD_BUG_ON(TTM_MAX_BO_PRIORITY <= 3);\n\tvmw_bo->tbo.priority = 3;\n\tvmw_bo->res_tree = RB_ROOT;\n\txa_init(&vmw_bo->detached_resources);\n\n\tparams->size = ALIGN(params->size, PAGE_SIZE);\n\tdrm_gem_private_object_init(vdev, &vmw_bo->tbo.base, params->size);\n\n\tvmw_bo_placement_set(vmw_bo, params->domain, params->busy_domain);\n\tret = ttm_bo_init_reserved(bdev, &vmw_bo->tbo, params->bo_type,\n\t\t\t\t   &vmw_bo->placement, 0, &ctx,\n\t\t\t\t   params->sg, params->resv, destroy);\n\tif (unlikely(ret))\n\t\treturn ret;\n\n\tif (params->pin)\n\t\tttm_bo_pin(&vmw_bo->tbo);\n\tttm_bo_unreserve(&vmw_bo->tbo);\n\n\treturn 0;\n}",
+            404
+        ]
+    ]
+}

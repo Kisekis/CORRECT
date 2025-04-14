@@ -1,0 +1,365 @@
+{
+    "calleeMethods": [
+        [
+            "src/basic/log.c",
+            "log_assert",
+            "static void log_assert( /* <=== log_assert */ \n                int level,\n                const char *text,\n                const char *file,\n                int line,\n                const char *func,\n                const char *format) {\n\n        static char buffer[LINE_MAX];\n        LogRealm realm = LOG_REALM_REMOVE_LEVEL(level);\n\n        if (_likely_(LOG_PRI(level) > log_max_level[realm]))\n                return;\n\n        DISABLE_WARNING_FORMAT_NONLITERAL;\n        (void) snprintf(buffer, sizeof buffer, format, text, file, line, func);\n        REENABLE_WARNING;\n\n        log_abort_msg = buffer;\n\n        log_dispatch_internal(level, 0, file, line, func, NULL, NULL, NULL, NULL, buffer);\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "source_io_register",
+            "static int source_io_register( /* <=== source_io_register */ \n                sd_event_source *s,\n                int enabled,\n                uint32_t events) {\n\n        struct epoll_event ev;\n        int r;\n\n        assert(s);\n        assert(s->type == SOURCE_IO);\n        assert(enabled != SD_EVENT_OFF);\n\n        ev = (struct epoll_event) {\n                .events = events | (enabled == SD_EVENT_ONESHOT ? EPOLLONESHOT : 0),\n                .data.ptr = s,\n        };\n\n        if (s->io.registered)\n                r = epoll_ctl(s->event->epoll_fd, EPOLL_CTL_MOD, s->io.fd, &ev);\n        else\n                r = epoll_ctl(s->event->epoll_fd, EPOLL_CTL_ADD, s->io.fd, &ev);\n        if (r < 0)\n                return -errno;\n\n        s->io.registered = true;\n\n        return 0;\n}",
+            2
+        ],
+        [
+            "src/basic/fd-util.c",
+            "safe_close",
+            "int safe_close(int fd) { /* <=== safe_close */ \n\n        /*\n         * Like close_nointr() but cannot fail. Guarantees errno is\n         * unchanged. Is a NOP with negative fds passed, and returns\n         * -1, so that it can be used in this syntax:\n         *\n         * fd = safe_close(fd);\n         */\n\n        if (fd >= 0) {\n                PROTECT_ERRNO;\n\n                /* The kernel might return pretty much any error code\n                 * via close(), but the fd will be closed anyway. The\n                 * only condition we want to check for here is whether\n                 * the fd was invalid at all... */\n\n                assert_se(close_nointr(fd) != -EBADF);\n        }\n\n        return -1;\n}",
+            1
+        ],
+        [
+            "src/basic/macro.h",
+            "_cleanup_",
+            "#define _cleanup_(x) __attribute__((__cleanup__(x))) /* <=== src/basic/macro.h:37:37:_cleanup_:1 */ ",
+            2
+        ],
+        [
+            "src/basic/log.h",
+            "log_info",
+            "#define log_info(...)      log_full(LOG_INFO,    __VA_ARGS__) /* <=== src/basic/log.h:234:234:log_info:1 */ ",
+            1
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "source_io_unregister",
+            "static void source_io_unregister(sd_event_source *s) { /* <=== source_io_unregister */ \n        int r;\n\n        assert(s);\n        assert(s->type == SOURCE_IO);\n\n        if (event_pid_changed(s->event))\n                return;\n\n        if (!s->io.registered)\n                return;\n\n        r = epoll_ctl(s->event->epoll_fd, EPOLL_CTL_DEL, s->io.fd, NULL);\n        if (r < 0)\n                log_debug_errno(errno, \"Failed to remove source %s (type %s) from epoll: %m\",\n                                strna(s->description), event_source_type_to_string(s->type));\n\n        s->io.registered = false;\n}",
+            3
+        ],
+        [
+            "src/systemd/sd-event.h",
+            "SD_EVENT_DEFAULT",
+            "#define SD_EVENT_DEFAULT ((sd_event *) 1) /* <=== src/systemd/sd-event.h:42:42:SD_EVENT_DEFAULT:0 */ ",
+            3
+        ],
+        [
+            "src/basic/log.c",
+            "log_assert_failed_return_realm",
+            "void log_assert_failed_return_realm( /* <=== log_assert_failed_return_realm */ \n                LogRealm realm,\n                const char *text,\n                const char *file,\n                int line,\n                const char *func) {\n        PROTECT_ERRNO;\n        log_assert(LOG_REALM_PLUS_LEVEL(realm, LOG_DEBUG), text, file, line, func,\n                   \"Assertion '%s' failed at %s:%u, function %s(). Ignoring.\");\n}",
+            2
+        ],
+        [
+            "src/basic/log.c",
+            "log_dispatch_internal",
+            "int log_dispatch_internal( /* <=== log_dispatch_internal */ \n                int level,\n                int error,\n                const char *file,\n                int line,\n                const char *func,\n                const char *object_field,\n                const char *object,\n                const char *extra_field,\n                const char *extra,\n                char *buffer) {\n\n        assert_raw(buffer);\n\n        if (log_target == LOG_TARGET_NULL)\n                return -ERRNO_VALUE(error);\n\n        /* Patch in LOG_DAEMON facility if necessary */\n        if ((level & LOG_FACMASK) == 0)\n                level |= log_facility;\n\n        if (open_when_needed)\n                log_open();\n\n        do {\n                char *e;\n                int k = 0;\n\n                buffer += strspn(buffer, NEWLINE);\n\n                if (buffer[0] == 0)\n                        break;\n\n                if ((e = strpbrk(buffer, NEWLINE)))\n                        *(e++) = 0;\n\n                if (IN_SET(log_target, LOG_TARGET_AUTO,\n                                       LOG_TARGET_JOURNAL_OR_KMSG,\n                                       LOG_TARGET_JOURNAL)) {\n\n                        k = write_to_journal(level, error, file, line, func, object_field, object, extra_field, extra, buffer);\n                        if (k < 0 && k != -EAGAIN)\n                                log_close_journal();\n                }\n\n                if (IN_SET(log_target, LOG_TARGET_SYSLOG_OR_KMSG,\n                                       LOG_TARGET_SYSLOG)) {\n\n                        k = write_to_syslog(level, error, file, line, func, buffer);\n                        if (k < 0 && k != -EAGAIN)\n                                log_close_syslog();\n                }\n\n                if (k <= 0 &&\n                    IN_SET(log_target, LOG_TARGET_AUTO,\n                                       LOG_TARGET_SYSLOG_OR_KMSG,\n                                       LOG_TARGET_JOURNAL_OR_KMSG,\n                                       LOG_TARGET_KMSG)) {\n\n                        if (k < 0)\n                                log_open_kmsg();\n\n                        k = write_to_kmsg(level, error, file, line, func, buffer);\n                        if (k < 0) {\n                                log_close_kmsg();\n                                log_open_console();\n                        }\n                }\n\n                if (k <= 0)\n                        (void) write_to_console(level, error, file, line, func, buffer);\n\n                buffer = e;\n        } while (buffer);\n\n        if (open_when_needed)\n                log_close();\n\n        return -ERRNO_VALUE(error);\n}",
+            3
+        ],
+        [
+            "src/basic/process-util.c",
+            "getpid_cached",
+            "pid_t getpid_cached(void) { /* <=== getpid_cached */ \n        static bool installed = false;\n        pid_t current_value;\n\n        /* getpid_cached() is much like getpid(), but caches the value in local memory, to avoid having to invoke a\n         * system call each time. This restores glibc behaviour from before 2.24, when getpid() was unconditionally\n         * cached. Starting with 2.24 getpid() started to become prohibitively expensive when used for detecting when\n         * objects were used across fork()s. With this caching the old behaviour is somewhat restored.\n         *\n         * https://bugzilla.redhat.com/show_bug.cgi?id=1443976\n         * https://sourceware.org/git/gitweb.cgi?p=glibc.git;h=c579f48edba88380635ab98cb612030e3ed8691e\n         */\n\n        current_value = __sync_val_compare_and_swap(&cached_pid, CACHED_PID_UNSET, CACHED_PID_BUSY);\n\n        switch (current_value) {\n\n        case CACHED_PID_UNSET: { /* Not initialized yet, then do so now */\n                pid_t new_pid;\n\n                new_pid = raw_getpid();\n\n                if (!installed) {\n                        /* __register_atfork() either returns 0 or -ENOMEM, in its glibc implementation. Since it's\n                         * only half-documented (glibc doesn't document it but LSB does — though only superficially)\n                         * we'll check for errors only in the most generic fashion possible. */\n\n                        if (__register_atfork(NULL, NULL, reset_cached_pid, __dso_handle) != 0) {\n                                /* OOM? Let's try again later */\n                                cached_pid = CACHED_PID_UNSET;\n                                return new_pid;\n                        }\n\n                        installed = true;\n                }\n\n                cached_pid = new_pid;\n                return new_pid;\n        }\n\n        case CACHED_PID_BUSY: /* Somebody else is currently initializing */\n                return raw_getpid();\n\n        default: /* Properly initialized */\n                return current_value;\n        }\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "source_disconnect",
+            "static void source_disconnect(sd_event_source *s) { /* <=== source_disconnect */ \n        sd_event *event;\n\n        assert(s);\n\n        if (!s->event)\n                return;\n\n        assert(s->event->n_sources > 0);\n\n        switch (s->type) {\n\n        case SOURCE_IO:\n                if (s->io.fd >= 0)\n                        source_io_unregister(s);\n\n                break;\n\n        case SOURCE_TIME_REALTIME:\n        case SOURCE_TIME_BOOTTIME:\n        case SOURCE_TIME_MONOTONIC:\n        case SOURCE_TIME_REALTIME_ALARM:\n        case SOURCE_TIME_BOOTTIME_ALARM: {\n                struct clock_data *d;\n\n                d = event_get_clock_data(s->event, s->type);\n                assert(d);\n\n                prioq_remove(d->earliest, s, &s->time.earliest_index);\n                prioq_remove(d->latest, s, &s->time.latest_index);\n                d->needs_rearm = true;\n                break;\n        }\n\n        case SOURCE_SIGNAL:\n                if (s->signal.sig > 0) {\n\n                        if (s->event->signal_sources)\n                                s->event->signal_sources[s->signal.sig] = NULL;\n\n                        event_gc_signal_data(s->event, &s->priority, s->signal.sig);\n                }\n\n                break;\n\n        case SOURCE_CHILD:\n                if (s->child.pid > 0) {\n                        if (s->enabled != SD_EVENT_OFF) {\n                                assert(s->event->n_enabled_child_sources > 0);\n                                s->event->n_enabled_child_sources--;\n                        }\n\n                        (void) hashmap_remove(s->event->child_sources, PID_TO_PTR(s->child.pid));\n                        event_gc_signal_data(s->event, &s->priority, SIGCHLD);\n                }\n\n                break;\n\n        case SOURCE_DEFER:\n                /* nothing */\n                break;\n\n        case SOURCE_POST:\n                set_remove(s->event->post_sources, s);\n                break;\n\n        case SOURCE_EXIT:\n                prioq_remove(s->event->exit, s, &s->exit.prioq_index);\n                break;\n\n        case SOURCE_INOTIFY: {\n                struct inode_data *inode_data;\n\n                inode_data = s->inotify.inode_data;\n                if (inode_data) {\n                        struct inotify_data *inotify_data;\n                        assert_se(inotify_data = inode_data->inotify_data);\n\n                        /* Detach this event source from the inode object */\n                        LIST_REMOVE(inotify.by_inode_data, inode_data->event_sources, s);\n                        s->inotify.inode_data = NULL;\n\n                        if (s->pending) {\n                                assert(inotify_data->n_pending > 0);\n                                inotify_data->n_pending--;\n                        }\n\n                        /* Note that we don't reduce the inotify mask for the watch descriptor here if the inode is\n                         * continued to being watched. That's because inotify doesn't really have an API for that: we\n                         * can only change watch masks with access to the original inode either by fd or by path. But\n                         * paths aren't stable, and keeping an O_PATH fd open all the time would mean wasting an fd\n                         * continuously and keeping the mount busy which we can't really do. We could reconstruct the\n                         * original inode from /proc/self/fdinfo/$INOTIFY_FD (as all watch descriptors are listed\n                         * there), but given the need for open_by_handle_at() which is privileged and not universally\n                         * available this would be quite an incomplete solution. Hence we go the other way, leave the\n                         * mask set, even if it is not minimized now, and ignore all events we aren't interested in\n                         * anymore after reception. Yes, this sucks, but … Linux … */\n\n                        /* Maybe release the inode data (and its inotify) */\n                        event_gc_inode_data(s->event, inode_data);\n                }\n\n                break;\n        }\n\n        default:\n                assert_not_reached(\"Wut? I shouldn't exist.\");\n        }\n\n        if (s->pending)\n                prioq_remove(s->event->pending, s, &s->pending_index);\n\n        if (s->prepare)\n                prioq_remove(s->event->prepare, s, &s->prepare_index);\n\n        event = s->event;\n\n        s->type = _SOURCE_EVENT_SOURCE_TYPE_INVALID;\n        s->event = NULL;\n        LIST_REMOVE(sources, event->sources, s);\n        event->n_sources--;\n\n        if (!s->floating)\n                sd_event_unref(event);\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "source_new",
+            "static sd_event_source *source_new(sd_event *e, bool floating, EventSourceType type) { /* <=== source_new */ \n        sd_event_source *s;\n\n        assert(e);\n\n        s = new(sd_event_source, 1);\n        if (!s)\n                return NULL;\n\n        *s = (struct sd_event_source) {\n                .n_ref = 1,\n                .event = e,\n                .floating = floating,\n                .type = type,\n                .pending_index = PRIOQ_IDX_NULL,\n                .prepare_index = PRIOQ_IDX_NULL,\n        };\n\n        if (!floating)\n                sd_event_ref(e);\n\n        LIST_PREPEND(sources, e->sources, s);\n        e->n_sources++;\n\n        return s;\n}",
+            2
+        ],
+        [
+            "src/login/logind-button.c",
+            "button_suitable",
+            "static int button_suitable(Button *b) { /* <=== button_suitable */ \n        unsigned long types[CONST_MAX(EV_KEY, EV_SW)/ULONG_BITS+1];\n\n        assert(b);\n        assert(b->fd);\n\n        if (ioctl(b->fd, EVIOCGBIT(EV_SYN, sizeof(types)), types) < 0)\n                return -errno;\n\n        if (bitset_get(types, EV_KEY)) {\n                unsigned long keys[CONST_MAX4(KEY_POWER, KEY_POWER2, KEY_SLEEP, KEY_SUSPEND)/ULONG_BITS+1];\n\n                if (ioctl(b->fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys) < 0)\n                        return -errno;\n\n                if (bitset_get(keys, KEY_POWER) ||\n                    bitset_get(keys, KEY_POWER2) ||\n                    bitset_get(keys, KEY_SLEEP) ||\n                    bitset_get(keys, KEY_SUSPEND))\n                        return true;\n        }\n\n        if (bitset_get(types, EV_SW)) {\n                unsigned long switches[CONST_MAX(SW_LID, SW_DOCK)/ULONG_BITS+1];\n\n                if (ioctl(b->fd, EVIOCGBIT(EV_SW, sizeof(switches)), switches) < 0)\n                        return -errno;\n\n                if (bitset_get(switches, SW_LID) ||\n                    bitset_get(switches, SW_DOCK))\n                        return true;\n        }\n\n        return false;\n}",
+            1
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "event_pid_changed",
+            "static bool event_pid_changed(sd_event *e) { /* <=== event_pid_changed */ \n        assert(e);\n\n        /* We don't support people creating an event loop and keeping\n         * it around over a fork(). Let's complain. */\n\n        return e->original_pid != getpid_cached();\n}",
+            2
+        ],
+        [
+            "src/login/logind-button.c",
+            "CONST_MAX4",
+            "#define CONST_MAX4(a, b, c, d) CONST_MAX(CONST_MAX(a, b), CONST_MAX(c, d)) /* <=== src/login/logind-button.c:19:19:CONST_MAX4:4 */ ",
+            2
+        ],
+        [
+            "src/basic/log.c",
+            "log_get_max_level_realm",
+            "int log_get_max_level_realm(LogRealm realm) { /* <=== log_get_max_level_realm */ \n        return log_max_level[realm];\n}",
+            1
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "event_source_free",
+            "static sd_event_source* event_source_free(sd_event_source *s) { /* <=== event_source_free */ \n        if (!s)\n                return NULL;\n\n        /* Here's a special hack: when we are called from a\n         * dispatch handler we won't free the event source\n         * immediately, but we will detach the fd from the\n         * epoll. This way it is safe for the caller to unref\n         * the event source and immediately close the fd, but\n         * we still retain a valid event source object after\n         * the callback. */\n\n        if (s->dispatching) {\n                if (s->type == SOURCE_IO)\n                        source_io_unregister(s);\n\n                source_disconnect(s);\n        } else\n                source_free(s);\n\n        return NULL;\n}",
+            2
+        ],
+        [
+            "src/basic/log.h",
+            "LOG_REALM_PLUS_LEVEL",
+            "#define LOG_REALM_PLUS_LEVEL(realm, level)  ((realm) << 10 | (level)) /* <=== src/basic/log.h:40:40:LOG_REALM_PLUS_LEVEL:2 */ ",
+            3
+        ],
+        [
+            "src/basic/log.h",
+            "ERRNO_VALUE",
+            "#define ERRNO_VALUE(val)                    (abs(val) & 255) /* <=== src/basic/log.h:44:44:ERRNO_VALUE:1 */ ",
+            3
+        ],
+        [
+            "src/basic/list.h",
+            "LIST_PREPEND",
+            "#define LIST_PREPEND(name,head,item)                                    \\ /* <=== src/basic/list.h:30:38:LIST_PREPEND:3 */ \n        do {                                                            \\\n                typeof(*(head)) **_head = &(head), *_item = (item);     \\\n                assert(_item);                                          \\\n                if ((_item->name##_next = *_head))                      \\\n                        _item->name##_next->name##_prev = _item;        \\\n                _item->name##_prev = NULL;                              \\\n                *_head = _item;                                         \\\n        } while (false)",
+            3
+        ],
+        [
+            "src/login/logind-button.c",
+            "ULONG_BITS",
+            "#define ULONG_BITS (sizeof(unsigned long)*8) /* <=== src/login/logind-button.c:21:21:ULONG_BITS:0 */ ",
+            2
+        ],
+        [
+            "src/login/logind-button.c",
+            "bitset_get",
+            "static bool bitset_get(const unsigned long *bits, unsigned i) { /* <=== bitset_get */ \n        return (bits[i / ULONG_BITS] >> (i % ULONG_BITS)) & 1UL;\n}",
+            2
+        ],
+        [
+            "src/basic/log.c",
+            "log_assert_failed_realm",
+            "_noreturn_ void log_assert_failed_realm( /* <=== log_assert_failed_realm */ \n                LogRealm realm,\n                const char *text,\n                const char *file,\n                int line,\n                const char *func) {\n        log_open();\n        log_assert(LOG_REALM_PLUS_LEVEL(realm, LOG_CRIT), text, file, line, func,\n                   \"Assertion '%s' failed at %s:%u, function %s(). Aborting.\");\n        abort();\n}",
+            2
+        ],
+        [
+            "src/basic/fd-util.c",
+            "close_nointr",
+            "int close_nointr(int fd) { /* <=== close_nointr */ \n        assert(fd >= 0);\n\n        if (close(fd) >= 0)\n                return 0;\n\n        /*\n         * Just ignore EINTR; a retry loop is the wrong thing to do on\n         * Linux.\n         *\n         * http://lkml.indiana.edu/hypermail/linux/kernel/0509.1/0877.html\n         * https://bugzilla.gnome.org/show_bug.cgi?id=682819\n         * http://utcc.utoronto.ca/~cks/space/blog/unix/CloseEINTR\n         * https://sites.google.com/site/michaelsafyan/software-engineering/checkforeintrwheninvokingclosethinkagain\n         */\n        if (errno == EINTR)\n                return 0;\n\n        return -errno;\n}",
+            2
+        ],
+        [
+            "src/basic/prioq.h",
+            "PRIOQ_IDX_NULL",
+            "#define PRIOQ_IDX_NULL ((unsigned) -1) /* <=== src/basic/prioq.h:11:11:PRIOQ_IDX_NULL:0 */ ",
+            3
+        ],
+        [
+            "src/basic/alloc-util.h",
+            "TAKE_PTR",
+            "#define TAKE_PTR(ptr)                           \\ /* <=== src/basic/alloc-util.h:161:166:TAKE_PTR:1 */ \n        ({                                      \\\n                typeof(ptr) _ptr_ = (ptr);      \\\n                (ptr) = NULL;                   \\\n                _ptr_;                          \\\n        })",
+            2
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "sd_event_ref",
+            "DEFINE_PUBLIC_TRIVIAL_REF_UNREF_FUNC(sd_event, sd_event, event_free); /* <=== sd_event_ref */ ",
+            3
+        ],
+        [
+            "src/basic/macro.h",
+            "assert_return",
+            "#define assert_return(expr, r)                                          \\ /* <=== src/basic/macro.h:361:365:assert_return:2 */ \n        do {                                                            \\\n                if (!assert_log(expr, #expr))                           \\\n                        return (r);                                     \\\n        } while (false)",
+            2
+        ],
+        [
+            "src/basic/string-util.h",
+            "strjoina",
+            "#define strjoina(a, ...)                                                \\ /* <=== src/basic/string-util.h:117:130:strjoina:2 */ \n        ({                                                              \\\n                const char *_appendees_[] = { a, __VA_ARGS__ };         \\\n                char *_d_, *_p_;                                        \\\n                size_t _len_ = 0;                                          \\\n                size_t _i_;                                           \\\n                for (_i_ = 0; _i_ < ELEMENTSOF(_appendees_) && _appendees_[_i_]; _i_++) \\\n                        _len_ += strlen(_appendees_[_i_]);              \\\n                _p_ = _d_ = newa(char, _len_ + 1);                      \\\n                for (_i_ = 0; _i_ < ELEMENTSOF(_appendees_) && _appendees_[_i_]; _i_++) \\\n                        _p_ = stpcpy(_p_, _appendees_[_i_]);            \\\n                *_p_ = 0;                                               \\\n                _d_;                                                    \\\n        })",
+            1
+        ],
+        [
+            "src/basic/log.c",
+            "log_open",
+            "int log_open(void) { /* <=== log_open */ \n        int r;\n\n        /* Do not call from library code. */\n\n        /* If we don't use the console we close it here, to not get\n         * killed by SAK. If we don't use syslog we close it here so\n         * that we are not confused by somebody deleting the socket in\n         * the fs, and to make sure we don't use it if prohibit_ipc is\n         * set. If we don't use /dev/kmsg we still keep it open,\n         * because there is no reason to close it. */\n\n        if (log_target == LOG_TARGET_NULL) {\n                log_close_journal();\n                log_close_syslog();\n                log_close_console();\n                return 0;\n        }\n\n        if (log_target != LOG_TARGET_AUTO ||\n            getpid_cached() == 1 ||\n            isatty(STDERR_FILENO) <= 0) {\n\n                if (!prohibit_ipc &&\n                    IN_SET(log_target, LOG_TARGET_AUTO,\n                                       LOG_TARGET_JOURNAL_OR_KMSG,\n                                       LOG_TARGET_JOURNAL)) {\n                        r = log_open_journal();\n                        if (r >= 0) {\n                                log_close_syslog();\n                                log_close_console();\n                                return r;\n                        }\n                }\n\n                if (!prohibit_ipc &&\n                    IN_SET(log_target, LOG_TARGET_SYSLOG_OR_KMSG,\n                                       LOG_TARGET_SYSLOG)) {\n                        r = log_open_syslog();\n                        if (r >= 0) {\n                                log_close_journal();\n                                log_close_console();\n                                return r;\n                        }\n                }\n\n                if (IN_SET(log_target, LOG_TARGET_AUTO,\n                                       LOG_TARGET_JOURNAL_OR_KMSG,\n                                       LOG_TARGET_SYSLOG_OR_KMSG,\n                                       LOG_TARGET_KMSG)) {\n                        r = log_open_kmsg();\n                        if (r >= 0) {\n                                log_close_journal();\n                                log_close_syslog();\n                                log_close_console();\n                                return r;\n                        }\n                }\n        }\n\n        log_close_journal();\n        log_close_syslog();\n\n        return log_open_console();\n}",
+            3
+        ],
+        [
+            "src/basic/macro.h",
+            "assert_se",
+            "#define assert_se(expr) assert_message_se(expr, #expr) /* <=== src/basic/macro.h:336:336:assert_se:1 */ ",
+            2
+        ],
+        [
+            "src/basic/alloc-util.h",
+            "malloc_multiply",
+            "_malloc_  _alloc_(1, 2) static inline void *malloc_multiply(size_t size, size_t need) { /* <=== malloc_multiply */ \n        if (size_multiply_overflow(size, need))\n                return NULL;\n\n        return malloc(size * need ?: 1);\n}",
+            3
+        ],
+        [
+            "src/basic/macro.h",
+            "assert",
+            "#define assert(expr) assert_message_se(expr, #expr) /* <=== src/basic/macro.h:343:343:assert:1 */ ",
+            1
+        ],
+        [
+            "src/basic/alloc-util.h",
+            "new",
+            "#define new(t, n) ((t*) malloc_multiply(sizeof(t), (n))) /* <=== src/basic/alloc-util.h:21:21:new:2 */ ",
+            3
+        ],
+        [
+            "src/basic/errno-util.h",
+            "PROTECT_ERRNO",
+            "#define PROTECT_ERRNO                                                   \\ /* <=== src/basic/errno-util.h:13:14:PROTECT_ERRNO:0 */ \n        _cleanup_(_reset_errno_) _unused_ int _saved_errno_ = errno",
+            2
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "source_free",
+            "static void source_free(sd_event_source *s) { /* <=== source_free */ \n        assert(s);\n\n        source_disconnect(s);\n\n        if (s->type == SOURCE_IO && s->io.owned)\n                s->io.fd = safe_close(s->io.fd);\n\n        if (s->destroy_callback)\n                s->destroy_callback(s->userdata);\n\n        free(s->description);\n        free(s);\n}",
+            3
+        ],
+        [
+            "src/basic/log.c",
+            "log_internalv_realm",
+            "int log_internalv_realm( /* <=== log_internalv_realm */ \n                int level,\n                int error,\n                const char *file,\n                int line,\n                const char *func,\n                const char *format,\n                va_list ap) {\n\n        LogRealm realm = LOG_REALM_REMOVE_LEVEL(level);\n        char buffer[LINE_MAX];\n        PROTECT_ERRNO;\n\n        if (_likely_(LOG_PRI(level) > log_max_level[realm]))\n                return -ERRNO_VALUE(error);\n\n        /* Make sure that %m maps to the specified error (or \"Success\"). */\n        errno = ERRNO_VALUE(error);\n\n        (void) vsnprintf(buffer, sizeof buffer, format, ap);\n\n        return log_dispatch_internal(level, error, file, line, func, NULL, NULL, NULL, NULL, buffer);\n}",
+            2
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "event_resolve",
+            "static sd_event *event_resolve(sd_event *e) { /* <=== event_resolve */ \n        return e == SD_EVENT_DEFAULT ? default_event : e;\n}",
+            2
+        ],
+        [
+            "src/basic/macro.h",
+            "CONST_MAX",
+            "#define CONST_MAX(_A, _B) \\ /* <=== src/basic/macro.h:219:225:CONST_MAX:2 */ \n        (__builtin_choose_expr(                                         \\\n                __builtin_constant_p(_A) &&                             \\\n                __builtin_constant_p(_B) &&                             \\\n                __builtin_types_compatible_p(typeof(_A), typeof(_B)),   \\\n                ((_A) > (_B)) ? (_A) : (_B),                            \\\n                VOID_0))",
+            2
+        ],
+        [
+            "src/basic/log.h",
+            "log_error_errno",
+            "#define log_error_errno(error, ...)     log_full_errno(LOG_ERR,     error, __VA_ARGS__) /* <=== src/basic/log.h:245:245:log_error_errno:2 */ ",
+            1
+        ],
+        [
+            "src/basic/log.c",
+            "log_internal_realm",
+            "int log_internal_realm( /* <=== log_internal_realm */ \n                int level,\n                int error,\n                const char *file,\n                int line,\n                const char *func,\n                const char *format, ...) {\n\n        va_list ap;\n        int r;\n\n        va_start(ap, format);\n        r = log_internalv_realm(level, error, file, line, func, format, ap);\n        va_end(ap);\n\n        return r;\n}",
+            1
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "sd_event_add_io",
+            "_public_ int sd_event_add_io( /* <=== sd_event_add_io */ \n                sd_event *e,\n                sd_event_source **ret,\n                int fd,\n                uint32_t events,\n                sd_event_io_handler_t callback,\n                void *userdata) {\n\n        _cleanup_(source_freep) sd_event_source *s = NULL;\n        int r;\n\n        assert_return(e, -EINVAL);\n        assert_return(e = event_resolve(e), -ENOPKG);\n        assert_return(fd >= 0, -EBADF);\n        assert_return(!(events & ~(EPOLLIN|EPOLLOUT|EPOLLRDHUP|EPOLLPRI|EPOLLERR|EPOLLHUP|EPOLLET)), -EINVAL);\n        assert_return(callback, -EINVAL);\n        assert_return(e->state != SD_EVENT_FINISHED, -ESTALE);\n        assert_return(!event_pid_changed(e), -ECHILD);\n\n        s = source_new(e, !ret, SOURCE_IO);\n        if (!s)\n                return -ENOMEM;\n\n        s->wakeup = WAKEUP_EVENT_SOURCE;\n        s->io.fd = fd;\n        s->io.events = events;\n        s->io.callback = callback;\n        s->userdata = userdata;\n        s->enabled = SD_EVENT_ON;\n\n        r = source_io_register(s, s->enabled, events);\n        if (r < 0)\n                return r;\n\n        if (ret)\n                *ret = s;\n        TAKE_PTR(s);\n\n        return 0;\n}",
+            1
+        ],
+        [
+            "src/basic/log.h",
+            "LOG_REALM_REMOVE_LEVEL",
+            "#define LOG_REALM_REMOVE_LEVEL(realm_level) ((realm_level) >> 10) /* <=== src/basic/log.h:41:41:LOG_REALM_REMOVE_LEVEL:1 */ ",
+            3
+        ],
+        [
+            "src/basic/macro.h",
+            "_likely_",
+            "#define _likely_(x) (__builtin_expect(!!(x), 1)) /* <=== src/basic/macro.h:29:29:_likely_:1 */ ",
+            3
+        ],
+        [
+            "src/libsystemd/sd-event/sd-event.c",
+            "sd_event_source_unref",
+            "DEFINE_PUBLIC_TRIVIAL_REF_UNREF_FUNC(sd_event_source, sd_event_source, event_source_free); /* <=== sd_event_source_unref */ ",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <fcntl.h>",
+        "#include <linux/input.h>",
+        "#include \"alloc-util.h\"",
+        "#include <unistd.h>",
+        "#include \"missing_input.h\"",
+        "#include <string.h>",
+        "#include \"sd-messages.h\"",
+        "#include <sys/ioctl.h>",
+        "#include \"logind-button.h\"",
+        "#include \"string-util.h\"",
+        "#include \"util.h\"",
+        "#include <errno.h>",
+        "#include \"fd-util.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct Button {\n        Manager *manager;\n\n        sd_event_source *io_event_source;\n        sd_event_source *check_event_source;\n\n        char *name;\n        char *seat;\n        int fd;\n\n        bool lid_closed;\n        bool docked;\n}",
+            "Button"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/login/logind-button.c": [
+            316,
+            320,
+            322,
+            324,
+            326,
+            327,
+            330,
+            331,
+            333,
+            338,
+            343,
+            345,
+            346,
+            347,
+            348,
+            352,
+            354,
+            357,
+            358
+        ]
+    },
+    "visitedLines_before": {
+        "src/login/logind-button.c": [
+            316,
+            320,
+            322,
+            324,
+            326,
+            327,
+            330,
+            331,
+            333,
+            338,
+            343,
+            345,
+            346,
+            347,
+            351,
+            353,
+            356,
+            357
+        ]
+    },
+    "visitedParams": {
+        "src/login/logind-button.c": [
+            [
+                "Button *b",
+                "button_open"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/login/logind-button.c",
+            "button_open",
+            "int button_open(Button *b) { /* <=== button_open */ \n        char *p, name[256];\n        int r;\n\n        assert(b);\n\n        b->fd = safe_close(b->fd);\n\n        p = strjoina(\"/dev/input/\", b->name);\n\n        b->fd = open(p, O_RDWR|O_CLOEXEC|O_NOCTTY|O_NONBLOCK);\n        if (b->fd < 0)\n                return log_warning_errno(errno, \"Failed to open %s: %m\", p);\n\n        r = button_suitable(b);\n        if (r < 0)\n                return log_warning_errno(r, \"Failed to determine whether input device is relevant to us: %m\");\n        if (r == 0)\n                return log_debug_errno(SYNTHETIC_ERRNO(EADDRNOTAVAIL),\n                                       \"Device %s does not expose keys or switches relevant to us, ignoring.\",\n                                       p);\n\n        if (ioctl(b->fd, EVIOCGNAME(sizeof(name)), name) < 0) {\n                r = log_error_errno(errno, \"Failed to get input name: %m\");\n                goto fail;\n        }\n\n        (void) button_set_mask(b);\n        \n        b->io_event_source = sd_event_source_unref(b->io_event_source);\n        r = sd_event_add_io(b->manager->event, &b->io_event_source, b->fd, EPOLLIN, button_dispatch, b);\n        if (r < 0) {\n                log_error_errno(r, \"Failed to add button event: %m\");\n                goto fail;\n        }\n\n        log_info(\"Watching system buttons on /dev/input/%s (%s)\", b->name, name);\n\n        return 0;\n\nfail:\n        b->fd = safe_close(b->fd);\n        return r;\n}",
+            316
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/login/logind-button.c",
+            "button_open",
+            "int button_open(Button *b) { /* <=== button_open */ \n        char *p, name[256];\n        int r;\n\n        assert(b);\n\n        b->fd = safe_close(b->fd);\n\n        p = strjoina(\"/dev/input/\", b->name);\n\n        b->fd = open(p, O_RDWR|O_CLOEXEC|O_NOCTTY|O_NONBLOCK);\n        if (b->fd < 0)\n                return log_warning_errno(errno, \"Failed to open %s: %m\", p);\n\n        r = button_suitable(b);\n        if (r < 0)\n                return log_warning_errno(r, \"Failed to determine whether input device is relevant to us: %m\");\n        if (r == 0)\n                return log_debug_errno(SYNTHETIC_ERRNO(EADDRNOTAVAIL),\n                                       \"Device %s does not expose keys or switches relevant to us, ignoring.\",\n                                       p);\n\n        if (ioctl(b->fd, EVIOCGNAME(sizeof(name)), name) < 0) {\n                r = log_error_errno(errno, \"Failed to get input name: %m\");\n                goto fail;\n        }\n\n        (void) button_set_mask(b);\n\n        r = sd_event_add_io(b->manager->event, &b->io_event_source, b->fd, EPOLLIN, button_dispatch, b);\n        if (r < 0) {\n                log_error_errno(r, \"Failed to add button event: %m\");\n                goto fail;\n        }\n\n        log_info(\"Watching system buttons on /dev/input/%s (%s)\", b->name, name);\n\n        return 0;\n\nfail:\n        b->fd = safe_close(b->fd);\n        return r;\n}",
+            316
+        ]
+    ]
+}

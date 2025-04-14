@@ -1,0 +1,557 @@
+{
+    "calleeMethods": [
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "VMW_RES_SURFACE",
+            "#define VMW_RES_SURFACE ttm_driver_type1 /* <=== drivers/gpu/drm/vmwgfx/vmwgfx_drv.h:76:76:VMW_RES_SURFACE:0 */ ",
+            1
+        ],
+        [
+            "include/drm/ttm/ttm_object.h",
+            "ttm_base_object_type",
+            "static inline enum ttm_object_type /* <=== ttm_base_object_type */ \nttm_base_object_type(struct ttm_base_object *base)\n{\n\treturn (base->object_type == ttm_prime_type) ?\n\t\tcontainer_of(base, struct ttm_prime_object, base)->real_type :\n\t\tbase->object_type;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_object.c",
+            "ttm_ref_object_add",
+            "int ttm_ref_object_add(struct ttm_object_file *tfile, /* <=== ttm_ref_object_add */ \n\t\t       struct ttm_base_object *base,\n\t\t       enum ttm_ref_type ref_type, bool *existed,\n\t\t       bool require_existed)\n{\n\tstruct drm_open_hash *ht = &tfile->ref_hash[ref_type];\n\tstruct ttm_ref_object *ref;\n\tstruct drm_hash_item *hash;\n\tstruct ttm_mem_global *mem_glob = tfile->tdev->mem_glob;\n\tint ret = -EINVAL;\n\n\tif (base->tfile != tfile && !base->shareable)\n\t\treturn -EPERM;\n\n\tif (existed != NULL)\n\t\t*existed = true;\n\n\twhile (ret == -EINVAL) {\n\t\trcu_read_lock();\n\t\tret = drm_ht_find_item_rcu(ht, base->hash.key, &hash);\n\n\t\tif (ret == 0) {\n\t\t\tref = drm_hash_entry(hash, struct ttm_ref_object, hash);\n\t\t\tif (kref_get_unless_zero(&ref->kref)) {\n\t\t\t\trcu_read_unlock();\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\n\t\trcu_read_unlock();\n\t\tif (require_existed)\n\t\t\treturn -EPERM;\n\n\t\tret = ttm_mem_global_alloc(mem_glob, sizeof(*ref),\n\t\t\t\t\t   false, false);\n\t\tif (unlikely(ret != 0))\n\t\t\treturn ret;\n\t\tref = kmalloc(sizeof(*ref), GFP_KERNEL);\n\t\tif (unlikely(ref == NULL)) {\n\t\t\tttm_mem_global_free(mem_glob, sizeof(*ref));\n\t\t\treturn -ENOMEM;\n\t\t}\n\n\t\tref->hash.key = base->hash.key;\n\t\tref->obj = base;\n\t\tref->tfile = tfile;\n\t\tref->ref_type = ref_type;\n\t\tkref_init(&ref->kref);\n\n\t\tspin_lock(&tfile->lock);\n\t\tret = drm_ht_insert_item_rcu(ht, &ref->hash);\n\n\t\tif (likely(ret == 0)) {\n\t\t\tlist_add_tail(&ref->head, &tfile->ref_list);\n\t\t\tkref_get(&base->refcount);\n\t\t\tspin_unlock(&tfile->lock);\n\t\t\tif (existed != NULL)\n\t\t\t\t*existed = false;\n\t\t\tbreak;\n\t\t}\n\n\t\tspin_unlock(&tfile->lock);\n\t\tBUG_ON(ret != -EINVAL);\n\n\t\tttm_mem_global_free(mem_glob, sizeof(*ref));\n\t\tkfree(ref);\n\t}\n\n\treturn ret;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "vmw_dmabuf_unreference",
+            "static inline void vmw_dmabuf_unreference(struct vmw_dma_buffer **buf) /* <=== vmw_dmabuf_unreference */ \n{\n\tstruct vmw_dma_buffer *tmp_buf = *buf;\n\n\t*buf = NULL;\n\tif (tmp_buf != NULL) {\n\t\tstruct ttm_buffer_object *bo = &tmp_buf->base;\n\n\t\tttm_bo_unref(&bo);\n\t}\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_object.c",
+            "ttm_prime_object_init",
+            "int ttm_prime_object_init(struct ttm_object_file *tfile, size_t size, /* <=== ttm_prime_object_init */ \n\t\t\t  struct ttm_prime_object *prime, bool shareable,\n\t\t\t  enum ttm_object_type type,\n\t\t\t  void (*refcount_release) (struct ttm_base_object **),\n\t\t\t  void (*ref_obj_release) (struct ttm_base_object *,\n\t\t\t\t\t\t   enum ttm_ref_type ref_type))\n{\n\tmutex_init(&prime->mutex);\n\tprime->size = PAGE_ALIGN(size);\n\tprime->real_type = type;\n\tprime->dma_buf = NULL;\n\tprime->refcount_release = refcount_release;\n\treturn ttm_base_object_init(tfile, &prime->base, shareable,\n\t\t\t\t    ttm_prime_type,\n\t\t\t\t    ttm_prime_refcount_release,\n\t\t\t\t    ref_obj_release);\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_object.c",
+            "ttm_base_object_lookup",
+            "struct ttm_base_object *ttm_base_object_lookup(struct ttm_object_file *tfile, /* <=== ttm_base_object_lookup */ \n\t\t\t\t\t       uint32_t key)\n{\n\tstruct ttm_base_object *base = NULL;\n\tstruct drm_hash_item *hash;\n\tstruct drm_open_hash *ht = &tfile->ref_hash[TTM_REF_USAGE];\n\tint ret;\n\n\trcu_read_lock();\n\tret = drm_ht_find_item_rcu(ht, key, &hash);\n\n\tif (likely(ret == 0)) {\n\t\tbase = drm_hash_entry(hash, struct ttm_ref_object, hash)->obj;\n\t\tif (!kref_get_unless_zero(&base->refcount))\n\t\t\tbase = NULL;\n\t}\n\trcu_read_unlock();\n\n\treturn base;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_resource.c",
+            "vmw_dmabuf_init",
+            "int vmw_dmabuf_init(struct vmw_private *dev_priv, /* <=== vmw_dmabuf_init */ \n\t\t    struct vmw_dma_buffer *vmw_bo,\n\t\t    size_t size, struct ttm_placement *placement,\n\t\t    bool interruptible,\n\t\t    void (*bo_free) (struct ttm_buffer_object *bo))\n{\n\tstruct ttm_bo_device *bdev = &dev_priv->bdev;\n\tsize_t acc_size;\n\tint ret;\n\tbool user = (bo_free == &vmw_user_dmabuf_destroy);\n\n\tBUG_ON(!bo_free && (!user && (bo_free != vmw_dmabuf_bo_free)));\n\n\tacc_size = vmw_dmabuf_acc_size(dev_priv, size, user);\n\tmemset(vmw_bo, 0, sizeof(*vmw_bo));\n\n\tINIT_LIST_HEAD(&vmw_bo->res_list);\n\n\tret = ttm_bo_init(bdev, &vmw_bo->base, size,\n\t\t\t  ttm_bo_type_device, placement,\n\t\t\t  0, interruptible,\n\t\t\t  NULL, acc_size, NULL, NULL, bo_free);\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "svga3dsurface_is_screen_target_format",
+            "static inline bool /* <=== svga3dsurface_is_screen_target_format */ \nsvga3dsurface_is_screen_target_format(SVGA3dSurfaceFormat format)\n{\n\tif (svga3dsurface_is_gb_screen_target_format(format)) {\n\t\treturn true;\n\t}\n\treturn svga3dsurface_is_dx_screen_target_format(format);\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_memory.c",
+            "ttm_mem_global_alloc_zone",
+            "static int ttm_mem_global_alloc_zone(struct ttm_mem_global *glob, /* <=== ttm_mem_global_alloc_zone */ \n\t\t\t\t     struct ttm_mem_zone *single_zone,\n\t\t\t\t     uint64_t memory,\n\t\t\t\t     bool no_wait, bool interruptible)\n{\n\tint count = TTM_MEMORY_ALLOC_RETRIES;\n\n\twhile (unlikely(ttm_mem_global_reserve(glob,\n\t\t\t\t\t       single_zone,\n\t\t\t\t\t       memory, true)\n\t\t\t!= 0)) {\n\t\tif (no_wait)\n\t\t\treturn -ENOMEM;\n\t\tif (unlikely(count-- == 0))\n\t\t\treturn -ENOMEM;\n\t\tttm_shrink(glob, false, memory + (memory >> 2) + 16);\n\t}\n\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "include/linux/list.h",
+            "INIT_LIST_HEAD",
+            "static inline void INIT_LIST_HEAD(struct list_head *list) /* <=== INIT_LIST_HEAD */ \n{\n\tWRITE_ONCE(list->next, list);\n\tlist->prev = list;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "svga3dsurface_get_mip_size",
+            "static inline surf_size_struct /* <=== svga3dsurface_get_mip_size */ \nsvga3dsurface_get_mip_size(surf_size_struct base_level, u32 mip_level)\n{\n\tsurf_size_struct size;\n\n\tsize.width = max_t(u32, base_level.width >> mip_level, 1);\n\tsize.height = max_t(u32, base_level.height >> mip_level, 1);\n\tsize.depth = max_t(u32, base_level.depth >> mip_level, 1);\n\tsize.pad64 = 0;\n\n\treturn size;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_object.c",
+            "ttm_base_object_init",
+            "int ttm_base_object_init(struct ttm_object_file *tfile, /* <=== ttm_base_object_init */ \n\t\t\t struct ttm_base_object *base,\n\t\t\t bool shareable,\n\t\t\t enum ttm_object_type object_type,\n\t\t\t void (*refcount_release) (struct ttm_base_object **),\n\t\t\t void (*ref_obj_release) (struct ttm_base_object *,\n\t\t\t\t\t\t  enum ttm_ref_type ref_type))\n{\n\tstruct ttm_object_device *tdev = tfile->tdev;\n\tint ret;\n\n\tbase->shareable = shareable;\n\tbase->tfile = ttm_object_file_ref(tfile);\n\tbase->refcount_release = refcount_release;\n\tbase->ref_obj_release = ref_obj_release;\n\tbase->object_type = object_type;\n\tkref_init(&base->refcount);\n\tspin_lock(&tdev->object_lock);\n\tret = drm_ht_just_insert_please_rcu(&tdev->object_hash,\n\t\t\t\t\t    &base->hash,\n\t\t\t\t\t    (unsigned long)base, 31, 0, 0);\n\tspin_unlock(&tdev->object_lock);\n\tif (unlikely(ret != 0))\n\t\tgoto out_err0;\n\n\tret = ttm_ref_object_add(tfile, base, TTM_REF_USAGE, NULL, false);\n\tif (unlikely(ret != 0))\n\t\tgoto out_err1;\n\n\tttm_base_object_unref(&base);\n\n\treturn 0;\nout_err1:\n\tspin_lock(&tdev->object_lock);\n\t(void)drm_ht_remove_item_rcu(&tdev->object_hash, &base->hash);\n\tspin_unlock(&tdev->object_lock);\nout_err0:\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/drm_auth.c",
+            "drm_master_get",
+            "struct drm_master *drm_master_get(struct drm_master *master) /* <=== drm_master_get */ \n{\n\tkref_get(&master->refcount);\n\treturn master;\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "surf_size_struct",
+            "#define surf_size_struct SVGA3dSize /* <=== drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h:42:42:surf_size_struct:0 */ ",
+            3
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "spin_unlock",
+            "static void spin_unlock(spinlock_t *lock) /* <=== spin_unlock */ \n{\n\tint ret = pthread_spin_unlock(lock);\n\tassert(!ret);\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "svga3dsurface_is_dx_screen_target_format",
+            "static inline bool /* <=== svga3dsurface_is_dx_screen_target_format */ \nsvga3dsurface_is_dx_screen_target_format(SVGA3dSurfaceFormat format)\n{\n\treturn (format == SVGA3D_R8G8B8A8_UNORM ||\n\t\tformat == SVGA3D_B8G8R8A8_UNORM ||\n\t\tformat == SVGA3D_B8G8R8X8_UNORM);\n}",
+            3
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "spin_lock",
+            "static void spin_lock(spinlock_t *lock) /* <=== spin_lock */ \n{\n\tint ret = pthread_spin_lock(lock);\n\tassert(!ret);\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_surface.c",
+            "vmw_surface_gb_priv_define",
+            "int vmw_surface_gb_priv_define(struct drm_device *dev, /* <=== vmw_surface_gb_priv_define */ \n\t\t\t       uint32_t user_accounting_size,\n\t\t\t       uint32_t svga3d_flags,\n\t\t\t       SVGA3dSurfaceFormat format,\n\t\t\t       bool for_scanout,\n\t\t\t       uint32_t num_mip_levels,\n\t\t\t       uint32_t multisample_count,\n\t\t\t       uint32_t array_size,\n\t\t\t       struct drm_vmw_size size,\n\t\t\t       struct vmw_surface **srf_out)\n{\n\tstruct vmw_private *dev_priv = vmw_priv(dev);\n\tstruct vmw_user_surface *user_srf;\n\tstruct vmw_surface *srf;\n\tint ret;\n\tu32 num_layers;\n\n\t*srf_out = NULL;\n\n\tif (for_scanout) {\n\t\tuint32_t max_width, max_height;\n\n\t\tif (!svga3dsurface_is_screen_target_format(format)) {\n\t\t\tDRM_ERROR(\"Invalid Screen Target surface format.\");\n\t\t\treturn -EINVAL;\n\t\t}\n\n\t\tmax_width = min(dev_priv->texture_max_width,\n\t\t\t\tdev_priv->stdu_max_width);\n\t\tmax_height = min(dev_priv->texture_max_height,\n\t\t\t\t dev_priv->stdu_max_height);\n\n\t\tif (size.width > max_width || size.height > max_height) {\n\t\t\tDRM_ERROR(\"%ux%u\\n, exeeds max surface size %ux%u\",\n\t\t\t\t  size.width, size.height,\n\t\t\t\t  max_width, max_height);\n\t\t\treturn -EINVAL;\n\t\t}\n\t} else {\n\t\tconst struct svga3d_surface_desc *desc;\n\n\t\tdesc = svga3dsurface_get_desc(format);\n\t\tif (unlikely(desc->block_desc == SVGA3DBLOCKDESC_NONE)) {\n\t\t\tDRM_ERROR(\"Invalid surface format.\\n\");\n\t\t\treturn -EINVAL;\n\t\t}\n\t}\n\n\t/* array_size must be null for non-GL3 host. */\n\tif (array_size > 0 && !dev_priv->has_dx) {\n\t\tDRM_ERROR(\"Tried to create DX surface on non-DX host.\\n\");\n\t\treturn -EINVAL;\n\t}\n\n\tret = ttm_read_lock(&dev_priv->reservation_sem, true);\n\tif (unlikely(ret != 0))\n\t\treturn ret;\n\n\tret = ttm_mem_global_alloc(vmw_mem_glob(dev_priv),\n\t\t\t\t   user_accounting_size, false, true);\n\tif (unlikely(ret != 0)) {\n\t\tif (ret != -ERESTARTSYS)\n\t\t\tDRM_ERROR(\"Out of graphics memory for surface\"\n\t\t\t\t  \" creation.\\n\");\n\t\tgoto out_unlock;\n\t}\n\n\tuser_srf = kzalloc(sizeof(*user_srf), GFP_KERNEL);\n\tif (unlikely(!user_srf)) {\n\t\tret = -ENOMEM;\n\t\tgoto out_no_user_srf;\n\t}\n\n\t*srf_out  = &user_srf->srf;\n\tuser_srf->size = user_accounting_size;\n\tuser_srf->prime.base.shareable = false;\n\tuser_srf->prime.base.tfile     = NULL;\n\n\tsrf = &user_srf->srf;\n\tsrf->flags             = svga3d_flags;\n\tsrf->format            = format;\n\tsrf->scanout           = for_scanout;\n\tsrf->mip_levels[0]     = num_mip_levels;\n\tsrf->num_sizes         = 1;\n\tsrf->sizes             = NULL;\n\tsrf->offsets           = NULL;\n\tsrf->base_size         = size;\n\tsrf->autogen_filter    = SVGA3D_TEX_FILTER_NONE;\n\tsrf->array_size        = array_size;\n\tsrf->multisample_count = multisample_count;\n\n\tif (array_size)\n\t\tnum_layers = array_size;\n\telse if (svga3d_flags & SVGA3D_SURFACE_CUBEMAP)\n\t\tnum_layers = SVGA3D_MAX_SURFACE_FACES;\n\telse\n\t\tnum_layers = 1;\n\n\tsrf->res.backup_size   =\n\t\tsvga3dsurface_get_serialized_size(srf->format,\n\t\t\t\t\t\t  srf->base_size,\n\t\t\t\t\t\t  srf->mip_levels[0],\n\t\t\t\t\t\t  num_layers);\n\n\tif (srf->flags & SVGA3D_SURFACE_BIND_STREAM_OUTPUT)\n\t\tsrf->res.backup_size += sizeof(SVGA3dDXSOState);\n\n\tif (dev_priv->active_display_unit == vmw_du_screen_target &&\n\t    for_scanout)\n\t\tsrf->flags |= SVGA3D_SURFACE_SCREENTARGET;\n\n\t/*\n\t * From this point, the generic resource management functions\n\t * destroy the object on failure.\n\t */\n\tret = vmw_surface_init(dev_priv, srf, vmw_user_surface_free);\n\n\tttm_read_unlock(&dev_priv->reservation_sem);\n\treturn ret;\n\nout_no_user_srf:\n\tttm_mem_global_free(vmw_mem_glob(dev_priv), user_accounting_size);\n\nout_unlock:\n\tttm_read_unlock(&dev_priv->reservation_sem);\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "tools/include/linux/list.h",
+            "INIT_LIST_HEAD",
+            "static inline void INIT_LIST_HEAD(struct list_head *list) /* <=== INIT_LIST_HEAD */ \n{\n\tlist->next = list;\n\tlist->prev = list;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "vmw_mem_glob",
+            "static inline struct ttm_mem_global *vmw_mem_glob(struct vmw_private *dev_priv) /* <=== vmw_mem_glob */ \n{\n\treturn (struct ttm_mem_global *) dev_priv->mem_global_ref.object;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_lock.c",
+            "ttm_read_unlock",
+            "void ttm_read_unlock(struct ttm_lock *lock) /* <=== ttm_read_unlock */ \n{\n\tspin_lock(&lock->lock);\n\tif (--lock->rw == 0)\n\t\twake_up_all(&lock->queue);\n\tspin_unlock(&lock->lock);\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_resource.c",
+            "vmw_user_dmabuf_alloc",
+            "int vmw_user_dmabuf_alloc(struct vmw_private *dev_priv, /* <=== vmw_user_dmabuf_alloc */ \n\t\t\t  struct ttm_object_file *tfile,\n\t\t\t  uint32_t size,\n\t\t\t  bool shareable,\n\t\t\t  uint32_t *handle,\n\t\t\t  struct vmw_dma_buffer **p_dma_buf,\n\t\t\t  struct ttm_base_object **p_base)\n{\n\tstruct vmw_user_dma_buffer *user_bo;\n\tstruct ttm_buffer_object *tmp;\n\tint ret;\n\n\tuser_bo = kzalloc(sizeof(*user_bo), GFP_KERNEL);\n\tif (unlikely(user_bo == NULL)) {\n\t\tDRM_ERROR(\"Failed to allocate a buffer.\\n\");\n\t\treturn -ENOMEM;\n\t}\n\n\tret = vmw_dmabuf_init(dev_priv, &user_bo->dma, size,\n\t\t\t      (dev_priv->has_mob) ?\n\t\t\t      &vmw_sys_placement :\n\t\t\t      &vmw_vram_sys_placement, true,\n\t\t\t      &vmw_user_dmabuf_destroy);\n\tif (unlikely(ret != 0))\n\t\treturn ret;\n\n\ttmp = ttm_bo_reference(&user_bo->dma.base);\n\tret = ttm_prime_object_init(tfile,\n\t\t\t\t    size,\n\t\t\t\t    &user_bo->prime,\n\t\t\t\t    shareable,\n\t\t\t\t    ttm_buffer_type,\n\t\t\t\t    &vmw_user_dmabuf_release,\n\t\t\t\t    &vmw_user_dmabuf_ref_obj_release);\n\tif (unlikely(ret != 0)) {\n\t\tttm_bo_unref(&tmp);\n\t\tgoto out_no_base_object;\n\t}\n\n\t*p_dma_buf = &user_bo->dma;\n\tif (p_base) {\n\t\t*p_base = &user_bo->prime.base;\n\t\tkref_get(&(*p_base)->refcount);\n\t}\n\t*handle = user_bo->prime.base.hash.key;\n\nout_no_base_object:\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "u32",
+            "#define u32 uint32 /* <=== drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h:43:43:u32:0 */ ",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "svga3dsurface_is_gb_screen_target_format",
+            "static inline bool /* <=== svga3dsurface_is_gb_screen_target_format */ \nsvga3dsurface_is_gb_screen_target_format(SVGA3dSurfaceFormat format)\n{\n\treturn (format == SVGA3D_X8R8G8B8 ||\n\t\tformat == SVGA3D_A8R8G8B8 ||\n\t\tformat == SVGA3D_R5G6B5   ||\n\t\tformat == SVGA3D_X1R5G5B5 ||\n\t\tformat == SVGA3D_A1R5G5B5 ||\n\t\tformat == SVGA3D_P8);\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "svga3dsurface_get_desc",
+            "static inline const struct svga3d_surface_desc * /* <=== svga3dsurface_get_desc */ \nsvga3dsurface_get_desc(SVGA3dSurfaceFormat format)\n{\n\tif (format < ARRAY_SIZE(svga3d_surface_descs))\n\t\treturn &svga3d_surface_descs[format];\n\n\treturn &svga3d_surface_descs[SVGA3D_FORMAT_INVALID];\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "vmw_fifo_resource_inc",
+            "static inline void vmw_fifo_resource_inc(struct vmw_private *dev_priv) /* <=== vmw_fifo_resource_inc */ \n{\n\tatomic_inc(&dev_priv->num_fifo_resources);\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_resource.c",
+            "vmw_resource_unreference",
+            "void vmw_resource_unreference(struct vmw_resource **p_res) /* <=== vmw_resource_unreference */ \n{\n\tstruct vmw_resource *res = *p_res;\n\n\t*p_res = NULL;\n\tkref_put(&res->kref, vmw_resource_release);\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_lock.c",
+            "__ttm_read_lock",
+            "static bool __ttm_read_lock(struct ttm_lock *lock) /* <=== __ttm_read_lock */ \n{\n\tbool locked = false;\n\n\tspin_lock(&lock->lock);\n\tif (unlikely(lock->kill_takers)) {\n\t\tsend_sig(lock->signal, current, 0);\n\t\tspin_unlock(&lock->lock);\n\t\treturn false;\n\t}\n\tif (lock->rw >= 0 && lock->flags == 0) {\n\t\t++lock->rw;\n\t\tlocked = true;\n\t}\n\tspin_unlock(&lock->lock);\n\treturn locked;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "svga3dsurface_get_image_buffer_size",
+            "static inline u32 /* <=== svga3dsurface_get_image_buffer_size */ \nsvga3dsurface_get_image_buffer_size(const struct svga3d_surface_desc *desc,\n\t\t\t\t    const surf_size_struct *size,\n\t\t\t\t    u32 pitch)\n{\n\tsurf_size_struct image_blocks;\n\tu32 slice_size, total_size;\n\n\tsvga3dsurface_get_size_in_blocks(desc, size, &image_blocks);\n\n\tif (svga3dsurface_is_planar_surface(desc)) {\n\t\ttotal_size = clamped_umul32(image_blocks.width,\n\t\t\t\t\t    image_blocks.height);\n\t\ttotal_size = clamped_umul32(total_size, image_blocks.depth);\n\t\ttotal_size = clamped_umul32(total_size, desc->bytes_per_block);\n\t\treturn total_size;\n\t}\n\n\tif (pitch == 0)\n\t\tpitch = svga3dsurface_calculate_pitch(desc, size);\n\n\tslice_size = clamped_umul32(image_blocks.height, pitch);\n\ttotal_size = clamped_umul32(slice_size, image_blocks.depth);\n\n\treturn total_size;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_limits.h",
+            "SVGA3D_MAX_SURFACE_FACES",
+            "#define SVGA3D_MAX_SURFACE_FACES 6 /* <=== drivers/gpu/drm/vmwgfx/device_include/svga3d_limits.h:80:80:SVGA3D_MAX_SURFACE_FACES:0 */ ",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_surface.c",
+            "vmw_surface_init",
+            "static int vmw_surface_init(struct vmw_private *dev_priv, /* <=== vmw_surface_init */ \n\t\t\t    struct vmw_surface *srf,\n\t\t\t    void (*res_free) (struct vmw_resource *res))\n{\n\tint ret;\n\tstruct vmw_resource *res = &srf->res;\n\n\tBUG_ON(!res_free);\n\tif (!dev_priv->has_mob)\n\t\tvmw_fifo_resource_inc(dev_priv);\n\tret = vmw_resource_init(dev_priv, res, true, res_free,\n\t\t\t\t(dev_priv->has_mob) ? &vmw_gb_surface_func :\n\t\t\t\t&vmw_legacy_surface_func);\n\n\tif (unlikely(ret != 0)) {\n\t\tif (!dev_priv->has_mob)\n\t\t\tvmw_fifo_resource_dec(dev_priv);\n\t\tres_free(res);\n\t\treturn ret;\n\t}\n\n\t/*\n\t * The surface won't be visible to hardware until a\n\t * surface validate.\n\t */\n\n\tINIT_LIST_HEAD(&srf->view_list);\n\tvmw_resource_activate(res, vmw_hw_surface_destroy);\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "vmw_priv",
+            "static inline struct vmw_private *vmw_priv(struct drm_device *dev) /* <=== vmw_priv */ \n{\n\treturn (struct vmw_private *)dev->dev_private;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_object.c",
+            "ttm_base_object_unref",
+            "void ttm_base_object_unref(struct ttm_base_object **p_base) /* <=== ttm_base_object_unref */ \n{\n\tstruct ttm_base_object *base = *p_base;\n\n\t*p_base = NULL;\n\n\tkref_put(&base->refcount, ttm_release_base);\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_memory.c",
+            "ttm_mem_global_free_zone",
+            "static void ttm_mem_global_free_zone(struct ttm_mem_global *glob, /* <=== ttm_mem_global_free_zone */ \n\t\t\t\t     struct ttm_mem_zone *single_zone,\n\t\t\t\t     uint64_t amount)\n{\n\tunsigned int i;\n\tstruct ttm_mem_zone *zone;\n\n\tspin_lock(&glob->lock);\n\tfor (i = 0; i < glob->num_zones; ++i) {\n\t\tzone = glob->zones[i];\n\t\tif (single_zone && zone != single_zone)\n\t\t\tcontinue;\n\t\tzone->used_mem -= amount;\n\t}\n\tspin_unlock(&glob->lock);\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_memory.c",
+            "ttm_mem_global_alloc",
+            "int ttm_mem_global_alloc(struct ttm_mem_global *glob, uint64_t memory, /* <=== ttm_mem_global_alloc */ \n\t\t\t bool no_wait, bool interruptible)\n{\n\t/**\n\t * Normal allocations of kernel memory are registered in\n\t * all zones.\n\t */\n\n\treturn ttm_mem_global_alloc_zone(glob, NULL, memory, no_wait,\n\t\t\t\t\t interruptible);\n}",
+            2
+        ],
+        [
+            "include/linux/slab.h",
+            "kzalloc",
+            "static inline void *kzalloc(size_t size, gfp_t flags) /* <=== kzalloc */ \n{\n\treturn kmalloc(size, flags | __GFP_ZERO);\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_memory.c",
+            "ttm_round_pot",
+            "size_t ttm_round_pot(size_t size) /* <=== ttm_round_pot */ \n{\n\tif ((size & (size - 1)) == 0)\n\t\treturn size;\n\telse if (size > PAGE_SIZE)\n\t\treturn PAGE_ALIGN(size);\n\telse {\n\t\tsize_t tmp_size = 4;\n\n\t\twhile (tmp_size < size)\n\t\t\ttmp_size <<= 1;\n\n\t\treturn tmp_size;\n\t}\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_resource.c",
+            "vmw_resource_activate",
+            "void vmw_resource_activate(struct vmw_resource *res, /* <=== vmw_resource_activate */ \n\t\t\t   void (*hw_destroy) (struct vmw_resource *))\n{\n\tstruct vmw_private *dev_priv = res->dev_priv;\n\n\twrite_lock(&dev_priv->resource_lock);\n\tres->avail = true;\n\tres->hw_destroy = hw_destroy;\n\twrite_unlock(&dev_priv->resource_lock);\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_memory.c",
+            "ttm_mem_global_free",
+            "void ttm_mem_global_free(struct ttm_mem_global *glob, /* <=== ttm_mem_global_free */ \n\t\t\t uint64_t amount)\n{\n\treturn ttm_mem_global_free_zone(glob, NULL, amount);\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_resource.c",
+            "vmw_resource_init",
+            "int vmw_resource_init(struct vmw_private *dev_priv, struct vmw_resource *res, /* <=== vmw_resource_init */ \n\t\t      bool delay_id,\n\t\t      void (*res_free) (struct vmw_resource *res),\n\t\t      const struct vmw_res_func *func)\n{\n\tkref_init(&res->kref);\n\tres->hw_destroy = NULL;\n\tres->res_free = res_free;\n\tres->avail = false;\n\tres->dev_priv = dev_priv;\n\tres->func = func;\n\tINIT_LIST_HEAD(&res->lru_head);\n\tINIT_LIST_HEAD(&res->mob_head);\n\tINIT_LIST_HEAD(&res->binding_head);\n\tres->id = -1;\n\tres->backup = NULL;\n\tres->backup_offset = 0;\n\tres->backup_dirty = false;\n\tres->res_dirty = false;\n\tif (delay_id)\n\t\treturn 0;\n\telse\n\t\treturn vmw_resource_alloc_id(res);\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "svga3dsurface_get_serialized_size",
+            "static inline u32 /* <=== svga3dsurface_get_serialized_size */ \nsvga3dsurface_get_serialized_size(SVGA3dSurfaceFormat format,\n\t\t\t\t  surf_size_struct base_level_size,\n\t\t\t\t  u32 num_mip_levels,\n\t\t\t\t  u32 num_layers)\n{\n\tconst struct svga3d_surface_desc *desc = svga3dsurface_get_desc(format);\n\tu32 total_size = 0;\n\tu32 mip;\n\n\tfor (mip = 0; mip < num_mip_levels; mip++) {\n\t\tsurf_size_struct size =\n\t\t\tsvga3dsurface_get_mip_size(base_level_size, mip);\n\t\ttotal_size += svga3dsurface_get_image_buffer_size(desc,\n\t\t\t\t\t\t\t\t  &size, 0);\n\t}\n\n\treturn total_size * num_layers;\n}",
+            2
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h",
+            "ARRAY_SIZE",
+            "#define ARRAY_SIZE(_A) (sizeof(_A) / sizeof((_A)[0])) /* <=== drivers/gpu/drm/vmwgfx/device_include/svga3d_surfacedefs.h:38:38:ARRAY_SIZE:1 */ ",
+            3
+        ],
+        [
+            "mm/kasan/kasan.c",
+            "memset",
+            "void *memset(void *addr, int c, size_t len) /* <=== memset */ \n{\n\tcheck_memory_region((unsigned long)addr, len, true, _RET_IP_);\n\n\treturn __memset(addr, c, len);\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/device_include/svga3d_types.h",
+            "SVGA3D_INVALID_ID",
+            "#define SVGA3D_INVALID_ID         ((uint32)-1) /* <=== drivers/gpu/drm/vmwgfx/device_include/svga3d_types.h:45:45:SVGA3D_INVALID_ID:0 */ ",
+            1
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_resource.c",
+            "vmw_dmabuf_acc_size",
+            "static size_t vmw_dmabuf_acc_size(struct vmw_private *dev_priv, size_t size, /* <=== vmw_dmabuf_acc_size */ \n\t\t\t\t  bool user)\n{\n\tstatic size_t struct_size, user_struct_size;\n\tsize_t num_pages = PAGE_ALIGN(size) >> PAGE_SHIFT;\n\tsize_t page_array_size = ttm_round_pot(num_pages * sizeof(void *));\n\n\tif (unlikely(struct_size == 0)) {\n\t\tsize_t backend_size = ttm_round_pot(vmw_tt_size);\n\n\t\tstruct_size = backend_size +\n\t\t\tttm_round_pot(sizeof(struct vmw_dma_buffer));\n\t\tuser_struct_size = backend_size +\n\t\t\tttm_round_pot(sizeof(struct vmw_user_dma_buffer));\n\t}\n\n\tif (dev_priv->map_mode == vmw_dma_alloc_coherent)\n\t\tpage_array_size +=\n\t\t\tttm_round_pot(num_pages * sizeof(dma_addr_t));\n\n\treturn ((user) ? user_struct_size : struct_size) +\n\t\tpage_array_size;\n}",
+            3
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "kmalloc",
+            "static void *kmalloc(unsigned size, gfp_t gfp) /* <=== kmalloc */ \n{\n\treturn memalign(64, size);\n}",
+            3
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kmalloc",
+            "static inline void *kmalloc(size_t s, gfp_t gfp) /* <=== kmalloc */ \n{\n\tif (__kmalloc_fake)\n\t\treturn __kmalloc_fake;\n\treturn malloc(s);\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_resource.c",
+            "vmw_resource_reference",
+            "struct vmw_resource *vmw_resource_reference(struct vmw_resource *res) /* <=== vmw_resource_reference */ \n{\n\tkref_get(&res->kref);\n\treturn res;\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_lock.c",
+            "ttm_read_lock",
+            "int ttm_read_lock(struct ttm_lock *lock, bool interruptible) /* <=== ttm_read_lock */ \n{\n\tint ret = 0;\n\n\tif (interruptible)\n\t\tret = wait_event_interruptible(lock->queue,\n\t\t\t\t\t       __ttm_read_lock(lock));\n\telse\n\t\twait_event(lock->queue, __ttm_read_lock(lock));\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kzalloc",
+            "static inline void *kzalloc(size_t s, gfp_t gfp) /* <=== kzalloc */ \n{\n\tvoid *p = kmalloc(s, gfp);\n\n\tmemset(p, 0, s);\n\treturn p;\n}",
+            2
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "kzalloc",
+            "static void *kzalloc(unsigned size, gfp_t gfp) /* <=== kzalloc */ \n{\n\tvoid *p = memalign(64, size);\n\tif (!p)\n\t\treturn p;\n\tmemset(p, 0, size);\n\n\treturn p;\n}",
+            2
+        ],
+        [
+            "tools/testing/radix-tree/linux.c",
+            "kmalloc",
+            "void *kmalloc(size_t size, gfp_t gfp) /* <=== kmalloc */ \n{\n\tvoid *ret = malloc(size);\n\tuatomic_inc(&nr_allocated);\n\tif (kmalloc_verbose)\n\t\tprintf(\"Allocating %p from malloc\\n\", ret);\n\treturn ret;\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_resource.c",
+            "vmw_user_dmabuf_lookup",
+            "int vmw_user_dmabuf_lookup(struct ttm_object_file *tfile, /* <=== vmw_user_dmabuf_lookup */ \n\t\t\t   uint32_t handle, struct vmw_dma_buffer **out,\n\t\t\t   struct ttm_base_object **p_base)\n{\n\tstruct vmw_user_dma_buffer *vmw_user_bo;\n\tstruct ttm_base_object *base;\n\n\tbase = ttm_base_object_lookup(tfile, handle);\n\tif (unlikely(base == NULL)) {\n\t\tpr_err(\"Invalid buffer object handle 0x%08lx\\n\",\n\t\t       (unsigned long)handle);\n\t\treturn -ESRCH;\n\t}\n\n\tif (unlikely(ttm_base_object_type(base) != ttm_buffer_type)) {\n\t\tttm_base_object_unref(&base);\n\t\tpr_err(\"Invalid buffer object handle 0x%08lx\\n\",\n\t\t       (unsigned long)handle);\n\t\treturn -EINVAL;\n\t}\n\n\tvmw_user_bo = container_of(base, struct vmw_user_dma_buffer,\n\t\t\t\t   prime.base);\n\t(void)ttm_bo_reference(&vmw_user_bo->dma.base);\n\tif (p_base)\n\t\t*p_base = base;\n\telse\n\t\tttm_base_object_unref(&base);\n\t*out = &vmw_user_bo->dma;\n\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_drv.h",
+            "vmw_fifo_resource_dec",
+            "static inline void vmw_fifo_resource_dec(struct vmw_private *dev_priv) /* <=== vmw_fifo_resource_dec */ \n{\n\tatomic_dec(&dev_priv->num_fifo_resources);\n}",
+            3
+        ],
+        [
+            "drivers/gpu/drm/ttm/ttm_object.c",
+            "ttm_object_file_ref",
+            "static inline struct ttm_object_file * /* <=== ttm_object_file_ref */ \nttm_object_file_ref(struct ttm_object_file *tfile)\n{\n\tkref_get(&tfile->refcount);\n\treturn tfile;\n}",
+            3
+        ]
+    ],
+    "globalVars": [
+        "uint64_t vmw_user_surface_size"
+    ],
+    "importContext": [
+        "#include \"vmwgfx_so.h\"",
+        "#include <ttm/ttm_placement.h>",
+        "#include \"vmwgfx_resource_priv.h\"",
+        "#include \"vmwgfx_binding.h\"",
+        "#include \"vmwgfx_drv.h\"",
+        "#include \"device_include/svga3d_surfacedefs.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct drm_vmw_gb_surface_create_req {\n\t__u32 svga3d_flags;\n\t__u32 format;\n\t__u32 mip_levels;\n\tenum drm_vmw_surface_flags drm_surface_flags;\n\t__u32 multisample_count;\n\t__u32 autogen_filter;\n\t__u32 buffer_handle;\n\t__u32 array_size;\n\tstruct drm_vmw_size base_size;\n}",
+            "drm_vmw_gb_surface_create_req"
+        ],
+        [
+            "struct vmw_resource {\n\tstruct kref kref;\n\tstruct vmw_private *dev_priv;\n\tint id;\n\tbool avail;\n\tunsigned long backup_size;\n\tbool res_dirty; /* Protected by backup buffer reserved */\n\tbool backup_dirty; /* Protected by backup buffer reserved */\n\tstruct vmw_dma_buffer *backup;\n\tunsigned long backup_offset;\n\tunsigned long pin_count; /* Protected by resource reserved */\n\tconst struct vmw_res_func *func;\n\tstruct list_head lru_head; /* Protected by the resource lock */\n\tstruct list_head mob_head; /* Protected by @backup reserved */\n\tstruct list_head binding_head; /* Protected by binding_mutex */\n\tvoid (*res_free) (struct vmw_resource *res);\n\tvoid (*hw_destroy) (struct vmw_resource *res);\n}",
+            "vmw_resource"
+        ],
+        [
+            "struct drm_vmw_gb_surface_create_rep {\n\t__u32 handle;\n\t__u32 backup_size;\n\t__u32 buffer_handle;\n\t__u32 buffer_size;\n\t__u64 buffer_map_handle;\n}",
+            "drm_vmw_gb_surface_create_rep"
+        ],
+        [
+            "typedef\t\t__u32\t\tuint32_t;",
+            "uint32_t"
+        ],
+        [
+            "struct drm_file",
+            "drm_file"
+        ],
+        [
+            "struct ttm_object_file {\n\tstruct ttm_object_device *tdev;\n\tspinlock_t lock;\n\tstruct list_head ref_list;\n\tstruct drm_open_hash ref_hash[TTM_REF_NUM];\n\tstruct kref refcount;\n}",
+            "ttm_object_file"
+        ],
+        [
+            "struct vmw_surface {\n\tstruct vmw_resource res;\n\tuint32_t flags;\n\tuint32_t format;\n\tuint32_t mip_levels[DRM_VMW_MAX_SURFACE_FACES];\n\tstruct drm_vmw_size base_size;\n\tstruct drm_vmw_size *sizes;\n\tuint32_t num_sizes;\n\tbool scanout;\n\tuint32_t array_size;\n\t/* TODO so far just a extra pointer */\n\tstruct vmw_cursor_snooper snooper;\n\tstruct vmw_surface_offset *offsets;\n\tSVGA3dTextureFilter autogen_filter;\n\tuint32_t multisample_count;\n\tstruct list_head view_list;\n}",
+            "vmw_surface"
+        ],
+        [
+            "struct vmw_user_surface {\n\tstruct ttm_prime_object prime;\n\tstruct vmw_surface srf;\n\tuint32_t size;\n\tstruct drm_master *master;\n\tstruct ttm_base_object *backup_base;\n}",
+            "vmw_user_surface"
+        ],
+        [
+            "struct vmw_private {\n\tstruct ttm_bo_device bdev;\n\tstruct ttm_bo_global_ref bo_global_ref;\n\tstruct drm_global_reference mem_global_ref;\n\n\tstruct vmw_fifo_state fifo;\n\n\tstruct drm_device *dev;\n\tunsigned long vmw_chipset;\n\tunsigned int io_start;\n\tuint32_t vram_start;\n\tuint32_t vram_size;\n\tuint32_t prim_bb_mem;\n\tuint32_t mmio_start;\n\tuint32_t mmio_size;\n\tuint32_t fb_max_width;\n\tuint32_t fb_max_height;\n\tuint32_t texture_max_width;\n\tuint32_t texture_max_height;\n\tuint32_t stdu_max_width;\n\tuint32_t stdu_max_height;\n\tuint32_t initial_width;\n\tuint32_t initial_height;\n\tu32 *mmio_virt;\n\tuint32_t capabilities;\n\tuint32_t max_gmr_ids;\n\tuint32_t max_gmr_pages;\n\tuint32_t max_mob_pages;\n\tuint32_t max_mob_size;\n\tuint32_t memory_size;\n\tbool has_gmr;\n\tbool has_mob;\n\tspinlock_t hw_lock;\n\tspinlock_t cap_lock;\n\tbool has_dx;\n\tbool assume_16bpp;\n\n\t/*\n\t * VGA registers.\n\t */\n\n\tstruct vmw_vga_topology_state vga_save[VMWGFX_MAX_DISPLAYS];\n\tuint32_t vga_width;\n\tuint32_t vga_height;\n\tuint32_t vga_bpp;\n\tuint32_t vga_bpl;\n\tuint32_t vga_pitchlock;\n\n\tuint32_t num_displays;\n\n\t/*\n\t * Framebuffer info.\n\t */\n\n\tvoid *fb_info;\n\tenum vmw_display_unit_type active_display_unit;\n\tstruct vmw_legacy_display *ldu_priv;\n\tstruct vmw_overlay *overlay_priv;\n\tstruct drm_property *hotplug_mode_update_property;\n\tstruct drm_property *implicit_placement_property;\n\tunsigned num_implicit;\n\tstruct vmw_framebuffer *implicit_fb;\n\tstruct mutex global_kms_state_mutex;\n\tspinlock_t cursor_lock;\n\n\t/*\n\t * Context and surface management.\n\t */\n\n\trwlock_t resource_lock;\n\tstruct idr res_idr[vmw_res_max];\n\t/*\n\t * Block lastclose from racing with firstopen.\n\t */\n\n\tstruct mutex init_mutex;\n\n\t/*\n\t * A resource manager for kernel-only surfaces and\n\t * contexts.\n\t */\n\n\tstruct ttm_object_device *tdev;\n\n\t/*\n\t * Fencing and IRQs.\n\t */\n\n\tatomic_t marker_seq;\n\twait_queue_head_t fence_queue;\n\twait_queue_head_t fifo_queue;\n\tspinlock_t waiter_lock;\n\tint fence_queue_waiters; /* Protected by waiter_lock */\n\tint goal_queue_waiters; /* Protected by waiter_lock */\n\tint cmdbuf_waiters; /* Protected by waiter_lock */\n\tint error_waiters; /* Protected by waiter_lock */\n\tint fifo_queue_waiters; /* Protected by waiter_lock */\n\tuint32_t last_read_seqno;\n\tstruct vmw_fence_manager *fman;\n\tuint32_t irq_mask; /* Updates protected by waiter_lock */\n\n\t/*\n\t * Device state\n\t */\n\n\tuint32_t traces_state;\n\tuint32_t enable_state;\n\tuint32_t config_done_state;\n\n\t/**\n\t * Execbuf\n\t */\n\t/**\n\t * Protected by the cmdbuf mutex.\n\t */\n\n\tstruct vmw_sw_context ctx;\n\tstruct mutex cmdbuf_mutex;\n\tstruct mutex binding_mutex;\n\n\t/**\n\t * Operating mode.\n\t */\n\n\tbool stealth;\n\tbool enable_fb;\n\tspinlock_t svga_lock;\n\n\t/**\n\t * Master management.\n\t */\n\n\tstruct vmw_master *active_master;\n\tstruct vmw_master fbdev_master;\n\tstruct notifier_block pm_nb;\n\tbool suspended;\n\tbool refuse_hibernation;\n\n\tstruct mutex release_mutex;\n\tatomic_t num_fifo_resources;\n\n\t/*\n\t * Replace this with an rwsem as soon as we have down_xx_interruptible()\n\t */\n\tstruct ttm_lock reservation_sem;\n\n\t/*\n\t * Query processing. These members\n\t * are protected by the cmdbuf mutex.\n\t */\n\n\tstruct vmw_dma_buffer *dummy_query_bo;\n\tstruct vmw_dma_buffer *pinned_bo;\n\tuint32_t query_cid;\n\tuint32_t query_cid_valid;\n\tbool dummy_query_bo_pinned;\n\n\t/*\n\t * Surface swapping. The \"surface_lru\" list is protected by the\n\t * resource lock in order to be able to destroy a surface and take\n\t * it off the lru atomically. \"used_memory_size\" is currently\n\t * protected by the cmdbuf mutex for simplicity.\n\t */\n\n\tstruct list_head res_lru[vmw_res_max];\n\tuint32_t used_memory_size;\n\n\t/*\n\t * DMA mapping stuff.\n\t */\n\tenum vmw_dma_map_mode map_mode;\n\n\t/*\n\t * Guest Backed stuff\n\t */\n\tstruct vmw_otable_batch otable_batch;\n\n\tstruct vmw_cmdbuf_man *cman;\n}",
+            "vmw_private"
+        ],
+        [
+            "struct drm_device {\n\tstruct list_head legacy_dev_list;/**< list of devices per driver for stealth attach cleanup */\n\tint if_version;\t\t\t/**< Highest interface version set */\n\n\t/** \\name Lifetime Management */\n\t/*@{ */\n\tstruct kref ref;\t\t/**< Object ref-count */\n\tstruct device *dev;\t\t/**< Device structure of bus-device */\n\tstruct drm_driver *driver;\t/**< DRM driver managing the device */\n\tvoid *dev_private;\t\t/**< DRM driver private data */\n\tstruct drm_minor *control;\t\t/**< Control node */\n\tstruct drm_minor *primary;\t\t/**< Primary node */\n\tstruct drm_minor *render;\t\t/**< Render node */\n\tbool registered;\n\n\t/* currently active master for this device. Protected by master_mutex */\n\tstruct drm_master *master;\n\n\tatomic_t unplugged;\t\t\t/**< Flag whether dev is dead */\n\tstruct inode *anon_inode;\t\t/**< inode for private address-space */\n\tchar *unique;\t\t\t\t/**< unique name of the device */\n\t/*@} */\n\n\t/** \\name Locks */\n\t/*@{ */\n\tstruct mutex struct_mutex;\t/**< For others */\n\tstruct mutex master_mutex;      /**< For drm_minor::master and drm_file::is_master */\n\t/*@} */\n\n\t/** \\name Usage Counters */\n\t/*@{ */\n\tint open_count;\t\t\t/**< Outstanding files open, protected by drm_global_mutex. */\n\tspinlock_t buf_lock;\t\t/**< For drm_device::buf_use and a few other things. */\n\tint buf_use;\t\t\t/**< Buffers in use -- cannot alloc */\n\tatomic_t buf_alloc;\t\t/**< Buffer allocation in progress */\n\t/*@} */\n\n\tstruct mutex filelist_mutex;\n\tstruct list_head filelist;\n\n\t/** \\name Memory management */\n\t/*@{ */\n\tstruct list_head maplist;\t/**< Linked list of regions */\n\tstruct drm_open_hash map_hash;\t/**< User token hash table for maps */\n\n\t/** \\name Context handle management */\n\t/*@{ */\n\tstruct list_head ctxlist;\t/**< Linked list of context handles */\n\tstruct mutex ctxlist_mutex;\t/**< For ctxlist */\n\n\tstruct idr ctx_idr;\n\n\tstruct list_head vmalist;\t/**< List of vmas (for debugging) */\n\n\t/*@} */\n\n\t/** \\name DMA support */\n\t/*@{ */\n\tstruct drm_device_dma *dma;\t\t/**< Optional pointer for DMA support */\n\t/*@} */\n\n\t/** \\name Context support */\n\t/*@{ */\n\n\t__volatile__ long context_flag;\t/**< Context swapping flag */\n\tint last_context;\t\t/**< Last current context */\n\t/*@} */\n\n\t/** \\name VBLANK IRQ support */\n\t/*@{ */\n\tbool irq_enabled;\n\tint irq;\n\n\t/*\n\t * If true, vblank interrupt will be disabled immediately when the\n\t * refcount drops to zero, as opposed to via the vblank disable\n\t * timer.\n\t * This can be set to true it the hardware has a working vblank\n\t * counter and the driver uses drm_vblank_on() and drm_vblank_off()\n\t * appropriately.\n\t */\n\tbool vblank_disable_immediate;\n\n\t/* array of size num_crtcs */\n\tstruct drm_vblank_crtc *vblank;\n\n\tspinlock_t vblank_time_lock;    /**< Protects vblank count and time updates during vblank enable/disable */\n\tspinlock_t vbl_lock;\n\n\tu32 max_vblank_count;           /**< size of vblank counter register */\n\n\t/**\n\t * List of events\n\t */\n\tstruct list_head vblank_event_list;\n\tspinlock_t event_lock;\n\n\t/*@} */\n\n\tstruct drm_agp_head *agp;\t/**< AGP data */\n\n\tstruct pci_dev *pdev;\t\t/**< PCI device structure */\n#ifdef __alpha__\n\tstruct pci_controller *hose;\n#endif\n\n\tstruct virtio_device *virtdev;\n\n\tstruct drm_sg_mem *sg;\t/**< Scatter gather memory */\n\tunsigned int num_crtcs;                  /**< Number of CRTCs on this device */\n\n\tstruct {\n\t\tint context;\n\t\tstruct drm_hw_lock *lock;\n\t} sigdata;\n\n\tstruct drm_local_map *agp_buffer_map;\n\tunsigned int agp_buffer_token;\n\n\tstruct drm_mode_config mode_config;\t/**< Current mode config */\n\n\t/** \\name GEM information */\n\t/*@{ */\n\tstruct mutex object_name_lock;\n\tstruct idr object_name_idr;\n\tstruct drm_vma_offset_manager *vma_offset_manager;\n\t/*@} */\n\tint switch_power_state;\n}",
+            "drm_device"
+        ]
+    ],
+    "visitedLines_after": {
+        "drivers/gpu/drm/vmwgfx/vmwgfx_surface.c": [
+            1262,
+            1270,
+            1271,
+            1272,
+            1279,
+            1282,
+            1283,
+            1285,
+            1286,
+            1287,
+            1289,
+            1292,
+            1293,
+            1294,
+            1295,
+            1296,
+            1297,
+            1298,
+            1299,
+            1300,
+            1301,
+            1302,
+            1303,
+            1306,
+            1307,
+            1309,
+            1310,
+            1311,
+            1313,
+            1316,
+            1317,
+            1318,
+            1319,
+            1320,
+            1321,
+            1322,
+            1323,
+            1324,
+            1327,
+            1328,
+            1329,
+            1330,
+            1331,
+            1332,
+            1333,
+            1334,
+            1336,
+            1337,
+            1341,
+            1342,
+            1343,
+            1344,
+            1345,
+            1346,
+            1348,
+            1349,
+            1350,
+            1354,
+            1355,
+            1356,
+            1357,
+            1358,
+            1359,
+            1360,
+            1362,
+            1363,
+            1364,
+            1367,
+            1370,
+            1371
+        ]
+    },
+    "visitedLines_before": {
+        "drivers/gpu/drm/vmwgfx/vmwgfx_surface.c": [
+            1262,
+            1270,
+            1271,
+            1272,
+            1279,
+            1282,
+            1283,
+            1284,
+            1286,
+            1289,
+            1290,
+            1291,
+            1292,
+            1293,
+            1294,
+            1295,
+            1296,
+            1297,
+            1298,
+            1299,
+            1300,
+            1303,
+            1304,
+            1306,
+            1307,
+            1308,
+            1310,
+            1313,
+            1314,
+            1315,
+            1316,
+            1317,
+            1318,
+            1319,
+            1320,
+            1321,
+            1324,
+            1325,
+            1326,
+            1327,
+            1328,
+            1329,
+            1330,
+            1331,
+            1333,
+            1334,
+            1338,
+            1339,
+            1340,
+            1341,
+            1342,
+            1343,
+            1345,
+            1346,
+            1347,
+            1351,
+            1352,
+            1353,
+            1354,
+            1355,
+            1356,
+            1357,
+            1359,
+            1360,
+            1361,
+            1364,
+            1367,
+            1368
+        ]
+    },
+    "visitedParams": {
+        "drivers/gpu/drm/vmwgfx/vmwgfx_surface.c": [
+            [
+                "void *data",
+                "vmw_gb_surface_define_ioctl"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_surface.c",
+            "vmw_gb_surface_define_ioctl",
+            "int vmw_gb_surface_define_ioctl(struct drm_device *dev, void *data, /* <=== vmw_gb_surface_define_ioctl */ \n\t\t\t\tstruct drm_file *file_priv)\n{\n\tstruct vmw_private *dev_priv = vmw_priv(dev);\n\tstruct vmw_user_surface *user_srf;\n\tstruct vmw_surface *srf;\n\tstruct vmw_resource *res;\n\tstruct vmw_resource *tmp;\n\tunion drm_vmw_gb_surface_create_arg *arg =\n\t    (union drm_vmw_gb_surface_create_arg *)data;\n\tstruct drm_vmw_gb_surface_create_req *req = &arg->req;\n\tstruct drm_vmw_gb_surface_create_rep *rep = &arg->rep;\n\tstruct ttm_object_file *tfile = vmw_fpriv(file_priv)->tfile;\n\tint ret;\n\tuint32_t size;\n\tuint32_t backup_handle;\n\n\tif (req->multisample_count != 0)\n\t\treturn -EINVAL;\n\n\tif (req->mip_levels > DRM_VMW_MAX_MIP_LEVELS)\n\t\treturn -EINVAL;\n\n\tif (unlikely(vmw_user_surface_size == 0))\n\t\tvmw_user_surface_size = ttm_round_pot(sizeof(*user_srf)) +\n\t\t\t128;\n\n\tsize = vmw_user_surface_size + 128;\n\n\t/* Define a surface based on the parameters. */\n\tret = vmw_surface_gb_priv_define(dev,\n\t\t\tsize,\n\t\t\treq->svga3d_flags,\n\t\t\treq->format,\n\t\t\treq->drm_surface_flags & drm_vmw_surface_flag_scanout,\n\t\t\treq->mip_levels,\n\t\t\treq->multisample_count,\n\t\t\treq->array_size,\n\t\t\treq->base_size,\n\t\t\t&srf);\n\tif (unlikely(ret != 0))\n\t\treturn ret;\n\n\tuser_srf = container_of(srf, struct vmw_user_surface, srf);\n\tif (drm_is_primary_client(file_priv))\n\t\tuser_srf->master = drm_master_get(file_priv->master);\n\n\tret = ttm_read_lock(&dev_priv->reservation_sem, true);\n\tif (unlikely(ret != 0))\n\t\treturn ret;\n\n\tres = &user_srf->srf.res;\n\n\n\tif (req->buffer_handle != SVGA3D_INVALID_ID) {\n\t\tret = vmw_user_dmabuf_lookup(tfile, req->buffer_handle,\n\t\t\t\t\t     &res->backup,\n\t\t\t\t\t     &user_srf->backup_base);\n\t\tif (ret == 0 && res->backup->base.num_pages * PAGE_SIZE <\n\t\t    res->backup_size) {\n\t\t\tDRM_ERROR(\"Surface backup buffer is too small.\\n\");\n\t\t\tvmw_dmabuf_unreference(&res->backup);\n\t\t\tret = -EINVAL;\n\t\t\tgoto out_unlock;\n\t\t}\n\t} else if (req->drm_surface_flags & drm_vmw_surface_flag_create_buffer)\n\t\tret = vmw_user_dmabuf_alloc(dev_priv, tfile,\n\t\t\t\t\t    res->backup_size,\n\t\t\t\t\t    req->drm_surface_flags &\n\t\t\t\t\t    drm_vmw_surface_flag_shareable,\n\t\t\t\t\t    &backup_handle,\n\t\t\t\t\t    &res->backup,\n\t\t\t\t\t    &user_srf->backup_base);\n\n\tif (unlikely(ret != 0)) {\n\t\tvmw_resource_unreference(&res);\n\t\tgoto out_unlock;\n\t}\n\n\ttmp = vmw_resource_reference(res);\n\tret = ttm_prime_object_init(tfile, res->backup_size, &user_srf->prime,\n\t\t\t\t    req->drm_surface_flags &\n\t\t\t\t    drm_vmw_surface_flag_shareable,\n\t\t\t\t    VMW_RES_SURFACE,\n\t\t\t\t    &vmw_user_surface_base_release, NULL);\n\n\tif (unlikely(ret != 0)) {\n\t\tvmw_resource_unreference(&tmp);\n\t\tvmw_resource_unreference(&res);\n\t\tgoto out_unlock;\n\t}\n\n\trep->handle      = user_srf->prime.base.hash.key;\n\trep->backup_size = res->backup_size;\n\tif (res->backup) {\n\t\trep->buffer_map_handle =\n\t\t\tdrm_vma_node_offset_addr(&res->backup->base.vma_node);\n\t\trep->buffer_size = res->backup->base.num_pages * PAGE_SIZE;\n\t\trep->buffer_handle = backup_handle;\n\t} else {\n\t\trep->buffer_map_handle = 0;\n\t\trep->buffer_size = 0;\n\t\trep->buffer_handle = SVGA3D_INVALID_ID;\n\t}\n\n\tvmw_resource_unreference(&res);\n\nout_unlock:\n\tttm_read_unlock(&dev_priv->reservation_sem);\n\treturn ret;\n}",
+            1262
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "drivers/gpu/drm/vmwgfx/vmwgfx_surface.c",
+            "vmw_gb_surface_define_ioctl",
+            "int vmw_gb_surface_define_ioctl(struct drm_device *dev, void *data, /* <=== vmw_gb_surface_define_ioctl */ \n\t\t\t\tstruct drm_file *file_priv)\n{\n\tstruct vmw_private *dev_priv = vmw_priv(dev);\n\tstruct vmw_user_surface *user_srf;\n\tstruct vmw_surface *srf;\n\tstruct vmw_resource *res;\n\tstruct vmw_resource *tmp;\n\tunion drm_vmw_gb_surface_create_arg *arg =\n\t    (union drm_vmw_gb_surface_create_arg *)data;\n\tstruct drm_vmw_gb_surface_create_req *req = &arg->req;\n\tstruct drm_vmw_gb_surface_create_rep *rep = &arg->rep;\n\tstruct ttm_object_file *tfile = vmw_fpriv(file_priv)->tfile;\n\tint ret;\n\tuint32_t size;\n\tuint32_t backup_handle;\n\n\tif (req->multisample_count != 0)\n\t\treturn -EINVAL;\n\n\tif (unlikely(vmw_user_surface_size == 0))\n\t\tvmw_user_surface_size = ttm_round_pot(sizeof(*user_srf)) +\n\t\t\t128;\n\n\tsize = vmw_user_surface_size + 128;\n\n\t/* Define a surface based on the parameters. */\n\tret = vmw_surface_gb_priv_define(dev,\n\t\t\tsize,\n\t\t\treq->svga3d_flags,\n\t\t\treq->format,\n\t\t\treq->drm_surface_flags & drm_vmw_surface_flag_scanout,\n\t\t\treq->mip_levels,\n\t\t\treq->multisample_count,\n\t\t\treq->array_size,\n\t\t\treq->base_size,\n\t\t\t&srf);\n\tif (unlikely(ret != 0))\n\t\treturn ret;\n\n\tuser_srf = container_of(srf, struct vmw_user_surface, srf);\n\tif (drm_is_primary_client(file_priv))\n\t\tuser_srf->master = drm_master_get(file_priv->master);\n\n\tret = ttm_read_lock(&dev_priv->reservation_sem, true);\n\tif (unlikely(ret != 0))\n\t\treturn ret;\n\n\tres = &user_srf->srf.res;\n\n\n\tif (req->buffer_handle != SVGA3D_INVALID_ID) {\n\t\tret = vmw_user_dmabuf_lookup(tfile, req->buffer_handle,\n\t\t\t\t\t     &res->backup,\n\t\t\t\t\t     &user_srf->backup_base);\n\t\tif (ret == 0 && res->backup->base.num_pages * PAGE_SIZE <\n\t\t    res->backup_size) {\n\t\t\tDRM_ERROR(\"Surface backup buffer is too small.\\n\");\n\t\t\tvmw_dmabuf_unreference(&res->backup);\n\t\t\tret = -EINVAL;\n\t\t\tgoto out_unlock;\n\t\t}\n\t} else if (req->drm_surface_flags & drm_vmw_surface_flag_create_buffer)\n\t\tret = vmw_user_dmabuf_alloc(dev_priv, tfile,\n\t\t\t\t\t    res->backup_size,\n\t\t\t\t\t    req->drm_surface_flags &\n\t\t\t\t\t    drm_vmw_surface_flag_shareable,\n\t\t\t\t\t    &backup_handle,\n\t\t\t\t\t    &res->backup,\n\t\t\t\t\t    &user_srf->backup_base);\n\n\tif (unlikely(ret != 0)) {\n\t\tvmw_resource_unreference(&res);\n\t\tgoto out_unlock;\n\t}\n\n\ttmp = vmw_resource_reference(res);\n\tret = ttm_prime_object_init(tfile, res->backup_size, &user_srf->prime,\n\t\t\t\t    req->drm_surface_flags &\n\t\t\t\t    drm_vmw_surface_flag_shareable,\n\t\t\t\t    VMW_RES_SURFACE,\n\t\t\t\t    &vmw_user_surface_base_release, NULL);\n\n\tif (unlikely(ret != 0)) {\n\t\tvmw_resource_unreference(&tmp);\n\t\tvmw_resource_unreference(&res);\n\t\tgoto out_unlock;\n\t}\n\n\trep->handle      = user_srf->prime.base.hash.key;\n\trep->backup_size = res->backup_size;\n\tif (res->backup) {\n\t\trep->buffer_map_handle =\n\t\t\tdrm_vma_node_offset_addr(&res->backup->base.vma_node);\n\t\trep->buffer_size = res->backup->base.num_pages * PAGE_SIZE;\n\t\trep->buffer_handle = backup_handle;\n\t} else {\n\t\trep->buffer_map_handle = 0;\n\t\trep->buffer_size = 0;\n\t\trep->buffer_handle = SVGA3D_INVALID_ID;\n\t}\n\n\tvmw_resource_unreference(&res);\n\nout_unlock:\n\tttm_read_unlock(&dev_priv->reservation_sem);\n\treturn ret;\n}",
+            1262
+        ]
+    ]
+}

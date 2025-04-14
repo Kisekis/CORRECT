@@ -1,0 +1,243 @@
+{
+    "calleeMethods": [
+        [
+            "tools/chafa/file-mapping.c",
+            "cache_stdin",
+            "static gint /* <=== cache_stdin */ \ncache_stdin (FileMapping *file_mapping)\n{\n    gpointer buf = NULL;\n    gint stdin_fd = fileno (stdin);  /* Can't use STDIN_FILENO on Windows */\n    size_t n_read;\n    gint cache_fd = -1;\n    gint success = FALSE;\n\n    if (stdin_fd < 0)\n        goto out;\n\n    /* Read from stdin */\n\n    buf = g_malloc (FILE_MEMORY_CACHE_MAX);\n    n_read = safe_read (stdin_fd, buf, FILE_MEMORY_CACHE_MAX);\n    if (n_read < 1)\n        goto out;\n\n    /* If the stream didn't fit in memory, save it all to a file instead.\n     * We can mmap it later. Or read it back in, ha ha. */\n\n    if (n_read == FILE_MEMORY_CACHE_MAX)\n    {\n        cache_fd = open_temp_file ();\n        if (cache_fd >= 0)\n        {\n            if (!safe_write (cache_fd, buf, n_read))\n                goto out;\n            g_free (buf);\n            buf = NULL;\n\n            if (!safe_copy (stdin_fd, cache_fd))\n                goto out;\n        }\n    }\n    else\n    {\n        file_mapping->data = g_realloc (buf, n_read);\n        file_mapping->length = n_read;\n        buf = NULL;\n    }\n\n    success = TRUE;\n\nout:\n    if (!success)\n    {\n        if (cache_fd >= 0)\n            close (cache_fd);\n        cache_fd = -1;\n        g_free (buf);\n    }\n\n    return cache_fd;\n}",
+            3
+        ],
+        [
+            "tools/chafa/file-mapping.c",
+            "read_file",
+            "static guint8 * /* <=== read_file */ \nread_file (gint fd, size_t *data_size)\n{\n    struct stat sb;\n    guint8 *buffer;\n    size_t size;\n    size_t n;\n\n    if (fstat (fd, &sb)) {\n        return NULL;\n    }\n\n    size = sb.st_size;\n\n    buffer = g_try_malloc (size);\n    if (!buffer) {\n        g_printerr (\"Unable to allocate %lld bytes\\n\",\n                    (long long) size);\n        return NULL;\n    }\n\n    if (lseek (fd, 0, SEEK_SET) != 0)\n    {\n        g_free (buffer);\n        return NULL;\n    }\n\n    n = safe_read (fd, buffer, size);\n    if (n != size)\n    {\n        g_free (buffer);\n        return NULL;\n    }\n\n    *data_size = size;\n    return buffer;\n}",
+            3
+        ],
+        [
+            "tools/chafa/file-mapping.c",
+            "file_mapping_get_data",
+            "gconstpointer /* <=== file_mapping_get_data */ \nfile_mapping_get_data (FileMapping *file_mapping, gsize *length_out)\n{\n    if (!file_mapping->data)\n        map_or_read_file (file_mapping);\n\n    if (length_out)\n        *length_out = file_mapping->length;\n\n    return file_mapping->data;\n}",
+            1
+        ],
+        [
+            "tools/chafa/file-mapping.c",
+            "map_or_read_file",
+            "static gboolean /* <=== map_or_read_file */ \nmap_or_read_file (FileMapping *file_mapping)\n{\n    gboolean result = FALSE;\n    struct stat sbuf;\n    gint t;\n\n    if (file_mapping->failed)\n        return FALSE;\n    if (file_mapping->data)\n        return TRUE;\n\n    if (file_mapping->fd < 0)\n        file_mapping->fd = open_file (file_mapping);\n\n    /* If the data arrived over a pipe and was reasonably small, open_file () will\n     * populate the data fields instead of the fd. */\n    if (!file_mapping->data)\n    {\n        if (file_mapping->fd < 0)\n            goto out;\n\n        t = fstat (file_mapping->fd, &sbuf);\n\n        if (!t)\n        {\n            file_mapping->length = sbuf.st_size;\n#ifdef HAVE_MMAP\n            /* Try memory mapping first */\n            file_mapping->data = mmap (NULL,\n                                       file_mapping->length,\n                                       PROT_READ,\n                                       MAP_SHARED | MAP_NORESERVE,\n                                       file_mapping->fd,\n                                       0);\n#endif\n        }\n\n        if (file_mapping->data)\n        {\n            file_mapping->is_mmapped = TRUE;\n        }\n        else\n        {\n            file_mapping->data = read_file (file_mapping->fd, &file_mapping->length);\n            file_mapping->is_mmapped = FALSE;\n        }\n    }\n\n    if (!file_mapping->data)\n        goto out;\n\n    result = TRUE;\n\nout:\n\n    if (!result)\n    {\n        file_mapping->failed = TRUE;\n    }\n\n    return result;\n}",
+            2
+        ],
+        [
+            "tools/chafa/file-mapping.c",
+            "file_mapping_taste",
+            "gboolean /* <=== file_mapping_taste */ \nfile_mapping_taste (FileMapping *file_mapping, gpointer out, goffset ofs, gsize length)\n{\n    if (file_mapping->fd < 0)\n        file_mapping->fd = open_file (file_mapping);\n\n    if (file_mapping->fd < 0)\n        return FALSE;\n\n    if (lseek (file_mapping->fd, ofs, SEEK_SET) != ofs)\n        return FALSE;\n\n    if (safe_read (file_mapping->fd, out, length) != length)\n        return FALSE;\n\n    return TRUE;\n}",
+            1
+        ],
+        [
+            "tools/chafa/xwd-loader.c",
+            "compute_pixel_type",
+            "static ChafaPixelType /* <=== compute_pixel_type */ \ncompute_pixel_type (XwdLoader *loader)\n{\n    XwdHeader *h = &loader->header;\n\n    if (h->bits_per_pixel == 24)\n    {\n        if (h->byte_order == 0)\n            return CHAFA_PIXEL_BGR8;\n        else\n            return CHAFA_PIXEL_RGB8;\n    }\n\n    if (h->bits_per_pixel == 32)\n    {\n        if (h->byte_order == 0)\n            return CHAFA_PIXEL_BGRA8_PREMULTIPLIED;\n        else\n            return CHAFA_PIXEL_ARGB8_PREMULTIPLIED;\n    }\n\n    return CHAFA_PIXEL_MAX;\n}",
+            1
+        ],
+        [
+            "tools/chafa/xwd-loader.c",
+            "ASSERT_HEADER",
+            "#define ASSERT_HEADER(x) if (!(x)) return FALSE /* <=== tools/chafa/xwd-loader.c:167:167:ASSERT_HEADER:1 */ ",
+            1
+        ],
+        [
+            "tools/chafa/file-mapping.c",
+            "open_file",
+            "static gint /* <=== open_file */ \nopen_file (FileMapping *file_mapping)\n{\n    if (file_mapping->path [0] == '-'\n        && file_mapping->path [1] == '\\0')\n    {\n        return cache_stdin (file_mapping);\n    }\n\n    return open (file_mapping->path, O_RDONLY);\n}",
+            2
+        ],
+        [
+            "tools/chafa/file-mapping.c",
+            "safe_read",
+            "static gsize /* <=== safe_read */ \nsafe_read (gint fd, void *buf, gsize len)\n{\n   gsize ntotal = 0;\n   guint8 *buffer = buf;\n\n   while (len > 0)\n   {\n       unsigned int nread;\n       int iread;\n\n       /* Passing nread > INT_MAX to read is implementation defined in POSIX\n        * 1003.1, therefore despite the unsigned argument portable code must\n        * limit the value to INT_MAX!\n        */\n       if (len > INT_MAX)\n           nread = INT_MAX;\n       else\n           nread = (unsigned int)/*SAFE*/len;\n\n       iread = read (fd, buffer, nread);\n\n       if (iread == -1)\n       {\n           /* This is the devil in the details, a read can terminate early with 0\n            * bytes read because of EINTR, yet it still returns -1 otherwise end\n            * of file cannot be distinguished.\n            */\n           if (errno != EINTR)\n           {\n               /* I.e. a permanent failure */\n               return 0;\n           }\n       }\n       else if (iread < 0)\n       {\n           /* Not a valid 'read' result: */\n           return 0;\n       }\n       else if (iread > 0)\n       {\n           /* Continue reading until a permanent failure, or EOF */\n           buffer += iread;\n           len -= (unsigned int)/*SAFE*/iread;\n           ntotal += (unsigned int)/*SAFE*/iread;\n       }\n       else\n           return ntotal;\n   }\n\n   return ntotal; /* len == 0 */\n}",
+            2
+        ]
+    ],
+    "globalVars": [
+        "struct XwdColor",
+        "struct XwdHeader"
+    ],
+    "importContext": [
+        "#include <sys/types.h>",
+        "#include <stdio.h>",
+        "#include <sys/stat.h>",
+        "#include <errno.h>",
+        "#include \"xwd-loader.h\"",
+        "#include <assert.h>",
+        "#include <stdlib.h>",
+        "#include <string.h>",
+        "#include <chafa.h>",
+        "#include \"config.h\"",
+        "#include <stdbool.h>",
+        "#include <unistd.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct XwdLoader\n{\n    FileMapping *mapping;\n    gconstpointer file_data;\n    gconstpointer image_data;\n    gsize file_data_len;\n    XwdHeader header;\n}",
+            "XwdLoader"
+        ],
+        [
+            "typedef struct\n{\n    guint32 header_size;          /* Size of the header in bytes */\n    guint32 file_version;         /* X11WD file version (always 07h) */\n    guint32 pixmap_format;        /* Pixmap format */\n    guint32 pixmap_depth;         /* Pixmap depth in pixels */\n    guint32 pixmap_width;         /* Pixmap width in pixels */\n    guint32 pixmap_height;        /* Pixmap height in pixels */\n    guint32 x_offset;             /* Bitmap X offset */\n    guint32 byte_order;           /* Byte order of image data */\n    guint32 bitmap_unit;          /* Bitmap base data size */\n    guint32 bitmap_bit_order;     /* Bit-order of image data */\n    guint32 bitmap_pad;           /* Bitmap scan-line pad*/\n    guint32 bits_per_pixel;       /* Bits per pixel */\n    guint32 bytes_per_line;       /* Bytes per scan-line */\n    guint32 visual_class;         /* Class of the image */\n    guint32 red_mask;             /* Red mask */\n    guint32 green_mask;           /* Green mask */\n    guint32 blue_mask;            /* Blue mask */\n    guint32 bits_per_rgb;         /* Size of each color mask in bits */\n    guint32 n_colors;             /* Number of colors in image */\n    guint32 color_map_entries;    /* Number of entries in color map */\n    guint32 window_width;         /* Window width */\n    guint32 window_height;        /* Window height */\n    gint32  window_x;             /* Window upper left X coordinate */\n    gint32  window_y;             /* Window upper left Y coordinate */\n    guint32 window_border_width;  /* Window border width */\n}",
+            "XwdHeader"
+        ]
+    ],
+    "visitedLines_after": {
+        "tools/chafa/xwd-loader.c": [
+            0,
+            168,
+            169,
+            170,
+            171,
+            172,
+            173,
+            174,
+            176,
+            177,
+            178,
+            179,
+            181,
+            183,
+            184,
+            185,
+            186,
+            187,
+            188,
+            189,
+            190,
+            191,
+            192,
+            193,
+            194,
+            195,
+            196,
+            197,
+            198,
+            199,
+            200,
+            201,
+            202,
+            203,
+            204,
+            205,
+            206,
+            207,
+            211,
+            212,
+            213,
+            214,
+            215,
+            216,
+            217,
+            220,
+            223,
+            224,
+            226,
+            227,
+            228,
+            230,
+            231,
+            233,
+            235,
+            236,
+            239,
+            241,
+            243,
+            244,
+            245,
+            247,
+            251,
+            252,
+            254
+        ]
+    },
+    "visitedLines_before": {
+        "tools/chafa/xwd-loader.c": [
+            0,
+            169,
+            170,
+            172,
+            174,
+            176,
+            177,
+            179,
+            180,
+            181,
+            182,
+            183,
+            184,
+            185,
+            186,
+            187,
+            188,
+            189,
+            190,
+            191,
+            192,
+            193,
+            194,
+            195,
+            196,
+            197,
+            198,
+            199,
+            200,
+            201,
+            202,
+            203,
+            208,
+            209,
+            210,
+            214,
+            216,
+            217,
+            219,
+            220,
+            221,
+            222,
+            223,
+            224,
+            226,
+            227,
+            228,
+            230
+        ]
+    },
+    "visitedParams": {
+        "tools/chafa/xwd-loader.c": [
+            [
+                "XwdLoader *loader",
+                "load_header"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "tools/chafa/xwd-loader.c",
+            "load_header",
+            "static gboolean /* <=== load_header */ \nload_header (XwdLoader *loader)\n{\n    XwdHeader *h = &loader->header;\n    XwdHeader in;\n    const XwdHeader *inp;\n\n    if (!file_mapping_taste (loader->mapping, &in, 0, sizeof (in)))\n        return FALSE;\n\n    inp = &in;\n\n    UNPACK_FIELD_U32 (h, inp, header_size);\n    UNPACK_FIELD_U32 (h, inp, file_version);\n    UNPACK_FIELD_U32 (h, inp, pixmap_format);\n    UNPACK_FIELD_U32 (h, inp, pixmap_depth);\n    UNPACK_FIELD_U32 (h, inp, pixmap_width);\n    UNPACK_FIELD_U32 (h, inp, pixmap_height);\n    UNPACK_FIELD_U32 (h, inp, x_offset);\n    UNPACK_FIELD_U32 (h, inp, byte_order);\n    UNPACK_FIELD_U32 (h, inp, bitmap_unit);\n    UNPACK_FIELD_U32 (h, inp, bitmap_bit_order);\n    UNPACK_FIELD_U32 (h, inp, bitmap_pad);\n    UNPACK_FIELD_U32 (h, inp, bits_per_pixel);\n    UNPACK_FIELD_U32 (h, inp, bytes_per_line);\n    UNPACK_FIELD_U32 (h, inp, visual_class);\n    UNPACK_FIELD_U32 (h, inp, red_mask);\n    UNPACK_FIELD_U32 (h, inp, green_mask);\n    UNPACK_FIELD_U32 (h, inp, blue_mask);\n    UNPACK_FIELD_U32 (h, inp, bits_per_rgb);\n    UNPACK_FIELD_U32 (h, inp, color_map_entries);\n    UNPACK_FIELD_U32 (h, inp, n_colors);\n    UNPACK_FIELD_U32 (h, inp, window_width);\n    UNPACK_FIELD_U32 (h, inp, window_height);\n    UNPACK_FIELD_S32 (h, inp, window_x);\n    UNPACK_FIELD_S32 (h, inp, window_y);\n    UNPACK_FIELD_U32 (h, inp, window_border_width);\n\n    /* Only support the most common/useful subset of XWD files out there;\n     * namely, that corresponding to screen dumps from modern X.Org servers.\n     * We could check visual_class == 5 too, but the other fields convey all\n     * the info we need. */\n\n    ASSERT_HEADER (h->header_size >= sizeof (XwdHeader));\n    ASSERT_HEADER (h->header_size <= 65535);\n    ASSERT_HEADER (h->file_version == 7);\n    ASSERT_HEADER (h->pixmap_depth == 24);\n\n    /* Should be zero for truecolor/directcolor. Cap it to prevent overflows. */\n    ASSERT_HEADER (h->color_map_entries <= 256);\n\n    /* Xvfb sets bits_per_rgb to 8, but 'convert' uses 24 for the same image data. One\n     * of them is likely misunderstanding. Let's be lenient and accept either. */\n    ASSERT_HEADER (h->bits_per_rgb == 8 || h->bits_per_rgb == 24);\n\n    /* These are the pixel formats we allow. */\n    ASSERT_HEADER (h->bits_per_pixel == 24 || h->bits_per_pixel == 32);\n\n    /* Enforce sane dimensions. */\n    ASSERT_HEADER (h->pixmap_width >= 1 && h->pixmap_width <= 65535);\n    ASSERT_HEADER (h->pixmap_height >= 1 && h->pixmap_height <= 65535);\n\n    /* Make sure rowstride can actually hold a row's worth of data but is not padded to\n     * something ridiculous. */\n    ASSERT_HEADER (h->bytes_per_line >= h->pixmap_width * (h->bits_per_pixel / 8));\n    ASSERT_HEADER (h->bytes_per_line <= h->pixmap_width * (h->bits_per_pixel / 8) + 1024);\n\n    /* Make sure the total allocation/map is not too big. */\n    ASSERT_HEADER (h->bytes_per_line * h->pixmap_height < (1UL << 31) - 65536 - 256 * 32);\n\n    ASSERT_HEADER (compute_pixel_type (loader) < CHAFA_PIXEL_MAX);\n\n    loader->file_data = file_mapping_get_data (loader->mapping, &loader->file_data_len);\n    if (!loader->file_data)\n        return FALSE;\n\n    ASSERT_HEADER (loader->file_data_len >= h->header_size\n                   + h->color_map_entries * sizeof (XwdColor)\n                   + h->pixmap_height * (gsize) h->bytes_per_line);\n\n    loader->image_data = (const guint8 *) loader->file_data\n        + h->header_size + h->color_map_entries * sizeof (XwdColor);\n\n    return TRUE;\n}",
+            171
+        ],
+        [
+            "tools/chafa/xwd-loader.c",
+            "UNPACK_FIELD_U32",
+            "#define UNPACK_FIELD_U32(dest, src, field) ((dest)->field = GUINT32_FROM_BE ((src)->field)) /* <=== tools/chafa/xwd-loader.c:168:168:UNPACK_FIELD_U32:3 */ ",
+            168
+        ],
+        [
+            "tools/chafa/xwd-loader.c",
+            "UNPACK_FIELD_S32",
+            "#define UNPACK_FIELD_S32(dest, src, field) ((dest)->field = GINT32_FROM_BE ((src)->field)) /* <=== tools/chafa/xwd-loader.c:169:169:UNPACK_FIELD_S32:3 */ ",
+            169
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "tools/chafa/xwd-loader.c",
+            "load_header",
+            "static gboolean /* <=== load_header */ \nload_header (XwdLoader *loader) // gconstpointer in, gsize in_max_len, XwdHeader *header_out)\n{\n    XwdHeader *h = &loader->header;\n    XwdHeader in;\n    const guint32 *p = (const guint32 *) &in;\n\n    if (!file_mapping_taste (loader->mapping, &in, 0, sizeof (in)))\n        return FALSE;\n\n    h->header_size = g_ntohl (*(p++));\n    h->file_version = g_ntohl (*(p++));\n    h->pixmap_format = g_ntohl (*(p++));\n    h->pixmap_depth = g_ntohl (*(p++));\n    h->pixmap_width = g_ntohl (*(p++));\n    h->pixmap_height = g_ntohl (*(p++));\n    h->x_offset = g_ntohl (*(p++));\n    h->byte_order = g_ntohl (*(p++));\n    h->bitmap_unit = g_ntohl (*(p++));\n    h->bitmap_bit_order = g_ntohl (*(p++));\n    h->bitmap_pad = g_ntohl (*(p++));\n    h->bits_per_pixel = g_ntohl (*(p++));\n    h->bytes_per_line = g_ntohl (*(p++));\n    h->visual_class = g_ntohl (*(p++));\n    h->red_mask = g_ntohl (*(p++));\n    h->green_mask = g_ntohl (*(p++));\n    h->blue_mask = g_ntohl (*(p++));\n    h->bits_per_rgb = g_ntohl (*(p++));\n    h->color_map_entries = g_ntohl (*(p++));\n    h->n_colors = g_ntohl (*(p++));\n    h->window_width = g_ntohl (*(p++));\n    h->window_height = g_ntohl (*(p++));\n    h->window_x = g_ntohl (*(p++));\n    h->window_y = g_ntohl (*(p++));\n    h->window_border_width = g_ntohl (*(p++));\n\n    /* Only support the most common/useful subset of XWD files out there;\n     * namely, that corresponding to screen dumps from modern X.Org servers. */\n\n    ASSERT_HEADER (h->header_size >= sizeof (XwdHeader));\n    ASSERT_HEADER (h->file_version == 7);\n    ASSERT_HEADER (h->pixmap_depth == 24);\n\n    /* Xvfb sets bits_per_rgb to 8, but 'convert' uses 24 for the same image data. One\n     * of them is likely misunderstanding. Let's be lenient and accept either. */\n    ASSERT_HEADER (h->bits_per_rgb == 8 || h->bits_per_rgb == 24);\n\n    ASSERT_HEADER (h->bytes_per_line >= h->pixmap_width * (h->bits_per_pixel / 8));\n    ASSERT_HEADER (compute_pixel_type (loader) < CHAFA_PIXEL_MAX);\n\n    loader->file_data = file_mapping_get_data (loader->mapping, &loader->file_data_len);\n    if (!loader->file_data)\n        return FALSE;\n\n    ASSERT_HEADER (loader->file_data_len >= h->header_size\n                   + h->n_colors * sizeof (XwdColor)\n                   + h->pixmap_height * h->bytes_per_line);\n\n    loader->image_data = (const guint8 *) loader->file_data\n        + h->header_size + h->n_colors * sizeof (XwdColor);\n\n    return TRUE;\n}",
+            169
+        ]
+    ]
+}

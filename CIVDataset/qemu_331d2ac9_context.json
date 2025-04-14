@@ -1,0 +1,682 @@
+{
+    "calleeMethods": [
+        [
+            "softmmu/physmem.c",
+            "flatview_read",
+            "static MemTxResult flatview_read(FlatView *fv, hwaddr addr, /* <=== flatview_read */ \n                                 MemTxAttrs attrs, void *buf, hwaddr len)\n{\n    hwaddr l;\n    hwaddr addr1;\n    MemoryRegion *mr;\n\n    l = len;\n    mr = flatview_translate(fv, addr, &addr1, &l, false, attrs);\n    return flatview_read_continue(fv, addr, attrs, buf, len,\n                                  addr1, l, mr);\n}",
+            3
+        ],
+        [
+            "net/net.c",
+            "qemu_can_receive_packet",
+            "int qemu_can_receive_packet(NetClientState *nc) /* <=== qemu_can_receive_packet */ \n{\n    if (nc->receive_disabled) {\n        return 0;\n    } else if (nc->info->can_receive &&\n               !nc->info->can_receive(nc)) {\n        return 0;\n    }\n    return 1;\n}",
+            2
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_CR_HTX",
+            "#define SONIC_CR_HTX     0x0001 /* <=== hw/net/dp8393x.c:101:101:SONIC_CR_HTX:0 */ ",
+            1
+        ],
+        [
+            "softmmu/physmem.c",
+            "prepare_mmio_access",
+            "static bool prepare_mmio_access(MemoryRegion *mr) /* <=== prepare_mmio_access */ \n{\n    bool release_lock = false;\n\n    if (!qemu_mutex_iothread_locked()) {\n        qemu_mutex_lock_iothread();\n        release_lock = true;\n    }\n    if (mr->flush_coalesced_mmio) {\n        qemu_flush_coalesced_mmio_buffer();\n    }\n\n    return release_lock;\n}",
+            3
+        ],
+        [
+            "include/hw/irq.h",
+            "qemu_set_irq",
+            "void qemu_set_irq(qemu_irq irq, int level); /* <=== qemu_set_irq */ ",
+            2
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "dp8393x_update_irq",
+            "static void dp8393x_update_irq(dp8393xState *s) /* <=== dp8393x_update_irq */ \n{\n    int level = (s->regs[SONIC_IMR] & s->regs[SONIC_ISR]) ? 1 : 0;\n\n#ifdef DEBUG_SONIC\n    if (level != s->irq_level) {\n        s->irq_level = level;\n        if (level) {\n            DPRINTF(\"raise irq, isr is 0x%04x\\n\", s->regs[SONIC_ISR]);\n        } else {\n            DPRINTF(\"lower irq\\n\");\n        }\n    }\n#endif\n\n    qemu_set_irq(s->irq, level);\n}",
+            1
+        ],
+        [
+            "include/qemu/atomic.h",
+            "qatomic_rcu_read",
+            "#define qatomic_rcu_read(ptr)    ({               \\ /* <=== include/qemu/atomic.h:340:344:qatomic_rcu_read:1 */ \n    typeof(*ptr) _val = qatomic_read(ptr);        \\\n    smp_read_barrier_depends();                   \\\n    _val;                                         \\\n})",
+            3
+        ],
+        [
+            "softmmu/physmem.c",
+            "flatview_read_continue",
+            "MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr, /* <=== flatview_read_continue */ \n                                   MemTxAttrs attrs, void *ptr,\n                                   hwaddr len, hwaddr addr1, hwaddr l,\n                                   MemoryRegion *mr)\n{\n    uint8_t *ram_ptr;\n    uint64_t val;\n    MemTxResult result = MEMTX_OK;\n    bool release_lock = false;\n    uint8_t *buf = ptr;\n\n    for (;;) {\n        if (!memory_access_is_direct(mr, false)) {\n            /* I/O case */\n            release_lock |= prepare_mmio_access(mr);\n            l = memory_access_size(mr, l, addr1);\n            result |= memory_region_dispatch_read(mr, addr1, &val,\n                                                  size_memop(l), attrs);\n            stn_he_p(buf, l, val);\n        } else {\n            /* RAM case */\n            fuzz_dma_read_cb(addr, len, mr);\n            ram_ptr = qemu_ram_ptr_length(mr->ram_block, addr1, &l, false);\n            memcpy(buf, ram_ptr, l);\n        }\n\n        if (release_lock) {\n            qemu_mutex_unlock_iothread();\n            release_lock = false;\n        }\n\n        len -= l;\n        buf += l;\n        addr += l;\n\n        if (!len) {\n            break;\n        }\n\n        l = len;\n        mr = flatview_translate(fv, addr, &addr1, &l, false, attrs);\n    }\n\n    return result;\n}",
+            2
+        ],
+        [
+            "softmmu/physmem.c",
+            "flatview_write_continue",
+            "static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr, /* <=== flatview_write_continue */ \n                                           MemTxAttrs attrs,\n                                           const void *ptr,\n                                           hwaddr len, hwaddr addr1,\n                                           hwaddr l, MemoryRegion *mr)\n{\n    uint8_t *ram_ptr;\n    uint64_t val;\n    MemTxResult result = MEMTX_OK;\n    bool release_lock = false;\n    const uint8_t *buf = ptr;\n\n    for (;;) {\n        if (!memory_access_is_direct(mr, true)) {\n            release_lock |= prepare_mmio_access(mr);\n            l = memory_access_size(mr, l, addr1);\n            /* XXX: could force current_cpu to NULL to avoid\n               potential bugs */\n            val = ldn_he_p(buf, l);\n            result |= memory_region_dispatch_write(mr, addr1, val,\n                                                   size_memop(l), attrs);\n        } else {\n            /* RAM case */\n            ram_ptr = qemu_ram_ptr_length(mr->ram_block, addr1, &l, false);\n            memcpy(ram_ptr, buf, l);\n            invalidate_and_set_dirty(mr, addr1, l);\n        }\n\n        if (release_lock) {\n            qemu_mutex_unlock_iothread();\n            release_lock = false;\n        }\n\n        len -= l;\n        buf += l;\n        addr += l;\n\n        if (!len) {\n            break;\n        }\n\n        l = len;\n        mr = flatview_translate(fv, addr, &addr1, &l, true, attrs);\n    }\n\n    return result;\n}",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "dp8393x_put",
+            "static void dp8393x_put(dp8393xState *s, int width, int offset, /* <=== dp8393x_put */ \n                        uint16_t val)\n{\n    if (s->big_endian) {\n        if (width == 2) {\n            s->data[offset * 2] = 0;\n            s->data[offset * 2 + 1] = cpu_to_be16(val);\n        } else {\n            s->data[offset] = cpu_to_be16(val);\n        }\n    } else {\n        if (width == 2) {\n            s->data[offset * 2] = cpu_to_le16(val);\n            s->data[offset * 2 + 1] = 0;\n        } else {\n            s->data[offset] = cpu_to_le16(val);\n        }\n    }\n}",
+            1
+        ],
+        [
+            "softmmu/physmem.c",
+            "flatview_write",
+            "static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs, /* <=== flatview_write */ \n                                  const void *buf, hwaddr len)\n{\n    hwaddr l;\n    hwaddr addr1;\n    MemoryRegion *mr;\n    MemTxResult result = MEMTX_OK;\n\n    l = len;\n    mr = flatview_translate(fv, addr, &addr1, &l, true, attrs);\n    result = flatview_write_continue(fv, addr, attrs, buf, len,\n                                     addr1, l, mr);\n\n    return result;\n}",
+            2
+        ],
+        [
+            "include/qemu/bswap.h",
+            "cpu_to_be16",
+            "CPU_CONVERT(be, 16, uint16_t) /* <=== cpu_to_be16 */ ",
+            2
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_RCR_LB1",
+            "#define SONIC_RCR_LB1    0x0400 /* <=== hw/net/dp8393x.c:125:125:SONIC_RCR_LB1:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TFC",
+            "#define SONIC_TFC    0x09 /* <=== hw/net/dp8393x.c:64:64:SONIC_TFC:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "DPRINTF",
+            "#define DPRINTF(fmt, ...) do {} while (0) /* <=== hw/net/dp8393x.c:49:49:DPRINTF:2 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_ISR",
+            "#define SONIC_ISR    0x05 /* <=== hw/net/dp8393x.c:60:60:SONIC_ISR:0 */ ",
+            1
+        ],
+        [
+            "include/exec/memory.h",
+            "memory_region_is_ram_device",
+            "bool memory_region_is_ram_device(MemoryRegion *mr); /* <=== memory_region_is_ram_device */ ",
+            3
+        ],
+        [
+            "softmmu/physmem.c",
+            "qemu_get_ram_block",
+            "static RAMBlock *qemu_get_ram_block(ram_addr_t addr) /* <=== qemu_get_ram_block */ \n{\n    RAMBlock *block;\n\n    block = qatomic_rcu_read(&ram_list.mru_block);\n    if (block && addr - block->offset < block->max_length) {\n        return block;\n    }\n    RAMBLOCK_FOREACH(block) {\n        if (addr - block->offset < block->max_length) {\n            goto found;\n        }\n    }\n\n    fprintf(stderr, \"Bad ram offset %\" PRIx64 \"\\n\", (uint64_t)addr);\n    abort();\n\nfound:\n    /* It is safe to write mru_block outside the iothread lock.  This\n     * is what happens:\n     *\n     *     mru_block = xxx\n     *     rcu_read_unlock()\n     *                                        xxx removed from list\n     *                  rcu_read_lock()\n     *                  read mru_block\n     *                                        mru_block = NULL;\n     *                                        call_rcu(reclaim_ramblock, xxx);\n     *                  rcu_read_unlock()\n     *\n     * qatomic_rcu_set is not needed here.  The block was already published\n     * when it was placed into the list.  Here we're just making an extra\n     * copy of the pointer.\n     */\n    ram_list.mru_block = block;\n    return block;\n}",
+            3
+        ],
+        [
+            "net/net.c",
+            "qemu_get_subqueue",
+            "NetClientState *qemu_get_subqueue(NICState *nic, int queue_index) /* <=== qemu_get_subqueue */ \n{\n    return nic->ncs + queue_index;\n}",
+            2
+        ],
+        [
+            "include/exec/memattrs.h",
+            "MEMTX_OK",
+            "#define MEMTX_OK 0 /* <=== include/exec/memattrs.h:66:66:MEMTX_OK:0 */ ",
+            2
+        ],
+        [
+            "include/exec/cpu-all.h",
+            "TARGET_PAGE_SIZE",
+            "#define TARGET_PAGE_SIZE   (1 << TARGET_PAGE_BITS) /* <=== include/exec/cpu-all.h:238:238:TARGET_PAGE_SIZE:0 */ ",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "dp8393x_ttda",
+            "static uint32_t dp8393x_ttda(dp8393xState *s) /* <=== dp8393x_ttda */ \n{\n    return (s->regs[SONIC_UTDA] << 16) |\n           (s->regs[SONIC_TTDA] & SONIC_DESC_ADDR);\n}",
+            1
+        ],
+        [
+            "softmmu/physmem.c",
+            "qemu_map_ram_ptr",
+            "void *qemu_map_ram_ptr(RAMBlock *ram_block, ram_addr_t addr) /* <=== qemu_map_ram_ptr */ \n{\n    RAMBlock *block = ram_block;\n\n    if (block == NULL) {\n        block = qemu_get_ram_block(addr);\n        addr -= block->offset;\n    }\n\n    if (xen_enabled() && block->host == NULL) {\n        /* We need to check if the requested address is in the RAM\n         * because we don't want to map the entire memory in QEMU.\n         * In that case just map until the end of the page.\n         */\n        if (block->offset == 0) {\n            return xen_map_cache(addr, 0, 0, false);\n        }\n\n        block->host = xen_map_cache(block->offset, block->max_length, 1, false);\n    }\n    return ramblock_ptr(block, addr);\n}",
+            2
+        ],
+        [
+            "include/exec/cpu-all.h",
+            "TARGET_PAGE_MASK",
+            "#define TARGET_PAGE_MASK   ((target_long)-1 << TARGET_PAGE_BITS) /* <=== include/exec/cpu-all.h:239:239:TARGET_PAGE_MASK:0 */ ",
+            3
+        ],
+        [
+            "softmmu/physmem.c",
+            "flatview_translate",
+            "MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat, /* <=== flatview_translate */ \n                                 hwaddr *plen, bool is_write,\n                                 MemTxAttrs attrs)\n{\n    MemoryRegion *mr;\n    MemoryRegionSection section;\n    AddressSpace *as = NULL;\n\n    /* This can be MMIO, so setup MMIO bit. */\n    section = flatview_do_translate(fv, addr, xlat, plen, NULL,\n                                    is_write, true, &as, attrs);\n    mr = section.mr;\n\n    if (xen_enabled() && memory_access_is_direct(mr, is_write)) {\n        hwaddr page = ((addr & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE) - addr;\n        *plen = MIN(page, *plen);\n    }\n\n    return mr;\n}",
+            2
+        ],
+        [
+            "include/exec/memory.h",
+            "memory_region_dispatch_read",
+            "MemTxResult memory_region_dispatch_read(MemoryRegion *mr, /* <=== memory_region_dispatch_read */ \n                                        hwaddr addr,\n                                        uint64_t *pval,\n                                        MemOp op,\n                                        MemTxAttrs attrs);",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_ERROR",
+            "#define SONIC_ERROR(fmt, ...) \\ /* <=== hw/net/dp8393x.c:52:53:SONIC_ERROR:2 */ \ndo { printf(\"sonic ERROR: %s: \" fmt, __func__ , ## __VA_ARGS__); } while (0)",
+            1
+        ],
+        [
+            "include/qemu/bswap.h",
+            "bswap16",
+            "static inline uint16_t bswap16(uint16_t x) /* <=== bswap16 */ \n{\n    return (((x & 0x00ff) << 8) |\n            ((x & 0xff00) >> 8));\n}",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_ISR_TXDN",
+            "#define SONIC_ISR_TXDN   0x0200 /* <=== hw/net/dp8393x.c:145:145:SONIC_ISR_TXDN:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TCR_CRSL",
+            "#define SONIC_TCR_CRSL   0x0080 /* <=== hw/net/dp8393x.c:135:135:SONIC_TCR_CRSL:0 */ ",
+            1
+        ],
+        [
+            "include/exec/memattrs.h",
+            "MEMTXATTRS_UNSPECIFIED",
+            "#define MEMTXATTRS_UNSPECIFIED ((MemTxAttrs) { .unspecified = 1 }) /* <=== include/exec/memattrs.h:59:59:MEMTXATTRS_UNSPECIFIED:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "dp8393x_get",
+            "static uint16_t dp8393x_get(dp8393xState *s, int width, int offset) /* <=== dp8393x_get */ \n{\n    uint16_t val;\n\n    if (s->big_endian) {\n        val = be16_to_cpu(s->data[offset * width + width - 1]);\n    } else {\n        val = le16_to_cpu(s->data[offset * width]);\n    }\n    return val;\n}",
+            1
+        ],
+        [
+            "softmmu/physmem.c",
+            "memory_access_size",
+            "static int memory_access_size(MemoryRegion *mr, unsigned l, hwaddr addr) /* <=== memory_access_size */ \n{\n    unsigned access_size_max = mr->ops->valid.max_access_size;\n\n    /* Regions are assumed to support 1-4 byte accesses unless\n       otherwise specified.  */\n    if (access_size_max == 0) {\n        access_size_max = 4;\n    }\n\n    /* Bound the maximum access by the alignment of the address.  */\n    if (!mr->ops->impl.unaligned) {\n        unsigned align_size_max = addr & -addr;\n        if (align_size_max != 0 && align_size_max < access_size_max) {\n            access_size_max = align_size_max;\n        }\n    }\n\n    /* Don't attempt accesses larger than the maximum.  */\n    if (l > access_size_max) {\n        l = access_size_max;\n    }\n    l = pow2floor(l);\n\n    return l;\n}",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TSA0",
+            "#define SONIC_TSA0   0x0a /* <=== hw/net/dp8393x.c:65:65:SONIC_TSA0:0 */ ",
+            1
+        ],
+        [
+            "include/qemu/bswap.h",
+            "cpu_to_le16",
+            "CPU_CONVERT(le, 16, uint16_t) /* <=== cpu_to_le16 */ ",
+            2
+        ],
+        [
+            "include/exec/memory.h",
+            "fuzz_dma_read_cb",
+            "static inline void fuzz_dma_read_cb(size_t addr, /* <=== fuzz_dma_read_cb */ \n                                    size_t len,\n                                    MemoryRegion *mr)\n{\n    /* Do Nothing */\n}",
+            3
+        ],
+        [
+            "include/qemu/bswap.h",
+            "le16_to_cpu",
+            "CPU_CONVERT(le, 16, uint16_t) /* <=== le16_to_cpu */ ",
+            2
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TCR_CRCI",
+            "#define SONIC_TCR_CRCI   0x2000 /* <=== hw/net/dp8393x.c:138:138:SONIC_TCR_CRCI:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TTDA",
+            "#define SONIC_TTDA   0x20 /* <=== hw/net/dp8393x.c:83:83:SONIC_TTDA:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "dp8393x_tsa",
+            "static uint32_t dp8393x_tsa(dp8393xState *s) /* <=== dp8393x_tsa */ \n{\n    return (s->regs[SONIC_TSA1] << 16) | s->regs[SONIC_TSA0];\n}",
+            1
+        ],
+        [
+            "include/qemu/osdep.h",
+            "MIN",
+            "#define MIN(a, b)                                       \\ /* <=== include/qemu/osdep.h:260:264:MIN:2 */ \n    ({                                                  \\\n        typeof(1 ? (a) : (b)) _a = (a), _b = (b);       \\\n        _a < _b ? _a : _b;                              \\\n    })",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_CTDA",
+            "#define SONIC_CTDA   0x07 /* <=== hw/net/dp8393x.c:62:62:SONIC_CTDA:0 */ ",
+            1
+        ],
+        [
+            "net/net.c",
+            "qemu_send_packet_async_with_flags",
+            "static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender, /* <=== qemu_send_packet_async_with_flags */ \n                                                 unsigned flags,\n                                                 const uint8_t *buf, int size,\n                                                 NetPacketSent *sent_cb)\n{\n    NetQueue *queue;\n    int ret;\n\n#ifdef DEBUG_NET\n    printf(\"qemu_send_packet_async:\\n\");\n    qemu_hexdump(stdout, \"net\", buf, size);\n#endif\n\n    if (sender->link_down || !sender->peer) {\n        return size;\n    }\n\n    /* Let filters handle the packet first */\n    ret = filter_receive(sender, NET_FILTER_DIRECTION_TX,\n                         sender, flags, buf, size, sent_cb);\n    if (ret) {\n        return ret;\n    }\n\n    ret = filter_receive(sender->peer, NET_FILTER_DIRECTION_RX,\n                         sender, flags, buf, size, sent_cb);\n    if (ret) {\n        return ret;\n    }\n\n    queue = sender->peer->incoming_queue;\n\n    return qemu_net_queue_send(queue, sender, flags, buf, size, sent_cb);\n}",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_UTDA",
+            "#define SONIC_UTDA   0x06 /* <=== hw/net/dp8393x.c:61:61:SONIC_UTDA:0 */ ",
+            2
+        ],
+        [
+            "net/net.c",
+            "qemu_send_packet",
+            "ssize_t qemu_send_packet(NetClientState *nc, const uint8_t *buf, int size) /* <=== qemu_send_packet */ \n{\n    return qemu_send_packet_async(nc, buf, size, NULL);\n}",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_CR",
+            "#define SONIC_CR     0x00 /* <=== hw/net/dp8393x.c:55:55:SONIC_CR:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TCR_PTX",
+            "#define SONIC_TCR_PTX    0x0001 /* <=== hw/net/dp8393x.c:131:131:SONIC_TCR_PTX:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TCR_PINT",
+            "#define SONIC_TCR_PINT   0x8000 /* <=== hw/net/dp8393x.c:139:139:SONIC_TCR_PINT:0 */ ",
+            1
+        ],
+        [
+            "net/net.c",
+            "qemu_send_packet_async",
+            "ssize_t qemu_send_packet_async(NetClientState *sender, /* <=== qemu_send_packet_async */ \n                               const uint8_t *buf, int size,\n                               NetPacketSent *sent_cb)\n{\n    return qemu_send_packet_async_with_flags(sender, QEMU_NET_PACKET_FLAG_NONE,\n                                             buf, size, sent_cb);\n}",
+            2
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TSA1",
+            "#define SONIC_TSA1   0x0b /* <=== hw/net/dp8393x.c:66:66:SONIC_TSA1:0 */ ",
+            1
+        ],
+        [
+            "include/sysemu/xen.h",
+            "xen_enabled",
+            "#define xen_enabled()           (xen_allowed) /* <=== include/sysemu/xen.h:25:25:xen_enabled:0 */ ",
+            3
+        ],
+        [
+            "softmmu/physmem.c",
+            "flatview_do_translate",
+            "static MemoryRegionSection flatview_do_translate(FlatView *fv, /* <=== flatview_do_translate */ \n                                                 hwaddr addr,\n                                                 hwaddr *xlat,\n                                                 hwaddr *plen_out,\n                                                 hwaddr *page_mask_out,\n                                                 bool is_write,\n                                                 bool is_mmio,\n                                                 AddressSpace **target_as,\n                                                 MemTxAttrs attrs)\n{\n    MemoryRegionSection *section;\n    IOMMUMemoryRegion *iommu_mr;\n    hwaddr plen = (hwaddr)(-1);\n\n    if (!plen_out) {\n        plen_out = &plen;\n    }\n\n    section = address_space_translate_internal(\n            flatview_to_dispatch(fv), addr, xlat,\n            plen_out, is_mmio);\n\n    iommu_mr = memory_region_get_iommu(section->mr);\n    if (unlikely(iommu_mr)) {\n        return address_space_translate_iommu(iommu_mr, xlat,\n                                             plen_out, page_mask_out,\n                                             is_write, is_mmio,\n                                             target_as, attrs);\n    }\n    if (page_mask_out) {\n        /* Not behind an IOMMU, use default page size. */\n        *page_mask_out = ~TARGET_PAGE_MASK;\n    }\n\n    return *section;\n}",
+            3
+        ],
+        [
+            "include/exec/memory.h",
+            "memory_region_is_romd",
+            "static inline bool memory_region_is_romd(MemoryRegion *mr) /* <=== memory_region_is_romd */ \n{\n    return mr->rom_device && mr->romd_mode;\n}",
+            3
+        ],
+        [
+            "include/qemu/bswap.h",
+            "be16_to_cpu",
+            "CPU_CONVERT(be, 16, uint16_t) /* <=== be16_to_cpu */ ",
+            2
+        ],
+        [
+            "net/net.c",
+            "qemu_get_queue",
+            "NetClientState *qemu_get_queue(NICState *nic) /* <=== qemu_get_queue */ \n{\n    return qemu_get_subqueue(nic, 0);\n}",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TPS",
+            "#define SONIC_TPS    0x08 /* <=== hw/net/dp8393x.c:63:63:SONIC_TPS:0 */ ",
+            1
+        ],
+        [
+            "include/exec/memory.h",
+            "memory_region_is_ram",
+            "static inline bool memory_region_is_ram(MemoryRegion *mr) /* <=== memory_region_is_ram */ \n{\n    return mr->ram;\n}",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_ISR_PINT",
+            "#define SONIC_ISR_PINT   0x0800 /* <=== hw/net/dp8393x.c:147:147:SONIC_ISR_PINT:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_DCR",
+            "#define SONIC_DCR    0x01 /* <=== hw/net/dp8393x.c:56:56:SONIC_DCR:0 */ ",
+            1
+        ],
+        [
+            "include/net/queue.h",
+            "qemu_net_queue_receive",
+            "ssize_t qemu_net_queue_receive(NetQueue *queue, /* <=== qemu_net_queue_receive */ \n                               const uint8_t *data,\n                               size_t size);",
+            2
+        ],
+        [
+            "include/exec/memory.h",
+            "memory_access_is_direct",
+            "static inline bool memory_access_is_direct(MemoryRegion *mr, bool is_write) /* <=== memory_access_is_direct */ \n{\n    if (is_write) {\n        return memory_region_is_ram(mr) && !mr->readonly &&\n               !mr->rom_device && !memory_region_is_ram_device(mr);\n    } else {\n        return (memory_region_is_ram(mr) && !memory_region_is_ram_device(mr)) ||\n               memory_region_is_romd(mr);\n    }\n}",
+            2
+        ],
+        [
+            "include/qemu/bswap.h",
+            "stn_he_p",
+            "DO_STN_LDN_P(he) /* <=== stn_he_p */ ",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_CR_TXP",
+            "#define SONIC_CR_TXP     0x0002 /* <=== hw/net/dp8393x.c:102:102:SONIC_CR_TXP:0 */ ",
+            1
+        ],
+        [
+            "softmmu/physmem.c",
+            "qemu_ram_ptr_length",
+            "static void *qemu_ram_ptr_length(RAMBlock *ram_block, ram_addr_t addr, /* <=== qemu_ram_ptr_length */ \n                                 hwaddr *size, bool lock)\n{\n    RAMBlock *block = ram_block;\n    if (*size == 0) {\n        return NULL;\n    }\n\n    if (block == NULL) {\n        block = qemu_get_ram_block(addr);\n        addr -= block->offset;\n    }\n    *size = MIN(*size, block->max_length - addr);\n\n    if (xen_enabled() && block->host == NULL) {\n        /* We need to check if the requested address is in the RAM\n         * because we don't want to map the entire memory in QEMU.\n         * In that case just map the requested area.\n         */\n        if (block->offset == 0) {\n            return xen_map_cache(addr, *size, lock, lock);\n        }\n\n        block->host = xen_map_cache(block->offset, block->max_length, 1, lock);\n    }\n\n    return ramblock_ptr(block, addr);\n}",
+            3
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_IMR",
+            "#define SONIC_IMR    0x04 /* <=== hw/net/dp8393x.c:59:59:SONIC_IMR:0 */ ",
+            2
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_DESC_EOL",
+            "#define SONIC_DESC_EOL   0x0001 /* <=== hw/net/dp8393x.c:150:150:SONIC_DESC_EOL:0 */ ",
+            1
+        ],
+        [
+            "include/qemu/rcu.h",
+            "RCU_READ_LOCK_GUARD",
+            "#define RCU_READ_LOCK_GUARD() \\ /* <=== include/qemu/rcu.h:180:181:RCU_READ_LOCK_GUARD:0 */ \n    g_autoptr(RCUReadAuto) _rcu_read_auto __attribute__((unused)) = rcu_read_auto_lock()",
+            2
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TCR",
+            "#define SONIC_TCR    0x03 /* <=== hw/net/dp8393x.c:58:58:SONIC_TCR:0 */ ",
+            1
+        ],
+        [
+            "include/net/queue.h",
+            "QEMU_NET_PACKET_FLAG_NONE",
+            "#define QEMU_NET_PACKET_FLAG_NONE  0 /* <=== include/net/queue.h:33:33:QEMU_NET_PACKET_FLAG_NONE:0 */ ",
+            3
+        ],
+        [
+            "include/exec/memory.h",
+            "address_space_to_flatview",
+            "static inline FlatView *address_space_to_flatview(AddressSpace *as) /* <=== address_space_to_flatview */ \n{\n    return qatomic_rcu_read(&as->current_map);\n}",
+            2
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_DESC_ADDR",
+            "#define SONIC_DESC_ADDR  0xFFFE /* <=== hw/net/dp8393x.c:151:151:SONIC_DESC_ADDR:0 */ ",
+            2
+        ],
+        [
+            "softmmu/physmem.c",
+            "address_space_write",
+            "MemTxResult address_space_write(AddressSpace *as, hwaddr addr, /* <=== address_space_write */ \n                                MemTxAttrs attrs,\n                                const void *buf, hwaddr len)\n{\n    MemTxResult result = MEMTX_OK;\n    FlatView *fv;\n\n    if (len > 0) {\n        RCU_READ_LOCK_GUARD();\n        fv = address_space_to_flatview(as);\n        result = flatview_write(fv, addr, attrs, buf, len);\n    }\n\n    return result;\n}",
+            1
+        ],
+        [
+            "softmmu/physmem.c",
+            "address_space_read_full",
+            "MemTxResult address_space_read_full(AddressSpace *as, hwaddr addr, /* <=== address_space_read_full */ \n                                    MemTxAttrs attrs, void *buf, hwaddr len)\n{\n    MemTxResult result = MEMTX_OK;\n    FlatView *fv;\n\n    if (len > 0) {\n        RCU_READ_LOCK_GUARD();\n        fv = address_space_to_flatview(as);\n        result = flatview_read(fv, addr, attrs, buf, len);\n    }\n\n    return result;\n}",
+            2
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_RCR_LB0",
+            "#define SONIC_RCR_LB0    0x0200 /* <=== hw/net/dp8393x.c:124:124:SONIC_RCR_LB0:0 */ ",
+            1
+        ],
+        [
+            "include/exec/memory.h",
+            "address_space_read",
+            "static inline __attribute__((__always_inline__)) /* <=== address_space_read */ \nMemTxResult address_space_read(AddressSpace *as, hwaddr addr,\n                               MemTxAttrs attrs, void *buf,\n                               hwaddr len)\n{\n    MemTxResult result = MEMTX_OK;\n    hwaddr l, addr1;\n    void *ptr;\n    MemoryRegion *mr;\n    FlatView *fv;\n\n    if (__builtin_constant_p(len)) {\n        if (len) {\n            RCU_READ_LOCK_GUARD();\n            fv = address_space_to_flatview(as);\n            l = len;\n            mr = flatview_translate(fv, addr, &addr1, &l, false, attrs);\n            if (len == l && memory_access_is_direct(mr, false)) {\n                ptr = qemu_map_ram_ptr(mr->ram_block, addr1);\n                memcpy(buf, ptr, len);\n            } else {\n                result = flatview_read_continue(fv, addr, attrs, buf, len,\n                                                addr1, l, mr);\n            }\n        }\n    } else {\n        result = address_space_read_full(as, addr, attrs, buf, len);\n    }\n    return result;\n}",
+            1
+        ],
+        [
+            "net/net.c",
+            "qemu_receive_packet",
+            "ssize_t qemu_receive_packet(NetClientState *nc, const uint8_t *buf, int size) /* <=== qemu_receive_packet */ \n{\n    if (!qemu_can_receive_packet(nc)) {\n        return 0;\n    }\n\n    return qemu_net_queue_receive(nc->incoming_queue, buf, size);\n}",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_TFS",
+            "#define SONIC_TFS    0x0c /* <=== hw/net/dp8393x.c:67:67:SONIC_TFS:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_RCR",
+            "#define SONIC_RCR    0x02 /* <=== hw/net/dp8393x.c:57:57:SONIC_RCR:0 */ ",
+            1
+        ],
+        [
+            "hw/net/dp8393x.c",
+            "SONIC_DCR_DW",
+            "#define SONIC_DCR_DW     0x0020 /* <=== hw/net/dp8393x.c:112:112:SONIC_DCR_DW:0 */ ",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"qemu/timer.h\"",
+        "#include \"hw/sysbus.h\"",
+        "#include <zlib.h>",
+        "#include \"migration/vmstate.h\"",
+        "#include \"qemu/osdep.h\"",
+        "#include \"hw/irq.h\"",
+        "#include \"qapi/error.h\"",
+        "#include \"hw/qdev-properties.h\"",
+        "#include \"qom/object.h\"",
+        "#include \"net/net.h\"",
+        "#include \"qemu/module.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct NetClientState {\n    NetClientInfo *info;\n    int link_down;\n    QTAILQ_ENTRY(NetClientState) next;\n    NetClientState *peer;\n    NetQueue *incoming_queue;\n    char *model;\n    char *name;\n    char info_str[256];\n    unsigned receive_disabled : 1;\n    NetClientDestructor *destructor;\n    unsigned int queue_index;\n    unsigned rxfilter_notify_enabled:1;\n    int vring_enable;\n    int vnet_hdr_len;\n    bool is_netdev;\n    QTAILQ_HEAD(, NetFilterState) filters;\n}",
+            "NetClientState"
+        ],
+        [
+            "typedef struct {\n    uint64_t low;\n    uint16_t high;\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct NetClientState",
+            "NetClientState"
+        ],
+        [
+            "struct dp8393xState {\n    SysBusDevice parent_obj;\n\n    /* Hardware */\n    uint8_t it_shift;\n    bool big_endian;\n    bool last_rba_is_full;\n    qemu_irq irq;\n#ifdef DEBUG_SONIC\n    int irq_level;\n#endif\n    QEMUTimer *watchdog;\n    int64_t wt_last_update;\n    NICConf conf;\n    NICState *nic;\n    MemoryRegion mmio;\n    MemoryRegion prom;\n\n    /* Registers */\n    uint8_t cam[16][6];\n    uint16_t regs[0x40];\n\n    /* Temporaries */\n    uint8_t tx_buffer[0x10000];\n    uint16_t data[12];\n    int loopback_packet;\n\n    /* Memory access */\n    MemoryRegion *dma_mr;\n    AddressSpace as;\n}",
+            "dp8393xState"
+        ],
+        [
+            "typedef dp8393xState",
+            "dp8393xState"
+        ],
+        [
+            "typedef union {\n    float128 q;\n#if defined(HOST_WORDS_BIGENDIAN)\n    struct {\n        uint32_t upmost;\n        uint32_t upper;\n        uint32_t lower;\n        uint32_t lowest;\n    } l;\n    struct {\n        uint64_t upper;\n        uint64_t lower;\n    } ll;\n#else\n    struct {\n        uint32_t lowest;\n        uint32_t lower;\n        uint32_t upper;\n        uint32_t upmost;\n    } l;\n    struct {\n        uint64_t lower;\n        uint64_t upper;\n    } ll;\n#endif\n}",
+            "ANY"
+        ]
+    ],
+    "visitedLines_after": {
+        "hw/net/dp8393x.c": [
+            433,
+            435,
+            440,
+            442,
+            444,
+            445,
+            446,
+            447,
+            448,
+            449,
+            452,
+            453,
+            454,
+            455,
+            456,
+            457,
+            460,
+            461,
+            463,
+            466,
+            468,
+            469,
+            470,
+            472,
+            473,
+            474,
+            476,
+            477,
+            479,
+            480,
+            481,
+            482,
+            483,
+            484,
+            485,
+            486,
+            487,
+            492,
+            497,
+            498,
+            499,
+            504,
+            506,
+            507,
+            508,
+            509,
+            513,
+            515,
+            518,
+            519,
+            520,
+            521,
+            522,
+            524,
+            526,
+            527,
+            528,
+            529,
+            530,
+            531,
+            532,
+            533,
+            534,
+            542,
+            543,
+            544
+        ]
+    },
+    "visitedLines_before": {
+        "hw/net/dp8393x.c": [
+            433,
+            435,
+            440,
+            442,
+            444,
+            445,
+            446,
+            447,
+            448,
+            449,
+            452,
+            453,
+            454,
+            455,
+            456,
+            457,
+            460,
+            461,
+            463,
+            466,
+            468,
+            469,
+            470,
+            472,
+            473,
+            474,
+            476,
+            477,
+            479,
+            480,
+            481,
+            482,
+            483,
+            484,
+            485,
+            486,
+            487,
+            492,
+            497,
+            498,
+            499,
+            504,
+            506,
+            507,
+            508,
+            509,
+            513,
+            515,
+            518,
+            519,
+            520,
+            521,
+            522,
+            524,
+            526,
+            527,
+            528,
+            529,
+            530,
+            531,
+            532,
+            533,
+            534,
+            542,
+            543,
+            544
+        ]
+    },
+    "visitedParams": {
+        "hw/net/dp8393x.c": [
+            [
+                "dp8393xState *s",
+                "dp8393x_do_transmit_packets"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "hw/net/dp8393x.c",
+            "dp8393x_do_transmit_packets",
+            "static void dp8393x_do_transmit_packets(dp8393xState *s) /* <=== dp8393x_do_transmit_packets */ \n{\n    NetClientState *nc = qemu_get_queue(s->nic);\n    int width, size;\n    int tx_len, len;\n    uint16_t i;\n\n    width = (s->regs[SONIC_DCR] & SONIC_DCR_DW) ? 2 : 1;\n\n    while (1) {\n        /* Read memory */\n        size = sizeof(uint16_t) * 6 * width;\n        s->regs[SONIC_TTDA] = s->regs[SONIC_CTDA];\n        DPRINTF(\"Transmit packet at %08x\\n\", dp8393x_ttda(s));\n        address_space_read(&s->as, dp8393x_ttda(s) + sizeof(uint16_t) * width,\n                           MEMTXATTRS_UNSPECIFIED, s->data, size);\n        tx_len = 0;\n\n        /* Update registers */\n        s->regs[SONIC_TCR] = dp8393x_get(s, width, 0) & 0xf000;\n        s->regs[SONIC_TPS] = dp8393x_get(s, width, 1);\n        s->regs[SONIC_TFC] = dp8393x_get(s, width, 2);\n        s->regs[SONIC_TSA0] = dp8393x_get(s, width, 3);\n        s->regs[SONIC_TSA1] = dp8393x_get(s, width, 4);\n        s->regs[SONIC_TFS] = dp8393x_get(s, width, 5);\n\n        /* Handle programmable interrupt */\n        if (s->regs[SONIC_TCR] & SONIC_TCR_PINT) {\n            s->regs[SONIC_ISR] |= SONIC_ISR_PINT;\n        } else {\n            s->regs[SONIC_ISR] &= ~SONIC_ISR_PINT;\n        }\n\n        for (i = 0; i < s->regs[SONIC_TFC]; ) {\n            /* Append fragment */\n            len = s->regs[SONIC_TFS];\n            if (tx_len + len > sizeof(s->tx_buffer)) {\n                len = sizeof(s->tx_buffer) - tx_len;\n            }\n            address_space_read(&s->as, dp8393x_tsa(s), MEMTXATTRS_UNSPECIFIED,\n                               &s->tx_buffer[tx_len], len);\n            tx_len += len;\n\n            i++;\n            if (i != s->regs[SONIC_TFC]) {\n                /* Read next fragment details */\n                size = sizeof(uint16_t) * 3 * width;\n                address_space_read(&s->as,\n                                   dp8393x_ttda(s)\n                                   + sizeof(uint16_t) * width * (4 + 3 * i),\n                                   MEMTXATTRS_UNSPECIFIED, s->data,\n                                   size);\n                s->regs[SONIC_TSA0] = dp8393x_get(s, width, 0);\n                s->regs[SONIC_TSA1] = dp8393x_get(s, width, 1);\n                s->regs[SONIC_TFS] = dp8393x_get(s, width, 2);\n            }\n        }\n\n        /* Handle Ethernet checksum */\n        if (!(s->regs[SONIC_TCR] & SONIC_TCR_CRCI)) {\n            /* Don't append FCS there, to look like slirp packets\n             * which don't have one */\n        } else {\n            /* Remove existing FCS */\n            tx_len -= 4;\n            if (tx_len < 0) {\n                SONIC_ERROR(\"tx_len is %d\\n\", tx_len);\n                break;\n            }\n        }\n\n        if (s->regs[SONIC_RCR] & (SONIC_RCR_LB1 | SONIC_RCR_LB0)) {\n            /* Loopback */\n            s->regs[SONIC_TCR] |= SONIC_TCR_CRSL;\n            if (nc->info->can_receive(nc)) {\n                s->loopback_packet = 1;\n                qemu_receive_packet(nc, s->tx_buffer, tx_len);\n            }\n        } else {\n            /* Transmit packet */\n            qemu_send_packet(nc, s->tx_buffer, tx_len);\n        }\n        s->regs[SONIC_TCR] |= SONIC_TCR_PTX;\n\n        /* Write status */\n        dp8393x_put(s, width, 0,\n                    s->regs[SONIC_TCR] & 0x0fff); /* status */\n        size = sizeof(uint16_t) * width;\n        address_space_write(&s->as, dp8393x_ttda(s),\n                            MEMTXATTRS_UNSPECIFIED, s->data, size);\n\n        if (!(s->regs[SONIC_CR] & SONIC_CR_HTX)) {\n            /* Read footer of packet */\n            size = sizeof(uint16_t) * width;\n            address_space_read(&s->as,\n                               dp8393x_ttda(s)\n                               + sizeof(uint16_t) * width\n                                 * (4 + 3 * s->regs[SONIC_TFC]),\n                               MEMTXATTRS_UNSPECIFIED, s->data,\n                               size);\n            s->regs[SONIC_CTDA] = dp8393x_get(s, width, 0);\n            if (s->regs[SONIC_CTDA] & SONIC_DESC_EOL) {\n                /* EOL detected */\n                break;\n            }\n        }\n    }\n\n    /* Done */\n    s->regs[SONIC_CR] &= ~SONIC_CR_TXP;\n    s->regs[SONIC_ISR] |= SONIC_ISR_TXDN;\n    dp8393x_update_irq(s);\n}",
+            433
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "hw/net/dp8393x.c",
+            "dp8393x_do_transmit_packets",
+            "static void dp8393x_do_transmit_packets(dp8393xState *s) /* <=== dp8393x_do_transmit_packets */ \n{\n    NetClientState *nc = qemu_get_queue(s->nic);\n    int width, size;\n    int tx_len, len;\n    uint16_t i;\n\n    width = (s->regs[SONIC_DCR] & SONIC_DCR_DW) ? 2 : 1;\n\n    while (1) {\n        /* Read memory */\n        size = sizeof(uint16_t) * 6 * width;\n        s->regs[SONIC_TTDA] = s->regs[SONIC_CTDA];\n        DPRINTF(\"Transmit packet at %08x\\n\", dp8393x_ttda(s));\n        address_space_read(&s->as, dp8393x_ttda(s) + sizeof(uint16_t) * width,\n                           MEMTXATTRS_UNSPECIFIED, s->data, size);\n        tx_len = 0;\n\n        /* Update registers */\n        s->regs[SONIC_TCR] = dp8393x_get(s, width, 0) & 0xf000;\n        s->regs[SONIC_TPS] = dp8393x_get(s, width, 1);\n        s->regs[SONIC_TFC] = dp8393x_get(s, width, 2);\n        s->regs[SONIC_TSA0] = dp8393x_get(s, width, 3);\n        s->regs[SONIC_TSA1] = dp8393x_get(s, width, 4);\n        s->regs[SONIC_TFS] = dp8393x_get(s, width, 5);\n\n        /* Handle programmable interrupt */\n        if (s->regs[SONIC_TCR] & SONIC_TCR_PINT) {\n            s->regs[SONIC_ISR] |= SONIC_ISR_PINT;\n        } else {\n            s->regs[SONIC_ISR] &= ~SONIC_ISR_PINT;\n        }\n\n        for (i = 0; i < s->regs[SONIC_TFC]; ) {\n            /* Append fragment */\n            len = s->regs[SONIC_TFS];\n            if (tx_len + len > sizeof(s->tx_buffer)) {\n                len = sizeof(s->tx_buffer) - tx_len;\n            }\n            address_space_read(&s->as, dp8393x_tsa(s), MEMTXATTRS_UNSPECIFIED,\n                               &s->tx_buffer[tx_len], len);\n            tx_len += len;\n\n            i++;\n            if (i != s->regs[SONIC_TFC]) {\n                /* Read next fragment details */\n                size = sizeof(uint16_t) * 3 * width;\n                address_space_read(&s->as,\n                                   dp8393x_ttda(s)\n                                   + sizeof(uint16_t) * width * (4 + 3 * i),\n                                   MEMTXATTRS_UNSPECIFIED, s->data,\n                                   size);\n                s->regs[SONIC_TSA0] = dp8393x_get(s, width, 0);\n                s->regs[SONIC_TSA1] = dp8393x_get(s, width, 1);\n                s->regs[SONIC_TFS] = dp8393x_get(s, width, 2);\n            }\n        }\n\n        /* Handle Ethernet checksum */\n        if (!(s->regs[SONIC_TCR] & SONIC_TCR_CRCI)) {\n            /* Don't append FCS there, to look like slirp packets\n             * which don't have one */\n        } else {\n            /* Remove existing FCS */\n            tx_len -= 4;\n            if (tx_len < 0) {\n                SONIC_ERROR(\"tx_len is %d\\n\", tx_len);\n                break;\n            }\n        }\n\n        if (s->regs[SONIC_RCR] & (SONIC_RCR_LB1 | SONIC_RCR_LB0)) {\n            /* Loopback */\n            s->regs[SONIC_TCR] |= SONIC_TCR_CRSL;\n            if (nc->info->can_receive(nc)) {\n                s->loopback_packet = 1;\n                nc->info->receive(nc, s->tx_buffer, tx_len);\n            }\n        } else {\n            /* Transmit packet */\n            qemu_send_packet(nc, s->tx_buffer, tx_len);\n        }\n        s->regs[SONIC_TCR] |= SONIC_TCR_PTX;\n\n        /* Write status */\n        dp8393x_put(s, width, 0,\n                    s->regs[SONIC_TCR] & 0x0fff); /* status */\n        size = sizeof(uint16_t) * width;\n        address_space_write(&s->as, dp8393x_ttda(s),\n                            MEMTXATTRS_UNSPECIFIED, s->data, size);\n\n        if (!(s->regs[SONIC_CR] & SONIC_CR_HTX)) {\n            /* Read footer of packet */\n            size = sizeof(uint16_t) * width;\n            address_space_read(&s->as,\n                               dp8393x_ttda(s)\n                               + sizeof(uint16_t) * width\n                                 * (4 + 3 * s->regs[SONIC_TFC]),\n                               MEMTXATTRS_UNSPECIFIED, s->data,\n                               size);\n            s->regs[SONIC_CTDA] = dp8393x_get(s, width, 0);\n            if (s->regs[SONIC_CTDA] & SONIC_DESC_EOL) {\n                /* EOL detected */\n                break;\n            }\n        }\n    }\n\n    /* Done */\n    s->regs[SONIC_CR] &= ~SONIC_CR_TXP;\n    s->regs[SONIC_ISR] |= SONIC_ISR_TXDN;\n    dp8393x_update_irq(s);\n}",
+            433
+        ]
+    ]
+}

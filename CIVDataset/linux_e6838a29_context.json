@@ -1,0 +1,432 @@
+{
+    "calleeMethods": [
+        [
+            "tools/testing/selftests/rcutorture/formal/srcu-cbmc/src/locks.h",
+            "spin_lock",
+            "static inline void spin_lock(spinlock_t *lock) /* <=== spin_lock */ \n{\n\t/*\n\t * Spin locks also need to be removed in order to eliminate all\n\t * memory barriers. They are only used by the write side anyway.\n\t */\n#ifndef NO_SYNC_SMP_MB\n\tpreempt_disable();\n\tlock_impl_lock(&lock->internal_lock);\n#endif\n}",
+            2
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "kmalloc",
+            "static void *kmalloc(unsigned size, gfp_t gfp) /* <=== kmalloc */ \n{\n\treturn memalign(64, size);\n}",
+            2
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_reply_cache_free_locked",
+            "static void /* <=== nfsd_reply_cache_free_locked */ \nnfsd_reply_cache_free_locked(struct svc_cacherep *rp)\n{\n\tif (rp->c_type == RC_REPLBUFF && rp->c_replvec.iov_base) {\n\t\tdrc_mem_usage -= rp->c_replvec.iov_len;\n\t\tkfree(rp->c_replvec.iov_base);\n\t}\n\tlist_del(&rp->c_lru);\n\tatomic_dec(&num_drc_entries);\n\tdrc_mem_usage -= sizeof(*rp);\n\tkmem_cache_free(drc_slab, rp);\n}",
+            2
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_reply_cache_free",
+            "static void /* <=== nfsd_reply_cache_free */ \nnfsd_reply_cache_free(struct nfsd_drc_bucket *b, struct svc_cacherep *rp)\n{\n\tspin_lock(&b->cache_lock);\n\tnfsd_reply_cache_free_locked(rp);\n\tspin_unlock(&b->cache_lock);\n}",
+            2
+        ],
+        [
+            "tools/include/linux/list.h",
+            "list_del",
+            "static inline void list_del(struct list_head *entry) /* <=== list_del */ \n{\n\t__list_del(entry->prev, entry->next);\n\tentry->next = LIST_POISON1;\n\tentry->prev = LIST_POISON2;\n}",
+            3
+        ],
+        [
+            "include/linux/list.h",
+            "list_move_tail",
+            "static inline void list_move_tail(struct list_head *list, /* <=== list_move_tail */ \n\t\t\t\t  struct list_head *head)\n{\n\t__list_del_entry(list);\n\tlist_add_tail(list, head);\n}",
+            3
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_cache_match",
+            "static bool /* <=== nfsd_cache_match */ \nnfsd_cache_match(struct svc_rqst *rqstp, __wsum csum, struct svc_cacherep *rp)\n{\n\t/* Check RPC XID first */\n\tif (rqstp->rq_xid != rp->c_xid)\n\t\treturn false;\n\t/* compare checksum of NFS data */\n\tif (csum != rp->c_csum) {\n\t\t++payload_misses;\n\t\treturn false;\n\t}\n\n\t/* Other discriminators */\n\tif (rqstp->rq_proc != rp->c_proc ||\n\t    rqstp->rq_prot != rp->c_prot ||\n\t    rqstp->rq_vers != rp->c_vers ||\n\t    rqstp->rq_arg.len != rp->c_len ||\n\t    !rpc_cmp_addr(svc_addr(rqstp), (struct sockaddr *)&rp->c_addr) ||\n\t    rpc_get_port(svc_addr(rqstp)) != rpc_get_port((struct sockaddr *)&rp->c_addr))\n\t\treturn false;\n\n\treturn true;\n}",
+            3
+        ],
+        [
+            "tools/testing/radix-tree/linux/slab.h",
+            "kmem_cache_free",
+            "void kmem_cache_free(struct kmem_cache *cachep, void *objp); /* <=== kmem_cache_free */ ",
+            3
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "kfree",
+            "static void kfree(void *p) /* <=== kfree */ \n{\n\tif (p)\n\t\tfree(p);\n}",
+            2
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_cache_update",
+            "void /* <=== nfsd_cache_update */ \nnfsd_cache_update(struct svc_rqst *rqstp, int cachetype, __be32 *statp)\n{\n\tstruct svc_cacherep *rp = rqstp->rq_cacherep;\n\tstruct kvec\t*resv = &rqstp->rq_res.head[0], *cachv;\n\tu32\t\thash;\n\tstruct nfsd_drc_bucket *b;\n\tint\t\tlen;\n\tsize_t\t\tbufsize = 0;\n\n\tif (!rp)\n\t\treturn;\n\n\thash = nfsd_cache_hash(rp->c_xid);\n\tb = &drc_hashtbl[hash];\n\n\tlen = resv->iov_len - ((char*)statp - (char*)resv->iov_base);\n\tlen >>= 2;\n\n\t/* Don't cache excessive amounts of data and XDR failures */\n\tif (!statp || len > (256 >> 2)) {\n\t\tnfsd_reply_cache_free(b, rp);\n\t\treturn;\n\t}\n\n\tswitch (cachetype) {\n\tcase RC_REPLSTAT:\n\t\tif (len != 1)\n\t\t\tprintk(\"nfsd: RC_REPLSTAT/reply len %d!\\n\",len);\n\t\trp->c_replstat = *statp;\n\t\tbreak;\n\tcase RC_REPLBUFF:\n\t\tcachv = &rp->c_replvec;\n\t\tbufsize = len << 2;\n\t\tcachv->iov_base = kmalloc(bufsize, GFP_KERNEL);\n\t\tif (!cachv->iov_base) {\n\t\t\tnfsd_reply_cache_free(b, rp);\n\t\t\treturn;\n\t\t}\n\t\tcachv->iov_len = bufsize;\n\t\tmemcpy(cachv->iov_base, statp, bufsize);\n\t\tbreak;\n\tcase RC_NOCACHE:\n\t\tnfsd_reply_cache_free(b, rp);\n\t\treturn;\n\t}\n\tspin_lock(&b->cache_lock);\n\tdrc_mem_usage += bufsize;\n\tlru_put_end(b, rp);\n\trp->c_secure = test_bit(RQ_SECURE, &rqstp->rq_flags);\n\trp->c_type = cachetype;\n\trp->c_state = RC_DONE;\n\tspin_unlock(&b->cache_lock);\n\treturn;\n}",
+            1
+        ],
+        [
+            "tools/testing/selftests/rcutorture/formal/srcu-cbmc/src/locks.h",
+            "spin_unlock",
+            "static inline void spin_unlock(spinlock_t *lock) /* <=== spin_unlock */ \n{\n#ifndef NO_SYNC_SMP_MB\n\tlock_impl_unlock(&lock->internal_lock);\n\tpreempt_enable();\n#endif\n}",
+            2
+        ],
+        [
+            "fs/nfsd/cache.h",
+            "RC_EXPIRE",
+            "#define RC_EXPIRE\t\t(120 * HZ) /* <=== fs/nfsd/cache.h:75:75:RC_EXPIRE:0 */ ",
+            3
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_cache_search",
+            "static struct svc_cacherep * /* <=== nfsd_cache_search */ \nnfsd_cache_search(struct nfsd_drc_bucket *b, struct svc_rqst *rqstp,\n\t\t__wsum csum)\n{\n\tstruct svc_cacherep\t*rp, *ret = NULL;\n\tstruct list_head \t*rh = &b->lru_head;\n\tunsigned int\t\tentries = 0;\n\n\tlist_for_each_entry(rp, rh, c_lru) {\n\t\t++entries;\n\t\tif (nfsd_cache_match(rqstp, csum, rp)) {\n\t\t\tret = rp;\n\t\t\tbreak;\n\t\t}\n\t}\n\n\t/* tally hash chain length stats */\n\tif (entries > longest_chain) {\n\t\tlongest_chain = entries;\n\t\tlongest_chain_cachesize = atomic_read(&num_drc_entries);\n\t} else if (entries == longest_chain) {\n\t\t/* prefer to keep the smallest cachesize possible here */\n\t\tlongest_chain_cachesize = min_t(unsigned int,\n\t\t\t\tlongest_chain_cachesize,\n\t\t\t\tatomic_read(&num_drc_entries));\n\t}\n\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "include/linux/list.h",
+            "list_del",
+            "static inline void list_del(struct list_head *entry) /* <=== list_del */ \n{\n\t__list_del_entry(entry);\n\tentry->next = LIST_POISON1;\n\tentry->prev = LIST_POISON2;\n}",
+            3
+        ],
+        [
+            "tools/testing/selftests/rcutorture/formal/srcu-cbmc/src/locks.h",
+            "lock_impl_unlock",
+            "static inline void lock_impl_unlock(struct lock_impl *lock) /* <=== lock_impl_unlock */ \n{\n#ifdef RUN\n\tBUG_ON(!__sync_bool_compare_and_swap(&lock->locked, true, false));\n#else\n\t/* Minimal barrier to prevent accesses leaking out of lock. */\n\t__CPROVER_fence(\"RWfence\", \"WWfence\");\n\n\t__CPROVER_atomic_begin();\n\tbool old_locked = lock->locked;\n\tlock->locked = false;\n\t__CPROVER_atomic_end();\n\n\tBUG_ON(!old_locked);\n#endif\n}",
+            3
+        ],
+        [
+            "fs/nfsd/nfsd.h",
+            "nfserr_jukebox",
+            "#define\tnfserr_jukebox\t\tcpu_to_be32(NFSERR_JUKEBOX) /* <=== fs/nfsd/nfsd.h:185:185:nfserr_jukebox:0 */ ",
+            2
+        ],
+        [
+            "tools/testing/selftests/rcutorture/formal/srcu-cbmc/src/locks.h",
+            "lock_impl_lock",
+            "static inline void lock_impl_lock(struct lock_impl *lock) /* <=== lock_impl_lock */ \n{\n\t/*\n\t * CBMC doesn't support busy waiting, so just assume that the\n\t * lock is available.\n\t */\n\tassume(lock_impl_trylock(lock));\n\n\t/*\n\t * If the lock was already held by this thread then the assumption\n\t * is unsatisfiable (deadlock).\n\t */\n}",
+            3
+        ],
+        [
+            "fs/nfsd/nfsd.h",
+            "nfserr_dropit",
+            "#define\tnfserr_dropit\t\tcpu_to_be32(30000) /* <=== fs/nfsd/nfsd.h:268:268:nfserr_dropit:0 */ ",
+            1
+        ],
+        [
+            "fs/nfsd/cache.h",
+            "RC_DELAY",
+            "#define RC_DELAY\t\t(HZ/5) /* <=== fs/nfsd/cache.h:72:72:RC_DELAY:0 */ ",
+            2
+        ],
+        [
+            "fs/nfsd/nfsd.h",
+            "nfserr_acces",
+            "#define\tnfserr_acces\t\tcpu_to_be32(NFSERR_ACCES) /* <=== fs/nfsd/nfsd.h:160:160:nfserr_acces:0 */ ",
+            2
+        ],
+        [
+            "tools/testing/radix-tree/linux/slab.h",
+            "kmem_cache_alloc",
+            "void *kmem_cache_alloc(struct kmem_cache *cachep, int flags); /* <=== kmem_cache_alloc */ ",
+            3
+        ],
+        [
+            "include/linux/list.h",
+            "INIT_LIST_HEAD",
+            "static inline void INIT_LIST_HEAD(struct list_head *list) /* <=== INIT_LIST_HEAD */ \n{\n\tWRITE_ONCE(list->next, list);\n\tlist->prev = list;\n}",
+            3
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_cache_append",
+            "static int /* <=== nfsd_cache_append */ \nnfsd_cache_append(struct svc_rqst *rqstp, struct kvec *data)\n{\n\tstruct kvec\t*vec = &rqstp->rq_res.head[0];\n\n\tif (vec->iov_len + data->iov_len > PAGE_SIZE) {\n\t\tprintk(KERN_WARNING \"nfsd: cached reply too large (%zd).\\n\",\n\t\t\t\tdata->iov_len);\n\t\treturn 0;\n\t}\n\tmemcpy((char*)vec->iov_base + vec->iov_len, data->iov_base, data->iov_len);\n\tvec->iov_len += data->iov_len;\n\treturn 1;\n}",
+            2
+        ],
+        [
+            "include/linux/sunrpc/svc.h",
+            "svc_addr",
+            "static inline struct sockaddr *svc_addr(const struct svc_rqst *rqst) /* <=== svc_addr */ \n{\n\treturn (struct sockaddr *) &rqst->rq_addr;\n}",
+            2
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_reply_cache_alloc",
+            "static struct svc_cacherep * /* <=== nfsd_reply_cache_alloc */ \nnfsd_reply_cache_alloc(void)\n{\n\tstruct svc_cacherep\t*rp;\n\n\trp = kmem_cache_alloc(drc_slab, GFP_KERNEL);\n\tif (rp) {\n\t\trp->c_state = RC_UNUSED;\n\t\trp->c_type = RC_NOCACHE;\n\t\tINIT_LIST_HEAD(&rp->c_lru);\n\t}\n\treturn rp;\n}",
+            2
+        ],
+        [
+            "tools/include/linux/list.h",
+            "INIT_LIST_HEAD",
+            "static inline void INIT_LIST_HEAD(struct list_head *list) /* <=== INIT_LIST_HEAD */ \n{\n\tlist->next = list;\n\tlist->prev = list;\n}",
+            3
+        ],
+        [
+            "fs/nfsd/cache.h",
+            "RC_CSUMLEN",
+            "#define RC_CSUMLEN\t\t(256U) /* <=== fs/nfsd/cache.h:78:78:RC_CSUMLEN:0 */ ",
+            3
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_cache_csum",
+            "static __wsum /* <=== nfsd_cache_csum */ \nnfsd_cache_csum(struct svc_rqst *rqstp)\n{\n\tint idx;\n\tunsigned int base;\n\t__wsum csum;\n\tstruct xdr_buf *buf = &rqstp->rq_arg;\n\tconst unsigned char *p = buf->head[0].iov_base;\n\tsize_t csum_len = min_t(size_t, buf->head[0].iov_len + buf->page_len,\n\t\t\t\tRC_CSUMLEN);\n\tsize_t len = min(buf->head[0].iov_len, csum_len);\n\n\t/* rq_arg.head first */\n\tcsum = csum_partial(p, len, 0);\n\tcsum_len -= len;\n\n\t/* Continue into page array */\n\tidx = buf->page_base / PAGE_SIZE;\n\tbase = buf->page_base & ~PAGE_MASK;\n\twhile (csum_len) {\n\t\tp = page_address(buf->pages[idx]) + base;\n\t\tlen = min_t(size_t, PAGE_SIZE - base, csum_len);\n\t\tcsum = csum_partial(p, len, csum);\n\t\tcsum_len -= len;\n\t\tbase = 0;\n\t\t++idx;\n\t}\n\treturn csum;\n}",
+            2
+        ],
+        [
+            "fs/nfsd/nfsd.h",
+            "nfserr_wrongsec",
+            "#define\tnfserr_wrongsec\t\tcpu_to_be32(NFSERR_WRONGSEC) /* <=== fs/nfsd/nfsd.h:218:218:nfserr_wrongsec:0 */ ",
+            2
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_cache_hash",
+            "static u32 /* <=== nfsd_cache_hash */ \nnfsd_cache_hash(__be32 xid)\n{\n\treturn hash_32(be32_to_cpu(xid), maskbits);\n}",
+            2
+        ],
+        [
+            "fs/nfsd/nfssvc.c",
+            "map_new_errors",
+            "static __be32 map_new_errors(u32 vers, __be32 nfserr) /* <=== map_new_errors */ \n{\n\tif (nfserr == nfserr_jukebox && vers == 2)\n\t\treturn nfserr_dropit;\n\tif (nfserr == nfserr_wrongsec && vers < 4)\n\t\treturn nfserr_acces;\n\treturn nfserr;\n}",
+            1
+        ],
+        [
+            "include/linux/sunrpc/svc.h",
+            "svc_putu32",
+            "static inline void svc_putu32(struct kvec *iov, __be32 val) /* <=== svc_putu32 */ \n{\n\t__be32 *vp = iov->iov_base + iov->iov_len;\n\t*vp = val;\n\tiov->iov_len += sizeof(__be32);\n}",
+            2
+        ],
+        [
+            "include/linux/string.h",
+            "memcpy",
+            "extern void * memcpy(void *,const void *,__kernel_size_t); /* <=== memcpy */ ",
+            2
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "nfsd_cache_lookup",
+            "int /* <=== nfsd_cache_lookup */ \nnfsd_cache_lookup(struct svc_rqst *rqstp)\n{\n\tstruct svc_cacherep\t*rp, *found;\n\t__be32\t\t\txid = rqstp->rq_xid;\n\tu32\t\t\tproto =  rqstp->rq_prot,\n\t\t\t\tvers = rqstp->rq_vers,\n\t\t\t\tproc = rqstp->rq_proc;\n\t__wsum\t\t\tcsum;\n\tu32 hash = nfsd_cache_hash(xid);\n\tstruct nfsd_drc_bucket *b = &drc_hashtbl[hash];\n\tunsigned long\t\tage;\n\tint type = rqstp->rq_cachetype;\n\tint rtn = RC_DOIT;\n\n\trqstp->rq_cacherep = NULL;\n\tif (type == RC_NOCACHE) {\n\t\tnfsdstats.rcnocache++;\n\t\treturn rtn;\n\t}\n\n\tcsum = nfsd_cache_csum(rqstp);\n\n\t/*\n\t * Since the common case is a cache miss followed by an insert,\n\t * preallocate an entry.\n\t */\n\trp = nfsd_reply_cache_alloc();\n\tspin_lock(&b->cache_lock);\n\tif (likely(rp)) {\n\t\tatomic_inc(&num_drc_entries);\n\t\tdrc_mem_usage += sizeof(*rp);\n\t}\n\n\t/* go ahead and prune the cache */\n\tprune_bucket(b);\n\n\tfound = nfsd_cache_search(b, rqstp, csum);\n\tif (found) {\n\t\tif (likely(rp))\n\t\t\tnfsd_reply_cache_free_locked(rp);\n\t\trp = found;\n\t\tgoto found_entry;\n\t}\n\n\tif (!rp) {\n\t\tdprintk(\"nfsd: unable to allocate DRC entry!\\n\");\n\t\tgoto out;\n\t}\n\n\tnfsdstats.rcmisses++;\n\trqstp->rq_cacherep = rp;\n\trp->c_state = RC_INPROG;\n\trp->c_xid = xid;\n\trp->c_proc = proc;\n\trpc_copy_addr((struct sockaddr *)&rp->c_addr, svc_addr(rqstp));\n\trpc_set_port((struct sockaddr *)&rp->c_addr, rpc_get_port(svc_addr(rqstp)));\n\trp->c_prot = proto;\n\trp->c_vers = vers;\n\trp->c_len = rqstp->rq_arg.len;\n\trp->c_csum = csum;\n\n\tlru_put_end(b, rp);\n\n\t/* release any buffer */\n\tif (rp->c_type == RC_REPLBUFF) {\n\t\tdrc_mem_usage -= rp->c_replvec.iov_len;\n\t\tkfree(rp->c_replvec.iov_base);\n\t\trp->c_replvec.iov_base = NULL;\n\t}\n\trp->c_type = RC_NOCACHE;\n out:\n\tspin_unlock(&b->cache_lock);\n\treturn rtn;\n\nfound_entry:\n\tnfsdstats.rchits++;\n\t/* We found a matching entry which is either in progress or done. */\n\tage = jiffies - rp->c_timestamp;\n\tlru_put_end(b, rp);\n\n\trtn = RC_DROPIT;\n\t/* Request being processed or excessive rexmits */\n\tif (rp->c_state == RC_INPROG || age < RC_DELAY)\n\t\tgoto out;\n\n\t/* From the hall of fame of impractical attacks:\n\t * Is this a user who tries to snoop on the cache? */\n\trtn = RC_DOIT;\n\tif (!test_bit(RQ_SECURE, &rqstp->rq_flags) && rp->c_secure)\n\t\tgoto out;\n\n\t/* Compose RPC reply header */\n\tswitch (rp->c_type) {\n\tcase RC_NOCACHE:\n\t\tbreak;\n\tcase RC_REPLSTAT:\n\t\tsvc_putu32(&rqstp->rq_res.head[0], rp->c_replstat);\n\t\trtn = RC_REPLY;\n\t\tbreak;\n\tcase RC_REPLBUFF:\n\t\tif (!nfsd_cache_append(rqstp, &rp->c_replvec))\n\t\t\tgoto out;\t/* should not happen */\n\t\trtn = RC_REPLY;\n\t\tbreak;\n\tdefault:\n\t\tprintk(KERN_WARNING \"nfsd: bad repcache type %d\\n\", rp->c_type);\n\t\tnfsd_reply_cache_free_locked(rp);\n\t}\n\n\tgoto out;\n}",
+            1
+        ],
+        [
+            "arch/sh/include/asm/bitops-op32.h",
+            "test_bit",
+            "static inline int test_bit(int nr, const volatile unsigned long *addr) /* <=== test_bit */ \n{\n\treturn 1UL & (addr[BIT_WORD(nr)] >> (nr & (BITS_PER_LONG-1)));\n}",
+            1
+        ],
+        [
+            "tools/include/linux/list.h",
+            "list_move_tail",
+            "static inline void list_move_tail(struct list_head *list, /* <=== list_move_tail */ \n\t\t\t\t  struct list_head *head)\n{\n\t__list_del_entry(list);\n\tlist_add_tail(list, head);\n}",
+            3
+        ],
+        [
+            "include/asm-generic/bitops/non-atomic.h",
+            "test_bit",
+            "static inline int test_bit(int nr, const volatile unsigned long *addr) /* <=== test_bit */ \n{\n\treturn 1UL & (addr[BIT_WORD(nr)] >> (nr & (BITS_PER_LONG-1)));\n}",
+            1
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "lru_put_end",
+            "static void /* <=== lru_put_end */ \nlru_put_end(struct nfsd_drc_bucket *b, struct svc_cacherep *rp)\n{\n\trp->c_timestamp = jiffies;\n\tlist_move_tail(&rp->c_lru, &b->lru_head);\n}",
+            2
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "spin_unlock",
+            "static void spin_unlock(spinlock_t *lock) /* <=== spin_unlock */ \n{\n\tint ret = pthread_spin_unlock(lock);\n\tassert(!ret);\n}",
+            2
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "spin_lock",
+            "static void spin_lock(spinlock_t *lock) /* <=== spin_lock */ \n{\n\tint ret = pthread_spin_lock(lock);\n\tassert(!ret);\n}",
+            2
+        ],
+        [
+            "fs/nfsd/nfscache.c",
+            "prune_bucket",
+            "static long /* <=== prune_bucket */ \nprune_bucket(struct nfsd_drc_bucket *b)\n{\n\tstruct svc_cacherep *rp, *tmp;\n\tlong freed = 0;\n\n\tlist_for_each_entry_safe(rp, tmp, &b->lru_head, c_lru) {\n\t\t/*\n\t\t * Don't free entries attached to calls that are still\n\t\t * in-progress, but do keep scanning the list.\n\t\t */\n\t\tif (rp->c_state == RC_INPROG)\n\t\t\tcontinue;\n\t\tif (atomic_read(&num_drc_entries) <= max_drc_entries &&\n\t\t    time_before(jiffies, rp->c_timestamp + RC_EXPIRE))\n\t\t\tbreak;\n\t\tnfsd_reply_cache_free_locked(rp);\n\t\tfreed++;\n\t}\n\treturn freed;\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/inetdevice.h>",
+        "#include <linux/sunrpc/svcsock.h>",
+        "#include <linux/nfsacl.h>",
+        "#include \"netns.h\"",
+        "#include \"cache.h\"",
+        "#include \"vfs.h\"",
+        "#include <linux/seq_file.h>",
+        "#include <linux/freezer.h>",
+        "#include <linux/fs_struct.h>",
+        "#include <linux/sunrpc/svc_xprt.h>",
+        "#include <net/net_namespace.h>",
+        "#include <linux/sched/signal.h>",
+        "#include <net/ipv6.h>",
+        "#include <net/addrconf.h>",
+        "#include <linux/lockd/bind.h>",
+        "#include <linux/swap.h>",
+        "#include <linux/sunrpc/stats.h>",
+        "#include \"nfsd.h\"",
+        "#include <linux/module.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef _Bool\t\t\tbool;",
+            "bool"
+        ],
+        [
+            "struct svc_procedure {\n\tsvc_procfunc\t\tpc_func;\t/* process the request */\n\tkxdrproc_t\t\tpc_decode;\t/* XDR decode args */\n\tkxdrproc_t\t\tpc_encode;\t/* XDR encode result */\n\tkxdrproc_t\t\tpc_release;\t/* XDR free result */\n\tunsigned int\t\tpc_argsize;\t/* argument struct size */\n\tunsigned int\t\tpc_ressize;\t/* result struct size */\n\tunsigned int\t\tpc_count;\t/* call count */\n\tunsigned int\t\tpc_cachetype;\t/* cache info (NFS) */\n\tunsigned int\t\tpc_xdrressize;\t/* maximum size of XDR reply */\n}",
+            "svc_procedure"
+        ],
+        [
+            "typedef __u32 __bitwise __be32;",
+            "__be32"
+        ],
+        [
+            "struct svc_rqst {\n\tstruct list_head\trq_all;\t\t/* all threads list */\n\tstruct rcu_head\t\trq_rcu_head;\t/* for RCU deferred kfree */\n\tstruct svc_xprt *\trq_xprt;\t/* transport ptr */\n\n\tstruct sockaddr_storage\trq_addr;\t/* peer address */\n\tsize_t\t\t\trq_addrlen;\n\tstruct sockaddr_storage\trq_daddr;\t/* dest addr of request\n\t\t\t\t\t\t *  - reply from here */\n\tsize_t\t\t\trq_daddrlen;\n\n\tstruct svc_serv *\trq_server;\t/* RPC service definition */\n\tstruct svc_pool *\trq_pool;\t/* thread pool */\n\tstruct svc_procedure *\trq_procinfo;\t/* procedure info */\n\tstruct auth_ops *\trq_authop;\t/* authentication flavour */\n\tstruct svc_cred\t\trq_cred;\t/* auth info */\n\tvoid *\t\t\trq_xprt_ctxt;\t/* transport specific context ptr */\n\tstruct svc_deferred_req*rq_deferred;\t/* deferred request we are replaying */\n\n\tsize_t\t\t\trq_xprt_hlen;\t/* xprt header len */\n\tstruct xdr_buf\t\trq_arg;\n\tstruct xdr_buf\t\trq_res;\n\tstruct page *\t\trq_pages[RPCSVC_MAXPAGES];\n\tstruct page *\t\t*rq_respages;\t/* points into rq_pages */\n\tstruct page *\t\t*rq_next_page; /* next reply page to use */\n\tstruct page *\t\t*rq_page_end;  /* one past the last page */\n\n\tstruct kvec\t\trq_vec[RPCSVC_MAXPAGES]; /* generally useful.. */\n\n\t__be32\t\t\trq_xid;\t\t/* transmission id */\n\tu32\t\t\trq_prog;\t/* program number */\n\tu32\t\t\trq_vers;\t/* program version */\n\tu32\t\t\trq_proc;\t/* procedure number */\n\tu32\t\t\trq_prot;\t/* IP protocol */\n\tint\t\t\trq_cachetype;\t/* catering to nfsd */\n#define\tRQ_SECURE\t(0)\t\t\t/* secure port */\n#define\tRQ_LOCAL\t(1)\t\t\t/* local request */\n#define\tRQ_USEDEFERRAL\t(2)\t\t\t/* use deferral */\n#define\tRQ_DROPME\t(3)\t\t\t/* drop current reply */\n#define\tRQ_SPLICE_OK\t(4)\t\t\t/* turned off in gss privacy\n\t\t\t\t\t\t * to prevent encrypting page\n\t\t\t\t\t\t * cache pages */\n#define\tRQ_VICTIM\t(5)\t\t\t/* about to be shut down */\n#define\tRQ_BUSY\t\t(6)\t\t\t/* request is busy */\n#define\tRQ_DATA\t\t(7)\t\t\t/* request has data */\n\tunsigned long\t\trq_flags;\t/* flags field */\n\n\tvoid *\t\t\trq_argp;\t/* decoded arguments */\n\tvoid *\t\t\trq_resp;\t/* xdr'd results */\n\tvoid *\t\t\trq_auth_data;\t/* flavor-specific data */\n\tint\t\t\trq_auth_slack;\t/* extra space xdr code\n\t\t\t\t\t\t * should leave in head\n\t\t\t\t\t\t * for krb5i, krb5p.\n\t\t\t\t\t\t */\n\tint\t\t\trq_reserved;\t/* space on socket outq\n\t\t\t\t\t\t * reserved for this request\n\t\t\t\t\t\t */\n\n\tstruct cache_req\trq_chandle;\t/* handle passed to caches for \n\t\t\t\t\t\t * request delaying \n\t\t\t\t\t\t */\n\t/* Catering to nfsd */\n\tstruct auth_domain *\trq_client;\t/* RPC peer info */\n\tstruct auth_domain *\trq_gssclient;\t/* \"gss/\"-style peer info */\n\tstruct svc_cacherep *\trq_cacherep;\t/* cache info */\n\tstruct task_struct\t*rq_task;\t/* service thread */\n\tspinlock_t\t\trq_lock;\t/* per-request lock */\n}",
+            "svc_rqst"
+        ]
+    ],
+    "visitedLines_after": {
+        "fs/nfsd/nfssvc.c": [
+            758,
+            759,
+            765,
+            766,
+            771,
+            772,
+            774,
+            775,
+            776,
+            778,
+            781,
+            782,
+            789,
+            790,
+            791,
+            793,
+            794,
+            795,
+            796,
+            802,
+            804,
+            805,
+            806,
+            807,
+            808,
+            809,
+            813,
+            814,
+            815,
+            816,
+            817,
+            818,
+            825,
+            826,
+            827,
+            830,
+            831,
+            832,
+            833,
+            834,
+            835,
+            838,
+            839,
+            844,
+            845,
+            846,
+            847,
+            849,
+            850,
+            851,
+            852,
+            857,
+            858
+        ]
+    },
+    "visitedLines_before": {
+        "fs/nfsd/nfssvc.c": [
+            750,
+            751,
+            758,
+            759,
+            760,
+            766,
+            768,
+            769,
+            770,
+            771,
+            772,
+            773,
+            777,
+            778,
+            779,
+            780,
+            781,
+            782,
+            789,
+            790,
+            791,
+            794,
+            795,
+            796,
+            797,
+            798,
+            799,
+            802,
+            803,
+            808,
+            809,
+            810,
+            811,
+            813,
+            814,
+            815,
+            816,
+            821,
+            822
+        ]
+    },
+    "visitedParams": {
+        "fs/nfsd/nfssvc.c": [
+            [
+                "__be32 *statp",
+                "nfsd_dispatch"
+            ],
+            [
+                "struct svc_procedure *proc",
+                "nfs_request_too_big"
+            ],
+            [
+                "struct svc_rqst *rqstp",
+                "nfs_request_too_big"
+            ],
+            [
+                "struct svc_rqst *rqstp",
+                "nfsd_dispatch"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "fs/nfsd/nfssvc.c",
+            "nfs_request_too_big",
+            "static bool nfs_request_too_big(struct svc_rqst *rqstp, /* <=== nfs_request_too_big */ \n\t\t\t\tstruct svc_procedure *proc)\n{\n\t/*\n\t * The ACL code has more careful bounds-checking and is not\n\t * susceptible to this problem:\n\t */\n\tif (rqstp->rq_prog != NFS_PROGRAM)\n\t\treturn false;\n\t/*\n\t * Ditto NFSv4 (which can in theory have argument and reply both\n\t * more than a page):\n\t */\n\tif (rqstp->rq_vers >= 4)\n\t\treturn false;\n\t/* The reply will be small, we're OK: */\n\tif (proc->pc_xdrressize > 0 &&\n\t    proc->pc_xdrressize < XDR_QUADLEN(PAGE_SIZE))\n\t\treturn false;\n\n\treturn rqstp->rq_arg.len > PAGE_SIZE;\n}",
+            758
+        ],
+        [
+            "fs/nfsd/nfssvc.c",
+            "nfsd_dispatch",
+            "int /* <=== nfsd_dispatch */ \nnfsd_dispatch(struct svc_rqst *rqstp, __be32 *statp)\n{\n\tstruct svc_procedure\t*proc;\n\tkxdrproc_t\t\txdr;\n\t__be32\t\t\tnfserr;\n\t__be32\t\t\t*nfserrp;\n\n\tdprintk(\"nfsd_dispatch: vers %d proc %d\\n\",\n\t\t\t\trqstp->rq_vers, rqstp->rq_proc);\n\tproc = rqstp->rq_procinfo;\n\n\tif (nfs_request_too_big(rqstp, proc)) {\n\t\tdprintk(\"nfsd: NFSv%d argument too large\\n\", rqstp->rq_vers);\n\t\t*statp = rpc_garbage_args;\n\t\treturn 1;\n\t}\n\t/*\n\t * Give the xdr decoder a chance to change this if it wants\n\t * (necessary in the NFSv4.0 compound case)\n\t */\n\trqstp->rq_cachetype = proc->pc_cachetype;\n\t/* Decode arguments */\n\txdr = proc->pc_decode;\n\tif (xdr && !xdr(rqstp, (__be32*)rqstp->rq_arg.head[0].iov_base,\n\t\t\trqstp->rq_argp)) {\n\t\tdprintk(\"nfsd: failed to decode arguments!\\n\");\n\t\t*statp = rpc_garbage_args;\n\t\treturn 1;\n\t}\n\n\t/* Check whether we have this call in the cache. */\n\tswitch (nfsd_cache_lookup(rqstp)) {\n\tcase RC_DROPIT:\n\t\treturn 0;\n\tcase RC_REPLY:\n\t\treturn 1;\n\tcase RC_DOIT:;\n\t\t/* do it */\n\t}\n\n\t/* need to grab the location to store the status, as\n\t * nfsv4 does some encoding while processing \n\t */\n\tnfserrp = rqstp->rq_res.head[0].iov_base\n\t\t+ rqstp->rq_res.head[0].iov_len;\n\trqstp->rq_res.head[0].iov_len += sizeof(__be32);\n\n\t/* Now call the procedure handler, and encode NFS status. */\n\tnfserr = proc->pc_func(rqstp, rqstp->rq_argp, rqstp->rq_resp);\n\tnfserr = map_new_errors(rqstp->rq_vers, nfserr);\n\tif (nfserr == nfserr_dropit || test_bit(RQ_DROPME, &rqstp->rq_flags)) {\n\t\tdprintk(\"nfsd: Dropping request; may be revisited later\\n\");\n\t\tnfsd_cache_update(rqstp, RC_NOCACHE, NULL);\n\t\treturn 0;\n\t}\n\n\tif (rqstp->rq_proc != 0)\n\t\t*nfserrp++ = nfserr;\n\n\t/* Encode result.\n\t * For NFSv2, additional info is never returned in case of an error.\n\t */\n\tif (!(nfserr && rqstp->rq_vers == 2)) {\n\t\txdr = proc->pc_encode;\n\t\tif (xdr && !xdr(rqstp, nfserrp,\n\t\t\t\trqstp->rq_resp)) {\n\t\t\t/* Failed to encode result. Release cache entry */\n\t\t\tdprintk(\"nfsd: failed to encode result!\\n\");\n\t\t\tnfsd_cache_update(rqstp, RC_NOCACHE, NULL);\n\t\t\t*statp = rpc_system_err;\n\t\t\treturn 1;\n\t\t}\n\t}\n\n\t/* Store reply in cache. */\n\tnfsd_cache_update(rqstp, rqstp->rq_cachetype, statp + 1);\n\treturn 1;\n}",
+            781
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "fs/nfsd/nfssvc.c",
+            "nfsd_dispatch",
+            "int /* <=== nfsd_dispatch */ \nnfsd_dispatch(struct svc_rqst *rqstp, __be32 *statp)\n{\n\tstruct svc_procedure\t*proc;\n\tkxdrproc_t\t\txdr;\n\t__be32\t\t\tnfserr;\n\t__be32\t\t\t*nfserrp;\n\n\tdprintk(\"nfsd_dispatch: vers %d proc %d\\n\",\n\t\t\t\trqstp->rq_vers, rqstp->rq_proc);\n\tproc = rqstp->rq_procinfo;\n\n\t/*\n\t * Give the xdr decoder a chance to change this if it wants\n\t * (necessary in the NFSv4.0 compound case)\n\t */\n\trqstp->rq_cachetype = proc->pc_cachetype;\n\t/* Decode arguments */\n\txdr = proc->pc_decode;\n\tif (xdr && !xdr(rqstp, (__be32*)rqstp->rq_arg.head[0].iov_base,\n\t\t\trqstp->rq_argp)) {\n\t\tdprintk(\"nfsd: failed to decode arguments!\\n\");\n\t\t*statp = rpc_garbage_args;\n\t\treturn 1;\n\t}\n\n\t/* Check whether we have this call in the cache. */\n\tswitch (nfsd_cache_lookup(rqstp)) {\n\tcase RC_DROPIT:\n\t\treturn 0;\n\tcase RC_REPLY:\n\t\treturn 1;\n\tcase RC_DOIT:;\n\t\t/* do it */\n\t}\n\n\t/* need to grab the location to store the status, as\n\t * nfsv4 does some encoding while processing \n\t */\n\tnfserrp = rqstp->rq_res.head[0].iov_base\n\t\t+ rqstp->rq_res.head[0].iov_len;\n\trqstp->rq_res.head[0].iov_len += sizeof(__be32);\n\n\t/* Now call the procedure handler, and encode NFS status. */\n\tnfserr = proc->pc_func(rqstp, rqstp->rq_argp, rqstp->rq_resp);\n\tnfserr = map_new_errors(rqstp->rq_vers, nfserr);\n\tif (nfserr == nfserr_dropit || test_bit(RQ_DROPME, &rqstp->rq_flags)) {\n\t\tdprintk(\"nfsd: Dropping request; may be revisited later\\n\");\n\t\tnfsd_cache_update(rqstp, RC_NOCACHE, NULL);\n\t\treturn 0;\n\t}\n\n\tif (rqstp->rq_proc != 0)\n\t\t*nfserrp++ = nfserr;\n\n\t/* Encode result.\n\t * For NFSv2, additional info is never returned in case of an error.\n\t */\n\tif (!(nfserr && rqstp->rq_vers == 2)) {\n\t\txdr = proc->pc_encode;\n\t\tif (xdr && !xdr(rqstp, nfserrp,\n\t\t\t\trqstp->rq_resp)) {\n\t\t\t/* Failed to encode result. Release cache entry */\n\t\t\tdprintk(\"nfsd: failed to encode result!\\n\");\n\t\t\tnfsd_cache_update(rqstp, RC_NOCACHE, NULL);\n\t\t\t*statp = rpc_system_err;\n\t\t\treturn 1;\n\t\t}\n\t}\n\n\t/* Store reply in cache. */\n\tnfsd_cache_update(rqstp, rqstp->rq_cachetype, statp + 1);\n\treturn 1;\n}",
+            750
+        ]
+    ]
+}

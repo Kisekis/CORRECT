@@ -1,0 +1,490 @@
+{
+    "calleeMethods": [
+        [
+            "system.h",
+            "xmalloc",
+            "#define xmalloc(_size) rmalloc((_size)) /* <=== system.h:66:66:xmalloc:1 */ ",
+            1
+        ],
+        [
+            "rpmio/digest_libgcrypt.c",
+            "hashalgo2gcryalgo",
+            "static int hashalgo2gcryalgo(int hashalgo) /* <=== hashalgo2gcryalgo */ \n{\n    switch (hashalgo) {\n    case PGPHASHALGO_MD5:\n\treturn GCRY_MD_MD5;\n    case PGPHASHALGO_SHA1:\n\treturn GCRY_MD_SHA1;\n    case PGPHASHALGO_SHA224:\n\treturn GCRY_MD_SHA224;\n    case PGPHASHALGO_SHA256:\n\treturn GCRY_MD_SHA256;\n    case PGPHASHALGO_SHA384:\n\treturn GCRY_MD_SHA384;\n    case PGPHASHALGO_SHA512:\n\treturn GCRY_MD_SHA512;\n    default:\n\treturn 0;\n    }\n}",
+            2
+        ],
+        [
+            "rpmio/digest_openssl.c",
+            "rpmDigestInit",
+            "DIGEST_CTX rpmDigestInit(int hashalgo, rpmDigestFlags flags) /* <=== rpmDigestInit */ \n{\n    DIGEST_CTX ctx = xcalloc(1, sizeof(*ctx));\n\n    ctx->md_ctx = EVP_MD_CTX_new();\n    if (!ctx->md_ctx) {\n        free(ctx);\n        return NULL;\n    }\n\n    const EVP_MD *md = getEVPMD(hashalgo);\n    if (md == EVP_md_null()) {\n        free(ctx->md_ctx);\n        free(ctx);\n        return NULL;\n    }\n\n    ctx->algo = hashalgo;\n    ctx->flags = flags;\n    if (!EVP_DigestInit_ex(ctx->md_ctx, md, NULL)) {\n        free(ctx->md_ctx);\n        free(ctx);\n        return NULL;\n    }\n\n    return ctx;\n}",
+            1
+        ],
+        [
+            "rpmio/digest_openssl.c",
+            "rpmDigestFinal",
+            "int rpmDigestFinal(DIGEST_CTX ctx, void ** datap, size_t *lenp, int asAscii) /* <=== rpmDigestFinal */ \n{\n    int ret;\n    unsigned char *digest = NULL;\n    unsigned int digestlen;\n\n    if (ctx == NULL) return -1;\n\n    digestlen = EVP_MD_CTX_size(ctx->md_ctx);\n    digest = xcalloc(digestlen, sizeof(*digest));\n\n    ret = EVP_DigestFinal_ex(ctx->md_ctx, digest, &digestlen);\n    if (ret != 1) goto done;\n\n    if (!asAscii) {\n        /* Raw data requested */\n        if (lenp) *lenp = digestlen;\n        if (datap) {\n            *datap = digest;\n            digest = NULL;\n        }\n    }\n\n    else {\n        /* ASCII requested */\n        if (lenp) *lenp = (2*digestlen) + 1;\n        if (datap) {\n            const uint8_t * s = (const uint8_t *) digest;\n            *datap = pgpHexStr(s, digestlen);\n        }\n    }\n\n    ret = 1;\n\ndone:\n    if (digest) {\n        /* Zero the digest, just in case it's sensitive */\n        memset(digest, 0, digestlen);\n        free(digest);\n    }\n\n    EVP_MD_CTX_free(ctx->md_ctx);\n    free(ctx);\n\n    if (ret != 1) {\n        return -1;\n    }\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtSigParams",
+            "static int pgpPrtSigParams(pgpTag tag, uint8_t pubkey_algo, /* <=== pgpPrtSigParams */ \n\t\tconst uint8_t *p, const uint8_t *h, size_t hlen,\n\t\tpgpDigParams sigp)\n{\n    int rc = 1; /* assume failure */\n    const uint8_t * pend = h + hlen;\n    int i;\n    pgpDigAlg sigalg = pgpSignatureNew(pubkey_algo);\n\n    for (i = 0; i < sigalg->mpis && pend - p >= 2; i++) {\n\tint mpil = pgpMpiLen(p);\n\tif (pend - p < mpil)\n\t    break;\n\tif (sigalg->setmpi(sigalg, i, p))\n\t    break;\n\tp += mpil;\n    }\n\n    /* Does the size and number of MPI's match our expectations? */\n    if (p == pend && i == sigalg->mpis)\n\trc = 0;\n    \n    /* We can't handle more than one sig at a time */\n    if (rc == 0 && sigp->alg == NULL && sigp->tag == PGPTAG_SIGNATURE)\n\tsigp->alg = sigalg;\n    else\n\tpgpDigAlgFree(sigalg);\n\n    return rc;\n}",
+            3
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPubkeyFingerprint",
+            "int pgpPubkeyFingerprint(const uint8_t *h, size_t hlen, /* <=== pgpPubkeyFingerprint */ \n\t\t\t  uint8_t **fp, size_t *fplen)\n{\n    int rc = -1; /* assume failure */\n    const uint8_t *se;\n    const uint8_t *pend = h + hlen;\n    uint8_t version = 0;\n\n    if (pgpVersion(h, hlen, &version))\n\treturn rc;\n\n    /* We only permit V4 keys, V3 keys are long long since deprecated */\n    switch (version) {\n    case 4:\n      {\tpgpPktKeyV4 v = (pgpPktKeyV4) (h);\n\tint mpis = -1;\n\n\t/* Packet must be larger than v to have room for the required MPIs */\n\tif (hlen > sizeof(*v)) {\n\t    switch (v->pubkey_algo) {\n\t    case PGPPUBKEYALGO_RSA:\n\t\tmpis = 2;\n\t\tbreak;\n\t    case PGPPUBKEYALGO_DSA:\n\t\tmpis = 4;\n\t\tbreak;\n\t    case PGPPUBKEYALGO_EDDSA:\n\t\tmpis = 1;\n\t\tbreak;\n\t    }\n\t}\n\n\tse = (uint8_t *)(v + 1);\n\t/* EdDSA has a curve id before the MPIs */\n\tif (v->pubkey_algo == PGPPUBKEYALGO_EDDSA) {\n\t    if (se < pend && se[0] != 0x00 && se[0] != 0xff)\n\t\tse += 1 + se[0];\n\t    else\n\t\tse = pend;      /* error out when reading the MPI */\n\t}\n\twhile (se < pend && mpis-- > 0)\n\t    se += pgpMpiLen(se);\n\n\t/* Does the size and number of MPI's match our expectations? */\n\tif (se == pend && mpis == 0) {\n\t    DIGEST_CTX ctx = rpmDigestInit(PGPHASHALGO_SHA1, RPMDIGEST_NONE);\n\t    uint8_t *d = NULL;\n\t    size_t dlen = 0;\n\t    int i = se - h;\n\t    uint8_t in[3] = { 0x99, (i >> 8), i };\n\n\t    (void) rpmDigestUpdate(ctx, in, 3);\n\t    (void) rpmDigestUpdate(ctx, h, i);\n\t    (void) rpmDigestFinal(ctx, (void **)&d, &dlen, 0);\n\n\t    if (dlen == 20) {\n\t\trc = 0;\n\t\t*fp = d;\n\t\t*fplen = dlen;\n\t    } else {\n\t\tfree(d);\n\t    }\n\t}\n\n      }\tbreak;\n    default:\n\trpmlog(RPMLOG_WARNING, _(\"Unsupported version of key: V%d\\n\"), version);\n    }\n    return rc;\n}",
+            3
+        ],
+        [
+            "system.h",
+            "_",
+            "# define _(Text) Text /* <=== system.h:96:96:_:1 */ ",
+            3
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtUserID",
+            "static int pgpPrtUserID(pgpTag tag, const uint8_t *h, size_t hlen, /* <=== pgpPrtUserID */ \n\t\t\tpgpDigParams _digp)\n{\n    pgpPrtVal(\"\", pgpTagTbl, tag);\n    if (_print)\n\tfprintf(stderr, \" \\\"%.*s\\\"\", (int)hlen, (const char *)h);\n    pgpPrtNL();\n    free(_digp->userid);\n    _digp->userid = memcpy(xmalloc(hlen+1), h, hlen);\n    _digp->userid[hlen] = '\\0';\n    return 0;\n}",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpGet",
+            "static int pgpGet(const uint8_t *s, size_t nbytes, const uint8_t *send, /* <=== pgpGet */ \n\t\t  unsigned int *valp)\n{\n    int rc = -1;\n\n    *valp = 0;\n    if (nbytes <= 4 && send - s >= nbytes) {\n\tunsigned int val = pgpGrab(s, nbytes);\n\tif (send - s - nbytes >= val) {\n\t    rc = 0;\n\t    *valp = val;\n\t}\n    }\n\n    return rc;\n}",
+            3
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpHexStr",
+            "char * pgpHexStr(const uint8_t *p, size_t plen) /* <=== pgpHexStr */ \n{\n    char *t, *str;\n    str = t = xmalloc(plen * 2 + 1);\n    static char const hex[] = \"0123456789abcdef\";\n    while (plen-- > 0) {\n\tsize_t i;\n\ti = *p++;\n\t*t++ = hex[ (i >> 4) & 0xf ];\n\t*t++ = hex[ (i     ) & 0xf ];\n    }\n    *t = '\\0';\n    return str;\n}",
+            2
+        ],
+        [
+            "system.h",
+            "xcalloc",
+            "#define xcalloc(_nmemb, _size) rcalloc((_nmemb), (_size)) /* <=== system.h:67:67:xcalloc:2 */ ",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtPubkeyParams",
+            "static int pgpPrtPubkeyParams(uint8_t pubkey_algo, /* <=== pgpPrtPubkeyParams */ \n\t\tconst uint8_t *p, const uint8_t *h, size_t hlen,\n\t\tpgpDigParams keyp)\n{\n    int rc = 1;\n    const uint8_t *pend = h + hlen;\n    int i, curve = 0;\n    pgpDigAlg keyalg;\n    if (pubkey_algo == PGPPUBKEYALGO_EDDSA) {\n\tint len = p + 1 < pend ? p[0] : 0;\n\tif (len == 0 || len == 0xff || p + 1 + len > pend)\n\t    goto exit;\n\tcurve = pgpCurveByOid(p + 1, len);\n\tp += len + 1;\n    }\n    keyalg = pgpPubkeyNew(pubkey_algo, curve);\n    for (i = 0; i < keyalg->mpis && p + 2 <= pend; i++) {\n\tint mpil = pgpMpiLen(p);\n\tif (p + mpil > pend)\n\t    break;\n\tif (keyalg->setmpi(keyalg, i, p))\n\t    break;\n\tp += mpil;\n    }\n\n    /* Does the size and number of MPI's match our expectations? */\n    if (p == pend && i == keyalg->mpis)\n\trc = 0;\n\n    /* We can't handle more than one key at a time */\n    if (rc == 0 && keyp->alg == NULL && (keyp->tag == PGPTAG_PUBLIC_KEY ||\n\tkeyp->tag == PGPTAG_PUBLIC_SUBKEY))\n\n\tkeyp->alg = keyalg;\n    else\n\tpgpDigAlgFree(keyalg);\n\nexit:\n    return rc;\n}",
+            3
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rmalloc",
+            "void * rmalloc(size_t size); /* <=== rmalloc */ ",
+            3
+        ],
+        [
+            "rpmio/digest_libgcrypt.c",
+            "rpmDigestLength",
+            "size_t rpmDigestLength(int hashalgo) /* <=== rpmDigestLength */ \n{\n    switch (hashalgo) {\n    case PGPHASHALGO_MD5:\n\treturn 16;\n    case PGPHASHALGO_SHA1:\n\treturn 20;\n    case PGPHASHALGO_SHA224:\n\treturn 28;\n    case PGPHASHALGO_SHA256:\n\treturn 32;\n    case PGPHASHALGO_SHA384:\n\treturn 48;\n    case PGPHASHALGO_SHA512:\n\treturn 64;\n    default:\n\treturn 0;\n    }\n}",
+            2
+        ],
+        [
+            "rpmio/digest_openssl.c",
+            "rpmDigestLength",
+            "size_t rpmDigestLength(int hashalgo) /* <=== rpmDigestLength */ \n{\n    return EVP_MD_size(getEVPMD(hashalgo));\n}",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpDigParamsNew",
+            "static pgpDigParams pgpDigParamsNew(uint8_t tag) /* <=== pgpDigParamsNew */ \n{\n    pgpDigParams digp = xcalloc(1, sizeof(*digp));\n    digp->tag = tag;\n    return digp;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpVersion",
+            "static int pgpVersion(const uint8_t *h, size_t hlen, uint8_t *version) /* <=== pgpVersion */ \n{\n    if (hlen < 1)\n\treturn -1;\n\n    *version = h[0];\n    return 0;\n}",
+            3
+        ],
+        [
+            "system.h",
+            "xmalloc",
+            "#define xmalloc(_size) rmalloc((_size)) /* <=== system.h:66:66:xmalloc:1 */ ",
+            3
+        ],
+        [
+            "rpmio/digest.h",
+            "PGPDIG_SAVED_ID",
+            "#define\tPGPDIG_SAVED_ID\t\t(1 << 1) /* <=== rpmio/digest.h:41:41:PGPDIG_SAVED_ID:0 */ ",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtSig",
+            "static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen, /* <=== pgpPrtSig */ \n\t\t     pgpDigParams _digp)\n{\n    uint8_t version = 0;\n    const uint8_t * p;\n    unsigned int plen;\n    int rc = 1;\n\n    if (pgpVersion(h, hlen, &version))\n\treturn rc;\n\n    switch (version) {\n    case 3:\n    {   pgpPktSigV3 v = (pgpPktSigV3)h;\n\n\tif (hlen <= sizeof(*v) || v->hashlen != 5)\n\t    return 1;\n\n\tpgpPrtVal(\"V3 \", pgpTagTbl, tag);\n\tpgpPrtVal(\" \", pgpPubkeyTbl, v->pubkey_algo);\n\tpgpPrtVal(\" \", pgpHashTbl, v->hash_algo);\n\tpgpPrtVal(\" \", pgpSigTypeTbl, v->sigtype);\n\tpgpPrtNL();\n\tpgpPrtTime(\" \", v->time, sizeof(v->time));\n\tpgpPrtNL();\n\tpgpPrtHex(\" signer keyid\", v->signid, sizeof(v->signid));\n\tplen = pgpGrab(v->signhash16, sizeof(v->signhash16));\n\tpgpPrtHex(\" signhash16\", v->signhash16, sizeof(v->signhash16));\n\tpgpPrtNL();\n\n\tif (_digp->pubkey_algo == 0) {\n\t    _digp->version = v->version;\n\t    _digp->hashlen = v->hashlen;\n\t    _digp->sigtype = v->sigtype;\n\t    _digp->hash = memcpy(xmalloc(v->hashlen), &v->sigtype, v->hashlen);\n\t    _digp->time = pgpGrab(v->time, sizeof(v->time));\n\t    memcpy(_digp->signid, v->signid, sizeof(_digp->signid));\n\t    _digp->pubkey_algo = v->pubkey_algo;\n\t    _digp->hash_algo = v->hash_algo;\n\t    memcpy(_digp->signhash16, v->signhash16, sizeof(_digp->signhash16));\n\t}\n\n\tp = ((uint8_t *)v) + sizeof(*v);\n\trc = pgpPrtSigParams(tag, v->pubkey_algo, p, h, hlen, _digp);\n    }\tbreak;\n    case 4:\n    {   pgpPktSigV4 v = (pgpPktSigV4)h;\n\tconst uint8_t *const hend = h + hlen;\n\n\tif (hlen <= sizeof(*v))\n\t    return 1;\n\n\tpgpPrtVal(\"V4 \", pgpTagTbl, tag);\n\tpgpPrtVal(\" \", pgpPubkeyTbl, v->pubkey_algo);\n\tpgpPrtVal(\" \", pgpHashTbl, v->hash_algo);\n\tpgpPrtVal(\" \", pgpSigTypeTbl, v->sigtype);\n\tpgpPrtNL();\n\n\tp = &v->hashlen[0];\n\tif (pgpGet(v->hashlen, sizeof(v->hashlen), hend, &plen))\n\t    return 1;\n\tp += sizeof(v->hashlen);\n\n\tif ((p + plen) > hend)\n\t    return 1;\n\n\tif (_digp->pubkey_algo == 0) {\n\t    _digp->hashlen = sizeof(*v) + plen;\n\t    _digp->hash = memcpy(xmalloc(_digp->hashlen), v, _digp->hashlen);\n\t}\n\tif (pgpPrtSubType(p, plen, v->sigtype, _digp))\n\t    return 1;\n\tp += plen;\n\n\tif (pgpGet(p, 2, hend, &plen))\n\t    return 1;\n\tp += 2;\n\n\tif ((p + plen) > hend)\n\t    return 1;\n\n\tif (pgpPrtSubType(p, plen, v->sigtype, _digp))\n\t    return 1;\n\tp += plen;\n\n\tif (h + hlen - p < 2)\n\t    return 1;\n\tpgpPrtHex(\" signhash16\", p, 2);\n\tpgpPrtNL();\n\n\tif (_digp->pubkey_algo == 0) {\n\t    _digp->version = v->version;\n\t    _digp->sigtype = v->sigtype;\n\t    _digp->pubkey_algo = v->pubkey_algo;\n\t    _digp->hash_algo = v->hash_algo;\n\t    memcpy(_digp->signhash16, p, sizeof(_digp->signhash16));\n\t}\n\n\tp += 2;\n\tif (p > hend)\n\t    return 1;\n\n\trc = pgpPrtSigParams(tag, v->pubkey_algo, p, h, hlen, _digp);\n    }\tbreak;\n    default:\n\trpmlog(RPMLOG_WARNING, _(\"Unsupported version of signature: V%d\\n\"), version);\n\trc = 1;\n\tbreak;\n    }\n    return rc;\n}",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtKey",
+            "static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen, /* <=== pgpPrtKey */ \n\t\t     pgpDigParams _digp)\n{\n    uint8_t version = 0;\n    const uint8_t * p = NULL;\n    int rc = 1;\n\n    if (pgpVersion(h, hlen, &version))\n\treturn rc;\n\n    /* We only permit V4 keys, V3 keys are long long since deprecated */\n    switch (version) {\n    case 4:\n    {   pgpPktKeyV4 v = (pgpPktKeyV4)h;\n\n\tif (hlen > sizeof(*v)) {\n\t    pgpPrtVal(\"V4 \", pgpTagTbl, tag);\n\t    pgpPrtVal(\" \", pgpPubkeyTbl, v->pubkey_algo);\n\t    pgpPrtTime(\" \", v->time, sizeof(v->time));\n\t    pgpPrtNL();\n\n\t    /* If _digp->hash is not NULL then signature is already loaded */\n\t    if (_digp->hash == NULL) {\n\t\t_digp->version = v->version;\n\t\t_digp->time = pgpGrab(v->time, sizeof(v->time));\n\t\t_digp->pubkey_algo = v->pubkey_algo;\n\t    }\n\n\t    p = ((uint8_t *)v) + sizeof(*v);\n\t    rc = pgpPrtPubkeyParams(v->pubkey_algo, p, h, hlen, _digp);\n\t}\n    }\tbreak;\n    default:\n\trpmlog(RPMLOG_WARNING, _(\"Unsupported version of key: V%d\\n\"), h[0]);\n    }\n    return rc;\n}",
+            2
+        ],
+        [
+            "system.h",
+            "xrealloc",
+            "#define xrealloc(_ptr, _size) rrealloc((_ptr), (_size)) /* <=== system.h:68:68:xrealloc:2 */ ",
+            1
+        ],
+        [
+            "rpmio/digest_libgcrypt.c",
+            "rpmDigestFinal",
+            "int rpmDigestFinal(DIGEST_CTX ctx, void ** datap, size_t *lenp, int asAscii) /* <=== rpmDigestFinal */ \n{\n    unsigned char *digest;\n    int digestlen;\n    if (ctx == NULL)\n\treturn -1;\n    digest = gcry_md_read(ctx->h, 0);\n    digestlen = rpmDigestLength(ctx->algo);\n    if (!asAscii) {\n\tif (lenp)\n\t    *lenp = digestlen;\n\tif (datap) {\n\t    *datap = xmalloc(digestlen);\n\t    memcpy(*datap, digest, digestlen);\n\t}\n    } else {\n\tif (lenp)\n\t    *lenp = 2 * digestlen + 1;\n\tif (datap) {\n\t    *datap = pgpHexStr((const uint8_t *)digest, digestlen);\n\t}\n    }\n    gcry_md_close(ctx->h);\n    free(ctx);\n    return 0;\n}",
+            1
+        ],
+        [
+            "rpmio/digest_openssl.c",
+            "EVP_MD_CTX_free",
+            "# define EVP_MD_CTX_free EVP_MD_CTX_destroy /* <=== rpmio/digest_openssl.c:15:15:EVP_MD_CTX_free:0 */ ",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtNL",
+            "static void pgpPrtNL(void) /* <=== pgpPrtNL */ \n{\n    if (!_print) return;\n    fprintf(stderr, \"\\n\");\n}",
+            2
+        ],
+        [
+            "rpmio/digest_libgcrypt.c",
+            "rpmDigestInit",
+            "DIGEST_CTX rpmDigestInit(int hashalgo, rpmDigestFlags flags) /* <=== rpmDigestInit */ \n{\n    gcry_md_hd_t h;\n    DIGEST_CTX ctx;\n    int gcryalgo = hashalgo2gcryalgo(hashalgo);\n\n    if (!gcryalgo || gcry_md_open(&h, gcryalgo, 0) != 0)\n\treturn NULL;\n\n    ctx = xcalloc(1, sizeof(*ctx));\n    ctx->flags = flags;\n    ctx->algo = hashalgo;\n    ctx->h = h;\n    return ctx;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "getKeyID",
+            "static int getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid) /* <=== getKeyID */ \n{\n    uint8_t *fp = NULL;\n    size_t fplen = 0;\n    int rc = pgpPubkeyFingerprint(h, hlen, &fp, &fplen);\n    if (fp && fplen > 8) {\n\tmemcpy(keyid, (fp + (fplen-8)), 8);\n\tfree(fp);\n    }\n    return rc;\n}",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtSubType",
+            "static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,  /* <=== pgpPrtSubType */ \n\t\t\t pgpDigParams _digp)\n{\n    const uint8_t *p = h;\n    size_t plen = 0, i;\n    int rc = 0;\n\n    while (hlen > 0 && rc == 0) {\n\tint impl = 0;\n\ti = pgpLen(p, hlen, &plen);\n\tif (i == 0 || plen < 1 || i + plen > hlen)\n\t    break;\n\n\tp += i;\n\thlen -= i;\n\n\tpgpPrtVal(\"    \", pgpSubTypeTbl, (p[0]&(~PGPSUBTYPE_CRITICAL)));\n\tif (p[0] & PGPSUBTYPE_CRITICAL)\n\t    if (_print)\n\t\tfprintf(stderr, \" *CRITICAL*\");\n\tswitch (*p) {\n\tcase PGPSUBTYPE_PREFER_SYMKEY:\t/* preferred symmetric algorithms */\n\t    for (i = 1; i < plen; i++)\n\t\tpgpPrtVal(\" \", pgpSymkeyTbl, p[i]);\n\t    break;\n\tcase PGPSUBTYPE_PREFER_HASH:\t/* preferred hash algorithms */\n\t    for (i = 1; i < plen; i++)\n\t\tpgpPrtVal(\" \", pgpHashTbl, p[i]);\n\t    break;\n\tcase PGPSUBTYPE_PREFER_COMPRESS:/* preferred compression algorithms */\n\t    for (i = 1; i < plen; i++)\n\t\tpgpPrtVal(\" \", pgpCompressionTbl, p[i]);\n\t    break;\n\tcase PGPSUBTYPE_KEYSERVER_PREFERS:/* key server preferences */\n\t    for (i = 1; i < plen; i++)\n\t\tpgpPrtVal(\" \", pgpKeyServerPrefsTbl, p[i]);\n\t    break;\n\tcase PGPSUBTYPE_SIG_CREATE_TIME:\n\t    impl = *p;\n\t    if (!(_digp->saved & PGPDIG_SAVED_TIME) &&\n\t\t(sigtype == PGPSIGTYPE_POSITIVE_CERT || sigtype == PGPSIGTYPE_BINARY || sigtype == PGPSIGTYPE_TEXT || sigtype == PGPSIGTYPE_STANDALONE))\n\t    {\n\t\tif (plen-1 != sizeof(_digp->time))\n\t\t    break;\n\t\t_digp->saved |= PGPDIG_SAVED_TIME;\n\t\t_digp->time = pgpGrab(p+1, sizeof(_digp->time));\n\t    }\n\tcase PGPSUBTYPE_SIG_EXPIRE_TIME:\n\tcase PGPSUBTYPE_KEY_EXPIRE_TIME:\n\t    pgpPrtTime(\" \", p+1, plen-1);\n\t    break;\n\n\tcase PGPSUBTYPE_ISSUER_KEYID:\t/* issuer key ID */\n\t    impl = *p;\n\t    if (!(_digp->saved & PGPDIG_SAVED_ID) &&\n\t\t(sigtype == PGPSIGTYPE_POSITIVE_CERT || sigtype == PGPSIGTYPE_BINARY || sigtype == PGPSIGTYPE_TEXT || sigtype == PGPSIGTYPE_STANDALONE))\n\t    {\n\t\tif (plen-1 != sizeof(_digp->signid))\n\t\t    break;\n\t\t_digp->saved |= PGPDIG_SAVED_ID;\n\t\tmemcpy(_digp->signid, p+1, sizeof(_digp->signid));\n\t    }\n\tcase PGPSUBTYPE_EXPORTABLE_CERT:\n\tcase PGPSUBTYPE_TRUST_SIG:\n\tcase PGPSUBTYPE_REGEX:\n\tcase PGPSUBTYPE_REVOCABLE:\n\tcase PGPSUBTYPE_ARR:\n\tcase PGPSUBTYPE_REVOKE_KEY:\n\tcase PGPSUBTYPE_NOTATION:\n\tcase PGPSUBTYPE_PREFER_KEYSERVER:\n\tcase PGPSUBTYPE_PRIMARY_USERID:\n\tcase PGPSUBTYPE_POLICY_URL:\n\tcase PGPSUBTYPE_KEY_FLAGS:\n\tcase PGPSUBTYPE_SIGNER_USERID:\n\tcase PGPSUBTYPE_REVOKE_REASON:\n\tcase PGPSUBTYPE_FEATURES:\n\tcase PGPSUBTYPE_EMBEDDED_SIG:\n\tcase PGPSUBTYPE_INTERNAL_100:\n\tcase PGPSUBTYPE_INTERNAL_101:\n\tcase PGPSUBTYPE_INTERNAL_102:\n\tcase PGPSUBTYPE_INTERNAL_103:\n\tcase PGPSUBTYPE_INTERNAL_104:\n\tcase PGPSUBTYPE_INTERNAL_105:\n\tcase PGPSUBTYPE_INTERNAL_106:\n\tcase PGPSUBTYPE_INTERNAL_107:\n\tcase PGPSUBTYPE_INTERNAL_108:\n\tcase PGPSUBTYPE_INTERNAL_109:\n\tcase PGPSUBTYPE_INTERNAL_110:\n\tdefault:\n\t    pgpPrtHex(\"\", p+1, plen-1);\n\t    break;\n\t}\n\tpgpPrtNL();\n\n\tif (!impl && (p[0] & PGPSUBTYPE_CRITICAL))\n\t    rc = 1;\n\n\tp += plen;\n\thlen -= plen;\n    }\n\n    if (hlen != 0)\n\trc = 1;\n\n    return rc;\n}",
+            3
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rmalloc",
+            "void * rmalloc(size_t size); /* <=== rmalloc */ ",
+            1
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "decodePkt",
+            "static int decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt) /* <=== decodePkt */ \n{\n    int rc = -1; /* assume failure */\n\n    /* Valid PGP packet header must always have two or more bytes in it */\n    if (p && plen >= 2 && p[0] & 0x80) {\n\tsize_t lenlen = 0;\n\tsize_t hlen = 0;\n\n\tif (p[0] & 0x40) {\n\t    /* New format packet, body length encoding in second byte */\n\t    lenlen = pgpLen(p+1, plen-1, &pkt->blen);\n\t    pkt->tag = (p[0] & 0x3f);\n\t} else {\n\t    /* Old format packet, body length encoding in tag byte */\n\t    lenlen = (1 << (p[0] & 0x3));\n\t    if (plen > lenlen) {\n\t\tpkt->blen = pgpGrab(p+1, lenlen);\n\t    }\n\t    pkt->tag = (p[0] >> 2) & 0xf;\n\t}\n\thlen = lenlen + 1;\n\n\t/* Does the packet header and its body fit in our boundaries? */\n\tif (lenlen && (hlen + pkt->blen <= plen)) {\n\t    pkt->head = p;\n\t    pkt->body = pkt->head + hlen;\n\t    rc = 0;\n\t}\n    }\n\n    return rc;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpDigAlgFree",
+            "pgpDigAlg pgpDigAlgFree(pgpDigAlg alg) /* <=== pgpDigAlgFree */ \n{\n    if (alg) {\n\tif (alg->free)\n\t    alg->free(alg);\n\tfree(alg);\n    }\n    return NULL;\n}",
+            2
+        ],
+        [
+            "rpmio/digest_openssl.c",
+            "rpmDigestUpdate",
+            "int rpmDigestUpdate(DIGEST_CTX ctx, const void *data, size_t len) /* <=== rpmDigestUpdate */ \n{\n    if (ctx == NULL) return -1;\n\n    EVP_DigestUpdate(ctx->md_ctx, data, len);\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtPkt",
+            "static int pgpPrtPkt(struct pgpPkt *p, pgpDigParams _digp) /* <=== pgpPrtPkt */ \n{\n    int rc = 0;\n\n    switch (p->tag) {\n    case PGPTAG_SIGNATURE:\n\trc = pgpPrtSig(p->tag, p->body, p->blen, _digp);\n\tbreak;\n    case PGPTAG_PUBLIC_KEY:\n\t/* Get the public key Key ID. */\n\tif (!getKeyID(p->body, p->blen, _digp->signid))\n\t    _digp->saved |= PGPDIG_SAVED_ID;\n\telse\n\t    memset(_digp->signid, 0, sizeof(_digp->signid));\n\trc = pgpPrtKey(p->tag, p->body, p->blen, _digp);\n\tbreak;\n    case PGPTAG_USER_ID:\n\trc = pgpPrtUserID(p->tag, p->body, p->blen, _digp);\n\tbreak;\n    case PGPTAG_RESERVED:\n\trc = -1;\n\tbreak;\n    case PGPTAG_COMMENT:\n    case PGPTAG_COMMENT_OLD:\n    case PGPTAG_PUBLIC_SUBKEY:\n    case PGPTAG_SECRET_KEY:\n    case PGPTAG_SECRET_SUBKEY:\n    case PGPTAG_PUBLIC_SESSION_KEY:\n    case PGPTAG_SYMMETRIC_SESSION_KEY:\n    case PGPTAG_COMPRESSED_DATA:\n    case PGPTAG_SYMMETRIC_DATA:\n    case PGPTAG_MARKER:\n    case PGPTAG_LITERAL_DATA:\n    case PGPTAG_TRUST:\n    case PGPTAG_PHOTOID:\n    case PGPTAG_ENCRYPTED_MDC:\n    case PGPTAG_MDC:\n    case PGPTAG_PRIVATE_60:\n    case PGPTAG_PRIVATE_62:\n    case PGPTAG_CONTROL:\n    default:\n\tpgpPrtVal(\"\", pgpTagTbl, p->tag);\n\tpgpPrtHex(\"\", p->body, p->blen);\n\tpgpPrtNL();\n\tbreak;\n    }\n\n    return rc;\n}",
+            1
+        ],
+        [
+            "rpmio/digest_openssl.c",
+            "rpmDigestDup",
+            "DIGEST_CTX rpmDigestDup(DIGEST_CTX octx) /* <=== rpmDigestDup */ \n{\n    if (!octx) return NULL;\n\n    DIGEST_CTX nctx = NULL;\n    nctx = xcalloc(1, sizeof(*nctx));\n\n    nctx->flags = octx->flags;\n    nctx->algo = octx->algo;\n    nctx->md_ctx = EVP_MD_CTX_new();\n    if (!nctx->md_ctx) {\n        free(nctx);\n        return NULL;\n    }\n\n    if (!EVP_MD_CTX_copy(nctx->md_ctx, octx->md_ctx)) {\n        free(nctx);\n        return NULL;\n    }\n\n    return nctx;\n}",
+            2
+        ],
+        [
+            "rpmio/digest_openssl.c",
+            "EVP_MD_CTX_new",
+            "# define EVP_MD_CTX_new EVP_MD_CTX_create /* <=== rpmio/digest_openssl.c:14:14:EVP_MD_CTX_new:0 */ ",
+            2
+        ],
+        [
+            "rpmio/digest_libgcrypt.c",
+            "rpmDigestDup",
+            "DIGEST_CTX rpmDigestDup(DIGEST_CTX octx) /* <=== rpmDigestDup */ \n{\n    DIGEST_CTX nctx = NULL;\n    if (octx) {\n        gcry_md_hd_t h;\n\tif (gcry_md_copy(&h, octx->h))\n\t    return NULL;\n\tnctx = memcpy(xcalloc(1, sizeof(*nctx)), octx, sizeof(*nctx));\n\tnctx->h = h;\n    }\n    return nctx;\n}",
+            2
+        ],
+        [
+            "rpmio/digest_openssl.c",
+            "getEVPMD",
+            "static const EVP_MD *getEVPMD(int hashalgo) /* <=== getEVPMD */ \n{\n    switch (hashalgo) {\n\n    case PGPHASHALGO_MD5:\n        return EVP_md5();\n\n    case PGPHASHALGO_SHA1:\n        return EVP_sha1();\n\n    case PGPHASHALGO_SHA256:\n        return EVP_sha256();\n\n    case PGPHASHALGO_SHA384:\n        return EVP_sha384();\n\n    case PGPHASHALGO_SHA512:\n        return EVP_sha512();\n\n    case PGPHASHALGO_SHA224:\n        return EVP_sha224();\n\n    default:\n        return EVP_md_null();\n    }\n}",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtHex",
+            "static void pgpPrtHex(const char *pre, const uint8_t *p, size_t plen) /* <=== pgpPrtHex */ \n{\n    char *hex = NULL;\n    if (!_print) return;\n    if (pre && *pre)\n\tfprintf(stderr, \"%s\", pre);\n    hex = pgpHexStr(p, plen);\n    fprintf(stderr, \" %s\", hex);\n    free(hex);\n}",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtTime",
+            "static void pgpPrtTime(const char * pre, const uint8_t *p, size_t plen) /* <=== pgpPrtTime */ \n{\n    if (!_print) return;\n    if (pre && *pre)\n\tfprintf(stderr, \"%s\", pre);\n    if (plen == 4) {\n\tchar buf[1024];\n\ttime_t t = pgpGrab(p, plen);\n\tstruct tm _tm, *tms = localtime_r(&t, &_tm);\n\tif (strftime(buf, sizeof(buf), \"%c\", tms) > 0)\n\t    fprintf(stderr, \" %-24.24s(0x%08x)\", buf, (unsigned)t);\n    } else {\n\tpgpPrtHex(\"\", p+1, plen-1);\n    }\n}",
+            3
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpLen",
+            "static inline /* <=== pgpLen */ \nsize_t pgpLen(const uint8_t *s, size_t slen, size_t * lenp)\n{\n    size_t dlen = 0;\n    size_t lenlen = 0;\n\n    /*\n     * Callers can only ensure we'll always have the first byte, beyond\n     * that the required size is not known until we decode it so we need\n     * to check if we have enough bytes to read the size as we go.\n     */\n    if (*s < 192) {\n\tlenlen = 1;\n\tdlen = *s;\n    } else if (*s < 224 && slen > 2) {\n\tlenlen = 2;\n\tdlen = (((s[0]) - 192) << 8) + s[1] + 192;\n    } else if (*s == 255 && slen > 5) {\n\tlenlen = 5;\n\tdlen = pgpGrab(s+1, 4);\n    }\n\n    if (slen - lenlen < dlen)\n\tlenlen = 0;\n\n    if (lenlen)\n\t*lenp = dlen;\n\n    return lenlen;\n}",
+            2
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rrealloc",
+            "void * rrealloc(void *ptr, size_t size); /* <=== rrealloc */ ",
+            1
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpHexStr",
+            "char * pgpHexStr(const uint8_t *p, size_t plen) /* <=== pgpHexStr */ \n{\n    char *t, *str;\n    str = t = xmalloc(plen * 2 + 1);\n    static char const hex[] = \"0123456789abcdef\";\n    while (plen-- > 0) {\n\tsize_t i;\n\ti = *p++;\n\t*t++ = hex[ (i >> 4) & 0xf ];\n\t*t++ = hex[ (i     ) & 0xf ];\n    }\n    *t = '\\0';\n    return str;\n}",
+            3
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpVerifySignature",
+            "rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx) /* <=== pgpVerifySignature */ \n{\n    DIGEST_CTX ctx = rpmDigestDup(hashctx);\n    uint8_t *hash = NULL;\n    size_t hashlen = 0;\n    rpmRC res = RPMRC_FAIL; /* assume failure */\n\n    if (sig == NULL || ctx == NULL)\n\tgoto exit;\n\n    if (sig->hash != NULL)\n\trpmDigestUpdate(ctx, sig->hash, sig->hashlen);\n\n    if (sig->version == 4) {\n\t/* V4 trailer is six octets long (rfc4880) */\n\tuint8_t trailer[6];\n\tuint32_t nb = sig->hashlen;\n\tnb = htonl(nb);\n\ttrailer[0] = sig->version;\n\ttrailer[1] = 0xff;\n\tmemcpy(trailer+2, &nb, 4);\n\trpmDigestUpdate(ctx, trailer, sizeof(trailer));\n    }\n\n    rpmDigestFinal(ctx, (void **)&hash, &hashlen, 0);\n\n    /* Compare leading 16 bits of digest for quick check. */\n    if (hash == NULL || memcmp(hash, sig->signhash16, 2) != 0)\n\tgoto exit;\n\n    /*\n     * If we have a key, verify the signature for real. Otherwise we've\n     * done all we can, return NOKEY to indicate \"looks okay but dunno.\"\n     */\n    if (key && key->alg) {\n\tpgpDigAlg sa = sig->alg;\n\tpgpDigAlg ka = key->alg;\n\tif (sa && sa->verify) {\n\t    if (sa->verify(ka, sa, hash, hashlen, sig->hash_algo) == 0) {\n\t\tres = RPMRC_OK;\n\t    }\n\t}\n    } else {\n\tres = RPMRC_NOKEY;\n    }\n\nexit:\n    free(hash);\n    return res;\n\n}",
+            1
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpValStr",
+            "static const char * pgpValStr(pgpValTbl vs, uint8_t val) /* <=== pgpValStr */ \n{\n    do {\n\tif (vs->val == val)\n\t    break;\n    } while ((++vs)->val != -1);\n    return vs->str;\n}",
+            3
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtVal",
+            "static void pgpPrtVal(const char * pre, pgpValTbl vs, uint8_t val) /* <=== pgpPrtVal */ \n{\n    if (!_print) return;\n    if (pre && *pre)\n\tfprintf(stderr, \"%s\", pre);\n    fprintf(stderr, \"%s(%u)\", pgpValStr(vs, val), (unsigned)val);\n}",
+            2
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rcalloc",
+            "void * rcalloc(size_t nmemb, size_t size); /* <=== rcalloc */ ",
+            2
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpDigParamsFree",
+            "pgpDigParams pgpDigParamsFree(pgpDigParams digp) /* <=== pgpDigParamsFree */ \n{\n    if (digp) {\n\tpgpDigAlgFree(digp->alg);\n\tfree(digp->userid);\n\tfree(digp->hash);\n\tmemset(digp, 0, sizeof(*digp));\n\tfree(digp);\n    }\n    return NULL;\n}",
+            1
+        ],
+        [
+            "rpmio/digest_libgcrypt.c",
+            "rpmDigestUpdate",
+            "int rpmDigestUpdate(DIGEST_CTX ctx, const void * data, size_t len) /* <=== rpmDigestUpdate */ \n{\n    if (ctx == NULL)\n\treturn -1;\n    gcry_md_write(ctx->h, data, len);\n    return 0;\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"system.h\"",
+        "#include \"rpmio/digest.h\"",
+        "#include <rpm/rpmstring.h>",
+        "#include <time.h>",
+        "#include <rpm/rpmlog.h>",
+        "#include <rpm/rpmbase64.h>",
+        "#include \"debug.h\"",
+        "#include \"rpmio/rpmio_internal.h\"",
+        "#include <netinet/in.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct pgpPkt {\n    uint8_t tag;\t\t/* decoded PGP tag */\n    const uint8_t *head;\t/* pointer to start of packet (header) */\n    const uint8_t *body;\t/* pointer to packet body */\n    size_t blen;\t\t/* length of body in bytes */\n}",
+            "pgpPkt"
+        ]
+    ],
+    "visitedLines_after": {
+        "rpmio/rpmpgp.c": [
+            1065,
+            1067,
+            1068,
+            1069,
+            1070,
+            1071,
+            1072,
+            1073,
+            1075,
+            1076,
+            1077,
+            1078,
+            1079,
+            1082,
+            1083,
+            1085,
+            1086,
+            1088,
+            1089,
+            1090,
+            1091,
+            1092,
+            1093,
+            1094,
+            1099,
+            1103,
+            1104,
+            1106,
+            1108,
+            1109,
+            1111,
+            1112,
+            1114,
+            1115,
+            1116,
+            1117,
+            1118,
+            1119,
+            1120,
+            1121,
+            1122,
+            1123,
+            1125,
+            1126,
+            1127,
+            1130,
+            1131,
+            1134,
+            1138,
+            1139,
+            1141,
+            1144,
+            1147,
+            1149,
+            1150,
+            1154,
+            1156,
+            1157,
+            1159,
+            1162,
+            1163,
+            1164,
+            1166,
+            1167,
+            1168,
+            1171,
+            1172,
+            1173,
+            1177,
+            1179,
+            1180,
+            1181,
+            1183,
+            1185
+        ]
+    },
+    "visitedLines_before": {
+        "rpmio/rpmpgp.c": [
+            1065,
+            1066,
+            1068,
+            1069,
+            1070,
+            1071,
+            1072,
+            1073,
+            1074,
+            1075,
+            1076,
+            1077,
+            1078,
+            1079,
+            1080,
+            1082,
+            1083,
+            1086,
+            1089,
+            1090,
+            1091,
+            1094,
+            1096,
+            1097,
+            1099,
+            1101
+        ]
+    },
+    "visitedParams": {
+        "rpmio/rpmpgp.c": [
+            [
+                "DIGEST_CTX hash",
+                "hashKey"
+            ],
+            [
+                "const struct pgpPkt *all",
+                "pgpVerifySelf"
+            ],
+            [
+                "const struct pgpPkt *pkt",
+                "hashKey"
+            ],
+            [
+                "const uint8_t * pkts",
+                "pgpPrtParams"
+            ],
+            [
+                "int exptag",
+                "hashKey"
+            ],
+            [
+                "int i",
+                "pgpVerifySelf"
+            ],
+            [
+                "pgpDigParams key",
+                "pgpVerifySelf"
+            ],
+            [
+                "pgpDigParams selfsig",
+                "pgpVerifySelf"
+            ],
+            [
+                "size_t pktlen",
+                "pgpPrtParams"
+            ],
+            [
+                "unsigned int pkttype",
+                "pgpPrtParams"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "rpmio/rpmpgp.c",
+            "hashKey",
+            "static int hashKey(DIGEST_CTX hash, const struct pgpPkt *pkt, int exptag) /* <=== hashKey */ \n{\n    int rc = -1;\n    if (pkt->tag == exptag) {\n\tuint8_t head[] = {\n\t    0x99,\n\t    (pkt->blen >> 8),\n\t    (pkt->blen     ),\n\t};\n\n\trpmDigestUpdate(hash, head, 3);\n\trpmDigestUpdate(hash, pkt->body, pkt->blen);\n\trc = 0;\n    }\n    return rc;\n}",
+            1065
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpVerifySelf",
+            "static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig, /* <=== pgpVerifySelf */ \n\t\t\tconst struct pgpPkt *all, int i)\n{\n    int rc = -1;\n    DIGEST_CTX hash = NULL;\n\n    switch (selfsig->sigtype) {\n    case PGPSIGTYPE_SUBKEY_BINDING:\n\thash = rpmDigestInit(selfsig->hash_algo, 0);\n\tif (hash) {\n\t    rc = hashKey(hash, &all[0], PGPTAG_PUBLIC_KEY);\n\t    if (!rc)\n\t\trc = hashKey(hash, &all[i-1], PGPTAG_PUBLIC_SUBKEY);\n\t}\n\tbreak;\n    default:\n\t/* ignore types we can't handle */\n\trc = 0;\n\tbreak;\n    }\n\n    if (hash && rc == 0)\n\trc = pgpVerifySignature(key, selfsig, hash);\n\n    rpmDigestFinal(hash, NULL, NULL, 0);\n\n    return rc;\n}",
+            1082
+        ],
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtParams",
+            "int pgpPrtParams(const uint8_t * pkts, size_t pktlen, unsigned int pkttype, /* <=== pgpPrtParams */ \n\t\t pgpDigParams * ret)\n{\n    const uint8_t *p = pkts;\n    const uint8_t *pend = pkts + pktlen;\n    pgpDigParams digp = NULL;\n    pgpDigParams selfsig = NULL;\n    int i = 0;\n    int alloced = 16; /* plenty for normal cases */\n    struct pgpPkt *all = xmalloc(alloced * sizeof(*all));\n    int rc = -1; /* assume failure */\n    int expect = 0;\n    int prevtag = 0;\n\n    while (p < pend) {\n\tstruct pgpPkt *pkt = &all[i];\n\tif (decodePkt(p, (pend - p), pkt))\n\t    break;\n\n\tif (digp == NULL) {\n\t    if (pkttype && pkt->tag != pkttype) {\n\t\tbreak;\n\t    } else {\n\t\tdigp = pgpDigParamsNew(pkt->tag);\n\t    }\n\t}\n\n\tif (expect) {\n\t    if (pkt->tag != expect)\n\t\tbreak;\n\t    selfsig = pgpDigParamsNew(pkt->tag);\n\t}\n\n\tif (pgpPrtPkt(pkt, selfsig ? selfsig : digp))\n\t    break;\n\n\tif (selfsig) {\n\t    /* subkeys must be followed by binding signature */\n\t    if (prevtag == PGPTAG_PUBLIC_SUBKEY) {\n\t\tif (selfsig->sigtype != PGPSIGTYPE_SUBKEY_BINDING)\n\t\t    break;\n\t    }\n\n\t    int xx = pgpVerifySelf(digp, selfsig, all, i);\n\n\t    selfsig = pgpDigParamsFree(selfsig);\n\t    if (xx)\n\t\tbreak;\n\t    expect = 0;\n\t}\n\n\tif (pkt->tag == PGPTAG_PUBLIC_SUBKEY)\n\t    expect = PGPTAG_SIGNATURE;\n\tprevtag = pkt->tag;\n\n\ti++;\n\tp += (pkt->body - pkt->head) + pkt->blen;\n\tif (pkttype == PGPTAG_SIGNATURE)\n\t    break;\n\n\tif (alloced <= i) {\n\t    alloced *= 2;\n\t    all = xrealloc(all, alloced * sizeof(*all));\n\t}\n    }\n\n    rc = (digp && (p == pend) && expect == 0) ? 0 : -1;\n\n    free(all);\n    if (ret && rc == 0) {\n\t*ret = digp;\n    } else {\n\tpgpDigParamsFree(digp);\n    }\n    return rc;\n}",
+            1111
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "rpmio/rpmpgp.c",
+            "pgpPrtParams",
+            "int pgpPrtParams(const uint8_t * pkts, size_t pktlen, unsigned int pkttype, /* <=== pgpPrtParams */ \n\t\t pgpDigParams * ret)\n{\n    const uint8_t *p = pkts;\n    const uint8_t *pend = pkts + pktlen;\n    pgpDigParams digp = NULL;\n    struct pgpPkt pkt;\n    int rc = -1; /* assume failure */\n\n    while (p < pend) {\n\tif (decodePkt(p, (pend - p), &pkt))\n\t    break;\n\n\tif (digp == NULL) {\n\t    if (pkttype && pkt.tag != pkttype) {\n\t\tbreak;\n\t    } else {\n\t\tdigp = pgpDigParamsNew(pkt.tag);\n\t    }\n\t}\n\n\tif (pgpPrtPkt(&pkt, digp))\n\t    break;\n\n\tp += (pkt.body - pkt.head) + pkt.blen;\n\tif (pkttype == PGPTAG_SIGNATURE)\n\t    break;\n    }\n\n    rc = (digp && (p == pend)) ? 0 : -1;\n\n    if (ret && rc == 0) {\n\t*ret = digp;\n    } else {\n\tpgpDigParamsFree(digp);\n    }\n    return rc;\n}",
+            1065
+        ]
+    ]
+}

@@ -1,0 +1,1614 @@
+{
+    "calleeMethods": [
+        [
+            "mm/slub.c",
+            "kfree",
+            "void kfree(const void *x) /* <=== kfree */ \n{\n\tstruct page *page;\n\tvoid *object = (void *)x;\n\n\ttrace_kfree(_RET_IP_, x);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(x)))\n\t\treturn;\n\n\tpage = virt_to_head_page(x);\n\tif (unlikely(!PageSlab(page))) {\n\t\tBUG_ON(!PageCompound(page));\n\t\tkfree_hook(x);\n\t\t__free_pages(page, compound_order(page));\n\t\treturn;\n\t}\n\tslab_free(page->slab_cache, page, object, NULL, 1, _RET_IP_);\n}",
+            1
+        ],
+        [
+            "arch/x86/kernel/process.c",
+            "arch_align_stack",
+            "unsigned long arch_align_stack(unsigned long sp) /* <=== arch_align_stack */ \n{\n\tif (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)\n\t\tsp -= get_random_int() % 8192;\n\treturn sp & ~0xf;\n}",
+            2
+        ],
+        [
+            "arch/powerpc/kernel/process.c",
+            "arch_randomize_brk",
+            "unsigned long arch_randomize_brk(struct mm_struct *mm) /* <=== arch_randomize_brk */ \n{\n\tunsigned long base = mm->brk;\n\tunsigned long ret;\n\n#ifdef CONFIG_PPC_STD_MMU_64\n\t/*\n\t * If we are using 1TB segments and we are allowed to randomise\n\t * the heap, we can put it above 1TB so it is backed by a 1TB\n\t * segment. Otherwise the heap will be in the bottom 1TB\n\t * which always uses 256MB segments and this may result in a\n\t * performance penalty. We don't need to worry about radix. For\n\t * radix, mmu_highuser_ssize remains unchanged from 256MB.\n\t */\n\tif (!is_32bit_task() && (mmu_highuser_ssize == MMU_SEGSIZE_1T))\n\t\tbase = max_t(unsigned long, mm->brk, 1UL << SID_SHIFT_1T);\n#endif\n\n\tret = PAGE_ALIGN(base + brk_rnd());\n\n\tif (ret < mm->brk)\n\t\treturn mm->brk;\n\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "fs/exec.c",
+            "do_open_execat",
+            "static struct file *do_open_execat(int fd, struct filename *name, int flags) /* <=== do_open_execat */ \n{\n\tstruct file *file;\n\tint err;\n\tstruct open_flags open_exec_flags = {\n\t\t.open_flag = O_LARGEFILE | O_RDONLY | __FMODE_EXEC,\n\t\t.acc_mode = MAY_EXEC,\n\t\t.intent = LOOKUP_OPEN,\n\t\t.lookup_flags = LOOKUP_FOLLOW,\n\t};\n\n\tif ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) != 0)\n\t\treturn ERR_PTR(-EINVAL);\n\tif (flags & AT_SYMLINK_NOFOLLOW)\n\t\topen_exec_flags.lookup_flags &= ~LOOKUP_FOLLOW;\n\tif (flags & AT_EMPTY_PATH)\n\t\topen_exec_flags.lookup_flags |= LOOKUP_EMPTY;\n\n\tfile = do_filp_open(fd, name, &open_exec_flags);\n\tif (IS_ERR(file))\n\t\tgoto out;\n\n\terr = -EACCES;\n\tif (!S_ISREG(file_inode(file)->i_mode))\n\t\tgoto exit;\n\n\tif (path_noexec(&file->f_path))\n\t\tgoto exit;\n\n\terr = deny_write_access(file);\n\tif (err)\n\t\tgoto exit;\n\n\tif (name->name[0] != '\\0')\n\t\tfsnotify_open(file);\n\nout:\n\treturn file;\n\nexit:\n\tfput(file);\n\treturn ERR_PTR(err);\n}",
+            2
+        ],
+        [
+            "arch/mips/kernel/process.c",
+            "arch_align_stack",
+            "unsigned long arch_align_stack(unsigned long sp) /* <=== arch_align_stack */ \n{\n\tif (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)\n\t\tsp -= get_random_int() & ~PAGE_MASK;\n\n\treturn sp & ALMASK;\n}",
+            2
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "load_elf_interp",
+            "static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex, /* <=== load_elf_interp */ \n\t\tstruct file *interpreter, unsigned long *interp_map_addr,\n\t\tunsigned long no_base, struct elf_phdr *interp_elf_phdata)\n{\n\tstruct elf_phdr *eppnt;\n\tunsigned long load_addr = 0;\n\tint load_addr_set = 0;\n\tunsigned long last_bss = 0, elf_bss = 0;\n\tunsigned long error = ~0UL;\n\tunsigned long total_size;\n\tint i;\n\n\t/* First of all, some simple consistency checks */\n\tif (interp_elf_ex->e_type != ET_EXEC &&\n\t    interp_elf_ex->e_type != ET_DYN)\n\t\tgoto out;\n\tif (!elf_check_arch(interp_elf_ex))\n\t\tgoto out;\n\tif (!interpreter->f_op->mmap)\n\t\tgoto out;\n\n\ttotal_size = total_mapping_size(interp_elf_phdata,\n\t\t\t\t\tinterp_elf_ex->e_phnum);\n\tif (!total_size) {\n\t\terror = -EINVAL;\n\t\tgoto out;\n\t}\n\n\teppnt = interp_elf_phdata;\n\tfor (i = 0; i < interp_elf_ex->e_phnum; i++, eppnt++) {\n\t\tif (eppnt->p_type == PT_LOAD) {\n\t\t\tint elf_type = MAP_PRIVATE | MAP_DENYWRITE;\n\t\t\tint elf_prot = 0;\n\t\t\tunsigned long vaddr = 0;\n\t\t\tunsigned long k, map_addr;\n\n\t\t\tif (eppnt->p_flags & PF_R)\n\t\t    \t\telf_prot = PROT_READ;\n\t\t\tif (eppnt->p_flags & PF_W)\n\t\t\t\telf_prot |= PROT_WRITE;\n\t\t\tif (eppnt->p_flags & PF_X)\n\t\t\t\telf_prot |= PROT_EXEC;\n\t\t\tvaddr = eppnt->p_vaddr;\n\t\t\tif (interp_elf_ex->e_type == ET_EXEC || load_addr_set)\n\t\t\t\telf_type |= MAP_FIXED;\n\t\t\telse if (no_base && interp_elf_ex->e_type == ET_DYN)\n\t\t\t\tload_addr = -vaddr;\n\n\t\t\tmap_addr = elf_map(interpreter, load_addr + vaddr,\n\t\t\t\t\teppnt, elf_prot, elf_type, total_size);\n\t\t\ttotal_size = 0;\n\t\t\tif (!*interp_map_addr)\n\t\t\t\t*interp_map_addr = map_addr;\n\t\t\terror = map_addr;\n\t\t\tif (BAD_ADDR(map_addr))\n\t\t\t\tgoto out;\n\n\t\t\tif (!load_addr_set &&\n\t\t\t    interp_elf_ex->e_type == ET_DYN) {\n\t\t\t\tload_addr = map_addr - ELF_PAGESTART(vaddr);\n\t\t\t\tload_addr_set = 1;\n\t\t\t}\n\n\t\t\t/*\n\t\t\t * Check to see if the section's size will overflow the\n\t\t\t * allowed task size. Note that p_filesz must always be\n\t\t\t * <= p_memsize so it's only necessary to check p_memsz.\n\t\t\t */\n\t\t\tk = load_addr + eppnt->p_vaddr;\n\t\t\tif (BAD_ADDR(k) ||\n\t\t\t    eppnt->p_filesz > eppnt->p_memsz ||\n\t\t\t    eppnt->p_memsz > TASK_SIZE ||\n\t\t\t    TASK_SIZE - eppnt->p_memsz < k) {\n\t\t\t\terror = -ENOMEM;\n\t\t\t\tgoto out;\n\t\t\t}\n\n\t\t\t/*\n\t\t\t * Find the end of the file mapping for this phdr, and\n\t\t\t * keep track of the largest address we see for this.\n\t\t\t */\n\t\t\tk = load_addr + eppnt->p_vaddr + eppnt->p_filesz;\n\t\t\tif (k > elf_bss)\n\t\t\t\telf_bss = k;\n\n\t\t\t/*\n\t\t\t * Do the same thing for the memory mapping - between\n\t\t\t * elf_bss and last_bss is the bss section.\n\t\t\t */\n\t\t\tk = load_addr + eppnt->p_vaddr + eppnt->p_memsz;\n\t\t\tif (k > last_bss)\n\t\t\t\tlast_bss = k;\n\t\t}\n\t}\n\n\t/*\n\t * Now fill out the bss section: first pad the last page from\n\t * the file up to the page boundary, and zero it from elf_bss\n\t * up to the end of the page.\n\t */\n\tif (padzero(elf_bss)) {\n\t\terror = -EFAULT;\n\t\tgoto out;\n\t}\n\t/*\n\t * Next, align both the file and mem bss up to the page size,\n\t * since this is where elf_bss was just zeroed up to, and where\n\t * last_bss will end after the vm_brk() below.\n\t */\n\telf_bss = ELF_PAGEALIGN(elf_bss);\n\tlast_bss = ELF_PAGEALIGN(last_bss);\n\t/* Finally, if there is still more bss to allocate, do it. */\n\tif (last_bss > elf_bss) {\n\t\terror = vm_brk(elf_bss, last_bss - elf_bss);\n\t\tif (error)\n\t\t\tgoto out;\n\t}\n\n\terror = load_addr;\nout:\n\treturn error;\n}",
+            1
+        ],
+        [
+            "include/linux/module.h",
+            "__module_get",
+            "static inline void __module_get(struct module *module) /* <=== __module_get */ \n{\n}",
+            2
+        ],
+        [
+            "arch/score/include/asm/uaccess.h",
+            "copy_to_user",
+            "static inline unsigned long /* <=== copy_to_user */ \ncopy_to_user(void *to, const void *from, unsigned long len)\n{\n\tunsigned long over;\n\n\tif (access_ok(VERIFY_WRITE, to, len))\n\t\treturn __copy_tofrom_user(to, from, len);\n\n\tif ((unsigned long)to < TASK_SIZE) {\n\t\tover = (unsigned long)to + len - TASK_SIZE;\n\t\treturn __copy_tofrom_user(to, from, len - over) + over;\n\t}\n\treturn len;\n}",
+            2
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "create_elf_tables",
+            "static int /* <=== create_elf_tables */ \ncreate_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,\n\t\tunsigned long load_addr, unsigned long interp_load_addr)\n{\n\tunsigned long p = bprm->p;\n\tint argc = bprm->argc;\n\tint envc = bprm->envc;\n\telf_addr_t __user *argv;\n\telf_addr_t __user *envp;\n\telf_addr_t __user *sp;\n\telf_addr_t __user *u_platform;\n\telf_addr_t __user *u_base_platform;\n\telf_addr_t __user *u_rand_bytes;\n\tconst char *k_platform = ELF_PLATFORM;\n\tconst char *k_base_platform = ELF_BASE_PLATFORM;\n\tunsigned char k_rand_bytes[16];\n\tint items;\n\telf_addr_t *elf_info;\n\tint ei_index = 0;\n\tconst struct cred *cred = current_cred();\n\tstruct vm_area_struct *vma;\n\n\t/*\n\t * In some cases (e.g. Hyper-Threading), we want to avoid L1\n\t * evictions by the processes running on the same package. One\n\t * thing we can do is to shuffle the initial stack for them.\n\t */\n\n\tp = arch_align_stack(p);\n\n\t/*\n\t * If this architecture has a platform capability string, copy it\n\t * to userspace.  In some cases (Sparc), this info is impossible\n\t * for userspace to get any other way, in others (i386) it is\n\t * merely difficult.\n\t */\n\tu_platform = NULL;\n\tif (k_platform) {\n\t\tsize_t len = strlen(k_platform) + 1;\n\n\t\tu_platform = (elf_addr_t __user *)STACK_ALLOC(p, len);\n\t\tif (__copy_to_user(u_platform, k_platform, len))\n\t\t\treturn -EFAULT;\n\t}\n\n\t/*\n\t * If this architecture has a \"base\" platform capability\n\t * string, copy it to userspace.\n\t */\n\tu_base_platform = NULL;\n\tif (k_base_platform) {\n\t\tsize_t len = strlen(k_base_platform) + 1;\n\n\t\tu_base_platform = (elf_addr_t __user *)STACK_ALLOC(p, len);\n\t\tif (__copy_to_user(u_base_platform, k_base_platform, len))\n\t\t\treturn -EFAULT;\n\t}\n\n\t/*\n\t * Generate 16 random bytes for userspace PRNG seeding.\n\t */\n\tget_random_bytes(k_rand_bytes, sizeof(k_rand_bytes));\n\tu_rand_bytes = (elf_addr_t __user *)\n\t\t       STACK_ALLOC(p, sizeof(k_rand_bytes));\n\tif (__copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes)))\n\t\treturn -EFAULT;\n\n\t/* Create the ELF interpreter info */\n\telf_info = (elf_addr_t *)current->mm->saved_auxv;\n\t/* update AT_VECTOR_SIZE_BASE if the number of NEW_AUX_ENT() changes */\n#define NEW_AUX_ENT(id, val) \\\n\tdo { \\\n\t\telf_info[ei_index++] = id; \\\n\t\telf_info[ei_index++] = val; \\\n\t} while (0)\n\n#ifdef ARCH_DLINFO\n\t/* \n\t * ARCH_DLINFO must come first so PPC can do its special alignment of\n\t * AUXV.\n\t * update AT_VECTOR_SIZE_ARCH if the number of NEW_AUX_ENT() in\n\t * ARCH_DLINFO changes\n\t */\n\tARCH_DLINFO;\n#endif\n\tNEW_AUX_ENT(AT_HWCAP, ELF_HWCAP);\n\tNEW_AUX_ENT(AT_PAGESZ, ELF_EXEC_PAGESIZE);\n\tNEW_AUX_ENT(AT_CLKTCK, CLOCKS_PER_SEC);\n\tNEW_AUX_ENT(AT_PHDR, load_addr + exec->e_phoff);\n\tNEW_AUX_ENT(AT_PHENT, sizeof(struct elf_phdr));\n\tNEW_AUX_ENT(AT_PHNUM, exec->e_phnum);\n\tNEW_AUX_ENT(AT_BASE, interp_load_addr);\n\tNEW_AUX_ENT(AT_FLAGS, 0);\n\tNEW_AUX_ENT(AT_ENTRY, exec->e_entry);\n\tNEW_AUX_ENT(AT_UID, from_kuid_munged(cred->user_ns, cred->uid));\n\tNEW_AUX_ENT(AT_EUID, from_kuid_munged(cred->user_ns, cred->euid));\n\tNEW_AUX_ENT(AT_GID, from_kgid_munged(cred->user_ns, cred->gid));\n\tNEW_AUX_ENT(AT_EGID, from_kgid_munged(cred->user_ns, cred->egid));\n \tNEW_AUX_ENT(AT_SECURE, security_bprm_secureexec(bprm));\n\tNEW_AUX_ENT(AT_RANDOM, (elf_addr_t)(unsigned long)u_rand_bytes);\n#ifdef ELF_HWCAP2\n\tNEW_AUX_ENT(AT_HWCAP2, ELF_HWCAP2);\n#endif\n\tNEW_AUX_ENT(AT_EXECFN, bprm->exec);\n\tif (k_platform) {\n\t\tNEW_AUX_ENT(AT_PLATFORM,\n\t\t\t    (elf_addr_t)(unsigned long)u_platform);\n\t}\n\tif (k_base_platform) {\n\t\tNEW_AUX_ENT(AT_BASE_PLATFORM,\n\t\t\t    (elf_addr_t)(unsigned long)u_base_platform);\n\t}\n\tif (bprm->interp_flags & BINPRM_FLAGS_EXECFD) {\n\t\tNEW_AUX_ENT(AT_EXECFD, bprm->interp_data);\n\t}\n#undef NEW_AUX_ENT\n\t/* AT_NULL is zero; clear the rest too */\n\tmemset(&elf_info[ei_index], 0,\n\t       sizeof current->mm->saved_auxv - ei_index * sizeof elf_info[0]);\n\n\t/* And advance past the AT_NULL entry.  */\n\tei_index += 2;\n\n\tsp = STACK_ADD(p, ei_index);\n\n\titems = (argc + 1) + (envc + 1) + 1;\n\tbprm->p = STACK_ROUND(sp, items);\n\n\t/* Point sp at the lowest address on the stack */\n#ifdef CONFIG_STACK_GROWSUP\n\tsp = (elf_addr_t __user *)bprm->p - items - ei_index;\n\tbprm->exec = (unsigned long)sp; /* XXX: PARISC HACK */\n#else\n\tsp = (elf_addr_t __user *)bprm->p;\n#endif\n\n\n\t/*\n\t * Grow the stack manually; some architectures have a limit on how\n\t * far ahead a user-space access may be in order to grow the stack.\n\t */\n\tvma = find_extend_vma(current->mm, bprm->p);\n\tif (!vma)\n\t\treturn -EFAULT;\n\n\t/* Now, let's put argc (and argv, envp if appropriate) on the stack */\n\tif (__put_user(argc, sp++))\n\t\treturn -EFAULT;\n\targv = sp;\n\tenvp = argv + argc + 1;\n\n\t/* Populate argv and envp */\n\tp = current->mm->arg_end = current->mm->arg_start;\n\twhile (argc-- > 0) {\n\t\tsize_t len;\n\t\tif (__put_user((elf_addr_t)p, argv++))\n\t\t\treturn -EFAULT;\n\t\tlen = strnlen_user((void __user *)p, MAX_ARG_STRLEN);\n\t\tif (!len || len > MAX_ARG_STRLEN)\n\t\t\treturn -EINVAL;\n\t\tp += len;\n\t}\n\tif (__put_user(0, argv))\n\t\treturn -EFAULT;\n\tcurrent->mm->arg_end = current->mm->env_start = p;\n\twhile (envc-- > 0) {\n\t\tsize_t len;\n\t\tif (__put_user((elf_addr_t)p, envp++))\n\t\t\treturn -EFAULT;\n\t\tlen = strnlen_user((void __user *)p, MAX_ARG_STRLEN);\n\t\tif (!len || len > MAX_ARG_STRLEN)\n\t\t\treturn -EINVAL;\n\t\tp += len;\n\t}\n\tif (__put_user(0, envp))\n\t\treturn -EFAULT;\n\tcurrent->mm->env_end = p;\n\n\t/* Put the elf_info on the stack in the right place.  */\n\tsp = (elf_addr_t __user *)envp + 1;\n\tif (copy_to_user(sp, elf_info, ei_index * sizeof(elf_addr_t)))\n\t\treturn -EFAULT;\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "kfree_debugcheck",
+            "#define kfree_debugcheck(x) do { } while(0) /* <=== mm/slab.c:2847:2847:kfree_debugcheck:1 */ ",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "__cache_free",
+            "static inline void __cache_free(struct kmem_cache *cachep, void *objp, /* <=== __cache_free */ \n\t\t\t\tunsigned long caller)\n{\n\t/* Put the object into the quarantine, don't touch it for now. */\n\tif (kasan_slab_free(cachep, objp))\n\t\treturn;\n\n\t___cache_free(cachep, objp, caller);\n}",
+            2
+        ],
+        [
+            "arch/x86/include/asm/elf.h",
+            "mmap_is_ia32",
+            "static inline int mmap_is_ia32(void) /* <=== mmap_is_ia32 */ \n{\n\treturn IS_ENABLED(CONFIG_X86_32) ||\n\t       (IS_ENABLED(CONFIG_COMPAT) &&\n\t\ttest_thread_flag(TIF_ADDR32));\n}",
+            2
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_unlock",
+            "extern void mutex_unlock(struct mutex *lock); /* <=== mutex_unlock */ ",
+            2
+        ],
+        [
+            "arch/tile/include/asm/processor.h",
+            "start_thread",
+            "static inline void start_thread(struct pt_regs *regs, /* <=== start_thread */ \n\t\t\t\tunsigned long pc, unsigned long usp)\n{\n\tregs->pc = pc;\n\tregs->sp = usp;\n\tsingle_step_execve();\n}",
+            1
+        ],
+        [
+            "tools/usb/ffs-test.c",
+            "debug",
+            "#define debug(...) _msg(7, __VA_ARGS__) /* <=== tools/usb/ffs-test.c:99:99:debug:1 */ ",
+            2
+        ],
+        [
+            "fs/file_table.c",
+            "fput",
+            "void fput(struct file *file) /* <=== fput */ \n{\n\tif (atomic_long_dec_and_test(&file->f_count)) {\n\t\tstruct task_struct *task = current;\n\n\t\tif (likely(!in_interrupt() && !(task->flags & PF_KTHREAD))) {\n\t\t\tinit_task_work(&file->f_u.fu_rcuhead, ____fput);\n\t\t\tif (!task_work_add(task, &file->f_u.fu_rcuhead, true))\n\t\t\t\treturn;\n\t\t\t/*\n\t\t\t * After this task has run exit_task_work(),\n\t\t\t * task_work_add() will fail.  Fall through to delayed\n\t\t\t * fput to avoid leaking *file.\n\t\t\t */\n\t\t}\n\n\t\tif (llist_add(&file->f_u.fu_llist, &delayed_fput_list))\n\t\t\tschedule_delayed_work(&delayed_fput_work, 1);\n\t}\n}",
+            1
+        ],
+        [
+            "arch/avr32/include/asm/uaccess.h",
+            "get_fs",
+            "static inline mm_segment_t get_fs(void) /* <=== get_fs */ \n{\n\treturn MAKE_MM_SEG(test_thread_flag(TIF_USERSPACE));\n}",
+            2
+        ],
+        [
+            "include/linux/workqueue.h",
+            "queue_delayed_work",
+            "static inline bool queue_delayed_work(struct workqueue_struct *wq, /* <=== queue_delayed_work */ \n\t\t\t\t      struct delayed_work *dwork,\n\t\t\t\t      unsigned long delay)\n{\n\treturn queue_delayed_work_on(WORK_CPU_UNBOUND, wq, dwork, delay);\n}",
+            3
+        ],
+        [
+            "arch/h8300/include/asm/processor.h",
+            "wrusp",
+            "static inline void wrusp(unsigned long usp) /* <=== wrusp */ \n{\n\textern unsigned int\t_sw_usp;\n\n\t_sw_usp = usp;\n}",
+            2
+        ],
+        [
+            "arch/x86/kernel/process_32.c",
+            "start_thread",
+            "void /* <=== start_thread */ \nstart_thread(struct pt_regs *regs, unsigned long new_ip, unsigned long new_sp)\n{\n\tset_user_gs(regs, 0);\n\tregs->fs\t\t= 0;\n\tregs->ds\t\t= __USER_DS;\n\tregs->es\t\t= __USER_DS;\n\tregs->ss\t\t= __USER_DS;\n\tregs->cs\t\t= __USER_CS;\n\tregs->ip\t\t= new_ip;\n\tregs->sp\t\t= new_sp;\n\tregs->flags\t\t= X86_EFLAGS_IF;\n\tforce_iret();\n}",
+            1
+        ],
+        [
+            "arch/s390/mm/mmap.c",
+            "arch_mmap_rnd",
+            "unsigned long arch_mmap_rnd(void) /* <=== arch_mmap_rnd */ \n{\n\treturn (get_random_int() & MMAP_RND_MASK) << PAGE_SHIFT;\n}",
+            1
+        ],
+        [
+            "fs/exec.c",
+            "open_exec",
+            "struct file *open_exec(const char *name) /* <=== open_exec */ \n{\n\tstruct filename *filename = getname_kernel(name);\n\tstruct file *f = ERR_CAST(filename);\n\n\tif (!IS_ERR(filename)) {\n\t\tf = do_open_execat(AT_FDCWD, filename, 0);\n\t\tputname(filename);\n\t}\n\treturn f;\n}",
+            1
+        ],
+        [
+            "arch/score/include/asm/string.h",
+            "memcpy",
+            "extern void *memcpy(void *__to, __const__ void *__from, size_t __n); /* <=== memcpy */ ",
+            2
+        ],
+        [
+            "arch/m32r/include/asm/uaccess.h",
+            "get_fs",
+            "static inline mm_segment_t get_fs(void) /* <=== get_fs */ \n{\n\treturn USER_DS;\n}",
+            2
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "spin_lock_irqsave",
+            "static void spin_lock_irqsave(spinlock_t *lock, unsigned long f) /* <=== spin_lock_irqsave */ \n{\n\tspin_lock(lock);\n}",
+            3
+        ],
+        [
+            "arch/h8300/include/asm/segment.h",
+            "get_fs",
+            "static inline mm_segment_t get_fs(void) /* <=== get_fs */ \n{\n\treturn USER_DS;\n}",
+            2
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "ELF_PAGEOFFSET",
+            "#define ELF_PAGEOFFSET(_v) ((_v) & (ELF_MIN_ALIGN-1)) /* <=== fs/binfmt_elf.c:81:81:ELF_PAGEOFFSET:1 */ ",
+            1
+        ],
+        [
+            "arch/frv/kernel/process.c",
+            "elf_check_arch",
+            "int elf_check_arch(const struct elf32_hdr *hdr) /* <=== elf_check_arch */ \n{\n\tunsigned long hsr0 = __get_HSR(0);\n\tunsigned long psr = __get_PSR();\n\n\tif (hdr->e_machine != EM_FRV)\n\t\treturn 0;\n\n\tswitch (hdr->e_flags & EF_FRV_GPR_MASK) {\n\tcase EF_FRV_GPR64:\n\t\tif ((hsr0 & HSR0_GRN) == HSR0_GRN_32)\n\t\t\treturn 0;\n\tcase EF_FRV_GPR32:\n\tcase 0:\n\t\tbreak;\n\tdefault:\n\t\treturn 0;\n\t}\n\n\tswitch (hdr->e_flags & EF_FRV_FPR_MASK) {\n\tcase EF_FRV_FPR64:\n\t\tif ((hsr0 & HSR0_FRN) == HSR0_FRN_32)\n\t\t\treturn 0;\n\tcase EF_FRV_FPR32:\n\tcase EF_FRV_FPR_NONE:\n\tcase 0:\n\t\tbreak;\n\tdefault:\n\t\treturn 0;\n\t}\n\n\tif ((hdr->e_flags & EF_FRV_MULADD) == EF_FRV_MULADD)\n\t\tif (PSR_IMPLE(psr) != PSR_IMPLE_FR405 &&\n\t\t    PSR_IMPLE(psr) != PSR_IMPLE_FR451)\n\t\t\treturn 0;\n\n\tswitch (hdr->e_flags & EF_FRV_CPU_MASK) {\n\tcase EF_FRV_CPU_GENERIC:\n\t\tbreak;\n\tcase EF_FRV_CPU_FR300:\n\tcase EF_FRV_CPU_SIMPLE:\n\tcase EF_FRV_CPU_TOMCAT:\n\tdefault:\n\t\treturn 0;\n\tcase EF_FRV_CPU_FR400:\n\t\tif (PSR_IMPLE(psr) != PSR_IMPLE_FR401 &&\n\t\t    PSR_IMPLE(psr) != PSR_IMPLE_FR405 &&\n\t\t    PSR_IMPLE(psr) != PSR_IMPLE_FR451 &&\n\t\t    PSR_IMPLE(psr) != PSR_IMPLE_FR551)\n\t\t\treturn 0;\n\t\tbreak;\n\tcase EF_FRV_CPU_FR450:\n\t\tif (PSR_IMPLE(psr) != PSR_IMPLE_FR451)\n\t\t\treturn 0;\n\t\tbreak;\n\tcase EF_FRV_CPU_FR500:\n\t\tif (PSR_IMPLE(psr) != PSR_IMPLE_FR501)\n\t\t\treturn 0;\n\t\tbreak;\n\tcase EF_FRV_CPU_FR550:\n\t\tif (PSR_IMPLE(psr) != PSR_IMPLE_FR551)\n\t\t\treturn 0;\n\t\tbreak;\n\t}\n\n\treturn 1;\n}",
+            1
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "ELF_BASE_PLATFORM",
+            "#define ELF_BASE_PLATFORM NULL /* <=== fs/binfmt_elf.c:146:146:ELF_BASE_PLATFORM:0 */ ",
+            2
+        ],
+        [
+            "fs/file_table.c",
+            "fput",
+            "void fput(struct file *file) /* <=== fput */ \n{\n\tif (atomic_long_dec_and_test(&file->f_count)) {\n\t\tstruct task_struct *task = current;\n\n\t\tif (likely(!in_interrupt() && !(task->flags & PF_KTHREAD))) {\n\t\t\tinit_task_work(&file->f_u.fu_rcuhead, ____fput);\n\t\t\tif (!task_work_add(task, &file->f_u.fu_rcuhead, true))\n\t\t\t\treturn;\n\t\t\t/*\n\t\t\t * After this task has run exit_task_work(),\n\t\t\t * task_work_add() will fail.  Fall through to delayed\n\t\t\t * fput to avoid leaking *file.\n\t\t\t */\n\t\t}\n\n\t\tif (llist_add(&file->f_u.fu_llist, &delayed_fput_list))\n\t\t\tschedule_delayed_work(&delayed_fput_work, 1);\n\t}\n}",
+            3
+        ],
+        [
+            "mm/slub.c",
+            "kfree_hook",
+            "static inline void kfree_hook(const void *x) /* <=== kfree_hook */ \n{\n\tkmemleak_free(x);\n\tkasan_kfree_large(x);\n}",
+            2
+        ],
+        [
+            "arch/tile/mm/mmap.c",
+            "arch_randomize_brk",
+            "unsigned long arch_randomize_brk(struct mm_struct *mm) /* <=== arch_randomize_brk */ \n{\n\tunsigned long range_end = mm->brk + 0x02000000;\n\treturn randomize_range(mm->brk, range_end, 0) ? : mm->brk;\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "kfree",
+            "void kfree(const void *block) /* <=== kfree */ \n{\n\tstruct page *sp;\n\n\ttrace_kfree(_RET_IP_, block);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(block)))\n\t\treturn;\n\tkmemleak_free(block);\n\n\tsp = virt_to_page(block);\n\tif (PageSlab(sp)) {\n\t\tint align = max_t(size_t, ARCH_KMALLOC_MINALIGN, ARCH_SLAB_MINALIGN);\n\t\tunsigned int *m = (unsigned int *)(block - align);\n\t\tslob_free(m, *m + align);\n\t} else\n\t\t__free_pages(sp, compound_order(sp));\n}",
+            1
+        ],
+        [
+            "include/linux/uidgid.h",
+            "from_kuid",
+            "static inline uid_t from_kuid(struct user_namespace *to, kuid_t kuid) /* <=== from_kuid */ \n{\n\treturn __kuid_val(kuid);\n}",
+            3
+        ],
+        [
+            "arch/parisc/kernel/process.c",
+            "arch_randomize_brk",
+            "unsigned long arch_randomize_brk(struct mm_struct *mm) /* <=== arch_randomize_brk */ \n{\n\tunsigned long ret = PAGE_ALIGN(mm->brk + brk_rnd());\n\n\tif (ret < mm->brk)\n\t\treturn mm->brk;\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "arch/openrisc/kernel/process.c",
+            "start_thread",
+            "void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long sp) /* <=== start_thread */ \n{\n\tunsigned long sr = mfspr(SPR_SR) & ~SPR_SR_SM;\n\n\tmemset(regs, 0, sizeof(struct pt_regs));\n\n\tregs->pc = pc;\n\tregs->sr = sr;\n\tregs->sp = sp;\n}",
+            1
+        ],
+        [
+            "include/linux/security.h",
+            "security_bprm_committing_creds",
+            "static inline void security_bprm_committing_creds(struct linux_binprm *bprm) /* <=== security_bprm_committing_creds */ \n{\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_free",
+            "static void slob_free(void *block, int size) /* <=== slob_free */ \n{\n\tstruct page *sp;\n\tslob_t *prev, *next, *b = (slob_t *)block;\n\tslobidx_t units;\n\tunsigned long flags;\n\tstruct list_head *slob_list;\n\n\tif (unlikely(ZERO_OR_NULL_PTR(block)))\n\t\treturn;\n\tBUG_ON(!size);\n\n\tsp = virt_to_page(block);\n\tunits = SLOB_UNITS(size);\n\n\tspin_lock_irqsave(&slob_lock, flags);\n\n\tif (sp->units + units == SLOB_UNITS(PAGE_SIZE)) {\n\t\t/* Go directly to page allocator. Do not pass slob allocator */\n\t\tif (slob_page_free(sp))\n\t\t\tclear_slob_page_free(sp);\n\t\tspin_unlock_irqrestore(&slob_lock, flags);\n\t\t__ClearPageSlab(sp);\n\t\tpage_mapcount_reset(sp);\n\t\tslob_free_pages(b, 0);\n\t\treturn;\n\t}\n\n\tif (!slob_page_free(sp)) {\n\t\t/* This slob page is about to become partially free. Easy! */\n\t\tsp->units = units;\n\t\tsp->freelist = b;\n\t\tset_slob(b, units,\n\t\t\t(void *)((unsigned long)(b +\n\t\t\t\t\tSLOB_UNITS(PAGE_SIZE)) & PAGE_MASK));\n\t\tif (size < SLOB_BREAK1)\n\t\t\tslob_list = &free_slob_small;\n\t\telse if (size < SLOB_BREAK2)\n\t\t\tslob_list = &free_slob_medium;\n\t\telse\n\t\t\tslob_list = &free_slob_large;\n\t\tset_slob_page_free(sp, slob_list);\n\t\tgoto out;\n\t}\n\n\t/*\n\t * Otherwise the page is already partially free, so find reinsertion\n\t * point.\n\t */\n\tsp->units += units;\n\n\tif (b < (slob_t *)sp->freelist) {\n\t\tif (b + units == sp->freelist) {\n\t\t\tunits += slob_units(sp->freelist);\n\t\t\tsp->freelist = slob_next(sp->freelist);\n\t\t}\n\t\tset_slob(b, units, sp->freelist);\n\t\tsp->freelist = b;\n\t} else {\n\t\tprev = sp->freelist;\n\t\tnext = slob_next(prev);\n\t\twhile (b > next) {\n\t\t\tprev = next;\n\t\t\tnext = slob_next(prev);\n\t\t}\n\n\t\tif (!slob_last(prev) && b + units == next) {\n\t\t\tunits += slob_units(next);\n\t\t\tset_slob(b, units, slob_next(next));\n\t\t} else\n\t\t\tset_slob(b, units, next);\n\n\t\tif (prev + slob_units(prev) == b) {\n\t\t\tunits = slob_units(b) + slob_units(prev);\n\t\t\tset_slob(prev, units, slob_next(b));\n\t\t} else\n\t\t\tset_slob(prev, slob_units(prev), b);\n\t}\nout:\n\tspin_unlock_irqrestore(&slob_lock, flags);\n}",
+            2
+        ],
+        [
+            "arch/arm/mm/mmap.c",
+            "arch_mmap_rnd",
+            "unsigned long arch_mmap_rnd(void) /* <=== arch_mmap_rnd */ \n{\n\tunsigned long rnd;\n\n\trnd = get_random_long() & ((1UL << mmap_rnd_bits) - 1);\n\n\treturn rnd << PAGE_SHIFT;\n}",
+            1
+        ],
+        [
+            "include/linux/llist.h",
+            "llist_add",
+            "static inline bool llist_add(struct llist_node *new, struct llist_head *head) /* <=== llist_add */ \n{\n\treturn llist_add_batch(new, new, head);\n}",
+            2
+        ],
+        [
+            "include/linux/gfp.h",
+            "__free_pages",
+            "extern void __free_pages(struct page *page, unsigned int order); /* <=== __free_pages */ ",
+            2
+        ],
+        [
+            "arch/sh/kernel/process_32.c",
+            "start_thread",
+            "void start_thread(struct pt_regs *regs, unsigned long new_pc, /* <=== start_thread */ \n\t\t  unsigned long new_sp)\n{\n\tregs->pr = 0;\n\tregs->sr = SR_FD;\n\tregs->pc = new_pc;\n\tregs->regs[15] = new_sp;\n\n\tfree_thread_xstate(current);\n}",
+            1
+        ],
+        [
+            "arch/metag/include/asm/thread_info.h",
+            "current_thread_info",
+            "static inline struct thread_info *current_thread_info(void) /* <=== current_thread_info */ \n{\n\treturn (struct thread_info *)(current_stack_pointer &\n\t\t\t\t      ~(THREAD_SIZE - 1));\n}",
+            3
+        ],
+        [
+            "arch/powerpc/kernel/process.c",
+            "start_thread",
+            "void start_thread(struct pt_regs *regs, unsigned long start, unsigned long sp) /* <=== start_thread */ \n{\n#ifdef CONFIG_PPC64\n\tunsigned long load_addr = regs->gpr[2];\t/* saved by ELF_PLAT_INIT */\n#endif\n\n\t/*\n\t * If we exec out of a kernel thread then thread.regs will not be\n\t * set.  Do it now.\n\t */\n\tif (!current->thread.regs) {\n\t\tstruct pt_regs *regs = task_stack_page(current) + THREAD_SIZE;\n\t\tcurrent->thread.regs = regs - 1;\n\t}\n\n#ifdef CONFIG_PPC_TRANSACTIONAL_MEM\n\t/*\n\t * Clear any transactional state, we're exec()ing. The cause is\n\t * not important as there will never be a recheckpoint so it's not\n\t * user visible.\n\t */\n\tif (MSR_TM_SUSPENDED(mfmsr()))\n\t\ttm_reclaim_current(0);\n#endif\n\n\tmemset(regs->gpr, 0, sizeof(regs->gpr));\n\tregs->ctr = 0;\n\tregs->link = 0;\n\tregs->xer = 0;\n\tregs->ccr = 0;\n\tregs->gpr[1] = sp;\n\n\t/*\n\t * We have just cleared all the nonvolatile GPRs, so make\n\t * FULL_REGS(regs) return true.  This is necessary to allow\n\t * ptrace to examine the thread immediately after exec.\n\t */\n\tregs->trap &= ~1UL;\n\n#ifdef CONFIG_PPC32\n\tregs->mq = 0;\n\tregs->nip = start;\n\tregs->msr = MSR_USER;\n#else\n\tif (!is_32bit_task()) {\n\t\tunsigned long entry;\n\n\t\tif (is_elf2_task()) {\n\t\t\t/* Look ma, no function descriptors! */\n\t\t\tentry = start;\n\n\t\t\t/*\n\t\t\t * Ulrich says:\n\t\t\t *   The latest iteration of the ABI requires that when\n\t\t\t *   calling a function (at its global entry point),\n\t\t\t *   the caller must ensure r12 holds the entry point\n\t\t\t *   address (so that the function can quickly\n\t\t\t *   establish addressability).\n\t\t\t */\n\t\t\tregs->gpr[12] = start;\n\t\t\t/* Make sure that's restored on entry to userspace. */\n\t\t\tset_thread_flag(TIF_RESTOREALL);\n\t\t} else {\n\t\t\tunsigned long toc;\n\n\t\t\t/* start is a relocated pointer to the function\n\t\t\t * descriptor for the elf _start routine.  The first\n\t\t\t * entry in the function descriptor is the entry\n\t\t\t * address of _start and the second entry is the TOC\n\t\t\t * value we need to use.\n\t\t\t */\n\t\t\t__get_user(entry, (unsigned long __user *)start);\n\t\t\t__get_user(toc, (unsigned long __user *)start+1);\n\n\t\t\t/* Check whether the e_entry function descriptor entries\n\t\t\t * need to be relocated before we can use them.\n\t\t\t */\n\t\t\tif (load_addr != 0) {\n\t\t\t\tentry += load_addr;\n\t\t\t\ttoc   += load_addr;\n\t\t\t}\n\t\t\tregs->gpr[2] = toc;\n\t\t}\n\t\tregs->nip = entry;\n\t\tregs->msr = MSR_USER64;\n\t} else {\n\t\tregs->nip = start;\n\t\tregs->gpr[2] = 0;\n\t\tregs->msr = MSR_USER32;\n\t}\n#endif\n#ifdef CONFIG_VSX\n\tcurrent->thread.used_vsr = 0;\n#endif\n\tmemset(&current->thread.fp_state, 0, sizeof(current->thread.fp_state));\n\tcurrent->thread.fp_save_area = NULL;\n#ifdef CONFIG_ALTIVEC\n\tmemset(&current->thread.vr_state, 0, sizeof(current->thread.vr_state));\n\tcurrent->thread.vr_state.vscr.u[3] = 0x00010000; /* Java mode disabled */\n\tcurrent->thread.vr_save_area = NULL;\n\tcurrent->thread.vrsave = 0;\n\tcurrent->thread.used_vr = 0;\n#endif /* CONFIG_ALTIVEC */\n#ifdef CONFIG_SPE\n\tmemset(current->thread.evr, 0, sizeof(current->thread.evr));\n\tcurrent->thread.acc = 0;\n\tcurrent->thread.spefscr = 0;\n\tcurrent->thread.used_spe = 0;\n#endif /* CONFIG_SPE */\n#ifdef CONFIG_PPC_TRANSACTIONAL_MEM\n\tif (cpu_has_feature(CPU_FTR_TM))\n\t\tregs->msr |= MSR_TM;\n\tcurrent->thread.tm_tfhar = 0;\n\tcurrent->thread.tm_texasr = 0;\n\tcurrent->thread.tm_tfiar = 0;\n#endif /* CONFIG_PPC_TRANSACTIONAL_MEM */\n}",
+            1
+        ],
+        [
+            "arch/sh/include/asm/processor.h",
+            "free_thread_xstate",
+            "extern void free_thread_xstate(struct task_struct *); /* <=== free_thread_xstate */ ",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "virt_to_cache",
+            "static inline struct kmem_cache *virt_to_cache(const void *obj) /* <=== virt_to_cache */ \n{\n\tstruct page *page = virt_to_head_page(obj);\n\treturn page->slab_cache;\n}",
+            2
+        ],
+        [
+            "arch/arm64/kernel/process.c",
+            "arch_randomize_brk",
+            "unsigned long arch_randomize_brk(struct mm_struct *mm) /* <=== arch_randomize_brk */ \n{\n\tunsigned long range_end = mm->brk;\n\n\tif (is_compat_task())\n\t\trange_end += 0x02000000;\n\telse\n\t\trange_end += 0x40000000;\n\n\treturn randomize_range(mm->brk, range_end, 0) ? : mm->brk;\n}",
+            1
+        ],
+        [
+            "arch/arc/kernel/process.c",
+            "elf_check_arch",
+            "int elf_check_arch(const struct elf32_hdr *x) /* <=== elf_check_arch */ \n{\n\tunsigned int eflags;\n\n\tif (x->e_machine != EM_ARC_INUSE) {\n\t\tpr_err(\"ELF not built for %s ISA\\n\",\n\t\t\tis_isa_arcompact() ? \"ARCompact\":\"ARCv2\");\n\t\treturn 0;\n\t}\n\n\teflags = x->e_flags;\n\tif ((eflags & EF_ARC_OSABI_MSK) != EF_ARC_OSABI_CURRENT) {\n\t\tpr_err(\"ABI mismatch - you need newer toolchain\\n\");\n\t\tforce_sigsegv(SIGSEGV, current);\n\t\treturn 0;\n\t}\n\n\treturn 1;\n}",
+            1
+        ],
+        [
+            "arch/x86/boot/string.h",
+            "memcpy",
+            "void *memcpy(void *dst, const void *src, size_t len); /* <=== memcpy */ ",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "set_slob_page_free",
+            "static void set_slob_page_free(struct page *sp, struct list_head *list) /* <=== set_slob_page_free */ \n{\n\tlist_add(&sp->lru, list);\n\t__SetPageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "___cache_free",
+            "void ___cache_free(struct kmem_cache *cachep, void *objp, /* <=== ___cache_free */ \n\t\tunsigned long caller)\n{\n\tstruct array_cache *ac = cpu_cache_get(cachep);\n\n\tcheck_irq_off();\n\tkmemleak_free_recursive(objp, cachep->flags);\n\tobjp = cache_free_debugcheck(cachep, objp, caller);\n\n\tkmemcheck_slab_free(cachep, objp, cachep->object_size);\n\n\t/*\n\t * Skip calling cache_free_alien() when the platform is not numa.\n\t * This will avoid cache misses that happen while accessing slabp (which\n\t * is per page memory  reference) to get nodeid. Instead use a global\n\t * variable to skip the call, which is mostly likely to be present in\n\t * the cache.\n\t */\n\tif (nr_online_nodes > 1 && cache_free_alien(cachep, objp))\n\t\treturn;\n\n\tif (ac->avail < ac->limit) {\n\t\tSTATS_INC_FREEHIT(cachep);\n\t} else {\n\t\tSTATS_INC_FREEMISS(cachep);\n\t\tcache_flusharray(cachep, ac);\n\t}\n\n\tif (sk_memalloc_socks()) {\n\t\tstruct page *page = virt_to_head_page(objp);\n\n\t\tif (unlikely(PageSlabPfmemalloc(page))) {\n\t\t\tcache_free_pfmemalloc(cachep, page, objp);\n\t\t\treturn;\n\t\t}\n\t}\n\n\tac->entry[ac->avail++] = objp;\n}",
+            3
+        ],
+        [
+            "include/linux/random.h",
+            "get_random_long",
+            "unsigned long get_random_long(void); /* <=== get_random_long */ ",
+            2
+        ],
+        [
+            "fs/exec.c",
+            "kernel_read",
+            "int kernel_read(struct file *file, loff_t offset, /* <=== kernel_read */ \n\t\tchar *addr, unsigned long count)\n{\n\tmm_segment_t old_fs;\n\tloff_t pos = offset;\n\tint result;\n\n\told_fs = get_fs();\n\tset_fs(get_ds());\n\t/* The cast to a user pointer is valid due to the set_fs() */\n\tresult = vfs_read(file, (void __user *)addr, count, &pos);\n\tset_fs(old_fs);\n\treturn result;\n}",
+            1
+        ],
+        [
+            "arch/x86/kernel/process_64.c",
+            "start_thread_common",
+            "static void /* <=== start_thread_common */ \nstart_thread_common(struct pt_regs *regs, unsigned long new_ip,\n\t\t    unsigned long new_sp,\n\t\t    unsigned int _cs, unsigned int _ss, unsigned int _ds)\n{\n\tloadsegment(fs, 0);\n\tloadsegment(es, _ds);\n\tloadsegment(ds, _ds);\n\tload_gs_index(0);\n\tregs->ip\t\t= new_ip;\n\tregs->sp\t\t= new_sp;\n\tregs->cs\t\t= _cs;\n\tregs->ss\t\t= _ss;\n\tregs->flags\t\t= X86_EFLAGS_IF;\n\tforce_iret();\n}",
+            2
+        ],
+        [
+            "arch/x86/kernel/process_64.c",
+            "start_thread",
+            "void /* <=== start_thread */ \nstart_thread(struct pt_regs *regs, unsigned long new_ip, unsigned long new_sp)\n{\n\tstart_thread_common(regs, new_ip, new_sp,\n\t\t\t    __USER_CS, __USER_DS, 0);\n}",
+            1
+        ],
+        [
+            "arch/s390/kernel/process.c",
+            "arch_randomize_brk",
+            "unsigned long arch_randomize_brk(struct mm_struct *mm) /* <=== arch_randomize_brk */ \n{\n\tunsigned long ret;\n\n\tret = PAGE_ALIGN(mm->brk + brk_rnd());\n\treturn (ret > mm->brk) ? ret : mm->brk;\n}",
+            1
+        ],
+        [
+            "include/linux/rwsem.h",
+            "up_write",
+            "extern void up_write(struct rw_semaphore *sem); /* <=== up_write */ ",
+            3
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "ELF_PAGESTART",
+            "#define ELF_PAGESTART(_v) ((_v) & ~(unsigned long)(ELF_MIN_ALIGN-1)) /* <=== fs/binfmt_elf.c:80:80:ELF_PAGESTART:1 */ ",
+            1
+        ],
+        [
+            "tools/usb/ffs-test.c",
+            "die_on",
+            "#define die_on(cond, ...) do { \\ /* <=== tools/usb/ffs-test.c:101:104:die_on:2 */ \n\tif (cond) \\\n\t\tdie(__VA_ARGS__); \\\n\t} while (0)",
+            2
+        ],
+        [
+            "mm/util.c",
+            "vm_mmap",
+            "unsigned long vm_mmap(struct file *file, unsigned long addr, /* <=== vm_mmap */ \n\tunsigned long len, unsigned long prot,\n\tunsigned long flag, unsigned long offset)\n{\n\tif (unlikely(offset + PAGE_ALIGN(len) < offset))\n\t\treturn -EINVAL;\n\tif (unlikely(offset_in_page(offset)))\n\t\treturn -EINVAL;\n\n\treturn vm_mmap_pgoff(file, addr, len, prot, flag, offset >> PAGE_SHIFT);\n}",
+            1
+        ],
+        [
+            "include/linux/security.h",
+            "cap_bprm_secureexec",
+            "extern int cap_bprm_secureexec(struct linux_binprm *bprm); /* <=== cap_bprm_secureexec */ ",
+            3
+        ],
+        [
+            "include/linux/fs.h",
+            "deny_write_access",
+            "static inline int deny_write_access(struct file *file) /* <=== deny_write_access */ \n{\n\tstruct inode *inode = file_inode(file);\n\treturn atomic_dec_unless_positive(&inode->i_writecount) ? 0 : -ETXTBSY;\n}",
+            3
+        ],
+        [
+            "tools/testing/radix-tree/linux/kernel.h",
+            "in_interrupt",
+            "static inline int in_interrupt(void) /* <=== in_interrupt */ \n{\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "arch/mips/mm/mmap.c",
+            "arch_randomize_brk",
+            "unsigned long arch_randomize_brk(struct mm_struct *mm) /* <=== arch_randomize_brk */ \n{\n\tunsigned long base = mm->brk;\n\tunsigned long ret;\n\n\tret = PAGE_ALIGN(base + brk_rnd());\n\n\tif (ret < mm->brk)\n\t\treturn mm->brk;\n\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "arch/unicore32/kernel/process.c",
+            "arch_randomize_brk",
+            "unsigned long arch_randomize_brk(struct mm_struct *mm) /* <=== arch_randomize_brk */ \n{\n\tunsigned long range_end = mm->brk + 0x02000000;\n\treturn randomize_range(mm->brk, range_end, 0) ? : mm->brk;\n}",
+            1
+        ],
+        [
+            "include/linux/random.h",
+            "get_random_bytes",
+            "extern void get_random_bytes(void *buf, int nbytes); /* <=== get_random_bytes */ ",
+            2
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kfree",
+            "static inline void kfree(void *p) /* <=== kfree */ \n{\n\tif (p >= __kfree_ignore_start && p < __kfree_ignore_end)\n\t\treturn;\n\tfree(p);\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_UNITS",
+            "#define SLOB_UNITS(size) DIV_ROUND_UP(size, SLOB_UNIT) /* <=== mm/slob.c:125:125:SLOB_UNITS:1 */ ",
+            3
+        ],
+        [
+            "arch/s390/kernel/process.c",
+            "brk_rnd",
+            "static inline unsigned long brk_rnd(void) /* <=== brk_rnd */ \n{\n\treturn (get_random_int() & BRK_RND_MASK) << PAGE_SHIFT;\n}",
+            2
+        ],
+        [
+            "arch/x86/ia32/ia32_aout.c",
+            "set_brk",
+            "static int set_brk(unsigned long start, unsigned long end) /* <=== set_brk */ \n{\n\tstart = PAGE_ALIGN(start);\n\tend = PAGE_ALIGN(end);\n\tif (end <= start)\n\t\treturn 0;\n\treturn vm_brk(start, end - start);\n}",
+            1
+        ],
+        [
+            "include/linux/kasan.h",
+            "kasan_kfree_large",
+            "static inline void kasan_kfree_large(const void *ptr) {} /* <=== kasan_kfree_large */ ",
+            3
+        ],
+        [
+            "arch/blackfin/kernel/process.c",
+            "start_thread",
+            "void start_thread(struct pt_regs *regs, unsigned long new_ip, unsigned long new_sp) /* <=== start_thread */ \n{\n\tregs->pc = new_ip;\n\tif (current->mm)\n\t\tregs->p5 = current->mm->start_data;\n#ifndef CONFIG_SMP\n\ttask_thread_info(current)->l1_task_info.stack_start =\n\t\t(void *)current->mm->context.stack_start;\n\ttask_thread_info(current)->l1_task_info.lowest_sp = (void *)new_sp;\n\tmemcpy(L1_SCRATCH_TASK_INFO, &task_thread_info(current)->l1_task_info,\n\t       sizeof(*L1_SCRATCH_TASK_INFO));\n#endif\n\twrusp(new_sp);\n}",
+            1
+        ],
+        [
+            "arch/x86/boot/string.c",
+            "memcmp",
+            "int memcmp(const void *s1, const void *s2, size_t len) /* <=== memcmp */ \n{\n\tbool diff;\n\tasm(\"repe; cmpsb; setnz %0\"\n\t    : \"=qm\" (diff), \"+D\" (s1), \"+S\" (s2), \"+c\" (len));\n\treturn diff;\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kmalloc",
+            "static inline void *kmalloc(size_t s, gfp_t gfp) /* <=== kmalloc */ \n{\n\tif (__kmalloc_fake)\n\t\treturn __kmalloc_fake;\n\treturn malloc(s);\n}",
+            1
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "STACK_ROUND",
+            "#define STACK_ROUND(sp, items) \\ /* <=== fs/binfmt_elf.c:135:136:STACK_ROUND:2 */ \n\t(((unsigned long) (sp - items)) &~ 15UL)",
+            2
+        ],
+        [
+            "include/linux/debug_locks.h",
+            "debug_check_no_locks_freed",
+            "static inline void /* <=== debug_check_no_locks_freed */ \ndebug_check_no_locks_freed(const void *from, unsigned long len)\n{\n}",
+            2
+        ],
+        [
+            "arch/um/include/asm/thread_info.h",
+            "current_thread_info",
+            "static inline struct thread_info *current_thread_info(void) /* <=== current_thread_info */ \n{\n\tstruct thread_info *ti;\n\tunsigned long mask = THREAD_SIZE - 1;\n\tvoid *p;\n\n\tasm volatile (\"\" : \"=r\" (p) : \"0\" (&ti));\n\tti = (struct thread_info *) (((unsigned long)p) & ~mask);\n\treturn ti;\n}",
+            3
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "NEW_AUX_ENT",
+            "#define NEW_AUX_ENT(id, val) \\ /* <=== fs/binfmt_elf.c:219:223:NEW_AUX_ENT:2 */ \n\tdo { \\\n\t\telf_info[ei_index++] = id; \\\n\t\telf_info[ei_index++] = val; \\\n\t} while (0)",
+            2
+        ],
+        [
+            "arch/s390/lib/string.c",
+            "__strend",
+            "static inline char *__strend(const char *s) /* <=== __strend */ \n{\n\tregister unsigned long r0 asm(\"0\") = 0;\n\n\tasm volatile (\"0: srst  %0,%1\\n\"\n\t\t      \"   jo    0b\"\n\t\t      : \"+d\" (r0), \"+a\" (s) :  : \"cc\" );\n\treturn (char *) r0;\n}",
+            3
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "BAD_ADDR",
+            "#define BAD_ADDR(x) ((unsigned long)(x) >= TASK_SIZE) /* <=== fs/binfmt_elf.c:92:92:BAD_ADDR:1 */ ",
+            1
+        ],
+        [
+            "arch/score/include/asm/string.h",
+            "memset",
+            "extern void *memset(void *__s, int __c, size_t __count); /* <=== memset */ ",
+            2
+        ],
+        [
+            "tools/usb/ffs-test.c",
+            "_msg",
+            "static void _msg(unsigned level, const char *fmt, ...) /* <=== _msg */ \n{\n\tif (level < 2)\n\t\tlevel = 2;\n\telse if (level > 7)\n\t\tlevel = 7;\n\n\tif (level <= verbosity) {\n\t\tstatic const char levels[8][6] = {\n\t\t\t[2] = \"crit:\",\n\t\t\t[3] = \"err: \",\n\t\t\t[4] = \"warn:\",\n\t\t\t[5] = \"note:\",\n\t\t\t[6] = \"info:\",\n\t\t\t[7] = \"dbg: \"\n\t\t};\n\n\t\tint _errno = errno;\n\t\tva_list ap;\n\n\t\tfprintf(stderr, \"%s: %s \", argv0, levels[level]);\n\t\tva_start(ap, fmt);\n\t\tvfprintf(stderr, fmt, ap);\n\t\tva_end(ap);\n\n\t\tif (fmt[strlen(fmt) - 1] != '\\n') {\n\t\t\tchar buffer[128];\n\t\t\tstrerror_r(_errno, buffer, sizeof buffer);\n\t\t\tfprintf(stderr, \": (-%d) %s\\n\", _errno, buffer);\n\t\t}\n\n\t\tfflush(stderr);\n\t}\n}",
+            2
+        ],
+        [
+            "arch/x86/mm/mmap.c",
+            "arch_mmap_rnd",
+            "unsigned long arch_mmap_rnd(void) /* <=== arch_mmap_rnd */ \n{\n\tunsigned long rnd;\n\n\tif (mmap_is_ia32())\n#ifdef CONFIG_COMPAT\n\t\trnd = get_random_long() & ((1UL << mmap_rnd_compat_bits) - 1);\n#else\n\t\trnd = get_random_long() & ((1UL << mmap_rnd_bits) - 1);\n#endif\n\telse\n\t\trnd = get_random_long() & ((1UL << mmap_rnd_bits) - 1);\n\n\treturn rnd << PAGE_SHIFT;\n}",
+            1
+        ],
+        [
+            "include/linux/security.h",
+            "security_mmap_file",
+            "static inline int security_mmap_file(struct file *file, unsigned long prot, /* <=== security_mmap_file */ \n\t\t\t\t     unsigned long flags)\n{\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "arch/alpha/include/asm/pal.h",
+            "wrusp",
+            "__CALL_PAL_W1(wrusp, unsigned long); /* <=== wrusp */ ",
+            2
+        ],
+        [
+            "arch/powerpc/mm/mmap.c",
+            "arch_mmap_rnd",
+            "unsigned long arch_mmap_rnd(void) /* <=== arch_mmap_rnd */ \n{\n\tunsigned long rnd;\n\n\t/* 8MB for 32bit, 1GB for 64bit */\n\tif (is_32bit_task())\n\t\trnd = get_random_long() % (1<<(23-PAGE_SHIFT));\n\telse\n\t\trnd = get_random_long() % (1UL<<(30-PAGE_SHIFT));\n\n\treturn rnd << PAGE_SHIFT;\n}",
+            1
+        ],
+        [
+            "arch/score/include/asm/uaccess.h",
+            "__copy_tofrom_user",
+            "extern int __copy_tofrom_user(void *to, const void *from, unsigned long len); /* <=== __copy_tofrom_user */ ",
+            3
+        ],
+        [
+            "include/linux/fs.h",
+            "allow_write_access",
+            "static inline void allow_write_access(struct file *file) /* <=== allow_write_access */ \n{\n\tif (file)\n\t\tatomic_inc(&file_inode(file)->i_writecount);\n}",
+            1
+        ],
+        [
+            "include/linux/elf-randomize.h",
+            "arch_mmap_rnd",
+            "static inline unsigned long arch_mmap_rnd(void) { return 0; } /* <=== arch_mmap_rnd */ ",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "slob_last",
+            "static int slob_last(slob_t *s) /* <=== slob_last */ \n{\n\treturn !((unsigned long)slob_next(s) & ~PAGE_MASK);\n}",
+            3
+        ],
+        [
+            "arch/mips/mm/mmap.c",
+            "arch_mmap_rnd",
+            "unsigned long arch_mmap_rnd(void) /* <=== arch_mmap_rnd */ \n{\n\tunsigned long rnd;\n\n\trnd = get_random_long();\n\trnd <<= PAGE_SHIFT;\n\tif (TASK_IS_32BIT_ADDR)\n\t\trnd &= 0xfffffful;\n\telse\n\t\trnd &= 0xffffffful;\n\n\treturn rnd;\n}",
+            1
+        ],
+        [
+            "arch/alpha/kernel/process.c",
+            "start_thread",
+            "void /* <=== start_thread */ \nstart_thread(struct pt_regs * regs, unsigned long pc, unsigned long sp)\n{\n\tregs->pc = pc;\n\tregs->ps = 8;\n\twrusp(sp);\n}",
+            1
+        ],
+        [
+            "arch/powerpc/kernel/process.c",
+            "arch_align_stack",
+            "unsigned long arch_align_stack(unsigned long sp) /* <=== arch_align_stack */ \n{\n\tif (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)\n\t\tsp -= get_random_int() & ~PAGE_MASK;\n\treturn sp & ~0xf;\n}",
+            2
+        ],
+        [
+            "arch/m68k/include/asm/processor.h",
+            "wrusp",
+            "static inline void wrusp(unsigned long usp) /* <=== wrusp */ \n{\n#ifdef CONFIG_COLDFIRE_SW_A7\n\textern unsigned int sw_usp;\n\tsw_usp = usp;\n#else\n\tregister unsigned long a0 __asm__(\"a0\") = usp;\n\t/* move %a0,%usp */\n\t__asm__ __volatile__(\".word 0x4e60\" : : \"a\" (a0) );\n#endif\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_page_free",
+            "static inline int slob_page_free(struct page *sp) /* <=== slob_page_free */ \n{\n\treturn PageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "arch/openrisc/include/asm/uaccess.h",
+            "copy_to_user",
+            "static inline unsigned long /* <=== copy_to_user */ \ncopy_to_user(void *to, const void *from, unsigned long n)\n{\n\tunsigned long over;\n\n\tif (access_ok(VERIFY_WRITE, to, n))\n\t\treturn __copy_tofrom_user(to, from, n);\n\tif ((unsigned long)to < TASK_SIZE) {\n\t\tover = (unsigned long)to + n - TASK_SIZE;\n\t\treturn __copy_tofrom_user(to, from, n - over) + over;\n\t}\n\treturn n;\n}",
+            2
+        ],
+        [
+            "arch/h8300/include/asm/segment.h",
+            "get_ds",
+            "static inline mm_segment_t get_ds(void) /* <=== get_ds */ \n{\n\t/* return the supervisor data space code */\n\treturn KERNEL_DS;\n}",
+            2
+        ],
+        [
+            "include/linux/sched.h",
+            "force_sigsegv",
+            "extern int force_sigsegv(int, struct task_struct *); /* <=== force_sigsegv */ ",
+            2
+        ],
+        [
+            "arch/s390/kernel/process.c",
+            "arch_align_stack",
+            "unsigned long arch_align_stack(unsigned long sp) /* <=== arch_align_stack */ \n{\n\tif (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)\n\t\tsp -= get_random_int() & ~PAGE_MASK;\n\treturn sp & ~0xf;\n}",
+            2
+        ],
+        [
+            "arch/s390/include/asm/string.h",
+            "strlen",
+            "static inline size_t strlen(const char *s) /* <=== strlen */ \n{\n\tregister unsigned long r0 asm(\"0\") = 0;\n\tconst char *tmp = s;\n\n\tasm volatile(\n\t\t\"0:\tsrst\t%0,%1\\n\"\n\t\t\"\tjo\t0b\"\n\t\t: \"+d\" (r0), \"+a\" (tmp) :  : \"cc\");\n\treturn r0 - (unsigned long) s;\n}",
+            2
+        ],
+        [
+            "arch/x86/kernel/process.c",
+            "arch_randomize_brk",
+            "unsigned long arch_randomize_brk(struct mm_struct *mm) /* <=== arch_randomize_brk */ \n{\n\tunsigned long range_end = mm->brk + 0x02000000;\n\treturn randomize_range(mm->brk, range_end, 0) ? : mm->brk;\n}",
+            1
+        ],
+        [
+            "arch/parisc/kernel/process.c",
+            "brk_rnd",
+            "static inline unsigned long brk_rnd(void) /* <=== brk_rnd */ \n{\n\t/* 8MB for 32bit, 1GB for 64bit */\n\tif (is_32bit_task())\n\t\treturn (get_random_int() & 0x7ffUL) << PAGE_SHIFT;\n\telse\n\t\treturn (get_random_int() & 0x3ffffUL) << PAGE_SHIFT;\n}",
+            2
+        ],
+        [
+            "arch/hexagon/kernel/process.c",
+            "start_thread",
+            "void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long sp) /* <=== start_thread */ \n{\n\t/* We want to zero all data-containing registers. Is this overkill? */\n\tmemset(regs, 0, sizeof(*regs));\n\t/* We might want to also zero all Processor registers here */\n\tpt_set_usermode(regs);\n\tpt_set_elr(regs, pc);\n\tpt_set_rte_sp(regs, sp);\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "slob_free_pages",
+            "static void slob_free_pages(void *b, int order) /* <=== slob_free_pages */ \n{\n\tif (current->reclaim_state)\n\t\tcurrent->reclaim_state->reclaimed_slab += 1 << order;\n\tfree_pages((unsigned long)b, order);\n}",
+            3
+        ],
+        [
+            "arch/arm64/include/asm/uaccess.h",
+            "KERNEL_DS",
+            "#define KERNEL_DS\t(-1UL) /* <=== arch/arm64/include/asm/uaccess.h:61:61:KERNEL_DS:0 */ ",
+            3
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "kmalloc",
+            "static void *kmalloc(unsigned size, gfp_t gfp) /* <=== kmalloc */ \n{\n\treturn memalign(64, size);\n}",
+            1
+        ],
+        [
+            "include/linux/security.h",
+            "security_bprm_secureexec",
+            "static inline int security_bprm_secureexec(struct linux_binprm *bprm) /* <=== security_bprm_secureexec */ \n{\n\treturn cap_bprm_secureexec(bprm);\n}",
+            2
+        ],
+        [
+            "arch/s390/include/asm/thread_info.h",
+            "current_thread_info",
+            "static inline struct thread_info *current_thread_info(void) /* <=== current_thread_info */ \n{\n\treturn (struct thread_info *) S390_lowcore.thread_info;\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "kfree",
+            "void kfree(const void *objp) /* <=== kfree */ \n{\n\tstruct kmem_cache *c;\n\tunsigned long flags;\n\n\ttrace_kfree(_RET_IP_, objp);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(objp)))\n\t\treturn;\n\tlocal_irq_save(flags);\n\tkfree_debugcheck(objp);\n\tc = virt_to_cache(objp);\n\tdebug_check_no_locks_freed(objp, c->object_size);\n\n\tdebug_check_no_obj_freed(objp, c->object_size);\n\t__cache_free(c, (void *)objp, _RET_IP_);\n\tlocal_irq_restore(flags);\n}",
+            1
+        ],
+        [
+            "include/linux/uidgid.h",
+            "from_kuid_munged",
+            "static inline uid_t from_kuid_munged(struct user_namespace *to, kuid_t kuid) /* <=== from_kuid_munged */ \n{\n\tuid_t uid = from_kuid(to, kuid);\n\tif (uid == (uid_t)-1)\n\t\tuid = overflowuid;\n\treturn uid;\n}",
+            2
+        ],
+        [
+            "include/linux/sched.h",
+            "get_dumpable",
+            "static inline int get_dumpable(struct mm_struct *mm) /* <=== get_dumpable */ \n{\n\treturn __get_dumpable(mm->flags);\n}",
+            2
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "set_brk",
+            "static int set_brk(unsigned long start, unsigned long end) /* <=== set_brk */ \n{\n\tstart = ELF_PAGEALIGN(start);\n\tend = ELF_PAGEALIGN(end);\n\tif (end > start) {\n\t\tint error = vm_brk(start, end - start);\n\t\tif (error)\n\t\t\treturn error;\n\t}\n\tcurrent->mm->start_brk = current->mm->brk = end;\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_BREAK2",
+            "#define SLOB_BREAK2 1024 /* <=== mm/slob.c:99:99:SLOB_BREAK2:0 */ ",
+            3
+        ],
+        [
+            "arch/arm/include/asm/uaccess.h",
+            "set_fs",
+            "static inline void set_fs(mm_segment_t fs) /* <=== set_fs */ \n{\n}",
+            2
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "spin_unlock_irqrestore",
+            "static void spin_unlock_irqrestore(spinlock_t *lock, unsigned long f) /* <=== spin_unlock_irqrestore */ \n{\n\tspin_unlock(lock);\n}",
+            3
+        ],
+        [
+            "arch/m68k/include/asm/processor.h",
+            "setframeformat",
+            "#define setframeformat(_regs)\tdo { } while (0) /* <=== arch/m68k/include/asm/processor.h:110:110:setframeformat:1 */ ",
+            2
+        ],
+        [
+            "arch/m68k/include/asm/thread_info.h",
+            "current_thread_info",
+            "static inline struct thread_info *current_thread_info(void) /* <=== current_thread_info */ \n{\n\tstruct thread_info *ti;\n\t__asm__(\n\t\t\"move.l %%sp, %0 \\n\\t\"\n\t\t\"and.l  %1, %0\"\n\t\t: \"=&d\"(ti)\n\t\t: \"di\" (~(THREAD_SIZE-1))\n\t\t);\n\treturn ti;\n}",
+            3
+        ],
+        [
+            "include/linux/workqueue.h",
+            "schedule_delayed_work",
+            "static inline bool schedule_delayed_work(struct delayed_work *dwork, /* <=== schedule_delayed_work */ \n\t\t\t\t\t unsigned long delay)\n{\n\treturn queue_delayed_work(system_wq, dwork, delay);\n}",
+            2
+        ],
+        [
+            "include/linux/security.h",
+            "security_bprm_committed_creds",
+            "static inline void security_bprm_committed_creds(struct linux_binprm *bprm) /* <=== security_bprm_committed_creds */ \n{\n}",
+            2
+        ],
+        [
+            "include/linux/llist.h",
+            "llist_add_batch",
+            "extern bool llist_add_batch(struct llist_node *new_first, /* <=== llist_add_batch */ \n\t\t\t    struct llist_node *new_last,\n\t\t\t    struct llist_head *head);",
+            3
+        ],
+        [
+            "include/linux/fs.h",
+            "file_inode",
+            "static inline struct inode *file_inode(const struct file *f) /* <=== file_inode */ \n{\n\treturn f->f_inode;\n}",
+            3
+        ],
+        [
+            "arch/nios2/kernel/process.c",
+            "start_thread",
+            "void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long sp) /* <=== start_thread */ \n{\n\tmemset((void *) regs, 0, sizeof(struct pt_regs));\n\tregs->estatus = ESTATUS_EPIE | ESTATUS_EU;\n\tregs->ea = pc;\n\tregs->sp = sp;\n}",
+            1
+        ],
+        [
+            "include/linux/kmemleak.h",
+            "kmemleak_free",
+            "static inline void kmemleak_free(const void *ptr) /* <=== kmemleak_free */ \n{\n}",
+            2
+        ],
+        [
+            "fs/exec.c",
+            "path_noexec",
+            "bool path_noexec(const struct path *path) /* <=== path_noexec */ \n{\n\treturn (path->mnt->mnt_flags & MNT_NOEXEC) ||\n\t       (path->mnt->mnt_sb->s_iflags & SB_I_NOEXEC);\n}",
+            3
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "elf_map",
+            "static unsigned long elf_map(struct file *filep, unsigned long addr, /* <=== elf_map */ \n\t\tstruct elf_phdr *eppnt, int prot, int type,\n\t\tunsigned long total_size)\n{\n\tunsigned long map_addr;\n\tunsigned long size = eppnt->p_filesz + ELF_PAGEOFFSET(eppnt->p_vaddr);\n\tunsigned long off = eppnt->p_offset - ELF_PAGEOFFSET(eppnt->p_vaddr);\n\taddr = ELF_PAGESTART(addr);\n\tsize = ELF_PAGEALIGN(size);\n\n\t/* mmap() will return -EINVAL if given a zero size, but a\n\t * segment with zero filesize is perfectly valid */\n\tif (!size)\n\t\treturn addr;\n\n\t/*\n\t* total_size is the size of the ELF (interpreter) image.\n\t* The _first_ mmap needs to know the full size, otherwise\n\t* randomization might put this image into an overlapping\n\t* position with the ELF binary image. (since size < total_size)\n\t* So we first map the 'big' image - and unmap the remainder at\n\t* the end. (which unmap is needed for ELF images with holes.)\n\t*/\n\tif (total_size) {\n\t\ttotal_size = ELF_PAGEALIGN(total_size);\n\t\tmap_addr = vm_mmap(filep, addr, total_size, prot, type, off);\n\t\tif (!BAD_ADDR(map_addr))\n\t\t\tvm_munmap(map_addr+size, total_size-size);\n\t} else\n\t\tmap_addr = vm_mmap(filep, addr, size, prot, type, off);\n\n\treturn(map_addr);\n}",
+            1
+        ],
+        [
+            "include/linux/sched.h",
+            "__get_dumpable",
+            "static inline int __get_dumpable(unsigned long mm_flags) /* <=== __get_dumpable */ \n{\n\treturn mm_flags & MMF_DUMPABLE_MASK;\n}",
+            3
+        ],
+        [
+            "include/asm-generic/uaccess.h",
+            "set_fs",
+            "static inline void set_fs(mm_segment_t fs) /* <=== set_fs */ \n{\n\tcurrent_thread_info()->addr_limit = fs;\n}",
+            2
+        ],
+        [
+            "arch/arm/kernel/process.c",
+            "arch_randomize_brk",
+            "unsigned long arch_randomize_brk(struct mm_struct *mm) /* <=== arch_randomize_brk */ \n{\n\tunsigned long range_end = mm->brk + 0x02000000;\n\treturn randomize_range(mm->brk, range_end, 0) ? : mm->brk;\n}",
+            1
+        ],
+        [
+            "include/linux/uidgid.h",
+            "from_kgid",
+            "static inline gid_t from_kgid(struct user_namespace *to, kgid_t kgid) /* <=== from_kgid */ \n{\n\treturn __kgid_val(kgid);\n}",
+            3
+        ],
+        [
+            "arch/mips/kernel/process.c",
+            "start_thread",
+            "void start_thread(struct pt_regs * regs, unsigned long pc, unsigned long sp) /* <=== start_thread */ \n{\n\tunsigned long status;\n\n\t/* New thread loses kernel privileges. */\n\tstatus = regs->cp0_status & ~(ST0_CU0|ST0_CU1|ST0_FR|KU_MASK);\n\tstatus |= KU_USER;\n\tregs->cp0_status = status;\n\tlose_fpu(0);\n\tclear_thread_flag(TIF_MSA_CTX_LIVE);\n\tclear_used_math();\n\tatomic_set(&current->thread.bd_emu_frame, BD_EMUFRAME_NONE);\n\tinit_dsp();\n\tregs->cp0_epc = pc;\n\tregs->regs[29] = sp;\n}",
+            1
+        ],
+        [
+            "arch/avr32/include/asm/uaccess.h",
+            "MAKE_MM_SEG",
+            "#define MAKE_MM_SEG(s)\t((mm_segment_t) { (s) }) /* <=== arch/avr32/include/asm/uaccess.h:28:28:MAKE_MM_SEG:1 */ ",
+            3
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "STACK_ALLOC",
+            "#define STACK_ALLOC(sp, len) ({ sp -= len ; sp; }) /* <=== fs/binfmt_elf.c:137:137:STACK_ALLOC:2 */ ",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_units",
+            "static slobidx_t slob_units(slob_t *s) /* <=== slob_units */ \n{\n\tif (s->units > 0)\n\t\treturn s->units;\n\treturn 1;\n}",
+            3
+        ],
+        [
+            "arch/arm64/mm/mmap.c",
+            "arch_mmap_rnd",
+            "unsigned long arch_mmap_rnd(void) /* <=== arch_mmap_rnd */ \n{\n\tunsigned long rnd;\n\n#ifdef CONFIG_COMPAT\n\tif (test_thread_flag(TIF_32BIT))\n\t\trnd = get_random_long() & ((1UL << mmap_rnd_compat_bits) - 1);\n\telse\n#endif\n\t\trnd = get_random_long() & ((1UL << mmap_rnd_bits) - 1);\n\treturn rnd << PAGE_SHIFT;\n}",
+            1
+        ],
+        [
+            "arch/s390/lib/string.c",
+            "clcle",
+            "static inline int clcle(const char *s1, unsigned long l1, /* <=== clcle */ \n\t\t\tconst char *s2, unsigned long l2)\n{\n\tregister unsigned long r2 asm(\"2\") = (unsigned long) s1;\n\tregister unsigned long r3 asm(\"3\") = (unsigned long) l1;\n\tregister unsigned long r4 asm(\"4\") = (unsigned long) s2;\n\tregister unsigned long r5 asm(\"5\") = (unsigned long) l2;\n\tint cc;\n\n\tasm volatile (\"0: clcle %1,%3,0\\n\"\n\t\t      \"   jo    0b\\n\"\n\t\t      \"   ipm   %0\\n\"\n\t\t      \"   srl   %0,28\"\n\t\t      : \"=&d\" (cc), \"+a\" (r2), \"+a\" (r3),\n\t\t\t\"+a\" (r4), \"+a\" (r5) : : \"cc\");\n\treturn cc;\n}",
+            2
+        ],
+        [
+            "arch/mips/mm/mmap.c",
+            "brk_rnd",
+            "static inline unsigned long brk_rnd(void) /* <=== brk_rnd */ \n{\n\tunsigned long rnd = get_random_long();\n\n\trnd = rnd << PAGE_SHIFT;\n\t/* 8MB for 32bit, 256MB for 64bit */\n\tif (TASK_IS_32BIT_ADDR)\n\t\trnd = rnd & 0x7ffffful;\n\telse\n\t\trnd = rnd & 0xffffffful;\n\n\treturn rnd;\n}",
+            2
+        ],
+        [
+            "mm/util.c",
+            "vm_mmap_pgoff",
+            "unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr, /* <=== vm_mmap_pgoff */ \n\tunsigned long len, unsigned long prot,\n\tunsigned long flag, unsigned long pgoff)\n{\n\tunsigned long ret;\n\tstruct mm_struct *mm = current->mm;\n\tunsigned long populate;\n\n\tret = security_mmap_file(file, prot, flag);\n\tif (!ret) {\n\t\tif (down_write_killable(&mm->mmap_sem))\n\t\t\treturn -EINTR;\n\t\tret = do_mmap_pgoff(file, addr, len, prot, flag, pgoff,\n\t\t\t\t    &populate);\n\t\tup_write(&mm->mmap_sem);\n\t\tif (populate)\n\t\t\tmm_populate(ret, populate);\n\t}\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "arch/openrisc/include/asm/uaccess.h",
+            "access_ok",
+            "#define access_ok(type, addr, size) \\ /* <=== arch/openrisc/include/asm/uaccess.h:65:66:access_ok:3 */ \n\t__range_ok((unsigned long)addr, (unsigned long)size)",
+            3
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "STACK_RND_MASK",
+            "#define STACK_RND_MASK (0x7ff >> (PAGE_SHIFT - 12))\t/* 8MB of VA */ /* <=== fs/binfmt_elf.c:648:648:STACK_RND_MASK:0 */ ",
+            2
+        ],
+        [
+            "arch/mn10300/include/asm/processor.h",
+            "start_thread",
+            "static inline void start_thread(struct pt_regs *regs, /* <=== start_thread */ \n\t\t\t\tunsigned long new_pc, unsigned long new_sp)\n{\n\tregs->epsw = EPSW_nSL | EPSW_IE | EPSW_IM;\n\tregs->pc = new_pc;\n\tregs->sp = new_sp;\n}",
+            1
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "randomize_stack_top",
+            "static unsigned long randomize_stack_top(unsigned long stack_top) /* <=== randomize_stack_top */ \n{\n\tunsigned long random_variable = 0;\n\n\tif ((current->flags & PF_RANDOMIZE) &&\n\t\t!(current->personality & ADDR_NO_RANDOMIZE)) {\n\t\trandom_variable = get_random_long();\n\t\trandom_variable &= STACK_RND_MASK;\n\t\trandom_variable <<= PAGE_SHIFT;\n\t}\n#ifdef CONFIG_STACK_GROWSUP\n\treturn PAGE_ALIGN(stack_top) + random_variable;\n#else\n\treturn PAGE_ALIGN(stack_top) - random_variable;\n#endif\n}",
+            1
+        ],
+        [
+            "arch/blackfin/include/asm/processor.h",
+            "wrusp",
+            "static inline void wrusp(unsigned long usp) /* <=== wrusp */ \n{\n\t__asm__ __volatile__(\"usp = %0;\\n\\t\"::\"da\"(usp));\n}",
+            2
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "load_elf_phdrs",
+            "static struct elf_phdr *load_elf_phdrs(struct elfhdr *elf_ex, /* <=== load_elf_phdrs */ \n\t\t\t\t       struct file *elf_file)\n{\n\tstruct elf_phdr *elf_phdata = NULL;\n\tint retval, size, err = -1;\n\n\t/*\n\t * If the size of this structure has changed, then punt, since\n\t * we will be doing the wrong thing.\n\t */\n\tif (elf_ex->e_phentsize != sizeof(struct elf_phdr))\n\t\tgoto out;\n\n\t/* Sanity check the number of program headers... */\n\tif (elf_ex->e_phnum < 1 ||\n\t\telf_ex->e_phnum > 65536U / sizeof(struct elf_phdr))\n\t\tgoto out;\n\n\t/* ...and their total size. */\n\tsize = sizeof(struct elf_phdr) * elf_ex->e_phnum;\n\tif (size > ELF_MIN_ALIGN)\n\t\tgoto out;\n\n\telf_phdata = kmalloc(size, GFP_KERNEL);\n\tif (!elf_phdata)\n\t\tgoto out;\n\n\t/* Read in the program headers */\n\tretval = kernel_read(elf_file, elf_ex->e_phoff,\n\t\t\t     (char *)elf_phdata, size);\n\tif (retval != size) {\n\t\terr = (retval < 0) ? retval : -EIO;\n\t\tgoto out;\n\t}\n\n\t/* Success! */\n\terr = 0;\nout:\n\tif (err) {\n\t\tkfree(elf_phdata);\n\t\telf_phdata = NULL;\n\t}\n\treturn elf_phdata;\n}",
+            1
+        ],
+        [
+            "arch/m68k/include/asm/processor.h",
+            "start_thread",
+            "static inline void start_thread(struct pt_regs * regs, unsigned long pc, /* <=== start_thread */ \n\t\t\t\tunsigned long usp)\n{\n\tregs->pc = pc;\n\tregs->sr &= ~0x2000;\n\tsetframeformat(regs);\n\twrusp(usp);\n}",
+            1
+        ],
+        [
+            "arch/h8300/include/asm/segment.h",
+            "USER_DS",
+            "#define USER_DS\t\tMAKE_MM_SEG(__USER_DS) /* <=== arch/h8300/include/asm/segment.h:23:23:USER_DS:0 */ ",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "slob_next",
+            "static slob_t *slob_next(slob_t *s) /* <=== slob_next */ \n{\n\tslob_t *base = (slob_t *)((unsigned long)s & PAGE_MASK);\n\tslobidx_t next;\n\n\tif (s[0].units < 0)\n\t\tnext = -s[0].units;\n\telse\n\t\tnext = s[1].units;\n\treturn base+next;\n}",
+            3
+        ],
+        [
+            "include/linux/cred.h",
+            "commit_creds",
+            "extern int commit_creds(struct cred *); /* <=== commit_creds */ ",
+            2
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "ELF_MIN_ALIGN",
+            "#define ELF_MIN_ALIGN\tPAGE_SIZE /* <=== fs/binfmt_elf.c:73:73:ELF_MIN_ALIGN:0 */ ",
+            1
+        ],
+        [
+            "arch/tile/include/asm/ptrace.h",
+            "single_step_execve",
+            "extern void single_step_execve(void); /* <=== single_step_execve */ ",
+            2
+        ],
+        [
+            "arch/x86/include/asm/thread_info.h",
+            "current_thread_info",
+            "static inline struct thread_info *current_thread_info(void) /* <=== current_thread_info */ \n{\n\treturn (struct thread_info *)(current_top_of_stack() - THREAD_SIZE);\n}",
+            3
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "ELF_PAGEALIGN",
+            "#define ELF_PAGEALIGN(_v) (((_v) + ELF_MIN_ALIGN - 1) & ~(ELF_MIN_ALIGN - 1)) /* <=== fs/binfmt_elf.c:82:82:ELF_PAGEALIGN:1 */ ",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "set_slob",
+            "static void set_slob(slob_t *s, slobidx_t size, slob_t *next) /* <=== set_slob */ \n{\n\tslob_t *base = (slob_t *)((unsigned long)s & PAGE_MASK);\n\tslobidx_t offset = next - base;\n\n\tif (size > 1) {\n\t\ts[0].units = size;\n\t\ts[1].units = offset;\n\t} else\n\t\ts[0].units = -offset;\n}",
+            3
+        ],
+        [
+            "arch/powerpc/kernel/process.c",
+            "brk_rnd",
+            "static inline unsigned long brk_rnd(void) /* <=== brk_rnd */ \n{\n        unsigned long rnd = 0;\n\n\t/* 8MB for 32bit, 1GB for 64bit */\n\tif (is_32bit_task())\n\t\trnd = (get_random_long() % (1UL<<(23-PAGE_SHIFT)));\n\telse\n\t\trnd = (get_random_long() % (1UL<<(30-PAGE_SHIFT)));\n\n\treturn rnd << PAGE_SHIFT;\n}",
+            2
+        ],
+        [
+            "include/linux/module.h",
+            "module_put",
+            "static inline void module_put(struct module *module) /* <=== module_put */ \n{\n}",
+            2
+        ],
+        [
+            "include/linux/random.h",
+            "get_random_int",
+            "unsigned int get_random_int(void); /* <=== get_random_int */ ",
+            2
+        ],
+        [
+            "arch/arm64/kernel/process.c",
+            "arch_align_stack",
+            "unsigned long arch_align_stack(unsigned long sp) /* <=== arch_align_stack */ \n{\n\tif (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)\n\t\tsp -= get_random_int() & ~PAGE_MASK;\n\treturn sp & ~0xf;\n}",
+            2
+        ],
+        [
+            "arch/sparc/include/asm/processor_32.h",
+            "start_thread",
+            "static inline void start_thread(struct pt_regs * regs, unsigned long pc, /* <=== start_thread */ \n\t\t\t\t    unsigned long sp)\n{\n\tregister unsigned long zero asm(\"g1\");\n\n\tregs->psr = (regs->psr & (PSR_CWP)) | PSR_S;\n\tregs->pc = ((pc & (~3)) - 4);\n\tregs->npc = regs->pc + 4;\n\tregs->y = 0;\n\tzero = 0;\n\t__asm__ __volatile__(\"std\\t%%g0, [%0 + %3 + 0x00]\\n\\t\"\n\t\t\t     \"std\\t%%g0, [%0 + %3 + 0x08]\\n\\t\"\n\t\t\t     \"std\\t%%g0, [%0 + %3 + 0x10]\\n\\t\"\n\t\t\t     \"std\\t%%g0, [%0 + %3 + 0x18]\\n\\t\"\n\t\t\t     \"std\\t%%g0, [%0 + %3 + 0x20]\\n\\t\"\n\t\t\t     \"std\\t%%g0, [%0 + %3 + 0x28]\\n\\t\"\n\t\t\t     \"std\\t%%g0, [%0 + %3 + 0x30]\\n\\t\"\n\t\t\t     \"st\\t%1, [%0 + %3 + 0x38]\\n\\t\"\n\t\t\t     \"st\\t%%g0, [%0 + %3 + 0x3c]\"\n\t\t\t     : /* no outputs */\n\t\t\t     : \"r\" (regs),\n\t\t\t       \"r\" (sp - sizeof(struct reg_window32)),\n\t\t\t       \"r\" (zero),\n\t\t\t       \"i\" ((const unsigned long)(&((struct pt_regs *)0)->u_regs[0]))\n\t\t\t     : \"memory\");\n}",
+            1
+        ],
+        [
+            "include/linux/binfmts.h",
+            "setup_arg_pages",
+            "extern int setup_arg_pages(struct linux_binprm * bprm, /* <=== setup_arg_pages */ \n\t\t\t   unsigned long stack_top,\n\t\t\t   int executable_stack);",
+            1
+        ],
+        [
+            "fs/binfmt_aout.c",
+            "set_brk",
+            "static int set_brk(unsigned long start, unsigned long end) /* <=== set_brk */ \n{\n\tstart = PAGE_ALIGN(start);\n\tend = PAGE_ALIGN(end);\n\tif (end > start)\n\t\treturn vm_brk(start, end - start);\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "include/linux/random.h",
+            "randomize_range",
+            "unsigned long randomize_range(unsigned long start, unsigned long end, unsigned long len); /* <=== randomize_range */ ",
+            2
+        ],
+        [
+            "arch/s390/lib/string.c",
+            "memcmp",
+            "int memcmp(const void *cs, const void *ct, size_t n) /* <=== memcmp */ \n{\n\tint ret;\n\n\tret = clcle(cs, n, ct, n);\n\tif (ret)\n\t\tret = ret == 1 ? -1 : 1;\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "arch/avr32/include/asm/uaccess.h",
+            "set_fs",
+            "static inline void set_fs(mm_segment_t s) /* <=== set_fs */ \n{\n\tif (s.is_user_space)\n\t\tset_thread_flag(TIF_USERSPACE);\n\telse\n\t\tclear_thread_flag(TIF_USERSPACE);\n}",
+            2
+        ],
+        [
+            "fs/exec.c",
+            "install_exec_creds",
+            "void install_exec_creds(struct linux_binprm *bprm) /* <=== install_exec_creds */ \n{\n\tsecurity_bprm_committing_creds(bprm);\n\n\tcommit_creds(bprm->cred);\n\tbprm->cred = NULL;\n\n\t/*\n\t * Disable monitoring for regular users\n\t * when executing setuid binaries. Must\n\t * wait until new credentials are committed\n\t * by commit_creds() above\n\t */\n\tif (get_dumpable(current->mm) != SUID_DUMP_USER)\n\t\tperf_event_exit_task(current);\n\t/*\n\t * cred_guard_mutex must be held at least to this point to prevent\n\t * ptrace_attach() from altering our determination of the task's\n\t * credentials; any time after this it may be unlocked.\n\t */\n\tsecurity_bprm_committed_creds(bprm);\n\tmutex_unlock(&current->signal->cred_guard_mutex);\n}",
+            1
+        ],
+        [
+            "arch/um/kernel/exec.c",
+            "start_thread",
+            "void start_thread(struct pt_regs *regs, unsigned long eip, unsigned long esp) /* <=== start_thread */ \n{\n\tPT_REGS_IP(regs) = eip;\n\tPT_REGS_SP(regs) = esp;\n\tcurrent->ptrace &= ~PT_DTRACE;\n#ifdef SUBARCH_EXECVE1\n\tSUBARCH_EXECVE1(regs->regs);\n#endif\n}",
+            1
+        ],
+        [
+            "arch/arm64/include/asm/uaccess.h",
+            "set_fs",
+            "static inline void set_fs(mm_segment_t fs) /* <=== set_fs */ \n{\n\tcurrent_thread_info()->addr_limit = fs;\n\n\t/*\n\t * Enable/disable UAO so that copy_to_user() etc can access\n\t * kernel memory with the unprivileged instructions.\n\t */\n\tif (IS_ENABLED(CONFIG_ARM64_UAO) && fs == KERNEL_DS)\n\t\tasm(ALTERNATIVE(\"nop\", SET_PSTATE_UAO(1), ARM64_HAS_UAO));\n\telse\n\t\tasm(ALTERNATIVE(\"nop\", SET_PSTATE_UAO(0), ARM64_HAS_UAO,\n\t\t\t\tCONFIG_ARM64_UAO));\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "clear_slob_page_free",
+            "static inline void clear_slob_page_free(struct page *sp) /* <=== clear_slob_page_free */ \n{\n\tlist_del(&sp->lru);\n\t__ClearPageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "include/linux/uidgid.h",
+            "from_kgid_munged",
+            "static inline gid_t from_kgid_munged(struct user_namespace *to, kgid_t kgid) /* <=== from_kgid_munged */ \n{\n\tgid_t gid = from_kgid(to, kgid);\n\tif (gid == (gid_t)-1)\n\t\tgid = overflowgid;\n\treturn gid;\n}",
+            2
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "kfree",
+            "static void kfree(void *p) /* <=== kfree */ \n{\n\tif (p)\n\t\tfree(p);\n}",
+            1
+        ],
+        [
+            "arch/blackfin/include/asm/uaccess.h",
+            "set_fs",
+            "static inline void set_fs(mm_segment_t fs) /* <=== set_fs */ \n{\n\tcurrent_thread_info()->addr_limit = fs;\n}",
+            2
+        ],
+        [
+            "arch/s390/lib/string.c",
+            "strlen",
+            "size_t strlen(const char *s) /* <=== strlen */ \n{\n\treturn __strend(s) - s;\n}",
+            2
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "padzero",
+            "static int padzero(unsigned long elf_bss) /* <=== padzero */ \n{\n\tunsigned long nbyte;\n\n\tnbyte = ELF_PAGEOFFSET(elf_bss);\n\tif (nbyte) {\n\t\tnbyte = ELF_MIN_ALIGN - nbyte;\n\t\tif (clear_user((void __user *) elf_bss, nbyte))\n\t\t\treturn -EFAULT;\n\t}\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "fs/binfmt_elf.c",
+            "total_mapping_size",
+            "static unsigned long total_mapping_size(struct elf_phdr *cmds, int nr) /* <=== total_mapping_size */ \n{\n\tint i, first_idx = -1, last_idx = -1;\n\n\tfor (i = 0; i < nr; i++) {\n\t\tif (cmds[i].p_type == PT_LOAD) {\n\t\t\tlast_idx = i;\n\t\t\tif (first_idx == -1)\n\t\t\t\tfirst_idx = i;\n\t\t}\n\t}\n\tif (first_idx == -1)\n\t\treturn 0;\n\n\treturn cmds[last_idx].p_vaddr + cmds[last_idx].p_memsz -\n\t\t\t\tELF_PAGESTART(cmds[first_idx].p_vaddr);\n}",
+            1
+        ],
+        [
+            "include/linux/fs.h",
+            "putname",
+            "extern void putname(struct filename *name); /* <=== putname */ ",
+            2
+        ],
+        [
+            "fs/exec.c",
+            "set_binfmt",
+            "void set_binfmt(struct linux_binfmt *new) /* <=== set_binfmt */ \n{\n\tstruct mm_struct *mm = current->mm;\n\n\tif (mm->binfmt)\n\t\tmodule_put(mm->binfmt->module);\n\n\tmm->binfmt = new;\n\tif (new)\n\t\t__module_get(new->module);\n}",
+            1
+        ],
+        [
+            "arch/x86/boot/string.c",
+            "strlen",
+            "size_t strlen(const char *s) /* <=== strlen */ \n{\n\tconst char *sc;\n\n\tfor (sc = s; *sc != '\\0'; ++sc)\n\t\t/* nothing */;\n\treturn sc - s;\n}",
+            2
+        ],
+        [
+            "include/linux/kasan.h",
+            "kasan_slab_free",
+            "static inline bool kasan_slab_free(struct kmem_cache *s, void *object) /* <=== kasan_slab_free */ \n{\n\treturn false;\n}",
+            3
+        ],
+        [
+            "arch/arc/kernel/process.c",
+            "start_thread",
+            "void start_thread(struct pt_regs * regs, unsigned long pc, unsigned long usp) /* <=== start_thread */ \n{\n\tregs->sp = usp;\n\tregs->ret = pc;\n\n\t/*\n\t * [U]ser Mode bit set\n\t * [L] ZOL loop inhibited to begin with - cleared by a LP insn\n\t * Interrupts enabled\n\t */\n\tregs->status32 = STATUS_U_MASK | STATUS_L_MASK | ISA_INIT_STATUS_BITS;\n\n\t/* bogus seed values for debugging */\n\tregs->lp_start = 0x10;\n\tregs->lp_end = 0x80;\n}",
+            1
+        ],
+        [
+            "arch/score/include/asm/uaccess.h",
+            "access_ok",
+            "#define access_ok(type, addr, size)\t\t\t\t\\ /* <=== arch/score/include/asm/uaccess.h:57:58:access_ok:3 */ \n\tlikely(__access_ok((unsigned long)(addr), (size)))",
+            3
+        ],
+        [
+            "tools/usb/ffs-test.c",
+            "start_thread",
+            "static void start_thread(struct thread *t) /* <=== start_thread */ \n{\n\tdebug(\"%s: starting\\n\", t->filename);\n\n\tdie_on(pthread_create(&t->id, NULL, start_thread_helper, t) < 0,\n\t       \"pthread_create(%s)\", t->filename);\n}",
+            1
+        ],
+        [
+            "arch/avr32/include/asm/thread_info.h",
+            "current_thread_info",
+            "static inline struct thread_info *current_thread_info(void) /* <=== current_thread_info */ \n{\n\tunsigned long addr = ~(THREAD_SIZE - 1);\n\n\tasm(\"and %0, sp\" : \"=r\"(addr) : \"0\"(addr));\n\treturn (struct thread_info *)addr;\n}",
+            3
+        ],
+        [
+            "arch/m32r/include/asm/uaccess.h",
+            "set_fs",
+            "static inline void set_fs(mm_segment_t s) /* <=== set_fs */ \n{\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_BREAK1",
+            "#define SLOB_BREAK1 256 /* <=== mm/slob.c:98:98:SLOB_BREAK1:0 */ ",
+            3
+        ],
+        [
+            "arch/h8300/include/asm/segment.h",
+            "KERNEL_DS",
+            "#define KERNEL_DS\tMAKE_MM_SEG(__KERNEL_DS) /* <=== arch/h8300/include/asm/segment.h:24:24:KERNEL_DS:0 */ ",
+            3
+        ],
+        [
+            "include/linux/fs.h",
+            "file_inode",
+            "static inline struct inode *file_inode(const struct file *f) /* <=== file_inode */ \n{\n\treturn f->f_inode;\n}",
+            2
+        ],
+        [
+            "arch/m32r/include/asm/uaccess.h",
+            "USER_DS",
+            "#define USER_DS\t\tMAKE_MM_SEG(0xFFFFFFFF) /* <=== arch/m32r/include/asm/uaccess.h:43:43:USER_DS:0 */ ",
+            3
+        ]
+    ],
+    "globalVars": [
+        "struct linux_binfmt elf_format"
+    ],
+    "importContext": [
+        "#include <asm/uaccess.h>",
+        "#include <linux/elf-randomize.h>",
+        "#include <linux/sched.h>",
+        "#include <linux/pagemap.h>",
+        "#include <linux/highuid.h>",
+        "#include <linux/mm.h>",
+        "#include <linux/errno.h>",
+        "#include <linux/vmalloc.h>",
+        "#include <linux/elf.h>",
+        "#include <linux/utsname.h>",
+        "#include <linux/binfmts.h>",
+        "#include <linux/random.h>",
+        "#include <linux/personality.h>",
+        "#include <linux/dax.h>",
+        "#include <linux/fs.h>",
+        "#include <linux/highmem.h>",
+        "#include <linux/coredump.h>",
+        "#include <linux/init.h>",
+        "#include <linux/string.h>",
+        "#include <linux/compiler.h>",
+        "#include <linux/mman.h>",
+        "#include <linux/elfcore.h>",
+        "#include <asm/param.h>",
+        "#include <linux/regset.h>",
+        "#include <linux/signal.h>",
+        "#include <linux/module.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/kernel.h>",
+        "#include <linux/file.h>",
+        "#include <linux/security.h>",
+        "#include <asm/page.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct linux_binfmt {\n\tstruct list_head lh;\n\tstruct module *module;\n\tint (*load_binary)(struct linux_binprm *);\n\tint (*load_shlib)(struct file *);\n\tint (*core_dump)(struct coredump_params *cprm);\n\tunsigned long min_coredump;\t/* minimal dump size */\n}",
+            "linux_binfmt"
+        ],
+        [
+            "struct pt_regs {\n\t/* The following registers are saved by SAVE_MIN: */\n\tunsigned long b6;\t\t/* scratch */\n\tunsigned long b7;\t\t/* scratch */\n\n\tunsigned long ar_csd;           /* used by cmp8xchg16 (scratch) */\n\tunsigned long ar_ssd;           /* reserved for future use (scratch) */\n\n\tunsigned long r8;\t\t/* scratch (return value register 0) */\n\tunsigned long r9;\t\t/* scratch (return value register 1) */\n\tunsigned long r10;\t\t/* scratch (return value register 2) */\n\tunsigned long r11;\t\t/* scratch (return value register 3) */\n\n\tunsigned long cr_ipsr;\t\t/* interrupted task's psr */\n\tunsigned long cr_iip;\t\t/* interrupted task's instruction pointer */\n\t/*\n\t * interrupted task's function state; if bit 63 is cleared, it\n\t * contains syscall's ar.pfs.pfm:\n\t */\n\tunsigned long cr_ifs;\n\n\tunsigned long ar_unat;\t\t/* interrupted task's NaT register (preserved) */\n\tunsigned long ar_pfs;\t\t/* prev function state  */\n\tunsigned long ar_rsc;\t\t/* RSE configuration */\n\t/* The following two are valid only if cr_ipsr.cpl > 0 || ti->flags & _TIF_MCA_INIT */\n\tunsigned long ar_rnat;\t\t/* RSE NaT */\n\tunsigned long ar_bspstore;\t/* RSE bspstore */\n\n\tunsigned long pr;\t\t/* 64 predicate registers (1 bit each) */\n\tunsigned long b0;\t\t/* return pointer (bp) */\n\tunsigned long loadrs;\t\t/* size of dirty partition << 16 */\n\n\tunsigned long r1;\t\t/* the gp pointer */\n\tunsigned long r12;\t\t/* interrupted task's memory stack pointer */\n\tunsigned long r13;\t\t/* thread pointer */\n\n\tunsigned long ar_fpsr;\t\t/* floating point status (preserved) */\n\tunsigned long r15;\t\t/* scratch */\n\n\t/* The remaining registers are NOT saved for system calls.  */\n\n\tunsigned long r14;\t\t/* scratch */\n\tunsigned long r2;\t\t/* scratch */\n\tunsigned long r3;\t\t/* scratch */\n\n\t/* The following registers are saved by SAVE_REST: */\n\tunsigned long r16;\t\t/* scratch */\n\tunsigned long r17;\t\t/* scratch */\n\tunsigned long r18;\t\t/* scratch */\n\tunsigned long r19;\t\t/* scratch */\n\tunsigned long r20;\t\t/* scratch */\n\tunsigned long r21;\t\t/* scratch */\n\tunsigned long r22;\t\t/* scratch */\n\tunsigned long r23;\t\t/* scratch */\n\tunsigned long r24;\t\t/* scratch */\n\tunsigned long r25;\t\t/* scratch */\n\tunsigned long r26;\t\t/* scratch */\n\tunsigned long r27;\t\t/* scratch */\n\tunsigned long r28;\t\t/* scratch */\n\tunsigned long r29;\t\t/* scratch */\n\tunsigned long r30;\t\t/* scratch */\n\tunsigned long r31;\t\t/* scratch */\n\n\tunsigned long ar_ccv;\t\t/* compare/exchange value (scratch) */\n\n\t/*\n\t * Floating point registers that the kernel considers scratch:\n\t */\n\tstruct ia64_fpreg f6;\t\t/* scratch */\n\tstruct ia64_fpreg f7;\t\t/* scratch */\n\tstruct ia64_fpreg f8;\t\t/* scratch */\n\tstruct ia64_fpreg f9;\t\t/* scratch */\n\tstruct ia64_fpreg f10;\t\t/* scratch */\n\tstruct ia64_fpreg f11;\t\t/* scratch */\n}",
+            "pt_regs"
+        ],
+        [
+            "struct file {\n\tunion {\n\t\tstruct llist_node\tfu_llist;\n\t\tstruct rcu_head \tfu_rcuhead;\n\t} f_u;\n\tstruct path\t\tf_path;\n\tstruct inode\t\t*f_inode;\t/* cached value */\n\tconst struct file_operations\t*f_op;\n\n\t/*\n\t * Protects f_ep_links, f_flags.\n\t * Must not be taken from IRQ context.\n\t */\n\tspinlock_t\t\tf_lock;\n\tatomic_long_t\t\tf_count;\n\tunsigned int \t\tf_flags;\n\tfmode_t\t\t\tf_mode;\n\tstruct mutex\t\tf_pos_lock;\n\tloff_t\t\t\tf_pos;\n\tstruct fown_struct\tf_owner;\n\tconst struct cred\t*f_cred;\n\tstruct file_ra_state\tf_ra;\n\n\tu64\t\t\tf_version;\n#ifdef CONFIG_SECURITY\n\tvoid\t\t\t*f_security;\n#endif\n\t/* needed for tty driver, and maybe others */\n\tvoid\t\t\t*private_data;\n\n#ifdef CONFIG_EPOLL\n\t/* Used by fs/eventpoll.c to link all the hooks to this file */\n\tstruct list_head\tf_ep_links;\n\tstruct list_head\tf_tfile_llink;\n#endif /* #ifdef CONFIG_EPOLL */\n\tstruct address_space\t*f_mapping;\n} __attribute__((aligned(4)))",
+            "file"
+        ],
+        [
+            "struct arch_elf_state {\n\tint nan_2008;\n\tint fp_abi;\n\tint interp_fp_abi;\n\tint overall_fp_mode;\n}",
+            "arch_elf_state"
+        ],
+        [
+            "struct linux_binprm {\n\tchar buf[BINPRM_BUF_SIZE];\n#ifdef CONFIG_MMU\n\tstruct vm_area_struct *vma;\n\tunsigned long vma_pages;\n#else\n# define MAX_ARG_PAGES\t32\n\tstruct page *page[MAX_ARG_PAGES];\n#endif\n\tstruct mm_struct *mm;\n\tunsigned long p; /* current top of mem */\n\tunsigned int\n\t\tcred_prepared:1,/* true if creds already prepared (multiple\n\t\t\t\t * preps happen for interpreters) */\n\t\tcap_effective:1;/* true if has elevated effective capabilities,\n\t\t\t\t * false if not; except for init which inherits\n\t\t\t\t * its parent's caps anyway */\n#ifdef __alpha__\n\tunsigned int taso:1;\n#endif\n\tunsigned int recursion_depth; /* only for search_binary_handler() */\n\tstruct file * file;\n\tstruct cred *cred;\t/* new credentials */\n\tint unsafe;\t\t/* how unsafe this exec is (mask of LSM_UNSAFE_*) */\n\tunsigned int per_clear;\t/* bits to clear in current->personality */\n\tint argc, envc;\n\tconst char * filename;\t/* Name of binary as seen by procps */\n\tconst char * interp;\t/* Name of the binary really executed. Most\n\t\t\t\t   of the time same as filename, but could be\n\t\t\t\t   different for binfmt_{misc,script} */\n\tunsigned interp_flags;\n\tunsigned interp_data;\n\tunsigned long loader, exec;\n}",
+            "linux_binprm"
+        ]
+    ],
+    "visitedLines_after": {
+        "fs/binfmt_elf.c": [
+            668,
+            670,
+            671,
+            672,
+            673,
+            675,
+            682,
+            688,
+            690,
+            691,
+            697,
+            701,
+            704,
+            706,
+            708,
+            711,
+            712,
+            715,
+            716,
+            717,
+            719,
+            721,
+            724,
+            725,
+            731,
+            732,
+            736,
+            737,
+            738,
+            741,
+            742,
+            743,
+            744,
+            751,
+            754,
+            755,
+            756,
+            764,
+            767,
+            768,
+            769,
+            770,
+            778,
+            781,
+            782,
+            783,
+            785,
+            786,
+            788,
+            792,
+            793,
+            794,
+            795,
+            801,
+            804,
+            807,
+            811,
+            812,
+            813,
+            817,
+            818,
+            819,
+            821,
+            822,
+            823,
+            824,
+            835,
+            836,
+            837,
+            838,
+            842,
+            843,
+            848,
+            849,
+            850,
+            852,
+            853,
+            855,
+            856,
+            860,
+            861,
+            862,
+            865,
+            869,
+            870,
+            871,
+            873,
+            875,
+            878,
+            884,
+            885,
+            886,
+            888,
+            889,
+            890,
+            891,
+            892,
+            904,
+            905,
+            906,
+            907,
+            908,
+            909,
+            911,
+            913,
+            914,
+            915,
+            916,
+            921,
+            922,
+            923,
+            924,
+            925,
+            926,
+            927,
+            928,
+            933,
+            934,
+            935,
+            936,
+            937,
+            941,
+            942,
+            943,
+            944,
+            945,
+            946,
+            947,
+            948,
+            951,
+            952,
+            953,
+            954,
+            955,
+            962,
+            963,
+            964,
+            966,
+            970,
+            972,
+            973,
+            974,
+            975,
+            976,
+            977,
+            978,
+            979,
+            980,
+            983,
+            984,
+            985,
+            986,
+            987,
+            988,
+            989,
+            996,
+            997,
+            999,
+            1000,
+            1004,
+            1005,
+            1007,
+            1008,
+            1009,
+            1010,
+            1011,
+            1016,
+            1017,
+            1019,
+            1020,
+            1021,
+            1024,
+            1026,
+            1027,
+            1028,
+            1030,
+            1031,
+            1032,
+            1037,
+            1038,
+            1040,
+            1048,
+            1049,
+            1050,
+            1053,
+            1054,
+            1055,
+            1056,
+            1057,
+            1059,
+            1060,
+            1061,
+            1067,
+            1072,
+            1073,
+            1090,
+            1091,
+            1093,
+            1095,
+            1099,
+            1100,
+            1101,
+            1102,
+            1104,
+            1106
+        ]
+    },
+    "visitedLines_before": {
+        "fs/binfmt_elf.c": [
+            668,
+            670,
+            671,
+            672,
+            673,
+            675,
+            682,
+            688,
+            690,
+            691,
+            697,
+            701,
+            704,
+            706,
+            708,
+            711,
+            712,
+            715,
+            716,
+            717,
+            719,
+            721,
+            724,
+            725,
+            731,
+            732,
+            736,
+            737,
+            738,
+            741,
+            742,
+            743,
+            744,
+            751,
+            754,
+            755,
+            756,
+            764,
+            767,
+            768,
+            769,
+            770,
+            778,
+            781,
+            782,
+            783,
+            785,
+            786,
+            788,
+            792,
+            793,
+            794,
+            795,
+            801,
+            804,
+            807,
+            811,
+            812,
+            813,
+            817,
+            818,
+            819,
+            821,
+            822,
+            823,
+            824,
+            835,
+            836,
+            837,
+            838,
+            842,
+            843,
+            848,
+            849,
+            850,
+            852,
+            853,
+            855,
+            859,
+            860,
+            861,
+            864,
+            868,
+            869,
+            870,
+            872,
+            874,
+            877,
+            883,
+            884,
+            885,
+            887,
+            888,
+            889,
+            890,
+            891,
+            903,
+            904,
+            905,
+            906,
+            907,
+            908,
+            910,
+            912,
+            913,
+            914,
+            915,
+            920,
+            921,
+            922,
+            923,
+            924,
+            925,
+            926,
+            927,
+            932,
+            933,
+            934,
+            935,
+            936,
+            940,
+            941,
+            942,
+            943,
+            944,
+            945,
+            946,
+            947,
+            950,
+            951,
+            952,
+            953,
+            954,
+            961,
+            962,
+            963,
+            965,
+            969,
+            971,
+            972,
+            973,
+            974,
+            975,
+            976,
+            977,
+            978,
+            979,
+            982,
+            983,
+            984,
+            985,
+            986,
+            987,
+            988,
+            995,
+            996,
+            998,
+            999,
+            1003,
+            1004,
+            1006,
+            1007,
+            1008,
+            1009,
+            1010,
+            1015,
+            1016,
+            1018,
+            1019,
+            1020,
+            1023,
+            1025,
+            1026,
+            1027,
+            1029,
+            1030,
+            1031,
+            1036,
+            1037,
+            1039,
+            1047,
+            1048,
+            1049,
+            1050,
+            1053,
+            1054,
+            1055,
+            1056,
+            1057,
+            1059,
+            1060,
+            1061,
+            1067,
+            1072,
+            1073,
+            1090,
+            1091,
+            1093,
+            1095,
+            1099,
+            1100,
+            1101,
+            1102,
+            1104,
+            1106
+        ]
+    },
+    "visitedParams": {
+        "fs/binfmt_elf.c": [
+            [
+                "struct linux_binprm *bprm",
+                "load_elf_binary"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "fs/binfmt_elf.c",
+            "load_elf_binary",
+            "static int load_elf_binary(struct linux_binprm *bprm) /* <=== load_elf_binary */ \n{\n\tstruct file *interpreter = NULL; /* to shut gcc up */\n \tunsigned long load_addr = 0, load_bias = 0;\n\tint load_addr_set = 0;\n\tchar * elf_interpreter = NULL;\n\tunsigned long error;\n\tstruct elf_phdr *elf_ppnt, *elf_phdata, *interp_elf_phdata = NULL;\n\tunsigned long elf_bss, elf_brk;\n\tint retval, i;\n\tunsigned long elf_entry;\n\tunsigned long interp_load_addr = 0;\n\tunsigned long start_code, end_code, start_data, end_data;\n\tunsigned long reloc_func_desc __maybe_unused = 0;\n\tint executable_stack = EXSTACK_DEFAULT;\n\tstruct pt_regs *regs = current_pt_regs();\n\tstruct {\n\t\tstruct elfhdr elf_ex;\n\t\tstruct elfhdr interp_elf_ex;\n\t} *loc;\n\tstruct arch_elf_state arch_state = INIT_ARCH_ELF_STATE;\n\n\tloc = kmalloc(sizeof(*loc), GFP_KERNEL);\n\tif (!loc) {\n\t\tretval = -ENOMEM;\n\t\tgoto out_ret;\n\t}\n\t\n\t/* Get the exec-header */\n\tloc->elf_ex = *((struct elfhdr *)bprm->buf);\n\n\tretval = -ENOEXEC;\n\t/* First of all, some simple consistency checks */\n\tif (memcmp(loc->elf_ex.e_ident, ELFMAG, SELFMAG) != 0)\n\t\tgoto out;\n\n\tif (loc->elf_ex.e_type != ET_EXEC && loc->elf_ex.e_type != ET_DYN)\n\t\tgoto out;\n\tif (!elf_check_arch(&loc->elf_ex))\n\t\tgoto out;\n\tif (!bprm->file->f_op->mmap)\n\t\tgoto out;\n\n\telf_phdata = load_elf_phdrs(&loc->elf_ex, bprm->file);\n\tif (!elf_phdata)\n\t\tgoto out;\n\n\telf_ppnt = elf_phdata;\n\telf_bss = 0;\n\telf_brk = 0;\n\n\tstart_code = ~0UL;\n\tend_code = 0;\n\tstart_data = 0;\n\tend_data = 0;\n\n\tfor (i = 0; i < loc->elf_ex.e_phnum; i++) {\n\t\tif (elf_ppnt->p_type == PT_INTERP) {\n\t\t\t/* This is the program interpreter used for\n\t\t\t * shared libraries - for now assume that this\n\t\t\t * is an a.out format binary\n\t\t\t */\n\t\t\tretval = -ENOEXEC;\n\t\t\tif (elf_ppnt->p_filesz > PATH_MAX || \n\t\t\t    elf_ppnt->p_filesz < 2)\n\t\t\t\tgoto out_free_ph;\n\n\t\t\tretval = -ENOMEM;\n\t\t\telf_interpreter = kmalloc(elf_ppnt->p_filesz,\n\t\t\t\t\t\t  GFP_KERNEL);\n\t\t\tif (!elf_interpreter)\n\t\t\t\tgoto out_free_ph;\n\n\t\t\tretval = kernel_read(bprm->file, elf_ppnt->p_offset,\n\t\t\t\t\t     elf_interpreter,\n\t\t\t\t\t     elf_ppnt->p_filesz);\n\t\t\tif (retval != elf_ppnt->p_filesz) {\n\t\t\t\tif (retval >= 0)\n\t\t\t\t\tretval = -EIO;\n\t\t\t\tgoto out_free_interp;\n\t\t\t}\n\t\t\t/* make sure path is NULL terminated */\n\t\t\tretval = -ENOEXEC;\n\t\t\tif (elf_interpreter[elf_ppnt->p_filesz - 1] != '\\0')\n\t\t\t\tgoto out_free_interp;\n\n\t\t\tinterpreter = open_exec(elf_interpreter);\n\t\t\tretval = PTR_ERR(interpreter);\n\t\t\tif (IS_ERR(interpreter))\n\t\t\t\tgoto out_free_interp;\n\n\t\t\t/*\n\t\t\t * If the binary is not readable then enforce\n\t\t\t * mm->dumpable = 0 regardless of the interpreter's\n\t\t\t * permissions.\n\t\t\t */\n\t\t\twould_dump(bprm, interpreter);\n\n\t\t\t/* Get the exec headers */\n\t\t\tretval = kernel_read(interpreter, 0,\n\t\t\t\t\t     (void *)&loc->interp_elf_ex,\n\t\t\t\t\t     sizeof(loc->interp_elf_ex));\n\t\t\tif (retval != sizeof(loc->interp_elf_ex)) {\n\t\t\t\tif (retval >= 0)\n\t\t\t\t\tretval = -EIO;\n\t\t\t\tgoto out_free_dentry;\n\t\t\t}\n\n\t\t\tbreak;\n\t\t}\n\t\telf_ppnt++;\n\t}\n\n\telf_ppnt = elf_phdata;\n\tfor (i = 0; i < loc->elf_ex.e_phnum; i++, elf_ppnt++)\n\t\tswitch (elf_ppnt->p_type) {\n\t\tcase PT_GNU_STACK:\n\t\t\tif (elf_ppnt->p_flags & PF_X)\n\t\t\t\texecutable_stack = EXSTACK_ENABLE_X;\n\t\t\telse\n\t\t\t\texecutable_stack = EXSTACK_DISABLE_X;\n\t\t\tbreak;\n\n\t\tcase PT_LOPROC ... PT_HIPROC:\n\t\t\tretval = arch_elf_pt_proc(&loc->elf_ex, elf_ppnt,\n\t\t\t\t\t\t  bprm->file, false,\n\t\t\t\t\t\t  &arch_state);\n\t\t\tif (retval)\n\t\t\t\tgoto out_free_dentry;\n\t\t\tbreak;\n\t\t}\n\n\t/* Some simple consistency checks for the interpreter */\n\tif (elf_interpreter) {\n\t\tretval = -ELIBBAD;\n\t\t/* Not an ELF interpreter */\n\t\tif (memcmp(loc->interp_elf_ex.e_ident, ELFMAG, SELFMAG) != 0)\n\t\t\tgoto out_free_dentry;\n\t\t/* Verify the interpreter has a valid arch */\n\t\tif (!elf_check_arch(&loc->interp_elf_ex))\n\t\t\tgoto out_free_dentry;\n\n\t\t/* Load the interpreter program headers */\n\t\tinterp_elf_phdata = load_elf_phdrs(&loc->interp_elf_ex,\n\t\t\t\t\t\t   interpreter);\n\t\tif (!interp_elf_phdata)\n\t\t\tgoto out_free_dentry;\n\n\t\t/* Pass PT_LOPROC..PT_HIPROC headers to arch code */\n\t\telf_ppnt = interp_elf_phdata;\n\t\tfor (i = 0; i < loc->interp_elf_ex.e_phnum; i++, elf_ppnt++)\n\t\t\tswitch (elf_ppnt->p_type) {\n\t\t\tcase PT_LOPROC ... PT_HIPROC:\n\t\t\t\tretval = arch_elf_pt_proc(&loc->interp_elf_ex,\n\t\t\t\t\t\t\t  elf_ppnt, interpreter,\n\t\t\t\t\t\t\t  true, &arch_state);\n\t\t\t\tif (retval)\n\t\t\t\t\tgoto out_free_dentry;\n\t\t\t\tbreak;\n\t\t\t}\n\t}\n\n\t/*\n\t * Allow arch code to reject the ELF at this point, whilst it's\n\t * still possible to return an error to the code that invoked\n\t * the exec syscall.\n\t */\n\tretval = arch_check_elf(&loc->elf_ex,\n\t\t\t\t!!interpreter, &loc->interp_elf_ex,\n\t\t\t\t&arch_state);\n\tif (retval)\n\t\tgoto out_free_dentry;\n\n\t/* Flush all traces of the currently running executable */\n\tretval = flush_old_exec(bprm);\n\tif (retval)\n\t\tgoto out_free_dentry;\n\n\t/* Do this immediately, since STACK_TOP as used in setup_arg_pages\n\t   may depend on the personality.  */\n\tSET_PERSONALITY2(loc->elf_ex, &arch_state);\n\tif (elf_read_implies_exec(loc->elf_ex, executable_stack))\n\t\tcurrent->personality |= READ_IMPLIES_EXEC;\n\n\tif (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)\n\t\tcurrent->flags |= PF_RANDOMIZE;\n\n\tsetup_new_exec(bprm);\n\tinstall_exec_creds(bprm);\n\n\t/* Do this so that we can load the interpreter, if need be.  We will\n\t   change some of these later */\n\tretval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),\n\t\t\t\t executable_stack);\n\tif (retval < 0)\n\t\tgoto out_free_dentry;\n\t\n\tcurrent->mm->start_stack = bprm->p;\n\n\t/* Now we do a little grungy work by mmapping the ELF image into\n\t   the correct location in memory. */\n\tfor(i = 0, elf_ppnt = elf_phdata;\n\t    i < loc->elf_ex.e_phnum; i++, elf_ppnt++) {\n\t\tint elf_prot = 0, elf_flags;\n\t\tunsigned long k, vaddr;\n\t\tunsigned long total_size = 0;\n\n\t\tif (elf_ppnt->p_type != PT_LOAD)\n\t\t\tcontinue;\n\n\t\tif (unlikely (elf_brk > elf_bss)) {\n\t\t\tunsigned long nbyte;\n\t            \n\t\t\t/* There was a PT_LOAD segment with p_memsz > p_filesz\n\t\t\t   before this one. Map anonymous pages, if needed,\n\t\t\t   and clear the area.  */\n\t\t\tretval = set_brk(elf_bss + load_bias,\n\t\t\t\t\t elf_brk + load_bias);\n\t\t\tif (retval)\n\t\t\t\tgoto out_free_dentry;\n\t\t\tnbyte = ELF_PAGEOFFSET(elf_bss);\n\t\t\tif (nbyte) {\n\t\t\t\tnbyte = ELF_MIN_ALIGN - nbyte;\n\t\t\t\tif (nbyte > elf_brk - elf_bss)\n\t\t\t\t\tnbyte = elf_brk - elf_bss;\n\t\t\t\tif (clear_user((void __user *)elf_bss +\n\t\t\t\t\t\t\tload_bias, nbyte)) {\n\t\t\t\t\t/*\n\t\t\t\t\t * This bss-zeroing can fail if the ELF\n\t\t\t\t\t * file specifies odd protections. So\n\t\t\t\t\t * we don't check the return value\n\t\t\t\t\t */\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\tif (elf_ppnt->p_flags & PF_R)\n\t\t\telf_prot |= PROT_READ;\n\t\tif (elf_ppnt->p_flags & PF_W)\n\t\t\telf_prot |= PROT_WRITE;\n\t\tif (elf_ppnt->p_flags & PF_X)\n\t\t\telf_prot |= PROT_EXEC;\n\n\t\telf_flags = MAP_PRIVATE | MAP_DENYWRITE | MAP_EXECUTABLE;\n\n\t\tvaddr = elf_ppnt->p_vaddr;\n\t\tif (loc->elf_ex.e_type == ET_EXEC || load_addr_set) {\n\t\t\telf_flags |= MAP_FIXED;\n\t\t} else if (loc->elf_ex.e_type == ET_DYN) {\n\t\t\t/* Try and get dynamic programs out of the way of the\n\t\t\t * default mmap base, as well as whatever program they\n\t\t\t * might try to exec.  This is because the brk will\n\t\t\t * follow the loader, and is not movable.  */\n\t\t\tload_bias = ELF_ET_DYN_BASE - vaddr;\n\t\t\tif (current->flags & PF_RANDOMIZE)\n\t\t\t\tload_bias += arch_mmap_rnd();\n\t\t\tload_bias = ELF_PAGESTART(load_bias);\n\t\t\ttotal_size = total_mapping_size(elf_phdata,\n\t\t\t\t\t\t\tloc->elf_ex.e_phnum);\n\t\t\tif (!total_size) {\n\t\t\t\tretval = -EINVAL;\n\t\t\t\tgoto out_free_dentry;\n\t\t\t}\n\t\t}\n\n\t\terror = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,\n\t\t\t\telf_prot, elf_flags, total_size);\n\t\tif (BAD_ADDR(error)) {\n\t\t\tretval = IS_ERR((void *)error) ?\n\t\t\t\tPTR_ERR((void*)error) : -EINVAL;\n\t\t\tgoto out_free_dentry;\n\t\t}\n\n\t\tif (!load_addr_set) {\n\t\t\tload_addr_set = 1;\n\t\t\tload_addr = (elf_ppnt->p_vaddr - elf_ppnt->p_offset);\n\t\t\tif (loc->elf_ex.e_type == ET_DYN) {\n\t\t\t\tload_bias += error -\n\t\t\t\t             ELF_PAGESTART(load_bias + vaddr);\n\t\t\t\tload_addr += load_bias;\n\t\t\t\treloc_func_desc = load_bias;\n\t\t\t}\n\t\t}\n\t\tk = elf_ppnt->p_vaddr;\n\t\tif (k < start_code)\n\t\t\tstart_code = k;\n\t\tif (start_data < k)\n\t\t\tstart_data = k;\n\n\t\t/*\n\t\t * Check to see if the section's size will overflow the\n\t\t * allowed task size. Note that p_filesz must always be\n\t\t * <= p_memsz so it is only necessary to check p_memsz.\n\t\t */\n\t\tif (BAD_ADDR(k) || elf_ppnt->p_filesz > elf_ppnt->p_memsz ||\n\t\t    elf_ppnt->p_memsz > TASK_SIZE ||\n\t\t    TASK_SIZE - elf_ppnt->p_memsz < k) {\n\t\t\t/* set_brk can never work. Avoid overflows. */\n\t\t\tretval = -EINVAL;\n\t\t\tgoto out_free_dentry;\n\t\t}\n\n\t\tk = elf_ppnt->p_vaddr + elf_ppnt->p_filesz;\n\n\t\tif (k > elf_bss)\n\t\t\telf_bss = k;\n\t\tif ((elf_ppnt->p_flags & PF_X) && end_code < k)\n\t\t\tend_code = k;\n\t\tif (end_data < k)\n\t\t\tend_data = k;\n\t\tk = elf_ppnt->p_vaddr + elf_ppnt->p_memsz;\n\t\tif (k > elf_brk)\n\t\t\telf_brk = k;\n\t}\n\n\tloc->elf_ex.e_entry += load_bias;\n\telf_bss += load_bias;\n\telf_brk += load_bias;\n\tstart_code += load_bias;\n\tend_code += load_bias;\n\tstart_data += load_bias;\n\tend_data += load_bias;\n\n\t/* Calling set_brk effectively mmaps the pages that we need\n\t * for the bss and break sections.  We must do this before\n\t * mapping in the interpreter, to make sure it doesn't wind\n\t * up getting placed where the bss needs to go.\n\t */\n\tretval = set_brk(elf_bss, elf_brk);\n\tif (retval)\n\t\tgoto out_free_dentry;\n\tif (likely(elf_bss != elf_brk) && unlikely(padzero(elf_bss))) {\n\t\tretval = -EFAULT; /* Nobody gets to see this, but.. */\n\t\tgoto out_free_dentry;\n\t}\n\n\tif (elf_interpreter) {\n\t\tunsigned long interp_map_addr = 0;\n\n\t\telf_entry = load_elf_interp(&loc->interp_elf_ex,\n\t\t\t\t\t    interpreter,\n\t\t\t\t\t    &interp_map_addr,\n\t\t\t\t\t    load_bias, interp_elf_phdata);\n\t\tif (!IS_ERR((void *)elf_entry)) {\n\t\t\t/*\n\t\t\t * load_elf_interp() returns relocation\n\t\t\t * adjustment\n\t\t\t */\n\t\t\tinterp_load_addr = elf_entry;\n\t\t\telf_entry += loc->interp_elf_ex.e_entry;\n\t\t}\n\t\tif (BAD_ADDR(elf_entry)) {\n\t\t\tretval = IS_ERR((void *)elf_entry) ?\n\t\t\t\t\t(int)elf_entry : -EINVAL;\n\t\t\tgoto out_free_dentry;\n\t\t}\n\t\treloc_func_desc = interp_load_addr;\n\n\t\tallow_write_access(interpreter);\n\t\tfput(interpreter);\n\t\tkfree(elf_interpreter);\n\t} else {\n\t\telf_entry = loc->elf_ex.e_entry;\n\t\tif (BAD_ADDR(elf_entry)) {\n\t\t\tretval = -EINVAL;\n\t\t\tgoto out_free_dentry;\n\t\t}\n\t}\n\n\tkfree(interp_elf_phdata);\n\tkfree(elf_phdata);\n\n\tset_binfmt(&elf_format);\n\n#ifdef ARCH_HAS_SETUP_ADDITIONAL_PAGES\n\tretval = arch_setup_additional_pages(bprm, !!elf_interpreter);\n\tif (retval < 0)\n\t\tgoto out;\n#endif /* ARCH_HAS_SETUP_ADDITIONAL_PAGES */\n\n\tretval = create_elf_tables(bprm, &loc->elf_ex,\n\t\t\t  load_addr, interp_load_addr);\n\tif (retval < 0)\n\t\tgoto out;\n\t/* N.B. passed_fileno might not be initialized? */\n\tcurrent->mm->end_code = end_code;\n\tcurrent->mm->start_code = start_code;\n\tcurrent->mm->start_data = start_data;\n\tcurrent->mm->end_data = end_data;\n\tcurrent->mm->start_stack = bprm->p;\n\n\tif ((current->flags & PF_RANDOMIZE) && (randomize_va_space > 1)) {\n\t\tcurrent->mm->brk = current->mm->start_brk =\n\t\t\tarch_randomize_brk(current->mm);\n#ifdef compat_brk_randomized\n\t\tcurrent->brk_randomized = 1;\n#endif\n\t}\n\n\tif (current->personality & MMAP_PAGE_ZERO) {\n\t\t/* Why this, you ask???  Well SVr4 maps page 0 as read-only,\n\t\t   and some applications \"depend\" upon this behavior.\n\t\t   Since we do not have the power to recompile these, we\n\t\t   emulate the SVr4 behavior. Sigh. */\n\t\terror = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC,\n\t\t\t\tMAP_FIXED | MAP_PRIVATE, 0);\n\t}\n\n#ifdef ELF_PLAT_INIT\n\t/*\n\t * The ABI may specify that certain registers be set up in special\n\t * ways (on i386 %edx is the address of a DT_FINI function, for\n\t * example.  In addition, it may also specify (eg, PowerPC64 ELF)\n\t * that the e_entry field is the address of the function descriptor\n\t * for the startup routine, rather than the address of the startup\n\t * routine itself.  This macro performs whatever initialization to\n\t * the regs structure is required as well as any relocations to the\n\t * function descriptor entries when executing dynamically links apps.\n\t */\n\tELF_PLAT_INIT(regs, reloc_func_desc);\n#endif\n\n\tstart_thread(regs, elf_entry, bprm->p);\n\tretval = 0;\nout:\n\tkfree(loc);\nout_ret:\n\treturn retval;\n\n\t/* error cleanup */\nout_free_dentry:\n\tkfree(interp_elf_phdata);\n\tallow_write_access(interpreter);\n\tif (interpreter)\n\t\tfput(interpreter);\nout_free_interp:\n\tkfree(elf_interpreter);\nout_free_ph:\n\tkfree(elf_phdata);\n\tgoto out;\n}",
+            668
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "fs/binfmt_elf.c",
+            "load_elf_binary",
+            "static int load_elf_binary(struct linux_binprm *bprm) /* <=== load_elf_binary */ \n{\n\tstruct file *interpreter = NULL; /* to shut gcc up */\n \tunsigned long load_addr = 0, load_bias = 0;\n\tint load_addr_set = 0;\n\tchar * elf_interpreter = NULL;\n\tunsigned long error;\n\tstruct elf_phdr *elf_ppnt, *elf_phdata, *interp_elf_phdata = NULL;\n\tunsigned long elf_bss, elf_brk;\n\tint retval, i;\n\tunsigned long elf_entry;\n\tunsigned long interp_load_addr = 0;\n\tunsigned long start_code, end_code, start_data, end_data;\n\tunsigned long reloc_func_desc __maybe_unused = 0;\n\tint executable_stack = EXSTACK_DEFAULT;\n\tstruct pt_regs *regs = current_pt_regs();\n\tstruct {\n\t\tstruct elfhdr elf_ex;\n\t\tstruct elfhdr interp_elf_ex;\n\t} *loc;\n\tstruct arch_elf_state arch_state = INIT_ARCH_ELF_STATE;\n\n\tloc = kmalloc(sizeof(*loc), GFP_KERNEL);\n\tif (!loc) {\n\t\tretval = -ENOMEM;\n\t\tgoto out_ret;\n\t}\n\t\n\t/* Get the exec-header */\n\tloc->elf_ex = *((struct elfhdr *)bprm->buf);\n\n\tretval = -ENOEXEC;\n\t/* First of all, some simple consistency checks */\n\tif (memcmp(loc->elf_ex.e_ident, ELFMAG, SELFMAG) != 0)\n\t\tgoto out;\n\n\tif (loc->elf_ex.e_type != ET_EXEC && loc->elf_ex.e_type != ET_DYN)\n\t\tgoto out;\n\tif (!elf_check_arch(&loc->elf_ex))\n\t\tgoto out;\n\tif (!bprm->file->f_op->mmap)\n\t\tgoto out;\n\n\telf_phdata = load_elf_phdrs(&loc->elf_ex, bprm->file);\n\tif (!elf_phdata)\n\t\tgoto out;\n\n\telf_ppnt = elf_phdata;\n\telf_bss = 0;\n\telf_brk = 0;\n\n\tstart_code = ~0UL;\n\tend_code = 0;\n\tstart_data = 0;\n\tend_data = 0;\n\n\tfor (i = 0; i < loc->elf_ex.e_phnum; i++) {\n\t\tif (elf_ppnt->p_type == PT_INTERP) {\n\t\t\t/* This is the program interpreter used for\n\t\t\t * shared libraries - for now assume that this\n\t\t\t * is an a.out format binary\n\t\t\t */\n\t\t\tretval = -ENOEXEC;\n\t\t\tif (elf_ppnt->p_filesz > PATH_MAX || \n\t\t\t    elf_ppnt->p_filesz < 2)\n\t\t\t\tgoto out_free_ph;\n\n\t\t\tretval = -ENOMEM;\n\t\t\telf_interpreter = kmalloc(elf_ppnt->p_filesz,\n\t\t\t\t\t\t  GFP_KERNEL);\n\t\t\tif (!elf_interpreter)\n\t\t\t\tgoto out_free_ph;\n\n\t\t\tretval = kernel_read(bprm->file, elf_ppnt->p_offset,\n\t\t\t\t\t     elf_interpreter,\n\t\t\t\t\t     elf_ppnt->p_filesz);\n\t\t\tif (retval != elf_ppnt->p_filesz) {\n\t\t\t\tif (retval >= 0)\n\t\t\t\t\tretval = -EIO;\n\t\t\t\tgoto out_free_interp;\n\t\t\t}\n\t\t\t/* make sure path is NULL terminated */\n\t\t\tretval = -ENOEXEC;\n\t\t\tif (elf_interpreter[elf_ppnt->p_filesz - 1] != '\\0')\n\t\t\t\tgoto out_free_interp;\n\n\t\t\tinterpreter = open_exec(elf_interpreter);\n\t\t\tretval = PTR_ERR(interpreter);\n\t\t\tif (IS_ERR(interpreter))\n\t\t\t\tgoto out_free_interp;\n\n\t\t\t/*\n\t\t\t * If the binary is not readable then enforce\n\t\t\t * mm->dumpable = 0 regardless of the interpreter's\n\t\t\t * permissions.\n\t\t\t */\n\t\t\twould_dump(bprm, interpreter);\n\n\t\t\t/* Get the exec headers */\n\t\t\tretval = kernel_read(interpreter, 0,\n\t\t\t\t\t     (void *)&loc->interp_elf_ex,\n\t\t\t\t\t     sizeof(loc->interp_elf_ex));\n\t\t\tif (retval != sizeof(loc->interp_elf_ex)) {\n\t\t\t\tif (retval >= 0)\n\t\t\t\t\tretval = -EIO;\n\t\t\t\tgoto out_free_dentry;\n\t\t\t}\n\n\t\t\tbreak;\n\t\t}\n\t\telf_ppnt++;\n\t}\n\n\telf_ppnt = elf_phdata;\n\tfor (i = 0; i < loc->elf_ex.e_phnum; i++, elf_ppnt++)\n\t\tswitch (elf_ppnt->p_type) {\n\t\tcase PT_GNU_STACK:\n\t\t\tif (elf_ppnt->p_flags & PF_X)\n\t\t\t\texecutable_stack = EXSTACK_ENABLE_X;\n\t\t\telse\n\t\t\t\texecutable_stack = EXSTACK_DISABLE_X;\n\t\t\tbreak;\n\n\t\tcase PT_LOPROC ... PT_HIPROC:\n\t\t\tretval = arch_elf_pt_proc(&loc->elf_ex, elf_ppnt,\n\t\t\t\t\t\t  bprm->file, false,\n\t\t\t\t\t\t  &arch_state);\n\t\t\tif (retval)\n\t\t\t\tgoto out_free_dentry;\n\t\t\tbreak;\n\t\t}\n\n\t/* Some simple consistency checks for the interpreter */\n\tif (elf_interpreter) {\n\t\tretval = -ELIBBAD;\n\t\t/* Not an ELF interpreter */\n\t\tif (memcmp(loc->interp_elf_ex.e_ident, ELFMAG, SELFMAG) != 0)\n\t\t\tgoto out_free_dentry;\n\t\t/* Verify the interpreter has a valid arch */\n\t\tif (!elf_check_arch(&loc->interp_elf_ex))\n\t\t\tgoto out_free_dentry;\n\n\t\t/* Load the interpreter program headers */\n\t\tinterp_elf_phdata = load_elf_phdrs(&loc->interp_elf_ex,\n\t\t\t\t\t\t   interpreter);\n\t\tif (!interp_elf_phdata)\n\t\t\tgoto out_free_dentry;\n\n\t\t/* Pass PT_LOPROC..PT_HIPROC headers to arch code */\n\t\telf_ppnt = interp_elf_phdata;\n\t\tfor (i = 0; i < loc->interp_elf_ex.e_phnum; i++, elf_ppnt++)\n\t\t\tswitch (elf_ppnt->p_type) {\n\t\t\tcase PT_LOPROC ... PT_HIPROC:\n\t\t\t\tretval = arch_elf_pt_proc(&loc->interp_elf_ex,\n\t\t\t\t\t\t\t  elf_ppnt, interpreter,\n\t\t\t\t\t\t\t  true, &arch_state);\n\t\t\t\tif (retval)\n\t\t\t\t\tgoto out_free_dentry;\n\t\t\t\tbreak;\n\t\t\t}\n\t}\n\n\t/*\n\t * Allow arch code to reject the ELF at this point, whilst it's\n\t * still possible to return an error to the code that invoked\n\t * the exec syscall.\n\t */\n\tretval = arch_check_elf(&loc->elf_ex,\n\t\t\t\t!!interpreter, &loc->interp_elf_ex,\n\t\t\t\t&arch_state);\n\tif (retval)\n\t\tgoto out_free_dentry;\n\n\t/* Flush all traces of the currently running executable */\n\tretval = flush_old_exec(bprm);\n\tif (retval)\n\t\tgoto out_free_dentry;\n\n\t/* Do this immediately, since STACK_TOP as used in setup_arg_pages\n\t   may depend on the personality.  */\n\tSET_PERSONALITY2(loc->elf_ex, &arch_state);\n\tif (elf_read_implies_exec(loc->elf_ex, executable_stack))\n\t\tcurrent->personality |= READ_IMPLIES_EXEC;\n\n\tif (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)\n\t\tcurrent->flags |= PF_RANDOMIZE;\n\n\tsetup_new_exec(bprm);\n\n\t/* Do this so that we can load the interpreter, if need be.  We will\n\t   change some of these later */\n\tretval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),\n\t\t\t\t executable_stack);\n\tif (retval < 0)\n\t\tgoto out_free_dentry;\n\t\n\tcurrent->mm->start_stack = bprm->p;\n\n\t/* Now we do a little grungy work by mmapping the ELF image into\n\t   the correct location in memory. */\n\tfor(i = 0, elf_ppnt = elf_phdata;\n\t    i < loc->elf_ex.e_phnum; i++, elf_ppnt++) {\n\t\tint elf_prot = 0, elf_flags;\n\t\tunsigned long k, vaddr;\n\t\tunsigned long total_size = 0;\n\n\t\tif (elf_ppnt->p_type != PT_LOAD)\n\t\t\tcontinue;\n\n\t\tif (unlikely (elf_brk > elf_bss)) {\n\t\t\tunsigned long nbyte;\n\t            \n\t\t\t/* There was a PT_LOAD segment with p_memsz > p_filesz\n\t\t\t   before this one. Map anonymous pages, if needed,\n\t\t\t   and clear the area.  */\n\t\t\tretval = set_brk(elf_bss + load_bias,\n\t\t\t\t\t elf_brk + load_bias);\n\t\t\tif (retval)\n\t\t\t\tgoto out_free_dentry;\n\t\t\tnbyte = ELF_PAGEOFFSET(elf_bss);\n\t\t\tif (nbyte) {\n\t\t\t\tnbyte = ELF_MIN_ALIGN - nbyte;\n\t\t\t\tif (nbyte > elf_brk - elf_bss)\n\t\t\t\t\tnbyte = elf_brk - elf_bss;\n\t\t\t\tif (clear_user((void __user *)elf_bss +\n\t\t\t\t\t\t\tload_bias, nbyte)) {\n\t\t\t\t\t/*\n\t\t\t\t\t * This bss-zeroing can fail if the ELF\n\t\t\t\t\t * file specifies odd protections. So\n\t\t\t\t\t * we don't check the return value\n\t\t\t\t\t */\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\tif (elf_ppnt->p_flags & PF_R)\n\t\t\telf_prot |= PROT_READ;\n\t\tif (elf_ppnt->p_flags & PF_W)\n\t\t\telf_prot |= PROT_WRITE;\n\t\tif (elf_ppnt->p_flags & PF_X)\n\t\t\telf_prot |= PROT_EXEC;\n\n\t\telf_flags = MAP_PRIVATE | MAP_DENYWRITE | MAP_EXECUTABLE;\n\n\t\tvaddr = elf_ppnt->p_vaddr;\n\t\tif (loc->elf_ex.e_type == ET_EXEC || load_addr_set) {\n\t\t\telf_flags |= MAP_FIXED;\n\t\t} else if (loc->elf_ex.e_type == ET_DYN) {\n\t\t\t/* Try and get dynamic programs out of the way of the\n\t\t\t * default mmap base, as well as whatever program they\n\t\t\t * might try to exec.  This is because the brk will\n\t\t\t * follow the loader, and is not movable.  */\n\t\t\tload_bias = ELF_ET_DYN_BASE - vaddr;\n\t\t\tif (current->flags & PF_RANDOMIZE)\n\t\t\t\tload_bias += arch_mmap_rnd();\n\t\t\tload_bias = ELF_PAGESTART(load_bias);\n\t\t\ttotal_size = total_mapping_size(elf_phdata,\n\t\t\t\t\t\t\tloc->elf_ex.e_phnum);\n\t\t\tif (!total_size) {\n\t\t\t\tretval = -EINVAL;\n\t\t\t\tgoto out_free_dentry;\n\t\t\t}\n\t\t}\n\n\t\terror = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,\n\t\t\t\telf_prot, elf_flags, total_size);\n\t\tif (BAD_ADDR(error)) {\n\t\t\tretval = IS_ERR((void *)error) ?\n\t\t\t\tPTR_ERR((void*)error) : -EINVAL;\n\t\t\tgoto out_free_dentry;\n\t\t}\n\n\t\tif (!load_addr_set) {\n\t\t\tload_addr_set = 1;\n\t\t\tload_addr = (elf_ppnt->p_vaddr - elf_ppnt->p_offset);\n\t\t\tif (loc->elf_ex.e_type == ET_DYN) {\n\t\t\t\tload_bias += error -\n\t\t\t\t             ELF_PAGESTART(load_bias + vaddr);\n\t\t\t\tload_addr += load_bias;\n\t\t\t\treloc_func_desc = load_bias;\n\t\t\t}\n\t\t}\n\t\tk = elf_ppnt->p_vaddr;\n\t\tif (k < start_code)\n\t\t\tstart_code = k;\n\t\tif (start_data < k)\n\t\t\tstart_data = k;\n\n\t\t/*\n\t\t * Check to see if the section's size will overflow the\n\t\t * allowed task size. Note that p_filesz must always be\n\t\t * <= p_memsz so it is only necessary to check p_memsz.\n\t\t */\n\t\tif (BAD_ADDR(k) || elf_ppnt->p_filesz > elf_ppnt->p_memsz ||\n\t\t    elf_ppnt->p_memsz > TASK_SIZE ||\n\t\t    TASK_SIZE - elf_ppnt->p_memsz < k) {\n\t\t\t/* set_brk can never work. Avoid overflows. */\n\t\t\tretval = -EINVAL;\n\t\t\tgoto out_free_dentry;\n\t\t}\n\n\t\tk = elf_ppnt->p_vaddr + elf_ppnt->p_filesz;\n\n\t\tif (k > elf_bss)\n\t\t\telf_bss = k;\n\t\tif ((elf_ppnt->p_flags & PF_X) && end_code < k)\n\t\t\tend_code = k;\n\t\tif (end_data < k)\n\t\t\tend_data = k;\n\t\tk = elf_ppnt->p_vaddr + elf_ppnt->p_memsz;\n\t\tif (k > elf_brk)\n\t\t\telf_brk = k;\n\t}\n\n\tloc->elf_ex.e_entry += load_bias;\n\telf_bss += load_bias;\n\telf_brk += load_bias;\n\tstart_code += load_bias;\n\tend_code += load_bias;\n\tstart_data += load_bias;\n\tend_data += load_bias;\n\n\t/* Calling set_brk effectively mmaps the pages that we need\n\t * for the bss and break sections.  We must do this before\n\t * mapping in the interpreter, to make sure it doesn't wind\n\t * up getting placed where the bss needs to go.\n\t */\n\tretval = set_brk(elf_bss, elf_brk);\n\tif (retval)\n\t\tgoto out_free_dentry;\n\tif (likely(elf_bss != elf_brk) && unlikely(padzero(elf_bss))) {\n\t\tretval = -EFAULT; /* Nobody gets to see this, but.. */\n\t\tgoto out_free_dentry;\n\t}\n\n\tif (elf_interpreter) {\n\t\tunsigned long interp_map_addr = 0;\n\n\t\telf_entry = load_elf_interp(&loc->interp_elf_ex,\n\t\t\t\t\t    interpreter,\n\t\t\t\t\t    &interp_map_addr,\n\t\t\t\t\t    load_bias, interp_elf_phdata);\n\t\tif (!IS_ERR((void *)elf_entry)) {\n\t\t\t/*\n\t\t\t * load_elf_interp() returns relocation\n\t\t\t * adjustment\n\t\t\t */\n\t\t\tinterp_load_addr = elf_entry;\n\t\t\telf_entry += loc->interp_elf_ex.e_entry;\n\t\t}\n\t\tif (BAD_ADDR(elf_entry)) {\n\t\t\tretval = IS_ERR((void *)elf_entry) ?\n\t\t\t\t\t(int)elf_entry : -EINVAL;\n\t\t\tgoto out_free_dentry;\n\t\t}\n\t\treloc_func_desc = interp_load_addr;\n\n\t\tallow_write_access(interpreter);\n\t\tfput(interpreter);\n\t\tkfree(elf_interpreter);\n\t} else {\n\t\telf_entry = loc->elf_ex.e_entry;\n\t\tif (BAD_ADDR(elf_entry)) {\n\t\t\tretval = -EINVAL;\n\t\t\tgoto out_free_dentry;\n\t\t}\n\t}\n\n\tkfree(interp_elf_phdata);\n\tkfree(elf_phdata);\n\n\tset_binfmt(&elf_format);\n\n#ifdef ARCH_HAS_SETUP_ADDITIONAL_PAGES\n\tretval = arch_setup_additional_pages(bprm, !!elf_interpreter);\n\tif (retval < 0)\n\t\tgoto out;\n#endif /* ARCH_HAS_SETUP_ADDITIONAL_PAGES */\n\n\tinstall_exec_creds(bprm);\n\tretval = create_elf_tables(bprm, &loc->elf_ex,\n\t\t\t  load_addr, interp_load_addr);\n\tif (retval < 0)\n\t\tgoto out;\n\t/* N.B. passed_fileno might not be initialized? */\n\tcurrent->mm->end_code = end_code;\n\tcurrent->mm->start_code = start_code;\n\tcurrent->mm->start_data = start_data;\n\tcurrent->mm->end_data = end_data;\n\tcurrent->mm->start_stack = bprm->p;\n\n\tif ((current->flags & PF_RANDOMIZE) && (randomize_va_space > 1)) {\n\t\tcurrent->mm->brk = current->mm->start_brk =\n\t\t\tarch_randomize_brk(current->mm);\n#ifdef compat_brk_randomized\n\t\tcurrent->brk_randomized = 1;\n#endif\n\t}\n\n\tif (current->personality & MMAP_PAGE_ZERO) {\n\t\t/* Why this, you ask???  Well SVr4 maps page 0 as read-only,\n\t\t   and some applications \"depend\" upon this behavior.\n\t\t   Since we do not have the power to recompile these, we\n\t\t   emulate the SVr4 behavior. Sigh. */\n\t\terror = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC,\n\t\t\t\tMAP_FIXED | MAP_PRIVATE, 0);\n\t}\n\n#ifdef ELF_PLAT_INIT\n\t/*\n\t * The ABI may specify that certain registers be set up in special\n\t * ways (on i386 %edx is the address of a DT_FINI function, for\n\t * example.  In addition, it may also specify (eg, PowerPC64 ELF)\n\t * that the e_entry field is the address of the function descriptor\n\t * for the startup routine, rather than the address of the startup\n\t * routine itself.  This macro performs whatever initialization to\n\t * the regs structure is required as well as any relocations to the\n\t * function descriptor entries when executing dynamically links apps.\n\t */\n\tELF_PLAT_INIT(regs, reloc_func_desc);\n#endif\n\n\tstart_thread(regs, elf_entry, bprm->p);\n\tretval = 0;\nout:\n\tkfree(loc);\nout_ret:\n\treturn retval;\n\n\t/* error cleanup */\nout_free_dentry:\n\tkfree(interp_elf_phdata);\n\tallow_write_access(interpreter);\n\tif (interpreter)\n\t\tfput(interpreter);\nout_free_interp:\n\tkfree(elf_interpreter);\nout_free_ph:\n\tkfree(elf_phdata);\n\tgoto out;\n}",
+            668
+        ]
+    ]
+}

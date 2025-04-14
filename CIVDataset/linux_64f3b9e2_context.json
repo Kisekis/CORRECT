@@ -1,0 +1,481 @@
+{
+    "calleeMethods": [
+        [
+            "arch/cris/include/asm/atomic.h",
+            "atomic_dec_and_test",
+            "static inline int atomic_dec_and_test(volatile atomic_t *v) /* <=== atomic_dec_and_test */ \n{\n\tint retval;\n\tunsigned long flags;\n\tcris_atomic_save(v, flags);\n\tretval = --(v->counter) == 0;\n\tcris_atomic_restore(v, flags);\n\treturn retval;\n}",
+            3
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "rcu_read_unlock",
+            "static inline void rcu_read_unlock(void) /* <=== rcu_read_unlock */ \n{\n\trcu_read_release();\n\t__release(RCU);\n\t__rcu_read_unlock();\n}",
+            2
+        ],
+        [
+            "net/ipv4/icmp.c",
+            "icmp_send",
+            "void icmp_send(struct sk_buff *skb_in, int type, int code, __be32 info) /* <=== icmp_send */ \n{\n\tstruct iphdr *iph;\n\tint room;\n\tstruct icmp_bxm icmp_param;\n\tstruct rtable *rt = skb_rtable(skb_in);\n\tstruct ipcm_cookie ipc;\n\t__be32 saddr;\n\tu8  tos;\n\tstruct net *net;\n\tstruct sock *sk;\n\n\tif (!rt)\n\t\tgoto out;\n\tnet = dev_net(rt->dst.dev);\n\n\t/*\n\t *\tFind the original header. It is expected to be valid, of course.\n\t *\tCheck this, icmp_send is called from the most obscure devices\n\t *\tsometimes.\n\t */\n\tiph = ip_hdr(skb_in);\n\n\tif ((u8 *)iph < skb_in->head ||\n\t    (skb_in->network_header + sizeof(*iph)) > skb_in->tail)\n\t\tgoto out;\n\n\t/*\n\t *\tNo replies to physical multicast/broadcast\n\t */\n\tif (skb_in->pkt_type != PACKET_HOST)\n\t\tgoto out;\n\n\t/*\n\t *\tNow check at the protocol level\n\t */\n\tif (rt->rt_flags & (RTCF_BROADCAST | RTCF_MULTICAST))\n\t\tgoto out;\n\n\t/*\n\t *\tOnly reply to fragment 0. We byte re-order the constant\n\t *\tmask for efficiency.\n\t */\n\tif (iph->frag_off & htons(IP_OFFSET))\n\t\tgoto out;\n\n\t/*\n\t *\tIf we send an ICMP error to an ICMP error a mess would result..\n\t */\n\tif (icmp_pointers[type].error) {\n\t\t/*\n\t\t *\tWe are an error, check if we are replying to an\n\t\t *\tICMP error\n\t\t */\n\t\tif (iph->protocol == IPPROTO_ICMP) {\n\t\t\tu8 _inner_type, *itp;\n\n\t\t\titp = skb_header_pointer(skb_in,\n\t\t\t\t\t\t skb_network_header(skb_in) +\n\t\t\t\t\t\t (iph->ihl << 2) +\n\t\t\t\t\t\t offsetof(struct icmphdr,\n\t\t\t\t\t\t\t  type) -\n\t\t\t\t\t\t skb_in->data,\n\t\t\t\t\t\t sizeof(_inner_type),\n\t\t\t\t\t\t &_inner_type);\n\t\t\tif (itp == NULL)\n\t\t\t\tgoto out;\n\n\t\t\t/*\n\t\t\t *\tAssume any unknown ICMP type is an error. This\n\t\t\t *\tisn't specified by the RFC, but think about it..\n\t\t\t */\n\t\t\tif (*itp > NR_ICMP_TYPES ||\n\t\t\t    icmp_pointers[*itp].error)\n\t\t\t\tgoto out;\n\t\t}\n\t}\n\n\tsk = icmp_xmit_lock(net);\n\tif (sk == NULL)\n\t\treturn;\n\n\t/*\n\t *\tConstruct source address and options.\n\t */\n\n\tsaddr = iph->daddr;\n\tif (!(rt->rt_flags & RTCF_LOCAL)) {\n\t\tstruct net_device *dev = NULL;\n\n\t\trcu_read_lock();\n\t\tif (rt_is_input_route(rt) &&\n\t\t    net->ipv4.sysctl_icmp_errors_use_inbound_ifaddr)\n\t\t\tdev = dev_get_by_index_rcu(net, rt->rt_iif);\n\n\t\tif (dev)\n\t\t\tsaddr = inet_select_addr(dev, 0, RT_SCOPE_LINK);\n\t\telse\n\t\t\tsaddr = 0;\n\t\trcu_read_unlock();\n\t}\n\n\ttos = icmp_pointers[type].error ? ((iph->tos & IPTOS_TOS_MASK) |\n\t\t\t\t\t   IPTOS_PREC_INTERNETCONTROL) :\n\t\t\t\t\t  iph->tos;\n\n\tif (ip_options_echo(&icmp_param.replyopts, skb_in))\n\t\tgoto out_unlock;\n\n\n\t/*\n\t *\tPrepare data for ICMP header.\n\t */\n\n\ticmp_param.data.icmph.type\t = type;\n\ticmp_param.data.icmph.code\t = code;\n\ticmp_param.data.icmph.un.gateway = info;\n\ticmp_param.data.icmph.checksum\t = 0;\n\ticmp_param.skb\t  = skb_in;\n\ticmp_param.offset = skb_network_offset(skb_in);\n\tinet_sk(sk)->tos = tos;\n\tipc.addr = iph->saddr;\n\tipc.opt = &icmp_param.replyopts;\n\tipc.tx_flags = 0;\n\n\trt = icmp_route_lookup(net, skb_in, iph, saddr, tos,\n\t\t\t       type, code, &icmp_param);\n\tif (IS_ERR(rt))\n\t\tgoto out_unlock;\n\n\tif (!icmpv4_xrlim_allow(net, rt, type, code))\n\t\tgoto ende;\n\n\t/* RFC says return as much as we can without exceeding 576 bytes. */\n\n\troom = dst_mtu(&rt->dst);\n\tif (room > 576)\n\t\troom = 576;\n\troom -= sizeof(struct iphdr) + icmp_param.replyopts.optlen;\n\troom -= sizeof(struct icmphdr);\n\n\ticmp_param.data_len = skb_in->len - icmp_param.offset;\n\tif (icmp_param.data_len > room)\n\t\ticmp_param.data_len = room;\n\ticmp_param.head_len = sizeof(struct icmphdr);\n\n\ticmp_push_reply(&icmp_param, &ipc, &rt);\nende:\n\tip_rt_put(rt);\nout_unlock:\n\ticmp_xmit_unlock(sk);\nout:;\n}",
+            1
+        ],
+        [
+            "net/ipv4/icmp.c",
+            "icmp_route_lookup",
+            "static struct rtable *icmp_route_lookup(struct net *net, struct sk_buff *skb_in, /* <=== icmp_route_lookup */ \n\t\t\t\t\tstruct iphdr *iph,\n\t\t\t\t\t__be32 saddr, u8 tos,\n\t\t\t\t\tint type, int code,\n\t\t\t\t\tstruct icmp_bxm *param)\n{\n\tstruct flowi4 fl4 = {\n\t\t.daddr = (param->replyopts.srr ?\n\t\t\t  param->replyopts.faddr : iph->saddr),\n\t\t.saddr = saddr,\n\t\t.flowi4_tos = RT_TOS(tos),\n\t\t.flowi4_proto = IPPROTO_ICMP,\n\t\t.fl4_icmp_type = type,\n\t\t.fl4_icmp_code = code,\n\t};\n\tstruct rtable *rt, *rt2;\n\tint err;\n\n\tsecurity_skb_classify_flow(skb_in, flowi4_to_flowi(&fl4));\n\trt = __ip_route_output_key(net, &fl4);\n\tif (IS_ERR(rt))\n\t\treturn rt;\n\n\t/* No need to clone since we're just using its address. */\n\trt2 = rt;\n\n\tif (!fl4.saddr)\n\t\tfl4.saddr = rt->rt_src;\n\n\trt = (struct rtable *) xfrm_lookup(net, &rt->dst,\n\t\t\t\t\t   flowi4_to_flowi(&fl4), NULL, 0);\n\tif (!IS_ERR(rt)) {\n\t\tif (rt != rt2)\n\t\t\treturn rt;\n\t} else if (PTR_ERR(rt) == -EPERM) {\n\t\trt = NULL;\n\t} else\n\t\treturn rt;\n\n\terr = xfrm_decode_session_reverse(skb_in, flowi4_to_flowi(&fl4), AF_INET);\n\tif (err)\n\t\tgoto relookup_failed;\n\n\tif (inet_addr_type(net, fl4.saddr) == RTN_LOCAL) {\n\t\trt2 = __ip_route_output_key(net, &fl4);\n\t\tif (IS_ERR(rt2))\n\t\t\terr = PTR_ERR(rt2);\n\t} else {\n\t\tstruct flowi4 fl4_2 = {};\n\t\tunsigned long orefdst;\n\n\t\tfl4_2.daddr = fl4.saddr;\n\t\trt2 = ip_route_output_key(net, &fl4_2);\n\t\tif (IS_ERR(rt2)) {\n\t\t\terr = PTR_ERR(rt2);\n\t\t\tgoto relookup_failed;\n\t\t}\n\t\t/* Ugh! */\n\t\torefdst = skb_in->_skb_refdst; /* save old refdst */\n\t\terr = ip_route_input(skb_in, fl4.daddr, fl4.saddr,\n\t\t\t\t     RT_TOS(tos), rt2->dst.dev);\n\n\t\tdst_release(&rt2->dst);\n\t\trt2 = skb_rtable(skb_in);\n\t\tskb_in->_skb_refdst = orefdst; /* restore old refdst */\n\t}\n\n\tif (err)\n\t\tgoto relookup_failed;\n\n\trt2 = (struct rtable *) xfrm_lookup(net, &rt2->dst,\n\t\t\t\t\t    flowi4_to_flowi(&fl4), NULL,\n\t\t\t\t\t    XFRM_LOOKUP_ICMP);\n\tif (!IS_ERR(rt2)) {\n\t\tdst_release(&rt->dst);\n\t\trt = rt2;\n\t} else if (PTR_ERR(rt2) == -EPERM) {\n\t\tif (rt)\n\t\t\tdst_release(&rt->dst);\n\t\treturn rt2;\n\t} else {\n\t\terr = PTR_ERR(rt2);\n\t\tgoto relookup_failed;\n\t}\n\treturn rt;\n\nrelookup_failed:\n\tif (rt)\n\t\treturn rt;\n\treturn ERR_PTR(err);\n}",
+            2
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "__rcu_read_lock",
+            "static inline void __rcu_read_lock(void) /* <=== __rcu_read_lock */ \n{\n\tpreempt_disable();\n}",
+            3
+        ],
+        [
+            "include/net/route.h",
+            "ip_route_input_noref",
+            "static inline int ip_route_input_noref(struct sk_buff *skb, __be32 dst, __be32 src, /* <=== ip_route_input_noref */ \n\t\t\t\t       u8 tos, struct net_device *devin)\n{\n\treturn ip_route_input_common(skb, dst, src, tos, devin, true);\n}",
+            1
+        ],
+        [
+            "arch/frv/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\tunsigned int tmp;\n\n\tasm(\"\tsrli\t\t%0,#16,%1\t\\n\"\n\t    \"\tsethi\t\t#0,%0\t\t\\n\"\n\t    \"\tadd\t\t%1,%0,%0\t\\n\"\n\t    \"\tsrli\t\t%0,#16,%1\t\\n\"\n\t    \"\tadd\t\t%1,%0,%0\t\\n\"\n\t    : \"=r\"(sum), \"=&r\"(tmp)\n\t    : \"0\"(sum)\n\t    );\n\n\treturn (__force __sum16)~sum;\n}",
+            3
+        ],
+        [
+            "include/net/inet_sock.h",
+            "inet_sk",
+            "static inline struct inet_sock *inet_sk(const struct sock *sk) /* <=== inet_sk */ \n{\n\treturn (struct inet_sock *)sk;\n}",
+            2
+        ],
+        [
+            "arch/parisc/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum csum) /* <=== csum_fold */ \n{\n\tu32 sum = (__force u32)csum;\n\t/* add the swapped two 16-bit halves of sum,\n\t   a possible carry from adding the two 16-bit halves,\n\t   will carry from the lower half into the upper half,\n\t   giving us the correct sum in the upper half. */\n\tsum += (sum << 16) + (sum >> 16);\n\treturn (__force __sum16)(~sum >> 16);\n}",
+            3
+        ],
+        [
+            "arch/m68k/include/asm/atomic.h",
+            "atomic_dec_and_test",
+            "static inline int atomic_dec_and_test(atomic_t *v) /* <=== atomic_dec_and_test */ \n{\n\tchar c;\n\t__asm__ __volatile__(\"subql #1,%1; seq %0\" : \"=d\" (c), \"+m\" (*v));\n\treturn c != 0;\n}",
+            3
+        ],
+        [
+            "arch/arm/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\t__asm__(\n\t\"add\t%0, %1, %1, ror #16\t@ csum_fold\"\n\t: \"=r\" (sum)\n\t: \"r\" (sum)\n\t: \"cc\");\n\treturn (__force __sum16)(~(__force u32)sum >> 16);\n}",
+            3
+        ],
+        [
+            "arch/avr32/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\tunsigned int tmp;\n\n\tasm(\"\tbfextu\t%1, %0, 0, 16\\n\"\n\t    \"\tlsr\t%0, 16\\n\"\n\t    \"\tadd\t%0, %1\\n\"\n\t    \"\tbfextu\t%1, %0, 16, 16\\n\"\n\t    \"\tadd\t%0, %1\"\n\t    : \"=&r\"(sum), \"=&r\"(tmp)\n\t    : \"0\"(sum));\n\n\treturn (__force __sum16)~sum;\n}",
+            3
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "rcu_read_acquire",
+            "# define rcu_read_acquire()\t\tdo { } while (0) /* <=== include/linux/rcupdate.h:251:251:rcu_read_acquire:0 */ ",
+            3
+        ],
+        [
+            "include/net/route.h",
+            "ip_route_input",
+            "static inline int ip_route_input(struct sk_buff *skb, __be32 dst, __be32 src, /* <=== ip_route_input */ \n\t\t\t\t u8 tos, struct net_device *devin)\n{\n\treturn ip_route_input_common(skb, dst, src, tos, devin, false);\n}",
+            1
+        ],
+        [
+            "include/net/route.h",
+            "rt_is_input_route",
+            "static inline bool rt_is_input_route(struct rtable *rt) /* <=== rt_is_input_route */ \n{\n\treturn rt->rt_route_iif != 0;\n}",
+            2
+        ],
+        [
+            "include/linux/spinlock.h",
+            "spin_unlock_bh",
+            "static inline void spin_unlock_bh(spinlock_t *lock) /* <=== spin_unlock_bh */ \n{\n\traw_spin_unlock_bh(&lock->rlock);\n}",
+            3
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "rcu_read_release",
+            "# define rcu_read_release()\t\tdo { } while (0) /* <=== include/linux/rcupdate.h:252:252:rcu_read_release:0 */ ",
+            3
+        ],
+        [
+            "arch/cris/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum csum) /* <=== csum_fold */ \n{\n\tu32 sum = (__force u32)csum;\n\tsum = (sum & 0xffff) + (sum >> 16); /* add in end-around carry */\n\tsum = (sum & 0xffff) + (sum >> 16); /* add in end-around carry */\n\treturn (__force __sum16)~sum;\n}",
+            3
+        ],
+        [
+            "arch/s390/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\tu32 csum = (__force u32) sum;\n\n\tcsum += (csum >> 16) + (csum << 16);\n\tcsum >>= 16;\n\treturn (__force __sum16) ~csum;\n}",
+            3
+        ],
+        [
+            "arch/m68k/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\tunsigned int tmp = (__force u32)sum;\n\n\t__asm__(\"swap %1\\n\\t\"\n\t\t\"addw %1, %0\\n\\t\"\n\t\t\"clrw %1\\n\\t\"\n\t\t\"addxw %1, %0\"\n\t\t: \"=&d\" (sum), \"=&d\" (tmp)\n\t\t: \"0\" (sum), \"1\" (tmp));\n\n\treturn (__force __sum16)~sum;\n}",
+            3
+        ],
+        [
+            "net/ipv4/ip_fragment.c",
+            "ipq_put",
+            "static __inline__ void ipq_put(struct ipq *ipq) /* <=== ipq_put */ \n{\n\tinet_frag_put(&ipq->q, &ip4_frags);\n}",
+            1
+        ],
+        [
+            "arch/xtensa/include/asm/checksum.h",
+            "csum_fold",
+            "static __inline__ __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\tunsigned int __dummy;\n\t__asm__(\"extui\t%1, %0, 16, 16\\n\\t\"\n\t\t\"extui\t%0 ,%0, 0, 16\\n\\t\"\n\t\t\"add\t%0, %0, %1\\n\\t\"\n\t\t\"slli\t%1, %0, 16\\n\\t\"\n\t\t\"add\t%0, %0, %1\\n\\t\"\n\t\t\"extui\t%0, %0, 16, 16\\n\\t\"\n\t\t\"neg\t%0, %0\\n\\t\"\n\t\t\"addi\t%0, %0, -1\\n\\t\"\n\t\t\"extui\t%0, %0, 0, 16\\n\\t\"\n\t\t: \"=r\" (sum), \"=&r\" (__dummy)\n\t\t: \"0\" (sum));\n\treturn (__force __sum16)sum;\n}",
+            3
+        ],
+        [
+            "arch/x86/include/asm/atomic.h",
+            "atomic_dec_and_test",
+            "static inline int atomic_dec_and_test(atomic_t *v) /* <=== atomic_dec_and_test */ \n{\n\tunsigned char c;\n\n\tasm volatile(LOCK_PREFIX \"decl %0; sete %1\"\n\t\t     : \"+m\" (v->counter), \"=qm\" (c)\n\t\t     : : \"memory\");\n\treturn c != 0;\n}",
+            3
+        ],
+        [
+            "arch/xtensa/include/asm/checksum.h",
+            "csum_partial_copy_nocheck",
+            "static inline /* <=== csum_partial_copy_nocheck */ \n__wsum csum_partial_copy_nocheck(const void *src, void *dst,\n\t\t\t\t\tint len, __wsum sum)\n{\n\treturn csum_partial_copy_generic(src, dst, len, sum, NULL, NULL);\n}",
+            3
+        ],
+        [
+            "net/ipv4/icmp.c",
+            "icmp_push_reply",
+            "static void icmp_push_reply(struct icmp_bxm *icmp_param, /* <=== icmp_push_reply */ \n\t\t\t    struct ipcm_cookie *ipc, struct rtable **rt)\n{\n\tstruct sock *sk;\n\tstruct sk_buff *skb;\n\n\tsk = icmp_sk(dev_net((*rt)->dst.dev));\n\tif (ip_append_data(sk, icmp_glue_bits, icmp_param,\n\t\t\t   icmp_param->data_len+icmp_param->head_len,\n\t\t\t   icmp_param->head_len,\n\t\t\t   ipc, rt, MSG_DONTWAIT) < 0) {\n\t\tICMP_INC_STATS_BH(sock_net(sk), ICMP_MIB_OUTERRORS);\n\t\tip_flush_pending_frames(sk);\n\t} else if ((skb = skb_peek(&sk->sk_write_queue)) != NULL) {\n\t\tstruct icmphdr *icmph = icmp_hdr(skb);\n\t\t__wsum csum = 0;\n\t\tstruct sk_buff *skb1;\n\n\t\tskb_queue_walk(&sk->sk_write_queue, skb1) {\n\t\t\tcsum = csum_add(csum, skb1->csum);\n\t\t}\n\t\tcsum = csum_partial_copy_nocheck((void *)&icmp_param->data,\n\t\t\t\t\t\t (char *)icmph,\n\t\t\t\t\t\t icmp_param->head_len, csum);\n\t\ticmph->checksum = csum_fold(csum);\n\t\tskb->ip_summed = CHECKSUM_NONE;\n\t\tip_push_pending_frames(sk);\n\t}\n}",
+            2
+        ],
+        [
+            "net/ipv4/icmp.c",
+            "icmp_sk",
+            "static struct sock *icmp_sk(struct net *net) /* <=== icmp_sk */ \n{\n\treturn net->ipv4.icmp_sk[smp_processor_id()];\n}",
+            3
+        ],
+        [
+            "net/core/dev.c",
+            "dev_get_by_index_rcu",
+            "struct net_device *dev_get_by_index_rcu(struct net *net, int ifindex) /* <=== dev_get_by_index_rcu */ \n{\n\tstruct hlist_node *p;\n\tstruct net_device *dev;\n\tstruct hlist_head *head = dev_index_hash(net, ifindex);\n\n\thlist_for_each_entry_rcu(dev, p, head, index_hlist)\n\t\tif (dev->ifindex == ifindex)\n\t\t\treturn dev;\n\n\treturn NULL;\n}",
+            1
+        ],
+        [
+            "include/net/route.h",
+            "ip_route_output_key",
+            "static inline struct rtable *ip_route_output_key(struct net *net, struct flowi4 *flp) /* <=== ip_route_output_key */ \n{\n\treturn ip_route_output_flow(net, flp, NULL);\n}",
+            3
+        ],
+        [
+            "arch/s390/include/asm/checksum.h",
+            "csum_partial_copy_nocheck",
+            "static inline __wsum /* <=== csum_partial_copy_nocheck */ \ncsum_partial_copy_nocheck (const void *src, void *dst, int len, __wsum sum)\n{\n        memcpy(dst,src,len);\n\treturn csum_partial(dst, len, sum);\n}",
+            3
+        ],
+        [
+            "include/net/inetpeer.h",
+            "inet_peer_xrlim_allow",
+            "extern bool inet_peer_xrlim_allow(struct inet_peer *peer, int timeout); /* <=== inet_peer_xrlim_allow */ ",
+            3
+        ],
+        [
+            "include/linux/security.h",
+            "security_skb_classify_flow",
+            "static inline void security_skb_classify_flow(struct sk_buff *skb, struct flowi *fl) /* <=== security_skb_classify_flow */ \n{\n}",
+            3
+        ],
+        [
+            "arch/h8300/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\t__asm__(\"mov.l %0,er0\\n\\t\"\n\t\t\"add.w e0,r0\\n\\t\"\n\t\t\"xor.w e0,e0\\n\\t\"\n\t\t\"rotxl.w e0\\n\\t\"\n\t\t\"add.w e0,r0\\n\\t\"\n\t\t\"sub.w e0,e0\\n\\t\"\n\t\t\"mov.l er0,%0\"\n\t\t: \"=r\"(sum)\n\t\t: \"0\"(sum)\n\t\t: \"er0\");\n\treturn (__force __sum16)~sum;\n}",
+            3
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "__rcu_read_unlock",
+            "static inline void __rcu_read_unlock(void) /* <=== __rcu_read_unlock */ \n{\n\tpreempt_enable();\n}",
+            3
+        ],
+        [
+            "include/net/route.h",
+            "ip_rt_put",
+            "static inline void ip_rt_put(struct rtable * rt) /* <=== ip_rt_put */ \n{\n\tif (rt)\n\t\tdst_release(&rt->dst);\n}",
+            2
+        ],
+        [
+            "net/ipv4/icmp.c",
+            "icmp_xmit_lock",
+            "static inline struct sock *icmp_xmit_lock(struct net *net) /* <=== icmp_xmit_lock */ \n{\n\tstruct sock *sk;\n\n\tlocal_bh_disable();\n\n\tsk = icmp_sk(net);\n\n\tif (unlikely(!spin_trylock(&sk->sk_lock.slock))) {\n\t\t/* This can happen if the output path signals a\n\t\t * dst_link_failure() for an outgoing ICMP packet.\n\t\t */\n\t\tlocal_bh_enable();\n\t\treturn NULL;\n\t}\n\treturn sk;\n}",
+            2
+        ],
+        [
+            "include/net/route.h",
+            "ip_route_input",
+            "static inline int ip_route_input(struct sk_buff *skb, __be32 dst, __be32 src, /* <=== ip_route_input */ \n\t\t\t\t u8 tos, struct net_device *devin)\n{\n\treturn ip_route_input_common(skb, dst, src, tos, devin, false);\n}",
+            3
+        ],
+        [
+            "net/core/dev.c",
+            "dev_index_hash",
+            "static inline struct hlist_head *dev_index_hash(struct net *net, int ifindex) /* <=== dev_index_hash */ \n{\n\treturn &net->dev_index_head[ifindex & (NETDEV_HASHENTRIES - 1)];\n}",
+            2
+        ],
+        [
+            "include/net/route.h",
+            "rt_bind_peer",
+            "extern void rt_bind_peer(struct rtable *rt, int create); /* <=== rt_bind_peer */ ",
+            3
+        ],
+        [
+            "net/ipv4/icmp.c",
+            "icmp_xmit_unlock",
+            "static inline void icmp_xmit_unlock(struct sock *sk) /* <=== icmp_xmit_unlock */ \n{\n\tspin_unlock_bh(&sk->sk_lock.slock);\n}",
+            2
+        ],
+        [
+            "include/net/route.h",
+            "inet_addr_type",
+            "extern unsigned\t\tinet_addr_type(struct net *net, __be32 addr); /* <=== inet_addr_type */ ",
+            3
+        ],
+        [
+            "include/net/flow.h",
+            "flowi4_to_flowi",
+            "static inline struct flowi *flowi4_to_flowi(struct flowi4 *fl4) /* <=== flowi4_to_flowi */ \n{\n\treturn container_of(fl4, struct flowi, u.ip4);\n}",
+            3
+        ],
+        [
+            "arch/avr32/include/asm/checksum.h",
+            "csum_partial_copy_nocheck",
+            "static inline /* <=== csum_partial_copy_nocheck */ \n__wsum csum_partial_copy_nocheck(const void *src, void *dst,\n\t\t\t\t       int len, __wsum sum)\n{\n\treturn csum_partial_copy_generic(src, dst, len, sum, NULL, NULL);\n}",
+            3
+        ],
+        [
+            "include/net/inet_frag.h",
+            "inet_frag_destroy",
+            "void inet_frag_destroy(struct inet_frag_queue *q, /* <=== inet_frag_destroy */ \n\t\t\t\tstruct inet_frags *f, int *work);",
+            3
+        ],
+        [
+            "include/net/inet_frag.h",
+            "inet_frag_put",
+            "static inline void inet_frag_put(struct inet_frag_queue *q, struct inet_frags *f) /* <=== inet_frag_put */ \n{\n\tif (atomic_dec_and_test(&q->refcnt))\n\t\tinet_frag_destroy(q, f, NULL);\n}",
+            2
+        ],
+        [
+            "arch/mn10300/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\tasm(\n\t\t\"\tadd\t%1,%0\t\t\\n\"\n\t\t\"\taddc\t0xffff,%0\t\\n\"\n\t\t: \"=r\" (sum)\n\t\t: \"r\" (sum << 16), \"0\" (sum & 0xffff0000)\n\t\t: \"cc\"\n\t    );\n\treturn (~sum) >> 16;\n}",
+            3
+        ],
+        [
+            "include/net/ip.h",
+            "ip_flush_pending_frames",
+            "extern void\t\tip_flush_pending_frames(struct sock *sk); /* <=== ip_flush_pending_frames */ ",
+            3
+        ],
+        [
+            "include/net/ip.h",
+            "ip_append_data",
+            "extern int\t\tip_append_data(struct sock *sk, /* <=== ip_append_data */ \n\t\t\t\t       int getfrag(void *from, char *to, int offset, int len,\n\t\t\t\t\t\t   int odd, struct sk_buff *skb),\n\t\t\t\tvoid *from, int len, int protolen,\n\t\t\t\tstruct ipcm_cookie *ipc,\n\t\t\t\tstruct rtable **rt,\n\t\t\t\tunsigned int flags);",
+            3
+        ],
+        [
+            "arch/alpha/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum csum) /* <=== csum_fold */ \n{\n\tu32 sum = (__force u32)csum;\n\tsum = (sum & 0xffff) + (sum >> 16);\n\tsum = (sum & 0xffff) + (sum >> 16);\n\treturn (__force __sum16)~sum;\n}",
+            3
+        ],
+        [
+            "include/net/checksum.h",
+            "csum_add",
+            "static inline __wsum csum_add(__wsum csum, __wsum addend) /* <=== csum_add */ \n{\n\tu32 res = (__force u32)csum;\n\tres += (__force u32)addend;\n\treturn (__force __wsum)(res + (res < (__force u32)addend));\n}",
+            3
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "rcu_read_lock",
+            "static inline void rcu_read_lock(void) /* <=== rcu_read_lock */ \n{\n\t__rcu_read_lock();\n\t__acquire(RCU);\n\trcu_read_acquire();\n}",
+            2
+        ],
+        [
+            "include/net/ip.h",
+            "ip_options_echo",
+            "extern int ip_options_echo(struct ip_options *dopt, struct sk_buff *skb); /* <=== ip_options_echo */ ",
+            2
+        ],
+        [
+            "arch/h8300/include/asm/atomic.h",
+            "atomic_dec_and_test",
+            "static __inline__ int atomic_dec_and_test(atomic_t *v) /* <=== atomic_dec_and_test */ \n{\n\tunsigned long flags;\n\tint ret;\n\tlocal_irq_save(flags);\n\t--v->counter;\n\tret = v->counter;\n\tlocal_irq_restore(flags);\n\treturn ret == 0;\n}",
+            3
+        ],
+        [
+            "include/net/sock.h",
+            "sock_net",
+            "static inline /* <=== sock_net */ \nstruct net *sock_net(const struct sock *sk)\n{\n\treturn read_pnet(&sk->sk_net);\n}",
+            3
+        ],
+        [
+            "arch/score/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\t/* the while loop is unnecessary really, it's always enough with two\n\t   iterations */\n\t__asm__ __volatile__(\n\t\t\".set volatile\\n\\t\"\n\t\t\".set\\tr1\\n\\t\"\n\t\t\"slli\\tr1,%0, 16\\n\\t\"\n\t\t\"add\\t%0,%0, r1\\n\\t\"\n\t\t\"cmp.c\\tr1, %0\\n\\t\"\n\t\t\"srli\\t%0, %0, 16\\n\\t\"\n\t\t\"bleu\\t1f\\n\\t\"\n\t\t\"addi\\t%0, 0x1\\n\\t\"\n\t\t\"1:ldi\\tr30, 0xffff\\n\\t\"\n\t\t\"xor\\t%0, %0, r30\\n\\t\"\n\t\t\"slli\\t%0, %0, 16\\n\\t\"\n\t\t\"srli\\t%0, %0, 16\\n\\t\"\n\t\t\".set\\tnor1\\n\\t\"\n\t\t\".set optimize\\n\\t\"\n\t\t: \"=r\" (sum)\n\t\t: \"0\" (sum));\n\treturn sum;\n}",
+            3
+        ],
+        [
+            "include/net/route.h",
+            "ip_route_input_common",
+            "extern int ip_route_input_common(struct sk_buff *skb, __be32 dst, __be32 src, /* <=== ip_route_input_common */ \n\t\t\t\t u8 tos, struct net_device *devin, bool noref);",
+            2
+        ],
+        [
+            "net/ipv4/icmp.c",
+            "icmpv4_xrlim_allow",
+            "static inline bool icmpv4_xrlim_allow(struct net *net, struct rtable *rt, /* <=== icmpv4_xrlim_allow */ \n\t\tint type, int code)\n{\n\tstruct dst_entry *dst = &rt->dst;\n\tbool rc = true;\n\n\tif (type > NR_ICMP_TYPES)\n\t\tgoto out;\n\n\t/* Don't limit PMTU discovery. */\n\tif (type == ICMP_DEST_UNREACH && code == ICMP_FRAG_NEEDED)\n\t\tgoto out;\n\n\t/* No rate limit on loopback */\n\tif (dst->dev && (dst->dev->flags&IFF_LOOPBACK))\n\t\tgoto out;\n\n\t/* Limit if icmp type is enabled in ratemask. */\n\tif ((1 << type) & net->ipv4.sysctl_icmp_ratemask) {\n\t\tif (!rt->peer)\n\t\t\trt_bind_peer(rt, 1);\n\t\trc = inet_peer_xrlim_allow(rt->peer,\n\t\t\t\t\t   net->ipv4.sysctl_icmp_ratelimit);\n\t}\nout:\n\treturn rc;\n}",
+            2
+        ],
+        [
+            "arch/ia64/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum csum) /* <=== csum_fold */ \n{\n\tu32 sum = (__force u32)csum;\n\tsum = (sum & 0xffff) + (sum >> 16);\n\tsum = (sum & 0xffff) + (sum >> 16);\n\treturn (__force __sum16)~sum;\n}",
+            3
+        ],
+        [
+            "arch/mips/include/asm/checksum.h",
+            "csum_fold",
+            "static inline __sum16 csum_fold(__wsum sum) /* <=== csum_fold */ \n{\n\t__asm__(\n\t\"\t.set\tpush\t\t# csum_fold\\n\"\n\t\"\t.set\tnoat\t\t\\n\"\n\t\"\tsll\t$1, %0, 16\t\\n\"\n\t\"\taddu\t%0, $1\t\t\\n\"\n\t\"\tsltu\t$1, %0, $1\t\\n\"\n\t\"\tsrl\t%0, %0, 16\t\\n\"\n\t\"\taddu\t%0, $1\t\t\\n\"\n\t\"\txori\t%0, 0xffff\t\\n\"\n\t\"\t.set\tpop\"\n\t: \"=r\" (sum)\n\t: \"0\" (sum));\n\n\treturn (__force __sum16)sum;\n}",
+            3
+        ],
+        [
+            "include/linux/spinlock.h",
+            "spin_trylock",
+            "static inline int spin_trylock(spinlock_t *lock) /* <=== spin_trylock */ \n{\n\treturn raw_spin_trylock(&lock->rlock);\n}",
+            3
+        ],
+        [
+            "include/net/ip.h",
+            "ip_push_pending_frames",
+            "extern int\t\tip_push_pending_frames(struct sock *sk); /* <=== ip_push_pending_frames */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <net/inet_frag.h>",
+        "#include <net/inet_ecn.h>",
+        "#include <linux/jhash.h>",
+        "#include <net/route.h>",
+        "#include <linux/jiffies.h>",
+        "#include <net/dst.h>",
+        "#include <linux/random.h>",
+        "#include <linux/udp.h>",
+        "#include <linux/compiler.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/skbuff.h>",
+        "#include <linux/netfilter_ipv4.h>",
+        "#include <linux/icmp.h>",
+        "#include <linux/types.h>",
+        "#include <net/checksum.h>",
+        "#include <linux/module.h>",
+        "#include <linux/ip.h>",
+        "#include <linux/list.h>",
+        "#include <net/inetpeer.h>",
+        "#include <net/icmp.h>",
+        "#include <linux/mm.h>",
+        "#include <linux/inet.h>",
+        "#include <linux/tcp.h>",
+        "#include <net/ip.h>",
+        "#include <linux/netdevice.h>",
+        "#include <net/sock.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct net",
+            "net"
+        ],
+        [
+            "struct ipq {\n\tstruct inet_frag_queue q;\n\n\tu32\t\tuser;\n\t__be32\t\tsaddr;\n\t__be32\t\tdaddr;\n\t__be16\t\tid;\n\tu8\t\tprotocol;\n\tu8\t\tecn; /* RFC3168 support */\n\tint             iif;\n\tunsigned int    rid;\n\tstruct inet_peer *peer;\n}",
+            "ipq"
+        ],
+        [
+            "struct sk_buff {\n\t/* These two members must be first. */\n\tstruct sk_buff\t\t*next;\n\tstruct sk_buff\t\t*prev;\n\n\tktime_t\t\t\ttstamp;\n\n\tstruct sock\t\t*sk;\n\tstruct net_device\t*dev;\n\n\t/*\n\t * This is the control buffer. It is free to use for every\n\t * layer. Please put your private variables there. If you\n\t * want to keep them across layers you have to do a skb_clone()\n\t * first. This is owned by whoever has the skb queued ATM.\n\t */\n\tchar\t\t\tcb[48] __aligned(8);\n\n\tunsigned long\t\t_skb_refdst;\n#ifdef CONFIG_XFRM\n\tstruct\tsec_path\t*sp;\n#endif\n\tunsigned int\t\tlen,\n\t\t\t\tdata_len;\n\t__u16\t\t\tmac_len,\n\t\t\t\thdr_len;\n\tunion {\n\t\t__wsum\t\tcsum;\n\t\tstruct {\n\t\t\t__u16\tcsum_start;\n\t\t\t__u16\tcsum_offset;\n\t\t};\n\t};\n\t__u32\t\t\tpriority;\n\tkmemcheck_bitfield_begin(flags1);\n\t__u8\t\t\tlocal_df:1,\n\t\t\t\tcloned:1,\n\t\t\t\tip_summed:2,\n\t\t\t\tnohdr:1,\n\t\t\t\tnfctinfo:3;\n\t__u8\t\t\tpkt_type:3,\n\t\t\t\tfclone:2,\n\t\t\t\tipvs_property:1,\n\t\t\t\tpeeked:1,\n\t\t\t\tnf_trace:1;\n\tkmemcheck_bitfield_end(flags1);\n\t__be16\t\t\tprotocol;\n\n\tvoid\t\t\t(*destructor)(struct sk_buff *skb);\n#if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)\n\tstruct nf_conntrack\t*nfct;\n#endif\n#ifdef NET_SKBUFF_NF_DEFRAG_NEEDED\n\tstruct sk_buff\t\t*nfct_reasm;\n#endif\n#ifdef CONFIG_BRIDGE_NETFILTER\n\tstruct nf_bridge_info\t*nf_bridge;\n#endif\n\n\tint\t\t\tskb_iif;\n#ifdef CONFIG_NET_SCHED\n\t__u16\t\t\ttc_index;\t/* traffic control index */\n#ifdef CONFIG_NET_CLS_ACT\n\t__u16\t\t\ttc_verd;\t/* traffic control verdict */\n#endif\n#endif\n\n\t__u32\t\t\trxhash;\n\n\tkmemcheck_bitfield_begin(flags2);\n\t__u16\t\t\tqueue_mapping:16;\n#ifdef CONFIG_IPV6_NDISC_NODETYPE\n\t__u8\t\t\tndisc_nodetype:2;\n#endif\n\t__u8\t\t\tooo_okay:1;\n\tkmemcheck_bitfield_end(flags2);\n\n\t/* 0/13 bit hole */\n\n#ifdef CONFIG_NET_DMA\n\tdma_cookie_t\t\tdma_cookie;\n#endif\n#ifdef CONFIG_NETWORK_SECMARK\n\t__u32\t\t\tsecmark;\n#endif\n\tunion {\n\t\t__u32\t\tmark;\n\t\t__u32\t\tdropcount;\n\t};\n\n\t__u16\t\t\tvlan_tci;\n\n\tsk_buff_data_t\t\ttransport_header;\n\tsk_buff_data_t\t\tnetwork_header;\n\tsk_buff_data_t\t\tmac_header;\n\t/* These elements must be at the end, see alloc_skb() for details.  */\n\tsk_buff_data_t\t\ttail;\n\tsk_buff_data_t\t\tend;\n\tunsigned char\t\t*head,\n\t\t\t\t*data;\n\tunsigned int\t\ttruesize;\n\tatomic_t\t\tusers;\n}",
+            "sk_buff"
+        ],
+        [
+            "struct sk_buff",
+            "sk_buff"
+        ],
+        [
+            "struct iphdr {\n#if defined(__LITTLE_ENDIAN_BITFIELD)\n\t__u8\tihl:4,\n\t\tversion:4;\n#elif defined (__BIG_ENDIAN_BITFIELD)\n\t__u8\tversion:4,\n  \t\tihl:4;\n#else\n#error\t\"Please fix <asm/byteorder.h>\"\n#endif\n\t__u8\ttos;\n\t__be16\ttot_len;\n\t__be16\tid;\n\t__be16\tfrag_off;\n\t__u8\tttl;\n\t__u8\tprotocol;\n\t__sum16\tcheck;\n\t__be32\tsaddr;\n\t__be32\tdaddr;\n\t/*The options start here. */\n}",
+            "iphdr"
+        ]
+    ],
+    "visitedLines_after": {
+        "net/ipv4/ip_fragment.c": [
+            206,
+            214,
+            216,
+            219,
+            221,
+            222,
+            224,
+            225,
+            226,
+            227,
+            230,
+            231,
+            235,
+            236,
+            237,
+            238,
+            239,
+            246,
+            247,
+            252,
+            257,
+            258
+        ]
+    },
+    "visitedLines_before": {
+        "net/ipv4/ip_fragment.c": [
+            206,
+            214,
+            216,
+            219,
+            221,
+            222,
+            224,
+            225,
+            228,
+            229,
+            236,
+            237,
+            238,
+            239,
+            240,
+            247,
+            253,
+            258,
+            259
+        ]
+    },
+    "visitedParams": {},
+    "vulnerableMethods_after": [
+        [
+            "net/ipv4/ip_fragment.c",
+            "ip_expire",
+            "static void ip_expire(unsigned long arg) /* <=== ip_expire */ \n{\n\tstruct ipq *qp;\n\tstruct net *net;\n\n\tqp = container_of((struct inet_frag_queue *) arg, struct ipq, q);\n\tnet = container_of(qp->q.net, struct net, ipv4.frags);\n\n\tspin_lock(&qp->q.lock);\n\n\tif (qp->q.last_in & INET_FRAG_COMPLETE)\n\t\tgoto out;\n\n\tipq_kill(qp);\n\n\tIP_INC_STATS_BH(net, IPSTATS_MIB_REASMTIMEOUT);\n\tIP_INC_STATS_BH(net, IPSTATS_MIB_REASMFAILS);\n\n\tif ((qp->q.last_in & INET_FRAG_FIRST_IN) && qp->q.fragments != NULL) {\n\t\tstruct sk_buff *head = qp->q.fragments;\n\t\tconst struct iphdr *iph;\n\t\tint err;\n\n\t\trcu_read_lock();\n\t\thead->dev = dev_get_by_index_rcu(net, qp->iif);\n\t\tif (!head->dev)\n\t\t\tgoto out_rcu_unlock;\n\n\t\t/* skb dst is stale, drop it, and perform route lookup again */\n\t\tskb_dst_drop(head);\n\t\tiph = ip_hdr(head);\n\t\terr = ip_route_input_noref(head, iph->daddr, iph->saddr,\n\t\t\t\t\t   iph->tos, head->dev);\n\t\tif (err)\n\t\t\tgoto out_rcu_unlock;\n\n\t\t/*\n\t\t * Only an end host needs to send an ICMP\n\t\t * \"Fragment Reassembly Timeout\" message, per RFC792.\n\t\t */\n\t\tif (qp->user == IP_DEFRAG_CONNTRACK_IN &&\n\t\t    skb_rtable(head)->rt_type != RTN_LOCAL)\n\t\t\tgoto out_rcu_unlock;\n\n\n\t\t/* Send an ICMP \"Fragment Reassembly Timeout\" message. */\n\t\ticmp_send(head, ICMP_TIME_EXCEEDED, ICMP_EXC_FRAGTIME, 0);\nout_rcu_unlock:\n\t\trcu_read_unlock();\n\t}\nout:\n\tspin_unlock(&qp->q.lock);\n\tipq_put(qp);\n}",
+            206
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "net/ipv4/ip_fragment.c",
+            "ip_expire",
+            "static void ip_expire(unsigned long arg) /* <=== ip_expire */ \n{\n\tstruct ipq *qp;\n\tstruct net *net;\n\n\tqp = container_of((struct inet_frag_queue *) arg, struct ipq, q);\n\tnet = container_of(qp->q.net, struct net, ipv4.frags);\n\n\tspin_lock(&qp->q.lock);\n\n\tif (qp->q.last_in & INET_FRAG_COMPLETE)\n\t\tgoto out;\n\n\tipq_kill(qp);\n\n\tIP_INC_STATS_BH(net, IPSTATS_MIB_REASMTIMEOUT);\n\tIP_INC_STATS_BH(net, IPSTATS_MIB_REASMFAILS);\n\n\tif ((qp->q.last_in & INET_FRAG_FIRST_IN) && qp->q.fragments != NULL) {\n\t\tstruct sk_buff *head = qp->q.fragments;\n\n\t\trcu_read_lock();\n\t\thead->dev = dev_get_by_index_rcu(net, qp->iif);\n\t\tif (!head->dev)\n\t\t\tgoto out_rcu_unlock;\n\n\t\t/*\n\t\t * Only search router table for the head fragment,\n\t\t * when defraging timeout at PRE_ROUTING HOOK.\n\t\t */\n\t\tif (qp->user == IP_DEFRAG_CONNTRACK_IN && !skb_dst(head)) {\n\t\t\tconst struct iphdr *iph = ip_hdr(head);\n\t\t\tint err = ip_route_input(head, iph->daddr, iph->saddr,\n\t\t\t\t\t\t iph->tos, head->dev);\n\t\t\tif (unlikely(err))\n\t\t\t\tgoto out_rcu_unlock;\n\n\t\t\t/*\n\t\t\t * Only an end host needs to send an ICMP\n\t\t\t * \"Fragment Reassembly Timeout\" message, per RFC792.\n\t\t\t */\n\t\t\tif (skb_rtable(head)->rt_type != RTN_LOCAL)\n\t\t\t\tgoto out_rcu_unlock;\n\n\t\t}\n\n\t\t/* Send an ICMP \"Fragment Reassembly Timeout\" message. */\n\t\ticmp_send(head, ICMP_TIME_EXCEEDED, ICMP_EXC_FRAGTIME, 0);\nout_rcu_unlock:\n\t\trcu_read_unlock();\n\t}\nout:\n\tspin_unlock(&qp->q.lock);\n\tipq_put(qp);\n}",
+            206
+        ]
+    ]
+}

@@ -1,0 +1,1053 @@
+{
+    "calleeMethods": [
+        [
+            "memcached.c",
+            "process_bin_touch",
+            "static void process_bin_touch(conn *c) { /* <=== process_bin_touch */ \n    item *it;\n\n    protocol_binary_response_get* rsp = (protocol_binary_response_get*)c->wbuf;\n    char* key = binary_get_key(c);\n    size_t nkey = c->binary_header.request.keylen;\n    protocol_binary_request_touch *t = binary_get_request(c);\n    time_t exptime = ntohl(t->message.body.expiration);\n\n    if (settings.verbose > 1) {\n        int ii;\n        /* May be GAT/GATQ/etc */\n        fprintf(stderr, \"<%d TOUCH \", c->sfd);\n        for (ii = 0; ii < nkey; ++ii) {\n            fprintf(stderr, \"%c\", key[ii]);\n        }\n        fprintf(stderr, \"\\n\");\n    }\n\n    it = item_touch(key, nkey, realtime(exptime));\n\n    if (it) {\n        /* the length has two unnecessary bytes (\"\\r\\n\") */\n        uint16_t keylen = 0;\n        uint32_t bodylen = sizeof(rsp->message.body) + (it->nbytes - 2);\n\n        item_update(it);\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.touch_cmds++;\n        c->thread->stats.slab_stats[it->slabs_clsid].touch_hits++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        MEMCACHED_COMMAND_TOUCH(c->sfd, ITEM_key(it), it->nkey,\n                                it->nbytes, ITEM_get_cas(it));\n\n        if (c->cmd == PROTOCOL_BINARY_CMD_TOUCH) {\n            bodylen -= it->nbytes - 2;\n        } else if (c->cmd == PROTOCOL_BINARY_CMD_GATK) {\n            bodylen += nkey;\n            keylen = nkey;\n        }\n\n        add_bin_header(c, 0, sizeof(rsp->message.body), keylen, bodylen);\n        rsp->message.header.response.cas = htonll(ITEM_get_cas(it));\n\n        // add the flags\n        rsp->message.body.flags = htonl(strtoul(ITEM_suffix(it), NULL, 10));\n        add_iov(c, &rsp->message.body, sizeof(rsp->message.body));\n\n        if (c->cmd == PROTOCOL_BINARY_CMD_GATK) {\n            add_iov(c, ITEM_key(it), nkey);\n        }\n\n        /* Add the data minus the CRLF */\n        if (c->cmd != PROTOCOL_BINARY_CMD_TOUCH) {\n            add_iov(c, ITEM_data(it), it->nbytes - 2);\n        }\n\n        conn_set_state(c, conn_mwrite);\n        c->write_and_go = conn_new_cmd;\n        /* Remember this command so we can garbage collect it later */\n        c->item = it;\n    } else {\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.touch_cmds++;\n        c->thread->stats.touch_misses++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        MEMCACHED_COMMAND_TOUCH(c->sfd, key, nkey, -1, 0);\n\n        if (c->noreply) {\n            conn_set_state(c, conn_new_cmd);\n        } else {\n            if (c->cmd == PROTOCOL_BINARY_CMD_GATK) {\n                char *ofs = c->wbuf + sizeof(protocol_binary_response_header);\n                add_bin_header(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT,\n                        0, nkey, nkey);\n                memcpy(ofs, key, nkey);\n                add_iov(c, ofs, nkey);\n                conn_set_state(c, conn_mwrite);\n                c->write_and_go = conn_new_cmd;\n            } else {\n                write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);\n            }\n        }\n    }\n\n    if (settings.detail_enabled) {\n        stats_prefix_record_get(key, nkey, NULL != it);\n    }\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "process_command",
+            "static void process_command(conn *c, char *command) { /* <=== process_command */ \n\n    token_t tokens[MAX_TOKENS];\n    size_t ntokens;\n    int comm;\n\n    assert(c != NULL);\n\n    MEMCACHED_PROCESS_COMMAND_START(c->sfd, c->rcurr, c->rbytes);\n\n    if (settings.verbose > 1)\n        fprintf(stderr, \"<%d %s\\n\", c->sfd, command);\n\n    /*\n     * for commands set/add/replace, we build an item and read the data\n     * directly into it, then continue in nread_complete().\n     */\n\n    c->msgcurr = 0;\n    c->msgused = 0;\n    c->iovused = 0;\n    if (add_msghdr(c) != 0) {\n        out_string(c, \"SERVER_ERROR out of memory preparing response\");\n        return;\n    }\n\n    ntokens = tokenize_command(command, tokens, MAX_TOKENS);\n    if (ntokens >= 3 &&\n        ((strcmp(tokens[COMMAND_TOKEN].value, \"get\") == 0) ||\n         (strcmp(tokens[COMMAND_TOKEN].value, \"bget\") == 0))) {\n\n        process_get_command(c, tokens, ntokens, false);\n\n    } else if ((ntokens == 6 || ntokens == 7) &&\n               ((strcmp(tokens[COMMAND_TOKEN].value, \"add\") == 0 && (comm = NREAD_ADD)) ||\n                (strcmp(tokens[COMMAND_TOKEN].value, \"set\") == 0 && (comm = NREAD_SET)) ||\n                (strcmp(tokens[COMMAND_TOKEN].value, \"replace\") == 0 && (comm = NREAD_REPLACE)) ||\n                (strcmp(tokens[COMMAND_TOKEN].value, \"prepend\") == 0 && (comm = NREAD_PREPEND)) ||\n                (strcmp(tokens[COMMAND_TOKEN].value, \"append\") == 0 && (comm = NREAD_APPEND)) )) {\n\n        process_update_command(c, tokens, ntokens, comm, false);\n\n    } else if ((ntokens == 7 || ntokens == 8) && (strcmp(tokens[COMMAND_TOKEN].value, \"cas\") == 0 && (comm = NREAD_CAS))) {\n\n        process_update_command(c, tokens, ntokens, comm, true);\n\n    } else if ((ntokens == 4 || ntokens == 5) && (strcmp(tokens[COMMAND_TOKEN].value, \"incr\") == 0)) {\n\n        process_arithmetic_command(c, tokens, ntokens, 1);\n\n    } else if (ntokens >= 3 && (strcmp(tokens[COMMAND_TOKEN].value, \"gets\") == 0)) {\n\n        process_get_command(c, tokens, ntokens, true);\n\n    } else if ((ntokens == 4 || ntokens == 5) && (strcmp(tokens[COMMAND_TOKEN].value, \"decr\") == 0)) {\n\n        process_arithmetic_command(c, tokens, ntokens, 0);\n\n    } else if (ntokens >= 3 && ntokens <= 5 && (strcmp(tokens[COMMAND_TOKEN].value, \"delete\") == 0)) {\n\n        process_delete_command(c, tokens, ntokens);\n\n    } else if ((ntokens == 4 || ntokens == 5) && (strcmp(tokens[COMMAND_TOKEN].value, \"touch\") == 0)) {\n\n        process_touch_command(c, tokens, ntokens);\n\n    } else if (ntokens >= 2 && (strcmp(tokens[COMMAND_TOKEN].value, \"stats\") == 0)) {\n\n        process_stat(c, tokens, ntokens);\n\n    } else if (ntokens >= 2 && ntokens <= 4 && (strcmp(tokens[COMMAND_TOKEN].value, \"flush_all\") == 0)) {\n        time_t exptime = 0;\n\n        set_noreply_maybe(c, tokens, ntokens);\n\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.flush_cmds++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        if(ntokens == (c->noreply ? 3 : 2)) {\n            settings.oldest_live = current_time - 1;\n            item_flush_expired();\n            out_string(c, \"OK\");\n            return;\n        }\n\n        exptime = strtol(tokens[1].value, NULL, 10);\n        if(errno == ERANGE) {\n            out_string(c, \"CLIENT_ERROR bad command line format\");\n            return;\n        }\n\n        /*\n          If exptime is zero realtime() would return zero too, and\n          realtime(exptime) - 1 would overflow to the max unsigned\n          value.  So we process exptime == 0 the same way we do when\n          no delay is given at all.\n        */\n        if (exptime > 0)\n            settings.oldest_live = realtime(exptime) - 1;\n        else /* exptime == 0 */\n            settings.oldest_live = current_time - 1;\n        item_flush_expired();\n        out_string(c, \"OK\");\n        return;\n\n    } else if (ntokens == 2 && (strcmp(tokens[COMMAND_TOKEN].value, \"version\") == 0)) {\n\n        out_string(c, \"VERSION \" VERSION);\n\n    } else if (ntokens == 2 && (strcmp(tokens[COMMAND_TOKEN].value, \"quit\") == 0)) {\n\n        conn_set_state(c, conn_closing);\n\n    } else if (ntokens == 2 && (strcmp(tokens[COMMAND_TOKEN].value, \"shutdown\") == 0)) {\n\n        if (settings.shutdown_command) {\n            conn_set_state(c, conn_closing);\n            raise(SIGINT);\n        } else {\n            out_string(c, \"ERROR: shutdown not enabled\");\n        }\n\n    } else if (ntokens > 1 && strcmp(tokens[COMMAND_TOKEN].value, \"slabs\") == 0) {\n        if (ntokens == 5 && strcmp(tokens[COMMAND_TOKEN + 1].value, \"reassign\") == 0) {\n            int src, dst, rv;\n\n            if (settings.slab_reassign == false) {\n                out_string(c, \"CLIENT_ERROR slab reassignment disabled\");\n                return;\n            }\n\n            src = strtol(tokens[2].value, NULL, 10);\n            dst = strtol(tokens[3].value, NULL, 10);\n\n            if (errno == ERANGE) {\n                out_string(c, \"CLIENT_ERROR bad command line format\");\n                return;\n            }\n\n            rv = slabs_reassign(src, dst);\n            switch (rv) {\n            case REASSIGN_OK:\n                out_string(c, \"OK\");\n                break;\n            case REASSIGN_RUNNING:\n                out_string(c, \"BUSY currently processing reassign request\");\n                break;\n            case REASSIGN_BADCLASS:\n                out_string(c, \"BADCLASS invalid src or dst class id\");\n                break;\n            case REASSIGN_NOSPARE:\n                out_string(c, \"NOSPARE source class has no spare pages\");\n                break;\n            case REASSIGN_SRC_DST_SAME:\n                out_string(c, \"SAME src and dst class are identical\");\n                break;\n            }\n            return;\n        } else if (ntokens == 4 &&\n            (strcmp(tokens[COMMAND_TOKEN + 1].value, \"automove\") == 0)) {\n            process_slabs_automove_command(c, tokens, ntokens);\n        } else {\n            out_string(c, \"ERROR\");\n        }\n    } else if ((ntokens == 3 || ntokens == 4) && (strcmp(tokens[COMMAND_TOKEN].value, \"verbosity\") == 0)) {\n        process_verbosity_command(c, tokens, ntokens);\n    } else {\n        out_string(c, \"ERROR\");\n    }\n    return;\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "realtime",
+            "static rel_time_t realtime(const time_t exptime) { /* <=== realtime */ \n    /* no. of seconds in 30 days - largest possible delta exptime */\n\n    if (exptime == 0) return 0; /* 0 means never expire */\n\n    if (exptime > REALTIME_MAXDELTA) {\n        /* if item expiration is at/before the server started, give it an\n           expiration time of 1 second after the server started.\n           (because 0 means don't expire).  without this, we'd\n           underflow and wrap around to some large value way in the\n           future, effectively making items expiring in the past\n           really expiring never */\n        if (exptime <= process_started)\n            return (rel_time_t)1;\n        return (rel_time_t)(exptime - process_started);\n    } else {\n        return (rel_time_t)(exptime + current_time);\n    }\n}",
+            3
+        ],
+        [
+            "thread.c",
+            "item_unlock",
+            "void item_unlock(uint32_t hv) { /* <=== item_unlock */ \n    uint8_t *lock_type = pthread_getspecific(item_lock_type_key);\n    if (likely(*lock_type == ITEM_LOCK_GRANULAR)) {\n        mutex_unlock(&item_locks[(hv & hashmask(hashpower)) % item_lock_count]);\n    } else {\n        mutex_unlock(&item_global_lock);\n    }\n}",
+            2
+        ],
+        [
+            "memcached.h",
+            "ITEM_key",
+            "#define ITEM_key(item) (((char*)&((item)->data)) \\ /* <=== memcached.h:91:92:ITEM_key:1 */ \n         + (((item)->it_flags & ITEM_CAS) ? sizeof(uint64_t) : 0))",
+            2
+        ],
+        [
+            "memcached.h",
+            "NREAD_PREPEND",
+            "#define NREAD_PREPEND 5 /* <=== memcached.h:194:194:NREAD_PREPEND:0 */ ",
+            3
+        ],
+        [
+            "thread.c",
+            "store_item",
+            "enum store_item_type store_item(item *item, int comm, conn* c) { /* <=== store_item */ \n    enum store_item_type ret;\n    uint32_t hv;\n\n    hv = hash(ITEM_key(item), item->nkey, 0);\n    item_lock(hv);\n    ret = do_store_item(item, comm, c, hv);\n    item_unlock(hv);\n    return ret;\n}",
+            3
+        ],
+        [
+            "memcached.h",
+            "UDP_MAX_PAYLOAD_SIZE",
+            "#define UDP_MAX_PAYLOAD_SIZE 1400 /* <=== memcached.h:34:34:UDP_MAX_PAYLOAD_SIZE:0 */ ",
+            2
+        ],
+        [
+            "thread.c",
+            "cq_push",
+            "static void cq_push(CQ *cq, CQ_ITEM *item) { /* <=== cq_push */ \n    item->next = NULL;\n\n    pthread_mutex_lock(&cq->lock);\n    if (NULL == cq->tail)\n        cq->head = item;\n    else\n        cq->tail->next = item;\n    cq->tail = item;\n    pthread_cond_signal(&cq->cond);\n    pthread_mutex_unlock(&cq->lock);\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "prot_text",
+            "static const char *prot_text(enum protocol prot) { /* <=== prot_text */ \n    char *rv = \"unknown\";\n    switch(prot) {\n        case ascii_prot:\n            rv = \"ascii\";\n            break;\n        case binary_prot:\n            rv = \"binary\";\n            break;\n        case negotiating_prot:\n            rv = \"auto-negotiate\";\n            break;\n    }\n    return rv;\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "build_udp_headers",
+            "static int build_udp_headers(conn *c) { /* <=== build_udp_headers */ \n    int i;\n    unsigned char *hdr;\n\n    assert(c != NULL);\n\n    if (c->msgused > c->hdrsize) {\n        void *new_hdrbuf;\n        if (c->hdrbuf)\n            new_hdrbuf = realloc(c->hdrbuf, c->msgused * 2 * UDP_HEADER_SIZE);\n        else\n            new_hdrbuf = malloc(c->msgused * 2 * UDP_HEADER_SIZE);\n        if (! new_hdrbuf)\n            return -1;\n        c->hdrbuf = (unsigned char *)new_hdrbuf;\n        c->hdrsize = c->msgused * 2;\n    }\n\n    hdr = c->hdrbuf;\n    for (i = 0; i < c->msgused; i++) {\n        c->msglist[i].msg_iov[0].iov_base = (void*)hdr;\n        c->msglist[i].msg_iov[0].iov_len = UDP_HEADER_SIZE;\n        *hdr++ = c->request_id / 256;\n        *hdr++ = c->request_id % 256;\n        *hdr++ = i / 256;\n        *hdr++ = i % 256;\n        *hdr++ = c->msgused / 256;\n        *hdr++ = c->msgused % 256;\n        *hdr++ = 0;\n        *hdr++ = 0;\n        assert((void *) hdr == (caddr_t)c->msglist[i].msg_iov[0].iov_base + UDP_HEADER_SIZE);\n    }\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "thread.c",
+            "item_lock",
+            "void item_lock(uint32_t hv) { /* <=== item_lock */ \n    uint8_t *lock_type = pthread_getspecific(item_lock_type_key);\n    if (likely(*lock_type == ITEM_LOCK_GRANULAR)) {\n        mutex_lock(&item_locks[(hv & hashmask(hashpower)) % item_lock_count]);\n    } else {\n        mutex_lock(&item_global_lock);\n    }\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "MAX_TOKENS",
+            "#define MAX_TOKENS 8 /* <=== memcached.c:2387:2387:MAX_TOKENS:0 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "conn_add_to_freelist",
+            "bool conn_add_to_freelist(conn *c) { /* <=== conn_add_to_freelist */ \n    bool ret = true;\n    pthread_mutex_lock(&conn_lock);\n    if (freecurr < freetotal) {\n        freeconns[freecurr++] = c;\n        ret = false;\n    } else {\n        /* try to enlarge free connections array */\n        size_t newsize = freetotal * 2;\n        conn **new_freeconns = realloc(freeconns, sizeof(conn *) * newsize);\n        if (new_freeconns) {\n            freetotal = newsize;\n            freeconns = new_freeconns;\n            freeconns[freecurr++] = c;\n            ret = false;\n        }\n    }\n    pthread_mutex_unlock(&conn_lock);\n    return ret;\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "process_bin_flush",
+            "static void process_bin_flush(conn *c) { /* <=== process_bin_flush */ \n    time_t exptime = 0;\n    protocol_binary_request_flush* req = binary_get_request(c);\n\n    if (c->binary_header.request.extlen == sizeof(req->message.body)) {\n        exptime = ntohl(req->message.body.expiration);\n    }\n\n    if (exptime > 0) {\n        settings.oldest_live = realtime(exptime) - 1;\n    } else {\n        settings.oldest_live = current_time - 1;\n    }\n    item_flush_expired();\n\n    pthread_mutex_lock(&c->thread->stats.mutex);\n    c->thread->stats.flush_cmds++;\n    pthread_mutex_unlock(&c->thread->stats.mutex);\n\n    write_bin_response(c, NULL, 0, 0, 0);\n}",
+            3
+        ],
+        [
+            "memcached.h",
+            "ITEM_SLABBED",
+            "#define ITEM_SLABBED 4 /* <=== memcached.h:321:321:ITEM_SLABBED:0 */ ",
+            1
+        ],
+        [
+            "memcached.c",
+            "process_bin_delete",
+            "static void process_bin_delete(conn *c) { /* <=== process_bin_delete */ \n    item *it;\n\n    protocol_binary_request_delete* req = binary_get_request(c);\n\n    char* key = binary_get_key(c);\n    size_t nkey = c->binary_header.request.keylen;\n\n    assert(c != NULL);\n\n    if (settings.verbose > 1) {\n        fprintf(stderr, \"Deleting %s\\n\", key);\n    }\n\n    if (settings.detail_enabled) {\n        stats_prefix_record_delete(key, nkey);\n    }\n\n    it = item_get(key, nkey);\n    if (it) {\n        uint64_t cas = ntohll(req->message.header.request.cas);\n        if (cas == 0 || cas == ITEM_get_cas(it)) {\n            MEMCACHED_COMMAND_DELETE(c->sfd, ITEM_key(it), it->nkey);\n            pthread_mutex_lock(&c->thread->stats.mutex);\n            c->thread->stats.slab_stats[it->slabs_clsid].delete_hits++;\n            pthread_mutex_unlock(&c->thread->stats.mutex);\n            item_unlink(it);\n            write_bin_response(c, NULL, 0, 0, 0);\n        } else {\n            write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_EEXISTS, 0);\n        }\n        item_remove(it);      /* release our reference */\n    } else {\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.delete_misses++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n    }\n}",
+            3
+        ],
+        [
+            "util.c",
+            "ntohll",
+            "uint64_t ntohll(uint64_t val) { /* <=== ntohll */ \n   return mc_swap64(val);\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "process_bin_get",
+            "static void process_bin_get(conn *c) { /* <=== process_bin_get */ \n    item *it;\n\n    protocol_binary_response_get* rsp = (protocol_binary_response_get*)c->wbuf;\n    char* key = binary_get_key(c);\n    size_t nkey = c->binary_header.request.keylen;\n\n    if (settings.verbose > 1) {\n        int ii;\n        fprintf(stderr, \"<%d GET \", c->sfd);\n        for (ii = 0; ii < nkey; ++ii) {\n            fprintf(stderr, \"%c\", key[ii]);\n        }\n        fprintf(stderr, \"\\n\");\n    }\n\n    it = item_get(key, nkey);\n    if (it) {\n        /* the length has two unnecessary bytes (\"\\r\\n\") */\n        uint16_t keylen = 0;\n        uint32_t bodylen = sizeof(rsp->message.body) + (it->nbytes - 2);\n\n        item_update(it);\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.get_cmds++;\n        c->thread->stats.slab_stats[it->slabs_clsid].get_hits++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        MEMCACHED_COMMAND_GET(c->sfd, ITEM_key(it), it->nkey,\n                              it->nbytes, ITEM_get_cas(it));\n\n        if (c->cmd == PROTOCOL_BINARY_CMD_GETK) {\n            bodylen += nkey;\n            keylen = nkey;\n        }\n        add_bin_header(c, 0, sizeof(rsp->message.body), keylen, bodylen);\n        rsp->message.header.response.cas = htonll(ITEM_get_cas(it));\n\n        // add the flags\n        rsp->message.body.flags = htonl(strtoul(ITEM_suffix(it), NULL, 10));\n        add_iov(c, &rsp->message.body, sizeof(rsp->message.body));\n\n        if (c->cmd == PROTOCOL_BINARY_CMD_GETK) {\n            add_iov(c, ITEM_key(it), nkey);\n        }\n\n        /* Add the data minus the CRLF */\n        add_iov(c, ITEM_data(it), it->nbytes - 2);\n        conn_set_state(c, conn_mwrite);\n        c->write_and_go = conn_new_cmd;\n        /* Remember this command so we can garbage collect it later */\n        c->item = it;\n    } else {\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.get_cmds++;\n        c->thread->stats.get_misses++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        MEMCACHED_COMMAND_GET(c->sfd, key, nkey, -1, 0);\n\n        if (c->noreply) {\n            conn_set_state(c, conn_new_cmd);\n        } else {\n            if (c->cmd == PROTOCOL_BINARY_CMD_GETK) {\n                char *ofs = c->wbuf + sizeof(protocol_binary_response_header);\n                add_bin_header(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT,\n                        0, nkey, nkey);\n                memcpy(ofs, key, nkey);\n                add_iov(c, ofs, nkey);\n                conn_set_state(c, conn_mwrite);\n                c->write_and_go = conn_new_cmd;\n            } else {\n                write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);\n            }\n        }\n    }\n\n    if (settings.detail_enabled) {\n        stats_prefix_record_get(key, nkey, NULL != it);\n    }\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "complete_incr_bin",
+            "static void complete_incr_bin(conn *c) { /* <=== complete_incr_bin */ \n    item *it;\n    char *key;\n    size_t nkey;\n    /* Weird magic in add_delta forces me to pad here */\n    char tmpbuf[INCR_MAX_STORAGE_LEN];\n    uint64_t cas = 0;\n\n    protocol_binary_response_incr* rsp = (protocol_binary_response_incr*)c->wbuf;\n    protocol_binary_request_incr* req = binary_get_request(c);\n\n    assert(c != NULL);\n    assert(c->wsize >= sizeof(*rsp));\n\n    /* fix byteorder in the request */\n    req->message.body.delta = ntohll(req->message.body.delta);\n    req->message.body.initial = ntohll(req->message.body.initial);\n    req->message.body.expiration = ntohl(req->message.body.expiration);\n    key = binary_get_key(c);\n    nkey = c->binary_header.request.keylen;\n\n    if (settings.verbose > 1) {\n        int i;\n        fprintf(stderr, \"incr \");\n\n        for (i = 0; i < nkey; i++) {\n            fprintf(stderr, \"%c\", key[i]);\n        }\n        fprintf(stderr, \" %lld, %llu, %d\\n\",\n                (long long)req->message.body.delta,\n                (long long)req->message.body.initial,\n                req->message.body.expiration);\n    }\n\n    if (c->binary_header.request.cas != 0) {\n        cas = c->binary_header.request.cas;\n    }\n    switch(add_delta(c, key, nkey, c->cmd == PROTOCOL_BINARY_CMD_INCREMENT,\n                     req->message.body.delta, tmpbuf,\n                     &cas)) {\n    case OK:\n        rsp->message.body.value = htonll(strtoull(tmpbuf, NULL, 10));\n        if (cas) {\n            c->cas = cas;\n        }\n        write_bin_response(c, &rsp->message.body, 0, 0,\n                           sizeof(rsp->message.body.value));\n        break;\n    case NON_NUMERIC:\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_DELTA_BADVAL, 0);\n        break;\n    case EOM:\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);\n        break;\n    case DELTA_ITEM_NOT_FOUND:\n        if (req->message.body.expiration != 0xffffffff) {\n            /* Save some room for the response */\n            rsp->message.body.value = htonll(req->message.body.initial);\n            it = item_alloc(key, nkey, 0, realtime(req->message.body.expiration),\n                            INCR_MAX_STORAGE_LEN);\n\n            if (it != NULL) {\n                snprintf(ITEM_data(it), INCR_MAX_STORAGE_LEN, \"%llu\",\n                         (unsigned long long)req->message.body.initial);\n\n                if (store_item(it, NREAD_ADD, c)) {\n                    c->cas = ITEM_get_cas(it);\n                    write_bin_response(c, &rsp->message.body, 0, 0, sizeof(rsp->message.body.value));\n                } else {\n                    write_bin_error(c, PROTOCOL_BINARY_RESPONSE_NOT_STORED, 0);\n                }\n                item_remove(it);         /* release our reference */\n            } else {\n                write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);\n            }\n        } else {\n            pthread_mutex_lock(&c->thread->stats.mutex);\n            if (c->cmd == PROTOCOL_BINARY_CMD_INCREMENT) {\n                c->thread->stats.incr_misses++;\n            } else {\n                c->thread->stats.decr_misses++;\n            }\n            pthread_mutex_unlock(&c->thread->stats.mutex);\n\n            write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);\n        }\n        break;\n    case DELTA_ITEM_CAS_MISMATCH:\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_EEXISTS, 0);\n        break;\n    }\n}",
+            3
+        ],
+        [
+            "memcached.h",
+            "NREAD_APPEND",
+            "#define NREAD_APPEND 4 /* <=== memcached.h:193:193:NREAD_APPEND:0 */ ",
+            3
+        ],
+        [
+            "thread.c",
+            "STATS_UNLOCK",
+            "void STATS_UNLOCK() { /* <=== STATS_UNLOCK */ \n    pthread_mutex_unlock(&stats_lock);\n}",
+            1
+        ],
+        [
+            "memcached.c",
+            "conn_free",
+            "void conn_free(conn *c) { /* <=== conn_free */ \n    if (c) {\n        MEMCACHED_CONN_DESTROY(c);\n        if (c->hdrbuf)\n            free(c->hdrbuf);\n        if (c->msglist)\n            free(c->msglist);\n        if (c->rbuf)\n            free(c->rbuf);\n        if (c->wbuf)\n            free(c->wbuf);\n        if (c->ilist)\n            free(c->ilist);\n        if (c->suffixlist)\n            free(c->suffixlist);\n        if (c->iov)\n            free(c->iov);\n        free(c);\n    }\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "transmit",
+            "static enum transmit_result transmit(conn *c) { /* <=== transmit */ \n    assert(c != NULL);\n\n    if (c->msgcurr < c->msgused &&\n            c->msglist[c->msgcurr].msg_iovlen == 0) {\n        /* Finished writing the current msg; advance to the next. */\n        c->msgcurr++;\n    }\n    if (c->msgcurr < c->msgused) {\n        ssize_t res;\n        struct msghdr *m = &c->msglist[c->msgcurr];\n\n        res = sendmsg(c->sfd, m, 0);\n        if (res > 0) {\n            pthread_mutex_lock(&c->thread->stats.mutex);\n            c->thread->stats.bytes_written += res;\n            pthread_mutex_unlock(&c->thread->stats.mutex);\n\n            /* We've written some of the data. Remove the completed\n               iovec entries from the list of pending writes. */\n            while (m->msg_iovlen > 0 && res >= m->msg_iov->iov_len) {\n                res -= m->msg_iov->iov_len;\n                m->msg_iovlen--;\n                m->msg_iov++;\n            }\n\n            /* Might have written just part of the last iovec entry;\n               adjust it so the next write will do the rest. */\n            if (res > 0) {\n                m->msg_iov->iov_base = (caddr_t)m->msg_iov->iov_base + res;\n                m->msg_iov->iov_len -= res;\n            }\n            return TRANSMIT_INCOMPLETE;\n        }\n        if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {\n            if (!update_event(c, EV_WRITE | EV_PERSIST)) {\n                if (settings.verbose > 0)\n                    fprintf(stderr, \"Couldn't update event\\n\");\n                conn_set_state(c, conn_closing);\n                return TRANSMIT_HARD_ERROR;\n            }\n            return TRANSMIT_SOFT_ERROR;\n        }\n        /* if res == 0 or res == -1 and error is not EAGAIN or EWOULDBLOCK,\n           we have a real error, on which we close the connection */\n        if (settings.verbose > 0)\n            perror(\"Failed to write, and not due to blocking\");\n\n        if (IS_UDP(c->transport))\n            conn_set_state(c, conn_read);\n        else\n            conn_set_state(c, conn_closing);\n        return TRANSMIT_HARD_ERROR;\n    } else {\n        return TRANSMIT_COMPLETE;\n    }\n}",
+            1
+        ],
+        [
+            "memcached.c",
+            "process_bin_complete_sasl_auth",
+            "static void process_bin_complete_sasl_auth(conn *c) { /* <=== process_bin_complete_sasl_auth */ \n    assert(settings.sasl);\n    const char *out = NULL;\n    unsigned int outlen = 0;\n\n    assert(c->item);\n    init_sasl_conn(c);\n\n    int nkey = c->binary_header.request.keylen;\n    int vlen = c->binary_header.request.bodylen - nkey;\n\n    char mech[nkey+1];\n    memcpy(mech, ITEM_key((item*)c->item), nkey);\n    mech[nkey] = 0x00;\n\n    if (settings.verbose)\n        fprintf(stderr, \"mech:  ``%s'' with %d bytes of data\\n\", mech, vlen);\n\n    const char *challenge = vlen == 0 ? NULL : ITEM_data((item*) c->item);\n\n    int result=-1;\n\n    switch (c->cmd) {\n    case PROTOCOL_BINARY_CMD_SASL_AUTH:\n        result = sasl_server_start(c->sasl_conn, mech,\n                                   challenge, vlen,\n                                   &out, &outlen);\n        break;\n    case PROTOCOL_BINARY_CMD_SASL_STEP:\n        result = sasl_server_step(c->sasl_conn,\n                                  challenge, vlen,\n                                  &out, &outlen);\n        break;\n    default:\n        assert(false); /* CMD should be one of the above */\n        /* This code is pretty much impossible, but makes the compiler\n           happier */\n        if (settings.verbose) {\n            fprintf(stderr, \"Unhandled command %d with challenge %s\\n\",\n                    c->cmd, challenge);\n        }\n        break;\n    }\n\n    item_unlink(c->item);\n\n    if (settings.verbose) {\n        fprintf(stderr, \"sasl result code:  %d\\n\", result);\n    }\n\n    switch(result) {\n    case SASL_OK:\n        write_bin_response(c, \"Authenticated\", 0, 0, strlen(\"Authenticated\"));\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.auth_cmds++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n        break;\n    case SASL_CONTINUE:\n        add_bin_header(c, PROTOCOL_BINARY_RESPONSE_AUTH_CONTINUE, 0, 0, outlen);\n        if(outlen > 0) {\n            add_iov(c, out, outlen);\n        }\n        conn_set_state(c, conn_mwrite);\n        c->write_and_go = conn_new_cmd;\n        break;\n    default:\n        if (settings.verbose)\n            fprintf(stderr, \"Unknown sasl response:  %d\\n\", result);\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_AUTH_ERROR, 0);\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.auth_cmds++;\n        c->thread->stats.auth_errors++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n    }\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "process_arithmetic_command",
+            "static void process_arithmetic_command(conn *c, token_t *tokens, const size_t ntokens, const bool incr) { /* <=== process_arithmetic_command */ \n    char temp[INCR_MAX_STORAGE_LEN];\n    uint64_t delta;\n    char *key;\n    size_t nkey;\n\n    assert(c != NULL);\n\n    set_noreply_maybe(c, tokens, ntokens);\n\n    if (tokens[KEY_TOKEN].length > KEY_MAX_LENGTH) {\n        out_string(c, \"CLIENT_ERROR bad command line format\");\n        return;\n    }\n\n    key = tokens[KEY_TOKEN].value;\n    nkey = tokens[KEY_TOKEN].length;\n\n    if (!safe_strtoull(tokens[2].value, &delta)) {\n        out_string(c, \"CLIENT_ERROR invalid numeric delta argument\");\n        return;\n    }\n\n    switch(add_delta(c, key, nkey, incr, delta, temp, NULL)) {\n    case OK:\n        out_string(c, temp);\n        break;\n    case NON_NUMERIC:\n        out_string(c, \"CLIENT_ERROR cannot increment or decrement non-numeric value\");\n        break;\n    case EOM:\n        out_string(c, \"SERVER_ERROR out of memory\");\n        break;\n    case DELTA_ITEM_NOT_FOUND:\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        if (incr) {\n            c->thread->stats.incr_misses++;\n        } else {\n            c->thread->stats.decr_misses++;\n        }\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        out_string(c, \"NOT_FOUND\");\n        break;\n    case DELTA_ITEM_CAS_MISMATCH:\n        break; /* Should never get here */\n    }\n}",
+            3
+        ],
+        [
+            "thread.c",
+            "item_remove",
+            "void item_remove(item *item) { /* <=== item_remove */ \n    uint32_t hv;\n    hv = hash(ITEM_key(item), item->nkey, 0);\n\n    item_lock(hv);\n    do_item_remove(item);\n    item_unlock(hv);\n}",
+            1
+        ],
+        [
+            "memcached.h",
+            "READ_BUFFER_HIGHWAT",
+            "#define READ_BUFFER_HIGHWAT 8192 /* <=== memcached.h:54:54:READ_BUFFER_HIGHWAT:0 */ ",
+            2
+        ],
+        [
+            "memcached.h",
+            "NREAD_CAS",
+            "#define NREAD_CAS 6 /* <=== memcached.h:195:195:NREAD_CAS:0 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "process_delete_command",
+            "static void process_delete_command(conn *c, token_t *tokens, const size_t ntokens) { /* <=== process_delete_command */ \n    char *key;\n    size_t nkey;\n    item *it;\n\n    assert(c != NULL);\n\n    if (ntokens > 3) {\n        bool hold_is_zero = strcmp(tokens[KEY_TOKEN+1].value, \"0\") == 0;\n        bool sets_noreply = set_noreply_maybe(c, tokens, ntokens);\n        bool valid = (ntokens == 4 && (hold_is_zero || sets_noreply))\n            || (ntokens == 5 && hold_is_zero && sets_noreply);\n        if (!valid) {\n            out_string(c, \"CLIENT_ERROR bad command line format.  \"\n                       \"Usage: delete <key> [noreply]\");\n            return;\n        }\n    }\n\n\n    key = tokens[KEY_TOKEN].value;\n    nkey = tokens[KEY_TOKEN].length;\n\n    if(nkey > KEY_MAX_LENGTH) {\n        out_string(c, \"CLIENT_ERROR bad command line format\");\n        return;\n    }\n\n    if (settings.detail_enabled) {\n        stats_prefix_record_delete(key, nkey);\n    }\n\n    it = item_get(key, nkey);\n    if (it) {\n        MEMCACHED_COMMAND_DELETE(c->sfd, ITEM_key(it), it->nkey);\n\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.slab_stats[it->slabs_clsid].delete_hits++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        item_unlink(it);\n        item_remove(it);      /* release our reference */\n        out_string(c, \"DELETED\");\n    } else {\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.delete_misses++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        out_string(c, \"NOT_FOUND\");\n    }\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "complete_update_bin",
+            "static void complete_update_bin(conn *c) { /* <=== complete_update_bin */ \n    protocol_binary_response_status eno = PROTOCOL_BINARY_RESPONSE_EINVAL;\n    enum store_item_type ret = NOT_STORED;\n    assert(c != NULL);\n\n    item *it = c->item;\n\n    pthread_mutex_lock(&c->thread->stats.mutex);\n    c->thread->stats.slab_stats[it->slabs_clsid].set_cmds++;\n    pthread_mutex_unlock(&c->thread->stats.mutex);\n\n    /* We don't actually receive the trailing two characters in the bin\n     * protocol, so we're going to just set them here */\n    *(ITEM_data(it) + it->nbytes - 2) = '\\r';\n    *(ITEM_data(it) + it->nbytes - 1) = '\\n';\n\n    ret = store_item(it, c->cmd, c);\n\n#ifdef ENABLE_DTRACE\n    uint64_t cas = ITEM_get_cas(it);\n    switch (c->cmd) {\n    case NREAD_ADD:\n        MEMCACHED_COMMAND_ADD(c->sfd, ITEM_key(it), it->nkey,\n                              (ret == STORED) ? it->nbytes : -1, cas);\n        break;\n    case NREAD_REPLACE:\n        MEMCACHED_COMMAND_REPLACE(c->sfd, ITEM_key(it), it->nkey,\n                                  (ret == STORED) ? it->nbytes : -1, cas);\n        break;\n    case NREAD_APPEND:\n        MEMCACHED_COMMAND_APPEND(c->sfd, ITEM_key(it), it->nkey,\n                                 (ret == STORED) ? it->nbytes : -1, cas);\n        break;\n    case NREAD_PREPEND:\n        MEMCACHED_COMMAND_PREPEND(c->sfd, ITEM_key(it), it->nkey,\n                                 (ret == STORED) ? it->nbytes : -1, cas);\n        break;\n    case NREAD_SET:\n        MEMCACHED_COMMAND_SET(c->sfd, ITEM_key(it), it->nkey,\n                              (ret == STORED) ? it->nbytes : -1, cas);\n        break;\n    }\n#endif\n\n    switch (ret) {\n    case STORED:\n        /* Stored */\n        write_bin_response(c, NULL, 0, 0, 0);\n        break;\n    case EXISTS:\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_EEXISTS, 0);\n        break;\n    case NOT_FOUND:\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);\n        break;\n    case NOT_STORED:\n        if (c->cmd == NREAD_ADD) {\n            eno = PROTOCOL_BINARY_RESPONSE_KEY_EEXISTS;\n        } else if(c->cmd == NREAD_REPLACE) {\n            eno = PROTOCOL_BINARY_RESPONSE_KEY_ENOENT;\n        } else {\n            eno = PROTOCOL_BINARY_RESPONSE_NOT_STORED;\n        }\n        write_bin_error(c, eno, 0);\n    }\n\n    item_remove(c->item);       /* release the c->item reference */\n    c->item = 0;\n}",
+            3
+        ],
+        [
+            "memcached.h",
+            "IOV_LIST_HIGHWAT",
+            "#define IOV_LIST_HIGHWAT 600 /* <=== memcached.h:56:56:IOV_LIST_HIGHWAT:0 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "complete_nread_ascii",
+            "static void complete_nread_ascii(conn *c) { /* <=== complete_nread_ascii */ \n    assert(c != NULL);\n\n    item *it = c->item;\n    int comm = c->cmd;\n    enum store_item_type ret;\n\n    pthread_mutex_lock(&c->thread->stats.mutex);\n    c->thread->stats.slab_stats[it->slabs_clsid].set_cmds++;\n    pthread_mutex_unlock(&c->thread->stats.mutex);\n\n    if (strncmp(ITEM_data(it) + it->nbytes - 2, \"\\r\\n\", 2) != 0) {\n        out_string(c, \"CLIENT_ERROR bad data chunk\");\n    } else {\n      ret = store_item(it, comm, c);\n\n#ifdef ENABLE_DTRACE\n      uint64_t cas = ITEM_get_cas(it);\n      switch (c->cmd) {\n      case NREAD_ADD:\n          MEMCACHED_COMMAND_ADD(c->sfd, ITEM_key(it), it->nkey,\n                                (ret == 1) ? it->nbytes : -1, cas);\n          break;\n      case NREAD_REPLACE:\n          MEMCACHED_COMMAND_REPLACE(c->sfd, ITEM_key(it), it->nkey,\n                                    (ret == 1) ? it->nbytes : -1, cas);\n          break;\n      case NREAD_APPEND:\n          MEMCACHED_COMMAND_APPEND(c->sfd, ITEM_key(it), it->nkey,\n                                   (ret == 1) ? it->nbytes : -1, cas);\n          break;\n      case NREAD_PREPEND:\n          MEMCACHED_COMMAND_PREPEND(c->sfd, ITEM_key(it), it->nkey,\n                                    (ret == 1) ? it->nbytes : -1, cas);\n          break;\n      case NREAD_SET:\n          MEMCACHED_COMMAND_SET(c->sfd, ITEM_key(it), it->nkey,\n                                (ret == 1) ? it->nbytes : -1, cas);\n          break;\n      case NREAD_CAS:\n          MEMCACHED_COMMAND_CAS(c->sfd, ITEM_key(it), it->nkey, it->nbytes,\n                                cas);\n          break;\n      }\n#endif\n\n      switch (ret) {\n      case STORED:\n          out_string(c, \"STORED\");\n          break;\n      case EXISTS:\n          out_string(c, \"EXISTS\");\n          break;\n      case NOT_FOUND:\n          out_string(c, \"NOT_FOUND\");\n          break;\n      case NOT_STORED:\n          out_string(c, \"NOT_STORED\");\n          break;\n      default:\n          out_string(c, \"SERVER_ERROR Unhandled storage type.\");\n      }\n\n    }\n\n    item_remove(c->item);       /* release the c->item reference */\n    c->item = 0;\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "process_bin_stat",
+            "static void process_bin_stat(conn *c) { /* <=== process_bin_stat */ \n    char *subcommand = binary_get_key(c);\n    size_t nkey = c->binary_header.request.keylen;\n\n    if (settings.verbose > 1) {\n        int ii;\n        fprintf(stderr, \"<%d STATS \", c->sfd);\n        for (ii = 0; ii < nkey; ++ii) {\n            fprintf(stderr, \"%c\", subcommand[ii]);\n        }\n        fprintf(stderr, \"\\n\");\n    }\n\n    if (nkey == 0) {\n        /* request all statistics */\n        server_stats(&append_stats, c);\n        (void)get_stats(NULL, 0, &append_stats, c);\n    } else if (strncmp(subcommand, \"reset\", 5) == 0) {\n        stats_reset();\n    } else if (strncmp(subcommand, \"settings\", 8) == 0) {\n        process_stat_settings(&append_stats, c);\n    } else if (strncmp(subcommand, \"detail\", 6) == 0) {\n        char *subcmd_pos = subcommand + 6;\n        if (strncmp(subcmd_pos, \" dump\", 5) == 0) {\n            int len;\n            char *dump_buf = stats_prefix_dump(&len);\n            if (dump_buf == NULL || len <= 0) {\n                write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);\n                return ;\n            } else {\n                append_stats(\"detailed\", strlen(\"detailed\"), dump_buf, len, c);\n                free(dump_buf);\n            }\n        } else if (strncmp(subcmd_pos, \" on\", 3) == 0) {\n            settings.detail_enabled = 1;\n        } else if (strncmp(subcmd_pos, \" off\", 4) == 0) {\n            settings.detail_enabled = 0;\n        } else {\n            write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);\n            return;\n        }\n    } else {\n        if (get_stats(subcommand, nkey, &append_stats, c)) {\n            if (c->stats.buffer == NULL) {\n                write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);\n            } else {\n                write_and_free(c, c->stats.buffer, c->stats.offset);\n                c->stats.buffer = NULL;\n            }\n        } else {\n            write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);\n        }\n\n        return;\n    }\n\n    /* Append termination package and start the transfer */\n    append_stats(NULL, 0, NULL, 0, c);\n    if (c->stats.buffer == NULL) {\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);\n    } else {\n        write_and_free(c, c->stats.buffer, c->stats.offset);\n        c->stats.buffer = NULL;\n    }\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "bin_read_key",
+            "static void bin_read_key(conn *c, enum bin_substates next_substate, int extra) { /* <=== bin_read_key */ \n    assert(c);\n    c->substate = next_substate;\n    c->rlbytes = c->keylen + extra;\n\n    /* Ok... do we have room for the extras and the key in the input buffer? */\n    ptrdiff_t offset = c->rcurr + sizeof(protocol_binary_request_header) - c->rbuf;\n    if (c->rlbytes > c->rsize - offset) {\n        size_t nsize = c->rsize;\n        size_t size = c->rlbytes + sizeof(protocol_binary_request_header);\n\n        while (size > nsize) {\n            nsize *= 2;\n        }\n\n        if (nsize != c->rsize) {\n            if (settings.verbose > 1) {\n                fprintf(stderr, \"%d: Need to grow buffer from %lu to %lu\\n\",\n                        c->sfd, (unsigned long)c->rsize, (unsigned long)nsize);\n            }\n            char *newm = realloc(c->rbuf, nsize);\n            if (newm == NULL) {\n                if (settings.verbose) {\n                    fprintf(stderr, \"%d: Failed to grow buffer.. closing connection\\n\",\n                            c->sfd);\n                }\n                conn_set_state(c, conn_closing);\n                return;\n            }\n\n            c->rbuf= newm;\n            /* rcurr should point to the same offset in the packet */\n            c->rcurr = c->rbuf + offset - sizeof(protocol_binary_request_header);\n            c->rsize = nsize;\n        }\n        if (c->rbuf != c->rcurr) {\n            memmove(c->rbuf, c->rcurr, c->rbytes);\n            c->rcurr = c->rbuf;\n            if (settings.verbose > 1) {\n                fprintf(stderr, \"%d: Repack input buffer\\n\", c->sfd);\n            }\n        }\n    }\n\n    /* preserve the header in the buffer.. */\n    c->ritem = c->rcurr + sizeof(protocol_binary_request_header);\n    conn_set_state(c, conn_nread);\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "set_noreply_maybe",
+            "static inline bool set_noreply_maybe(conn *c, token_t *tokens, size_t ntokens) /* <=== set_noreply_maybe */ \n{\n    int noreply_index = ntokens - 2;\n\n    /*\n      NOTE: this function is not the first place where we are going to\n      send the reply.  We could send it instead from process_command()\n      if the request line has wrong number of tokens.  However parsing\n      malformed line for \"noreply\" option is not reliable anyway, so\n      it can't be helped.\n    */\n    if (tokens[noreply_index].value\n        && strcmp(tokens[noreply_index].value, \"noreply\") == 0) {\n        c->noreply = true;\n    }\n    return c->noreply;\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "process_bin_update",
+            "static void process_bin_update(conn *c) { /* <=== process_bin_update */ \n    char *key;\n    int nkey;\n    int vlen;\n    item *it;\n    protocol_binary_request_set* req = binary_get_request(c);\n\n    assert(c != NULL);\n\n    key = binary_get_key(c);\n    nkey = c->binary_header.request.keylen;\n\n    /* fix byteorder in the request */\n    req->message.body.flags = ntohl(req->message.body.flags);\n    req->message.body.expiration = ntohl(req->message.body.expiration);\n\n    vlen = c->binary_header.request.bodylen - (nkey + c->binary_header.request.extlen);\n\n    if (settings.verbose > 1) {\n        int ii;\n        if (c->cmd == PROTOCOL_BINARY_CMD_ADD) {\n            fprintf(stderr, \"<%d ADD \", c->sfd);\n        } else if (c->cmd == PROTOCOL_BINARY_CMD_SET) {\n            fprintf(stderr, \"<%d SET \", c->sfd);\n        } else {\n            fprintf(stderr, \"<%d REPLACE \", c->sfd);\n        }\n        for (ii = 0; ii < nkey; ++ii) {\n            fprintf(stderr, \"%c\", key[ii]);\n        }\n\n        fprintf(stderr, \" Value len is %d\", vlen);\n        fprintf(stderr, \"\\n\");\n    }\n\n    if (settings.detail_enabled) {\n        stats_prefix_record_set(key, nkey);\n    }\n\n    it = item_alloc(key, nkey, req->message.body.flags,\n            realtime(req->message.body.expiration), vlen+2);\n\n    if (it == 0) {\n        if (! item_size_ok(nkey, req->message.body.flags, vlen + 2)) {\n            write_bin_error(c, PROTOCOL_BINARY_RESPONSE_E2BIG, vlen);\n        } else {\n            write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, vlen);\n        }\n\n        /* Avoid stale data persisting in cache because we failed alloc.\n         * Unacceptable for SET. Anywhere else too? */\n        if (c->cmd == PROTOCOL_BINARY_CMD_SET) {\n            it = item_get(key, nkey);\n            if (it) {\n                item_unlink(it);\n                item_remove(it);\n            }\n        }\n\n        /* swallow the data line */\n        c->write_and_go = conn_swallow;\n        return;\n    }\n\n    ITEM_set_cas(it, c->binary_header.request.cas);\n\n    switch (c->cmd) {\n        case PROTOCOL_BINARY_CMD_ADD:\n            c->cmd = NREAD_ADD;\n            break;\n        case PROTOCOL_BINARY_CMD_SET:\n            c->cmd = NREAD_SET;\n            break;\n        case PROTOCOL_BINARY_CMD_REPLACE:\n            c->cmd = NREAD_REPLACE;\n            break;\n        default:\n            assert(0);\n    }\n\n    if (ITEM_get_cas(it) != 0) {\n        c->cmd = NREAD_CAS;\n    }\n\n    c->item = it;\n    c->ritem = ITEM_data(it);\n    c->rlbytes = vlen;\n    conn_set_state(c, conn_nread);\n    c->substate = bin_read_set_value;\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "complete_nread",
+            "static void complete_nread(conn *c) { /* <=== complete_nread */ \n    assert(c != NULL);\n    assert(c->protocol == ascii_prot\n           || c->protocol == binary_prot);\n\n    if (c->protocol == ascii_prot) {\n        complete_nread_ascii(c);\n    } else if (c->protocol == binary_prot) {\n        complete_nread_binary(c);\n    }\n}",
+            1
+        ],
+        [
+            "memcached.c",
+            "ensure_iov_space",
+            "static int ensure_iov_space(conn *c) { /* <=== ensure_iov_space */ \n    assert(c != NULL);\n\n    if (c->iovused >= c->iovsize) {\n        int i, iovnum;\n        struct iovec *new_iov = (struct iovec *)realloc(c->iov,\n                                (c->iovsize * 2) * sizeof(struct iovec));\n        if (! new_iov)\n            return -1;\n        c->iov = new_iov;\n        c->iovsize *= 2;\n\n        /* Point all the msghdr structures at the new list. */\n        for (i = 0, iovnum = 0; i < c->msgused; i++) {\n            c->msglist[i].msg_iov = &c->iov[iovnum];\n            iovnum += c->msglist[i].msg_iovlen;\n        }\n    }\n\n    return 0;\n}",
+            2
+        ],
+        [
+            "thread.c",
+            "refcount_decr",
+            "unsigned short refcount_decr(unsigned short *refcount) { /* <=== refcount_decr */ \n#ifdef HAVE_GCC_ATOMICS\n    return __sync_sub_and_fetch(refcount, 1);\n#elif defined(__sun)\n    return atomic_dec_ushort_nv(refcount);\n#else\n    unsigned short res;\n    mutex_lock(&atomics_mutex);\n    (*refcount)--;\n    res = *refcount;\n    mutex_unlock(&atomics_mutex);\n    return res;\n#endif\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "try_read_udp",
+            "static enum try_read_result try_read_udp(conn *c) { /* <=== try_read_udp */ \n    int res;\n\n    assert(c != NULL);\n\n    c->request_addr_size = sizeof(c->request_addr);\n    res = recvfrom(c->sfd, c->rbuf, c->rsize,\n                   0, &c->request_addr, &c->request_addr_size);\n    if (res > 8) {\n        unsigned char *buf = (unsigned char *)c->rbuf;\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.bytes_read += res;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        /* Beginning of UDP packet is the request ID; save it. */\n        c->request_id = buf[0] * 256 + buf[1];\n\n        /* If this is a multi-packet request, drop it. */\n        if (buf[4] != 0 || buf[5] != 1) {\n            out_string(c, \"SERVER_ERROR multi-packet request not supported\");\n            return READ_NO_DATA_RECEIVED;\n        }\n\n        /* Don't care about any of the rest of the header. */\n        res -= 8;\n        memmove(c->rbuf, c->rbuf + 8, res);\n\n        c->rbytes = res;\n        c->rcurr = c->rbuf;\n        return READ_DATA_RECEIVED;\n    }\n    return READ_NO_DATA_RECEIVED;\n}",
+            1
+        ],
+        [
+            "memcached.c",
+            "try_read_network",
+            "static enum try_read_result try_read_network(conn *c) { /* <=== try_read_network */ \n    enum try_read_result gotdata = READ_NO_DATA_RECEIVED;\n    int res;\n    int num_allocs = 0;\n    assert(c != NULL);\n\n    if (c->rcurr != c->rbuf) {\n        if (c->rbytes != 0) /* otherwise there's nothing to copy */\n            memmove(c->rbuf, c->rcurr, c->rbytes);\n        c->rcurr = c->rbuf;\n    }\n\n    while (1) {\n        if (c->rbytes >= c->rsize) {\n            if (num_allocs == 4) {\n                return gotdata;\n            }\n            ++num_allocs;\n            char *new_rbuf = realloc(c->rbuf, c->rsize * 2);\n            if (!new_rbuf) {\n                if (settings.verbose > 0)\n                    fprintf(stderr, \"Couldn't realloc input buffer\\n\");\n                c->rbytes = 0; /* ignore what we read */\n                out_string(c, \"SERVER_ERROR out of memory reading request\");\n                c->write_and_go = conn_closing;\n                return READ_MEMORY_ERROR;\n            }\n            c->rcurr = c->rbuf = new_rbuf;\n            c->rsize *= 2;\n        }\n\n        int avail = c->rsize - c->rbytes;\n        res = read(c->sfd, c->rbuf + c->rbytes, avail);\n        if (res > 0) {\n            pthread_mutex_lock(&c->thread->stats.mutex);\n            c->thread->stats.bytes_read += res;\n            pthread_mutex_unlock(&c->thread->stats.mutex);\n            gotdata = READ_DATA_RECEIVED;\n            c->rbytes += res;\n            if (res == avail) {\n                continue;\n            } else {\n                break;\n            }\n        }\n        if (res == 0) {\n            return READ_ERROR;\n        }\n        if (res == -1) {\n            if (errno == EAGAIN || errno == EWOULDBLOCK) {\n                break;\n            }\n            return READ_ERROR;\n        }\n    }\n    return gotdata;\n}",
+            1
+        ],
+        [
+            "cache.c",
+            "cache_free",
+            "void cache_free(cache_t *cache, void *ptr) { /* <=== cache_free */ \n    pthread_mutex_lock(&cache->mutex);\n\n#ifndef NDEBUG\n    /* validate redzone... */\n    if (memcmp(((char*)ptr) + cache->bufsize - (2 * sizeof(redzone_pattern)),\n               &redzone_pattern, sizeof(redzone_pattern)) != 0) {\n        raise(SIGABRT);\n        cache_error = 1;\n        pthread_mutex_unlock(&cache->mutex);\n        return;\n    }\n    uint64_t *pre = ptr;\n    --pre;\n    if (*pre != redzone_pattern) {\n        raise(SIGABRT);\n        cache_error = -1;\n        pthread_mutex_unlock(&cache->mutex);\n        return;\n    }\n    ptr = pre;\n#endif\n    if (cache->freecurr < cache->freetotal) {\n        cache->ptr[cache->freecurr++] = ptr;\n    } else {\n        /* try to enlarge free connections array */\n        size_t newtotal = cache->freetotal * 2;\n        void **new_free = realloc(cache->ptr, sizeof(char *) * newtotal);\n        if (new_free) {\n            cache->freetotal = newtotal;\n            cache->ptr = new_free;\n            cache->ptr[cache->freecurr++] = ptr;\n        } else {\n            if (cache->destructor) {\n                cache->destructor(ptr, NULL);\n            }\n            free(ptr);\n\n        }\n    }\n    pthread_mutex_unlock(&cache->mutex);\n}",
+            1
+        ],
+        [
+            "memcached.c",
+            "process_slabs_automove_command",
+            "static void process_slabs_automove_command(conn *c, token_t *tokens, const size_t ntokens) { /* <=== process_slabs_automove_command */ \n    unsigned int level;\n\n    assert(c != NULL);\n\n    set_noreply_maybe(c, tokens, ntokens);\n\n    level = strtoul(tokens[2].value, NULL, 10);\n    if (level == 0) {\n        settings.slab_automove = 0;\n    } else if (level == 1 || level == 2) {\n        settings.slab_automove = level;\n    } else {\n        out_string(c, \"ERROR\");\n        return;\n    }\n    out_string(c, \"OK\");\n    return;\n}",
+            3
+        ],
+        [
+            "slabs.c",
+            "slabs_reassign",
+            "enum reassign_result_type slabs_reassign(int src, int dst) { /* <=== slabs_reassign */ \n    enum reassign_result_type ret;\n    if (pthread_mutex_trylock(&slabs_rebalance_lock) != 0) {\n        return REASSIGN_RUNNING;\n    }\n    ret = do_slabs_reassign(src, dst);\n    pthread_mutex_unlock(&slabs_rebalance_lock);\n    return ret;\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "add_msghdr",
+            "static int add_msghdr(conn *c) /* <=== add_msghdr */ \n{\n    struct msghdr *msg;\n\n    assert(c != NULL);\n\n    if (c->msgsize == c->msgused) {\n        msg = realloc(c->msglist, c->msgsize * 2 * sizeof(struct msghdr));\n        if (! msg)\n            return -1;\n        c->msglist = msg;\n        c->msgsize *= 2;\n    }\n\n    msg = c->msglist + c->msgused;\n\n    /* this wipes msg_iovlen, msg_control, msg_controllen, and\n       msg_flags, the last 3 of which aren't defined on solaris: */\n    memset(msg, 0, sizeof(struct msghdr));\n\n    msg->msg_iov = &c->iov[c->iovused];\n\n    if (c->request_addr_size > 0) {\n        msg->msg_name = &c->request_addr;\n        msg->msg_namelen = c->request_addr_size;\n    }\n\n    c->msgbytes = 0;\n    c->msgused++;\n\n    if (IS_UDP(c->transport)) {\n        /* Leave room for the UDP header, which we'll fill in later. */\n        return add_iov(c, NULL, UDP_HEADER_SIZE);\n    }\n\n    return 0;\n}",
+            2
+        ],
+        [
+            "memcached.h",
+            "KEY_MAX_LENGTH",
+            "#define KEY_MAX_LENGTH 250 /* <=== memcached.h:27:27:KEY_MAX_LENGTH:0 */ ",
+            3
+        ],
+        [
+            "memcached.h",
+            "mutex_lock",
+            "static inline int mutex_lock(pthread_mutex_t *mutex) /* <=== mutex_lock */ \n{\n    while (pthread_mutex_trylock(mutex));\n    return 0;\n}",
+            3
+        ],
+        [
+            "thread.c",
+            "dispatch_conn_new",
+            "void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags, /* <=== dispatch_conn_new */ \n                       int read_buffer_size, enum network_transport transport) {\n    CQ_ITEM *item = cqi_new();\n    char buf[1];\n    int tid = (last_thread + 1) % settings.num_threads;\n\n    LIBEVENT_THREAD *thread = threads + tid;\n\n    last_thread = tid;\n\n    item->sfd = sfd;\n    item->init_state = init_state;\n    item->event_flags = event_flags;\n    item->read_buffer_size = read_buffer_size;\n    item->transport = transport;\n\n    cq_push(thread->new_conn_queue, item);\n\n    MEMCACHED_CONN_DISPATCH(sfd, thread->thread_id);\n    buf[0] = 'c';\n    if (write(thread->notify_send_fd, buf, 1) != 1) {\n        perror(\"Writing to thread notify pipe\");\n    }\n}",
+            1
+        ],
+        [
+            "memcached.h",
+            "UDP_HEADER_SIZE",
+            "#define UDP_HEADER_SIZE 8 /* <=== memcached.h:35:35:UDP_HEADER_SIZE:0 */ ",
+            2
+        ],
+        [
+            "util.c",
+            "mc_swap64",
+            "static uint64_t mc_swap64(uint64_t in) { /* <=== mc_swap64 */ \n#ifdef ENDIAN_LITTLE\n    /* Little endian, flip the bytes around until someone makes a faster/better\n    * way to do this. */\n    int64_t rv = 0;\n    int i = 0;\n     for(i = 0; i<8; i++) {\n        rv = (rv << 8) | (in & 0xff);\n        in >>= 8;\n     }\n    return rv;\n#else\n    /* big-endian machines don't need byte swapping */\n    return in;\n#endif\n}",
+            3
+        ],
+        [
+            "memcached.h",
+            "IS_UDP",
+            "#define IS_UDP(x) (x == udp_transport) /* <=== memcached.h:188:188:IS_UDP:1 */ ",
+            1
+        ],
+        [
+            "memcached.c",
+            "process_bin_append_prepend",
+            "static void process_bin_append_prepend(conn *c) { /* <=== process_bin_append_prepend */ \n    char *key;\n    int nkey;\n    int vlen;\n    item *it;\n\n    assert(c != NULL);\n\n    key = binary_get_key(c);\n    nkey = c->binary_header.request.keylen;\n    vlen = c->binary_header.request.bodylen - nkey;\n\n    if (settings.verbose > 1) {\n        fprintf(stderr, \"Value len is %d\\n\", vlen);\n    }\n\n    if (settings.detail_enabled) {\n        stats_prefix_record_set(key, nkey);\n    }\n\n    it = item_alloc(key, nkey, 0, 0, vlen+2);\n\n    if (it == 0) {\n        if (! item_size_ok(nkey, 0, vlen + 2)) {\n            write_bin_error(c, PROTOCOL_BINARY_RESPONSE_E2BIG, vlen);\n        } else {\n            write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, vlen);\n        }\n        /* swallow the data line */\n        c->write_and_go = conn_swallow;\n        return;\n    }\n\n    ITEM_set_cas(it, c->binary_header.request.cas);\n\n    switch (c->cmd) {\n        case PROTOCOL_BINARY_CMD_APPEND:\n            c->cmd = NREAD_APPEND;\n            break;\n        case PROTOCOL_BINARY_CMD_PREPEND:\n            c->cmd = NREAD_PREPEND;\n            break;\n        default:\n            assert(0);\n    }\n\n    c->item = it;\n    c->ritem = ITEM_data(it);\n    c->rlbytes = vlen;\n    conn_set_state(c, conn_nread);\n    c->substate = bin_read_set_value;\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "process_update_command",
+            "static void process_update_command(conn *c, token_t *tokens, const size_t ntokens, int comm, bool handle_cas) { /* <=== process_update_command */ \n    char *key;\n    size_t nkey;\n    unsigned int flags;\n    int32_t exptime_int = 0;\n    time_t exptime;\n    int vlen;\n    uint64_t req_cas_id=0;\n    item *it;\n\n    assert(c != NULL);\n\n    set_noreply_maybe(c, tokens, ntokens);\n\n    if (tokens[KEY_TOKEN].length > KEY_MAX_LENGTH) {\n        out_string(c, \"CLIENT_ERROR bad command line format\");\n        return;\n    }\n\n    key = tokens[KEY_TOKEN].value;\n    nkey = tokens[KEY_TOKEN].length;\n\n    if (! (safe_strtoul(tokens[2].value, (uint32_t *)&flags)\n           && safe_strtol(tokens[3].value, &exptime_int)\n           && safe_strtol(tokens[4].value, (int32_t *)&vlen))) {\n        out_string(c, \"CLIENT_ERROR bad command line format\");\n        return;\n    }\n\n    /* Ubuntu 8.04 breaks when I pass exptime to safe_strtol */\n    exptime = exptime_int;\n\n    /* Negative exptimes can underflow and end up immortal. realtime() will\n       immediately expire values that are greater than REALTIME_MAXDELTA, but less\n       than process_started, so lets aim for that. */\n    if (exptime < 0)\n        exptime = REALTIME_MAXDELTA + 1;\n\n    // does cas value exist?\n    if (handle_cas) {\n        if (!safe_strtoull(tokens[5].value, &req_cas_id)) {\n            out_string(c, \"CLIENT_ERROR bad command line format\");\n            return;\n        }\n    }\n\n    vlen += 2;\n    if (vlen < 0 || vlen - 2 < 0) {\n        out_string(c, \"CLIENT_ERROR bad command line format\");\n        return;\n    }\n\n    if (settings.detail_enabled) {\n        stats_prefix_record_set(key, nkey);\n    }\n\n    it = item_alloc(key, nkey, flags, realtime(exptime), vlen);\n\n    if (it == 0) {\n        if (! item_size_ok(nkey, flags, vlen))\n            out_string(c, \"SERVER_ERROR object too large for cache\");\n        else\n            out_string(c, \"SERVER_ERROR out of memory storing object\");\n        /* swallow the data line */\n        c->write_and_go = conn_swallow;\n        c->sbytes = vlen;\n\n        /* Avoid stale data persisting in cache because we failed alloc.\n         * Unacceptable for SET. Anywhere else too? */\n        if (comm == NREAD_SET) {\n            it = item_get(key, nkey);\n            if (it) {\n                item_unlink(it);\n                item_remove(it);\n            }\n        }\n\n        return;\n    }\n    ITEM_set_cas(it, req_cas_id);\n\n    c->item = it;\n    c->ritem = ITEM_data(it);\n    c->rlbytes = it->nbytes;\n    c->cmd = comm;\n    conn_set_state(c, conn_nread);\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "process_get_command",
+            "static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens, bool return_cas) { /* <=== process_get_command */ \n    char *key;\n    size_t nkey;\n    int i = 0;\n    item *it;\n    token_t *key_token = &tokens[KEY_TOKEN];\n    char *suffix;\n    assert(c != NULL);\n\n    do {\n        while(key_token->length != 0) {\n\n            key = key_token->value;\n            nkey = key_token->length;\n\n            if(nkey > KEY_MAX_LENGTH) {\n                out_string(c, \"CLIENT_ERROR bad command line format\");\n                return;\n            }\n\n            it = item_get(key, nkey);\n            if (settings.detail_enabled) {\n                stats_prefix_record_get(key, nkey, NULL != it);\n            }\n            if (it) {\n                if (i >= c->isize) {\n                    item **new_list = realloc(c->ilist, sizeof(item *) * c->isize * 2);\n                    if (new_list) {\n                        c->isize *= 2;\n                        c->ilist = new_list;\n                    } else {\n                        item_remove(it);\n                        break;\n                    }\n                }\n\n                /*\n                 * Construct the response. Each hit adds three elements to the\n                 * outgoing data list:\n                 *   \"VALUE \"\n                 *   key\n                 *   \" \" + flags + \" \" + data length + \"\\r\\n\" + data (with \\r\\n)\n                 */\n\n                if (return_cas)\n                {\n                  MEMCACHED_COMMAND_GET(c->sfd, ITEM_key(it), it->nkey,\n                                        it->nbytes, ITEM_get_cas(it));\n                  /* Goofy mid-flight realloc. */\n                  if (i >= c->suffixsize) {\n                    char **new_suffix_list = realloc(c->suffixlist,\n                                           sizeof(char *) * c->suffixsize * 2);\n                    if (new_suffix_list) {\n                        c->suffixsize *= 2;\n                        c->suffixlist  = new_suffix_list;\n                    } else {\n                        item_remove(it);\n                        break;\n                    }\n                  }\n\n                  suffix = cache_alloc(c->thread->suffix_cache);\n                  if (suffix == NULL) {\n                    out_string(c, \"SERVER_ERROR out of memory making CAS suffix\");\n                    item_remove(it);\n                    return;\n                  }\n                  *(c->suffixlist + i) = suffix;\n                  int suffix_len = snprintf(suffix, SUFFIX_SIZE,\n                                            \" %llu\\r\\n\",\n                                            (unsigned long long)ITEM_get_cas(it));\n                  if (add_iov(c, \"VALUE \", 6) != 0 ||\n                      add_iov(c, ITEM_key(it), it->nkey) != 0 ||\n                      add_iov(c, ITEM_suffix(it), it->nsuffix - 2) != 0 ||\n                      add_iov(c, suffix, suffix_len) != 0 ||\n                      add_iov(c, ITEM_data(it), it->nbytes) != 0)\n                      {\n                          item_remove(it);\n                          break;\n                      }\n                }\n                else\n                {\n                  MEMCACHED_COMMAND_GET(c->sfd, ITEM_key(it), it->nkey,\n                                        it->nbytes, ITEM_get_cas(it));\n                  if (add_iov(c, \"VALUE \", 6) != 0 ||\n                      add_iov(c, ITEM_key(it), it->nkey) != 0 ||\n                      add_iov(c, ITEM_suffix(it), it->nsuffix + it->nbytes) != 0)\n                      {\n                          item_remove(it);\n                          break;\n                      }\n                }\n\n\n                if (settings.verbose > 1)\n                    fprintf(stderr, \">%d sending key %s\\n\", c->sfd, ITEM_key(it));\n\n                /* item_get() has incremented it->refcount for us */\n                pthread_mutex_lock(&c->thread->stats.mutex);\n                c->thread->stats.slab_stats[it->slabs_clsid].get_hits++;\n                c->thread->stats.get_cmds++;\n                pthread_mutex_unlock(&c->thread->stats.mutex);\n                item_update(it);\n                *(c->ilist + i) = it;\n                i++;\n\n            } else {\n                pthread_mutex_lock(&c->thread->stats.mutex);\n                c->thread->stats.get_misses++;\n                c->thread->stats.get_cmds++;\n                pthread_mutex_unlock(&c->thread->stats.mutex);\n                MEMCACHED_COMMAND_GET(c->sfd, key, nkey, -1, 0);\n            }\n\n            key_token++;\n        }\n\n        /*\n         * If the command string hasn't been fully processed, get the next set\n         * of tokens.\n         */\n        if(key_token->value != NULL) {\n            ntokens = tokenize_command(key_token->value, tokens, MAX_TOKENS);\n            key_token = tokens;\n        }\n\n    } while(key_token->value != NULL);\n\n    c->icurr = c->ilist;\n    c->ileft = i;\n    if (return_cas) {\n        c->suffixcurr = c->suffixlist;\n        c->suffixleft = i;\n    }\n\n    if (settings.verbose > 1)\n        fprintf(stderr, \">%d END\\n\", c->sfd);\n\n    /*\n        If the loop was terminated because of out-of-memory, it is not\n        reliable to add END\\r\\n to the buffer, because it might not end\n        in \\r\\n. So we send SERVER_ERROR instead.\n    */\n    if (key_token->value != NULL || add_iov(c, \"END\\r\\n\", 5) != 0\n        || (IS_UDP(c->transport) && build_udp_headers(c) != 0)) {\n        out_string(c, \"SERVER_ERROR out of memory writing get response\");\n    }\n    else {\n        conn_set_state(c, conn_mwrite);\n        c->msgcurr = 0;\n    }\n\n    return;\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "out_string",
+            "static void out_string(conn *c, const char *str) { /* <=== out_string */ \n    size_t len;\n\n    assert(c != NULL);\n\n    if (c->noreply) {\n        if (settings.verbose > 1)\n            fprintf(stderr, \">%d NOREPLY %s\\n\", c->sfd, str);\n        c->noreply = false;\n        conn_set_state(c, conn_new_cmd);\n        return;\n    }\n\n    if (settings.verbose > 1)\n        fprintf(stderr, \">%d %s\\n\", c->sfd, str);\n\n    /* Nuke a partial output... */\n    c->msgcurr = 0;\n    c->msgused = 0;\n    c->iovused = 0;\n    add_msghdr(c);\n\n    len = strlen(str);\n    if ((len + 2) > c->wsize) {\n        /* ought to be always enough. just fail for simplicity */\n        str = \"SERVER_ERROR output line too long\";\n        len = strlen(str);\n    }\n\n    memcpy(c->wbuf, str, len);\n    memcpy(c->wbuf + len, \"\\r\\n\", 2);\n    c->wbytes = len + 2;\n    c->wcurr = c->wbuf;\n\n    conn_set_state(c, conn_write);\n    c->write_and_go = conn_new_cmd;\n    return;\n}",
+            2
+        ],
+        [
+            "memcached.h",
+            "ITEM_LIST_INITIAL",
+            "#define ITEM_LIST_INITIAL 200 /* <=== memcached.h:42:42:ITEM_LIST_INITIAL:0 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "tokenize_command",
+            "static size_t tokenize_command(char *command, token_t *tokens, const size_t max_tokens) { /* <=== tokenize_command */ \n    char *s, *e;\n    size_t ntokens = 0;\n    size_t len = strlen(command);\n    unsigned int i = 0;\n\n    assert(command != NULL && tokens != NULL && max_tokens > 1);\n\n    s = e = command;\n    for (i = 0; i < len; i++) {\n        if (*e == ' ') {\n            if (s != e) {\n                tokens[ntokens].value = s;\n                tokens[ntokens].length = e - s;\n                ntokens++;\n                *e = '\\0';\n                if (ntokens == max_tokens - 1) {\n                    e++;\n                    s = e; /* so we don't add an extra token */\n                    break;\n                }\n            }\n            s = e + 1;\n        }\n        e++;\n    }\n\n    if (s != e) {\n        tokens[ntokens].value = s;\n        tokens[ntokens].length = e - s;\n        ntokens++;\n    }\n\n    /*\n     * If we scanned the whole string, the terminal value pointer is null,\n     * otherwise it is the first unprocessed character.\n     */\n    tokens[ntokens].value =  *e == '\\0' ? NULL : e;\n    tokens[ntokens].length = 0;\n    ntokens++;\n\n    return ntokens;\n}",
+            3
+        ],
+        [
+            "items.c",
+            "do_item_remove",
+            "void do_item_remove(item *it) { /* <=== do_item_remove */ \n    MEMCACHED_ITEM_REMOVE(ITEM_key(it), it->nkey, it->nbytes);\n    assert((it->it_flags & ITEM_SLABBED) == 0);\n\n    if (refcount_decr(&it->refcount) == 0) {\n        item_free(it);\n    }\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "state_text",
+            "static const char *state_text(enum conn_states state) { /* <=== state_text */ \n    const char* const statenames[] = { \"conn_listening\",\n                                       \"conn_new_cmd\",\n                                       \"conn_waiting\",\n                                       \"conn_read\",\n                                       \"conn_parse_cmd\",\n                                       \"conn_write\",\n                                       \"conn_nread\",\n                                       \"conn_swallow\",\n                                       \"conn_closing\",\n                                       \"conn_mwrite\" };\n    return statenames[state];\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "conn_cleanup",
+            "static void conn_cleanup(conn *c) { /* <=== conn_cleanup */ \n    assert(c != NULL);\n\n    if (c->item) {\n        item_remove(c->item);\n        c->item = 0;\n    }\n\n    if (c->ileft != 0) {\n        for (; c->ileft > 0; c->ileft--,c->icurr++) {\n            item_remove(*(c->icurr));\n        }\n    }\n\n    if (c->suffixleft != 0) {\n        for (; c->suffixleft > 0; c->suffixleft--, c->suffixcurr++) {\n            cache_free(c->thread->suffix_cache, *(c->suffixcurr));\n        }\n    }\n\n    if (c->write_and_free) {\n        free(c->write_and_free);\n        c->write_and_free = 0;\n    }\n\n    if (c->sasl_conn) {\n        assert(settings.sasl);\n        sasl_dispose(&c->sasl_conn);\n        c->sasl_conn = NULL;\n    }\n\n    if (IS_UDP(c->transport)) {\n        conn_set_state(c, conn_read);\n    }\n}",
+            1
+        ],
+        [
+            "sasl_defs.h",
+            "sasl_dispose",
+            "#define sasl_dispose(x) {} /* <=== sasl_defs.h:19:19:sasl_dispose:1 */ ",
+            2
+        ],
+        [
+            "memcached.c",
+            "bin_list_sasl_mechs",
+            "static void bin_list_sasl_mechs(conn *c) { /* <=== bin_list_sasl_mechs */ \n    // Guard against a disabled SASL.\n    if (!settings.sasl) {\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_UNKNOWN_COMMAND,\n                        c->binary_header.request.bodylen\n                        - c->binary_header.request.keylen);\n        return;\n    }\n\n    init_sasl_conn(c);\n    const char *result_string = NULL;\n    unsigned int string_length = 0;\n    int result=sasl_listmech(c->sasl_conn, NULL,\n                             \"\",   /* What to prepend the string with */\n                             \" \",  /* What to separate mechanisms with */\n                             \"\",   /* What to append to the string */\n                             &result_string, &string_length,\n                             NULL);\n    if (result != SASL_OK) {\n        /* Perhaps there's a better error for this... */\n        if (settings.verbose) {\n            fprintf(stderr, \"Failed to list SASL mechanisms.\\n\");\n        }\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_AUTH_ERROR, 0);\n        return;\n    }\n    write_bin_response(c, (char*)result_string, 0, 0, string_length);\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "authenticated",
+            "static bool authenticated(conn *c) { /* <=== authenticated */ \n    assert(settings.sasl);\n    bool rv = false;\n\n    switch (c->cmd) {\n    case PROTOCOL_BINARY_CMD_SASL_LIST_MECHS: /* FALLTHROUGH */\n    case PROTOCOL_BINARY_CMD_SASL_AUTH:       /* FALLTHROUGH */\n    case PROTOCOL_BINARY_CMD_SASL_STEP:       /* FALLTHROUGH */\n    case PROTOCOL_BINARY_CMD_VERSION:         /* FALLTHROUGH */\n        rv = true;\n        break;\n    default:\n        if (c->sasl_conn) {\n            const void *uname = NULL;\n            sasl_getprop(c->sasl_conn, SASL_USERNAME, &uname);\n            rv = uname != NULL;\n        }\n    }\n\n    if (settings.verbose > 1) {\n        fprintf(stderr, \"authenticated() in cmd 0x%02x is %s\\n\",\n                c->cmd, rv ? \"true\" : \"false\");\n    }\n\n    return rv;\n}",
+            3
+        ],
+        [
+            "memcached.h",
+            "MSG_LIST_INITIAL",
+            "#define MSG_LIST_INITIAL 10 /* <=== memcached.h:51:51:MSG_LIST_INITIAL:0 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "conn_shrink",
+            "static void conn_shrink(conn *c) { /* <=== conn_shrink */ \n    assert(c != NULL);\n\n    if (IS_UDP(c->transport))\n        return;\n\n    if (c->rsize > READ_BUFFER_HIGHWAT && c->rbytes < DATA_BUFFER_SIZE) {\n        char *newbuf;\n\n        if (c->rcurr != c->rbuf)\n            memmove(c->rbuf, c->rcurr, (size_t)c->rbytes);\n\n        newbuf = (char *)realloc((void *)c->rbuf, DATA_BUFFER_SIZE);\n\n        if (newbuf) {\n            c->rbuf = newbuf;\n            c->rsize = DATA_BUFFER_SIZE;\n        }\n        /* TODO check other branch... */\n        c->rcurr = c->rbuf;\n    }\n\n    if (c->isize > ITEM_LIST_HIGHWAT) {\n        item **newbuf = (item**) realloc((void *)c->ilist, ITEM_LIST_INITIAL * sizeof(c->ilist[0]));\n        if (newbuf) {\n            c->ilist = newbuf;\n            c->isize = ITEM_LIST_INITIAL;\n        }\n    /* TODO check error condition? */\n    }\n\n    if (c->msgsize > MSG_LIST_HIGHWAT) {\n        struct msghdr *newbuf = (struct msghdr *) realloc((void *)c->msglist, MSG_LIST_INITIAL * sizeof(c->msglist[0]));\n        if (newbuf) {\n            c->msglist = newbuf;\n            c->msgsize = MSG_LIST_INITIAL;\n        }\n    /* TODO check error condition? */\n    }\n\n    if (c->iovsize > IOV_LIST_HIGHWAT) {\n        struct iovec *newbuf = (struct iovec *) realloc((void *)c->iov, IOV_LIST_INITIAL * sizeof(c->iov[0]));\n        if (newbuf) {\n            c->iov = newbuf;\n            c->iovsize = IOV_LIST_INITIAL;\n        }\n    /* TODO check return value */\n    }\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "process_stat",
+            "static void process_stat(conn *c, token_t *tokens, const size_t ntokens) { /* <=== process_stat */ \n    const char *subcommand = tokens[SUBCOMMAND_TOKEN].value;\n    assert(c != NULL);\n\n    if (ntokens < 2) {\n        out_string(c, \"CLIENT_ERROR bad command line\");\n        return;\n    }\n\n    if (ntokens == 2) {\n        server_stats(&append_stats, c);\n        (void)get_stats(NULL, 0, &append_stats, c);\n    } else if (strcmp(subcommand, \"reset\") == 0) {\n        stats_reset();\n        out_string(c, \"RESET\");\n        return ;\n    } else if (strcmp(subcommand, \"detail\") == 0) {\n        /* NOTE: how to tackle detail with binary? */\n        if (ntokens < 4)\n            process_stats_detail(c, \"\");  /* outputs the error message */\n        else\n            process_stats_detail(c, tokens[2].value);\n        /* Output already generated */\n        return ;\n    } else if (strcmp(subcommand, \"settings\") == 0) {\n        process_stat_settings(&append_stats, c);\n    } else if (strcmp(subcommand, \"cachedump\") == 0) {\n        char *buf;\n        unsigned int bytes, id, limit = 0;\n\n        if (ntokens < 5) {\n            out_string(c, \"CLIENT_ERROR bad command line\");\n            return;\n        }\n\n        if (!safe_strtoul(tokens[2].value, &id) ||\n            !safe_strtoul(tokens[3].value, &limit)) {\n            out_string(c, \"CLIENT_ERROR bad command line format\");\n            return;\n        }\n\n        if (id >= POWER_LARGEST) {\n            out_string(c, \"CLIENT_ERROR Illegal slab id\");\n            return;\n        }\n\n        buf = item_cachedump(id, limit, &bytes);\n        write_and_free(c, buf, bytes);\n        return ;\n    } else {\n        /* getting here means that the subcommand is either engine specific or\n           is invalid. query the engine and see. */\n        if (get_stats(subcommand, strlen(subcommand), &append_stats, c)) {\n            if (c->stats.buffer == NULL) {\n                out_string(c, \"SERVER_ERROR out of memory writing stats\");\n            } else {\n                write_and_free(c, c->stats.buffer, c->stats.offset);\n                c->stats.buffer = NULL;\n            }\n        } else {\n            out_string(c, \"ERROR\");\n        }\n        return ;\n    }\n\n    /* append terminator and start the transfer */\n    append_stats(NULL, 0, NULL, 0, c);\n\n    if (c->stats.buffer == NULL) {\n        out_string(c, \"SERVER_ERROR out of memory writing stats\");\n    } else {\n        write_and_free(c, c->stats.buffer, c->stats.offset);\n        c->stats.buffer = NULL;\n    }\n}",
+            3
+        ],
+        [
+            "hash.h",
+            "hash",
+            "uint32_t hash(const void *key, size_t length, const uint32_t initval); /* <=== hash */ ",
+            2
+        ],
+        [
+            "memcached.c",
+            "complete_nread_binary",
+            "static void complete_nread_binary(conn *c) { /* <=== complete_nread_binary */ \n    assert(c != NULL);\n    assert(c->cmd >= 0);\n\n    switch(c->substate) {\n    case bin_reading_set_header:\n        if (c->cmd == PROTOCOL_BINARY_CMD_APPEND ||\n                c->cmd == PROTOCOL_BINARY_CMD_PREPEND) {\n            process_bin_append_prepend(c);\n        } else {\n            process_bin_update(c);\n        }\n        break;\n    case bin_read_set_value:\n        complete_update_bin(c);\n        break;\n    case bin_reading_get_key:\n        process_bin_get(c);\n        break;\n    case bin_reading_touch_key:\n        process_bin_touch(c);\n        break;\n    case bin_reading_stat:\n        process_bin_stat(c);\n        break;\n    case bin_reading_del_header:\n        process_bin_delete(c);\n        break;\n    case bin_reading_incr_header:\n        complete_incr_bin(c);\n        break;\n    case bin_read_flush_exptime:\n        process_bin_flush(c);\n        break;\n    case bin_reading_sasl_auth:\n        process_bin_sasl_auth(c);\n        break;\n    case bin_reading_sasl_auth_data:\n        process_bin_complete_sasl_auth(c);\n        break;\n    default:\n        fprintf(stderr, \"Not handling substate %d\\n\", c->substate);\n        assert(0);\n    }\n}",
+            2
+        ],
+        [
+            "memcached.h",
+            "IOV_LIST_INITIAL",
+            "#define IOV_LIST_INITIAL 400 /* <=== memcached.h:48:48:IOV_LIST_INITIAL:0 */ ",
+            3
+        ],
+        [
+            "thread.c",
+            "item_flush_expired",
+            "void item_flush_expired() { /* <=== item_flush_expired */ \n    mutex_lock(&cache_lock);\n    do_item_flush_expired();\n    mutex_unlock(&cache_lock);\n}",
+            3
+        ],
+        [
+            "items.c",
+            "item_free",
+            "void item_free(item *it) { /* <=== item_free */ \n    size_t ntotal = ITEM_ntotal(it);\n    unsigned int clsid;\n    assert((it->it_flags & ITEM_LINKED) == 0);\n    assert(it != heads[it->slabs_clsid]);\n    assert(it != tails[it->slabs_clsid]);\n    assert(it->refcount == 0);\n\n    /* so slab size changer can tell later if item is already free or not */\n    clsid = it->slabs_clsid;\n    it->slabs_clsid = 0;\n    DEBUG_REFCNT(it, 'F');\n    slabs_free(it, ntotal, clsid);\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "do_accept_new_conns",
+            "void do_accept_new_conns(const bool do_accept) { /* <=== do_accept_new_conns */ \n    conn *next;\n\n    for (next = listen_conn; next; next = next->next) {\n        if (do_accept) {\n            update_event(next, EV_READ | EV_PERSIST);\n            if (listen(next->sfd, settings.backlog) != 0) {\n                perror(\"listen\");\n            }\n        }\n        else {\n            update_event(next, 0);\n            if (listen(next->sfd, 0) != 0) {\n                perror(\"listen\");\n            }\n        }\n    }\n\n    if (do_accept) {\n        STATS_LOCK();\n        stats.accepting_conns = true;\n        STATS_UNLOCK();\n    } else {\n        STATS_LOCK();\n        stats.accepting_conns = false;\n        stats.listen_disabled_num++;\n        STATS_UNLOCK();\n        allow_new_conns = false;\n        maxconns_handler(-42, 0, 0);\n    }\n}",
+            2
+        ],
+        [
+            "memcached.h",
+            "mutex_unlock",
+            "#define mutex_unlock(x) pthread_mutex_unlock(x) /* <=== memcached.h:498:498:mutex_unlock:1 */ ",
+            3
+        ],
+        [
+            "memcached.h",
+            "NREAD_ADD",
+            "#define NREAD_ADD 1 /* <=== memcached.h:190:190:NREAD_ADD:0 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "maxconns_handler",
+            "static void maxconns_handler(const int fd, const short which, void *arg) { /* <=== maxconns_handler */ \n    struct timeval t = {.tv_sec = 0, .tv_usec = 10000};\n\n    if (fd == -42 || allow_new_conns == false) {\n        /* reschedule in 10ms if we need to keep polling */\n        evtimer_set(&maxconnsevent, maxconns_handler, 0);\n        event_base_set(main_base, &maxconnsevent);\n        evtimer_add(&maxconnsevent, &t);\n    } else {\n        evtimer_del(&maxconnsevent);\n        accept_new_conns(true);\n    }\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "try_read_command",
+            "static int try_read_command(conn *c) { /* <=== try_read_command */ \n    assert(c != NULL);\n    assert(c->rcurr <= (c->rbuf + c->rsize));\n    assert(c->rbytes > 0);\n\n    if (c->protocol == negotiating_prot || c->transport == udp_transport)  {\n        if ((unsigned char)c->rbuf[0] == (unsigned char)PROTOCOL_BINARY_REQ) {\n            c->protocol = binary_prot;\n        } else {\n            c->protocol = ascii_prot;\n        }\n\n        if (settings.verbose > 1) {\n            fprintf(stderr, \"%d: Client using the %s protocol\\n\", c->sfd,\n                    prot_text(c->protocol));\n        }\n    }\n\n    if (c->protocol == binary_prot) {\n        /* Do we have the complete packet header? */\n        if (c->rbytes < sizeof(c->binary_header)) {\n            /* need more data! */\n            return 0;\n        } else {\n#ifdef NEED_ALIGN\n            if (((long)(c->rcurr)) % 8 != 0) {\n                /* must realign input buffer */\n                memmove(c->rbuf, c->rcurr, c->rbytes);\n                c->rcurr = c->rbuf;\n                if (settings.verbose > 1) {\n                    fprintf(stderr, \"%d: Realign input buffer\\n\", c->sfd);\n                }\n            }\n#endif\n            protocol_binary_request_header* req;\n            req = (protocol_binary_request_header*)c->rcurr;\n\n            if (settings.verbose > 1) {\n                /* Dump the packet before we convert it to host order */\n                int ii;\n                fprintf(stderr, \"<%d Read binary protocol data:\", c->sfd);\n                for (ii = 0; ii < sizeof(req->bytes); ++ii) {\n                    if (ii % 4 == 0) {\n                        fprintf(stderr, \"\\n<%d   \", c->sfd);\n                    }\n                    fprintf(stderr, \" 0x%02x\", req->bytes[ii]);\n                }\n                fprintf(stderr, \"\\n\");\n            }\n\n            c->binary_header = *req;\n            c->binary_header.request.keylen = ntohs(req->request.keylen);\n            c->binary_header.request.bodylen = ntohl(req->request.bodylen);\n            c->binary_header.request.cas = ntohll(req->request.cas);\n\n            if (c->binary_header.request.magic != PROTOCOL_BINARY_REQ) {\n                if (settings.verbose) {\n                    fprintf(stderr, \"Invalid magic:  %x\\n\",\n                            c->binary_header.request.magic);\n                }\n                conn_set_state(c, conn_closing);\n                return -1;\n            }\n\n            c->msgcurr = 0;\n            c->msgused = 0;\n            c->iovused = 0;\n            if (add_msghdr(c) != 0) {\n                out_string(c, \"SERVER_ERROR out of memory\");\n                return 0;\n            }\n\n            c->cmd = c->binary_header.request.opcode;\n            c->keylen = c->binary_header.request.keylen;\n            c->opaque = c->binary_header.request.opaque;\n            /* clear the returned cas value */\n            c->cas = 0;\n\n            dispatch_bin_command(c);\n\n            c->rbytes -= sizeof(c->binary_header);\n            c->rcurr += sizeof(c->binary_header);\n        }\n    } else {\n        char *el, *cont;\n\n        if (c->rbytes == 0)\n            return 0;\n\n        el = memchr(c->rcurr, '\\n', c->rbytes);\n        if (!el) {\n            if (c->rbytes > 1024) {\n                /*\n                 * We didn't have a '\\n' in the first k. This _has_ to be a\n                 * large multiget, if not we should just nuke the connection.\n                 */\n                char *ptr = c->rcurr;\n                while (*ptr == ' ') { /* ignore leading whitespaces */\n                    ++ptr;\n                }\n\n                if (ptr - c->rcurr > 100 ||\n                    (strncmp(ptr, \"get \", 4) && strncmp(ptr, \"gets \", 5))) {\n\n                    conn_set_state(c, conn_closing);\n                    return 1;\n                }\n            }\n\n            return 0;\n        }\n        cont = el + 1;\n        if ((el - c->rcurr) > 1 && *(el - 1) == '\\r') {\n            el--;\n        }\n        *el = '\\0';\n\n        assert(cont <= (c->rcurr + c->rbytes));\n\n        process_command(c, c->rcurr);\n\n        c->rbytes -= (cont - c->rcurr);\n        c->rcurr = cont;\n\n        assert(c->rcurr <= (c->rbuf + c->rsize));\n    }\n\n    return 1;\n}",
+            1
+        ],
+        [
+            "memcached.h",
+            "NREAD_SET",
+            "#define NREAD_SET 2 /* <=== memcached.h:191:191:NREAD_SET:0 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "reset_cmd_handler",
+            "static void reset_cmd_handler(conn *c) { /* <=== reset_cmd_handler */ \n    c->cmd = -1;\n    c->substate = bin_no_state;\n    if(c->item != NULL) {\n        item_remove(c->item);\n        c->item = NULL;\n    }\n    conn_shrink(c);\n    if (c->rbytes > 0) {\n        conn_set_state(c, conn_parse_cmd);\n    } else {\n        conn_set_state(c, conn_waiting);\n    }\n}",
+            1
+        ],
+        [
+            "memcached.c",
+            "dispatch_bin_command",
+            "static void dispatch_bin_command(conn *c) { /* <=== dispatch_bin_command */ \n    int protocol_error = 0;\n\n    int extlen = c->binary_header.request.extlen;\n    int keylen = c->binary_header.request.keylen;\n    uint32_t bodylen = c->binary_header.request.bodylen;\n\n    if (settings.sasl && !authenticated(c)) {\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_AUTH_ERROR, 0);\n        c->write_and_go = conn_closing;\n        return;\n    }\n\n    MEMCACHED_PROCESS_COMMAND_START(c->sfd, c->rcurr, c->rbytes);\n    c->noreply = true;\n\n    /* binprot supports 16bit keys, but internals are still 8bit */\n    if (keylen > KEY_MAX_LENGTH) {\n        handle_binary_protocol_error(c);\n        return;\n    }\n\n    switch (c->cmd) {\n    case PROTOCOL_BINARY_CMD_SETQ:\n        c->cmd = PROTOCOL_BINARY_CMD_SET;\n        break;\n    case PROTOCOL_BINARY_CMD_ADDQ:\n        c->cmd = PROTOCOL_BINARY_CMD_ADD;\n        break;\n    case PROTOCOL_BINARY_CMD_REPLACEQ:\n        c->cmd = PROTOCOL_BINARY_CMD_REPLACE;\n        break;\n    case PROTOCOL_BINARY_CMD_DELETEQ:\n        c->cmd = PROTOCOL_BINARY_CMD_DELETE;\n        break;\n    case PROTOCOL_BINARY_CMD_INCREMENTQ:\n        c->cmd = PROTOCOL_BINARY_CMD_INCREMENT;\n        break;\n    case PROTOCOL_BINARY_CMD_DECREMENTQ:\n        c->cmd = PROTOCOL_BINARY_CMD_DECREMENT;\n        break;\n    case PROTOCOL_BINARY_CMD_QUITQ:\n        c->cmd = PROTOCOL_BINARY_CMD_QUIT;\n        break;\n    case PROTOCOL_BINARY_CMD_FLUSHQ:\n        c->cmd = PROTOCOL_BINARY_CMD_FLUSH;\n        break;\n    case PROTOCOL_BINARY_CMD_APPENDQ:\n        c->cmd = PROTOCOL_BINARY_CMD_APPEND;\n        break;\n    case PROTOCOL_BINARY_CMD_PREPENDQ:\n        c->cmd = PROTOCOL_BINARY_CMD_PREPEND;\n        break;\n    case PROTOCOL_BINARY_CMD_GETQ:\n        c->cmd = PROTOCOL_BINARY_CMD_GET;\n        break;\n    case PROTOCOL_BINARY_CMD_GETKQ:\n        c->cmd = PROTOCOL_BINARY_CMD_GETK;\n        break;\n    case PROTOCOL_BINARY_CMD_GATQ:\n        c->cmd = PROTOCOL_BINARY_CMD_GAT;\n        break;\n    case PROTOCOL_BINARY_CMD_GATKQ:\n        c->cmd = PROTOCOL_BINARY_CMD_GAT;\n        break;\n    default:\n        c->noreply = false;\n    }\n\n    switch (c->cmd) {\n        case PROTOCOL_BINARY_CMD_VERSION:\n            if (extlen == 0 && keylen == 0 && bodylen == 0) {\n                write_bin_response(c, VERSION, 0, 0, strlen(VERSION));\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_FLUSH:\n            if (keylen == 0 && bodylen == extlen && (extlen == 0 || extlen == 4)) {\n                bin_read_key(c, bin_read_flush_exptime, extlen);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_NOOP:\n            if (extlen == 0 && keylen == 0 && bodylen == 0) {\n                write_bin_response(c, NULL, 0, 0, 0);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_SET: /* FALLTHROUGH */\n        case PROTOCOL_BINARY_CMD_ADD: /* FALLTHROUGH */\n        case PROTOCOL_BINARY_CMD_REPLACE:\n            if (extlen == 8 && keylen != 0 && bodylen >= (keylen + 8)) {\n                bin_read_key(c, bin_reading_set_header, 8);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_GETQ:  /* FALLTHROUGH */\n        case PROTOCOL_BINARY_CMD_GET:   /* FALLTHROUGH */\n        case PROTOCOL_BINARY_CMD_GETKQ: /* FALLTHROUGH */\n        case PROTOCOL_BINARY_CMD_GETK:\n            if (extlen == 0 && bodylen == keylen && keylen > 0) {\n                bin_read_key(c, bin_reading_get_key, 0);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_DELETE:\n            if (keylen > 0 && extlen == 0 && bodylen == keylen) {\n                bin_read_key(c, bin_reading_del_header, extlen);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_INCREMENT:\n        case PROTOCOL_BINARY_CMD_DECREMENT:\n            if (keylen > 0 && extlen == 20 && bodylen == (keylen + extlen)) {\n                bin_read_key(c, bin_reading_incr_header, 20);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_APPEND:\n        case PROTOCOL_BINARY_CMD_PREPEND:\n            if (keylen > 0 && extlen == 0) {\n                bin_read_key(c, bin_reading_set_header, 0);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_STAT:\n            if (extlen == 0) {\n                bin_read_key(c, bin_reading_stat, 0);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_QUIT:\n            if (keylen == 0 && extlen == 0 && bodylen == 0) {\n                write_bin_response(c, NULL, 0, 0, 0);\n                c->write_and_go = conn_closing;\n                if (c->noreply) {\n                    conn_set_state(c, conn_closing);\n                }\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_SASL_LIST_MECHS:\n            if (extlen == 0 && keylen == 0 && bodylen == 0) {\n                bin_list_sasl_mechs(c);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_SASL_AUTH:\n        case PROTOCOL_BINARY_CMD_SASL_STEP:\n            if (extlen == 0 && keylen != 0) {\n                bin_read_key(c, bin_reading_sasl_auth, 0);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        case PROTOCOL_BINARY_CMD_TOUCH:\n        case PROTOCOL_BINARY_CMD_GAT:\n        case PROTOCOL_BINARY_CMD_GATQ:\n        case PROTOCOL_BINARY_CMD_GATK:\n        case PROTOCOL_BINARY_CMD_GATKQ:\n            if (extlen == 4 && keylen != 0) {\n                bin_read_key(c, bin_reading_touch_key, 4);\n            } else {\n                protocol_error = 1;\n            }\n            break;\n        default:\n            write_bin_error(c, PROTOCOL_BINARY_RESPONSE_UNKNOWN_COMMAND, bodylen);\n    }\n\n    if (protocol_error)\n        handle_binary_protocol_error(c);\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "conn_close",
+            "static void conn_close(conn *c) { /* <=== conn_close */ \n    assert(c != NULL);\n\n    /* delete the event, the socket and the conn */\n    event_del(&c->event);\n\n    if (settings.verbose > 1)\n        fprintf(stderr, \"<%d connection closed.\\n\", c->sfd);\n\n    MEMCACHED_CONN_RELEASE(c->sfd);\n    close(c->sfd);\n    pthread_mutex_lock(&conn_lock);\n    allow_new_conns = true;\n    pthread_mutex_unlock(&conn_lock);\n    conn_cleanup(c);\n\n    /* if the connection has big buffers, just free it */\n    if (c->rsize > READ_BUFFER_HIGHWAT || conn_add_to_freelist(c)) {\n        conn_free(c);\n    }\n\n    STATS_LOCK();\n    stats.curr_conns--;\n    STATS_UNLOCK();\n\n    return;\n}",
+            1
+        ],
+        [
+            "memcached.c",
+            "update_event",
+            "static bool update_event(conn *c, const int new_flags) { /* <=== update_event */ \n    assert(c != NULL);\n\n    struct event_base *base = c->event.ev_base;\n    if (c->ev_flags == new_flags)\n        return true;\n    if (event_del(&c->event) == -1) return false;\n    event_set(&c->event, c->sfd, new_flags, event_handler, (void *)c);\n    event_base_set(base, &c->event);\n    c->ev_flags = new_flags;\n    if (event_add(&c->event, 0) == -1) return false;\n    return true;\n}",
+            1
+        ],
+        [
+            "memcached.h",
+            "NREAD_REPLACE",
+            "#define NREAD_REPLACE 3 /* <=== memcached.h:192:192:NREAD_REPLACE:0 */ ",
+            3
+        ],
+        [
+            "thread.c",
+            "STATS_LOCK",
+            "void STATS_LOCK() { /* <=== STATS_LOCK */ \n    pthread_mutex_lock(&stats_lock);\n}",
+            1
+        ],
+        [
+            "memcached.h",
+            "ITEM_data",
+            "#define ITEM_data(item) ((char*) &((item)->data) + (item)->nkey + 1 \\ /* <=== memcached.h:97:99:ITEM_data:1 */ \n         + (item)->nsuffix \\\n         + (((item)->it_flags & ITEM_CAS) ? sizeof(uint64_t) : 0))",
+            3
+        ],
+        [
+            "memcached.c",
+            "process_bin_sasl_auth",
+            "static void process_bin_sasl_auth(conn *c) { /* <=== process_bin_sasl_auth */ \n    // Guard for handling disabled SASL on the server.\n    if (!settings.sasl) {\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_UNKNOWN_COMMAND,\n                        c->binary_header.request.bodylen\n                        - c->binary_header.request.keylen);\n        return;\n    }\n\n    assert(c->binary_header.request.extlen == 0);\n\n    int nkey = c->binary_header.request.keylen;\n    int vlen = c->binary_header.request.bodylen - nkey;\n\n    if (nkey > MAX_SASL_MECH_LEN) {\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_EINVAL, vlen);\n        c->write_and_go = conn_swallow;\n        return;\n    }\n\n    char *key = binary_get_key(c);\n    assert(key);\n\n    item *it = item_alloc(key, nkey, 0, 0, vlen);\n\n    if (it == 0) {\n        write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, vlen);\n        c->write_and_go = conn_swallow;\n        return;\n    }\n\n    c->item = it;\n    c->ritem = ITEM_data(it);\n    c->rlbytes = vlen;\n    conn_set_state(c, conn_nread);\n    c->substate = bin_reading_sasl_auth_data;\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "process_verbosity_command",
+            "static void process_verbosity_command(conn *c, token_t *tokens, const size_t ntokens) { /* <=== process_verbosity_command */ \n    unsigned int level;\n\n    assert(c != NULL);\n\n    set_noreply_maybe(c, tokens, ntokens);\n\n    level = strtoul(tokens[1].value, NULL, 10);\n    settings.verbose = level > MAX_VERBOSITY_LEVEL ? MAX_VERBOSITY_LEVEL : level;\n    out_string(c, \"OK\");\n    return;\n}",
+            3
+        ],
+        [
+            "thread.c",
+            "accept_new_conns",
+            "void accept_new_conns(const bool do_accept) { /* <=== accept_new_conns */ \n    pthread_mutex_lock(&conn_lock);\n    do_accept_new_conns(do_accept);\n    pthread_mutex_unlock(&conn_lock);\n}",
+            1
+        ],
+        [
+            "thread.c",
+            "cqi_new",
+            "static CQ_ITEM *cqi_new(void) { /* <=== cqi_new */ \n    CQ_ITEM *item = NULL;\n    pthread_mutex_lock(&cqi_freelist_lock);\n    if (cqi_freelist) {\n        item = cqi_freelist;\n        cqi_freelist = item->next;\n    }\n    pthread_mutex_unlock(&cqi_freelist_lock);\n\n    if (NULL == item) {\n        int i;\n\n        /* Allocate a bunch of items at once to reduce fragmentation */\n        item = malloc(sizeof(CQ_ITEM) * ITEMS_PER_ALLOC);\n        if (NULL == item)\n            return NULL;\n\n        /*\n         * Link together all the new items except the first one\n         * (which we'll return to the caller) for placement on\n         * the freelist.\n         */\n        for (i = 2; i < ITEMS_PER_ALLOC; i++)\n            item[i - 1].next = &item[i];\n\n        pthread_mutex_lock(&cqi_freelist_lock);\n        item[ITEMS_PER_ALLOC - 1].next = cqi_freelist;\n        cqi_freelist = &item[1];\n        pthread_mutex_unlock(&cqi_freelist_lock);\n    }\n\n    return item;\n}",
+            2
+        ],
+        [
+            "memcached.c",
+            "add_iov",
+            "static int add_iov(conn *c, const void *buf, int len) { /* <=== add_iov */ \n    struct msghdr *m;\n    int leftover;\n    bool limit_to_mtu;\n\n    assert(c != NULL);\n\n    do {\n        m = &c->msglist[c->msgused - 1];\n\n        /*\n         * Limit UDP packets, and the first payloads of TCP replies, to\n         * UDP_MAX_PAYLOAD_SIZE bytes.\n         */\n        limit_to_mtu = IS_UDP(c->transport) || (1 == c->msgused);\n\n        /* We may need to start a new msghdr if this one is full. */\n        if (m->msg_iovlen == IOV_MAX ||\n            (limit_to_mtu && c->msgbytes >= UDP_MAX_PAYLOAD_SIZE)) {\n            add_msghdr(c);\n            m = &c->msglist[c->msgused - 1];\n        }\n\n        if (ensure_iov_space(c) != 0)\n            return -1;\n\n        /* If the fragment is too big to fit in the datagram, split it up */\n        if (limit_to_mtu && len + c->msgbytes > UDP_MAX_PAYLOAD_SIZE) {\n            leftover = len + c->msgbytes - UDP_MAX_PAYLOAD_SIZE;\n            len -= leftover;\n        } else {\n            leftover = 0;\n        }\n\n        m = &c->msglist[c->msgused - 1];\n        m->msg_iov[m->msg_iovlen].iov_base = (void *)buf;\n        m->msg_iov[m->msg_iovlen].iov_len = len;\n\n        c->msgbytes += len;\n        c->iovused++;\n        m->msg_iovlen++;\n\n        buf = ((char *)buf) + len;\n        len = leftover;\n    } while (leftover > 0);\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "memcached.h",
+            "ITEM_LIST_HIGHWAT",
+            "#define ITEM_LIST_HIGHWAT 400 /* <=== memcached.h:55:55:ITEM_LIST_HIGHWAT:0 */ ",
+            3
+        ],
+        [
+            "thread.c",
+            "hashmask",
+            "#define hashmask(n) (hashsize(n)-1) /* <=== thread.c:61:61:hashmask:1 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "write_bin_response",
+            "static void write_bin_response(conn *c, void *d, int hlen, int keylen, int dlen) { /* <=== write_bin_response */ \n    if (!c->noreply || c->cmd == PROTOCOL_BINARY_CMD_GET ||\n        c->cmd == PROTOCOL_BINARY_CMD_GETK) {\n        add_bin_header(c, 0, hlen, keylen, dlen);\n        if(dlen > 0) {\n            add_iov(c, d, dlen);\n        }\n        conn_set_state(c, conn_mwrite);\n        c->write_and_go = conn_new_cmd;\n    } else {\n        conn_set_state(c, conn_new_cmd);\n    }\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "write_bin_error",
+            "static void write_bin_error(conn *c, protocol_binary_response_status err, int swallow) { /* <=== write_bin_error */ \n    const char *errstr = \"Unknown error\";\n    size_t len;\n\n    switch (err) {\n    case PROTOCOL_BINARY_RESPONSE_ENOMEM:\n        errstr = \"Out of memory\";\n        break;\n    case PROTOCOL_BINARY_RESPONSE_UNKNOWN_COMMAND:\n        errstr = \"Unknown command\";\n        break;\n    case PROTOCOL_BINARY_RESPONSE_KEY_ENOENT:\n        errstr = \"Not found\";\n        break;\n    case PROTOCOL_BINARY_RESPONSE_EINVAL:\n        errstr = \"Invalid arguments\";\n        break;\n    case PROTOCOL_BINARY_RESPONSE_KEY_EEXISTS:\n        errstr = \"Data exists for key.\";\n        break;\n    case PROTOCOL_BINARY_RESPONSE_E2BIG:\n        errstr = \"Too large.\";\n        break;\n    case PROTOCOL_BINARY_RESPONSE_DELTA_BADVAL:\n        errstr = \"Non-numeric server-side value for incr or decr\";\n        break;\n    case PROTOCOL_BINARY_RESPONSE_NOT_STORED:\n        errstr = \"Not stored.\";\n        break;\n    case PROTOCOL_BINARY_RESPONSE_AUTH_ERROR:\n        errstr = \"Auth failure.\";\n        break;\n    default:\n        assert(false);\n        errstr = \"UNHANDLED ERROR\";\n        fprintf(stderr, \">%d UNHANDLED ERROR: %d\\n\", c->sfd, err);\n    }\n\n    if (settings.verbose > 1) {\n        fprintf(stderr, \">%d Writing an error: %s\\n\", c->sfd, errstr);\n    }\n\n    len = strlen(errstr);\n    add_bin_header(c, err, 0, 0, len);\n    if (len > 0) {\n        add_iov(c, errstr, len);\n    }\n    conn_set_state(c, conn_mwrite);\n    if(swallow > 0) {\n        c->sbytes = swallow;\n        c->write_and_go = conn_swallow;\n    } else {\n        c->write_and_go = conn_new_cmd;\n    }\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "COMMAND_TOKEN",
+            "#define COMMAND_TOKEN 0 /* <=== memcached.c:2383:2383:COMMAND_TOKEN:0 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "process_touch_command",
+            "static void process_touch_command(conn *c, token_t *tokens, const size_t ntokens) { /* <=== process_touch_command */ \n    char *key;\n    size_t nkey;\n    int32_t exptime_int = 0;\n    item *it;\n\n    assert(c != NULL);\n\n    set_noreply_maybe(c, tokens, ntokens);\n\n    if (tokens[KEY_TOKEN].length > KEY_MAX_LENGTH) {\n        out_string(c, \"CLIENT_ERROR bad command line format\");\n        return;\n    }\n\n    key = tokens[KEY_TOKEN].value;\n    nkey = tokens[KEY_TOKEN].length;\n\n    if (!safe_strtol(tokens[2].value, &exptime_int)) {\n        out_string(c, \"CLIENT_ERROR invalid exptime argument\");\n        return;\n    }\n\n    it = item_touch(key, nkey, realtime(exptime_int));\n    if (it) {\n        item_update(it);\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.touch_cmds++;\n        c->thread->stats.slab_stats[it->slabs_clsid].touch_hits++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        out_string(c, \"TOUCHED\");\n        item_remove(it);\n    } else {\n        pthread_mutex_lock(&c->thread->stats.mutex);\n        c->thread->stats.touch_cmds++;\n        c->thread->stats.touch_misses++;\n        pthread_mutex_unlock(&c->thread->stats.mutex);\n\n        out_string(c, \"NOT_FOUND\");\n    }\n}",
+            3
+        ],
+        [
+            "memcached.c",
+            "conn_set_state",
+            "static void conn_set_state(conn *c, enum conn_states state) { /* <=== conn_set_state */ \n    assert(c != NULL);\n    assert(state >= conn_listening && state < conn_max_state);\n\n    if (state != c->state) {\n        if (settings.verbose > 2) {\n            fprintf(stderr, \"%d: going from %s to %s\\n\",\n                    c->sfd, state_text(c->state),\n                    state_text(state));\n        }\n\n        if (state == conn_write || state == conn_mwrite) {\n            MEMCACHED_PROCESS_COMMAND_END(c->sfd, c->wbuf, c->wbytes);\n        }\n        c->state = state;\n    }\n}",
+            1
+        ],
+        [
+            "memcached.h",
+            "MSG_LIST_HIGHWAT",
+            "#define MSG_LIST_HIGHWAT 100 /* <=== memcached.h:57:57:MSG_LIST_HIGHWAT:0 */ ",
+            3
+        ],
+        [
+            "memcached.c",
+            "handle_binary_protocol_error",
+            "static void handle_binary_protocol_error(conn *c) { /* <=== handle_binary_protocol_error */ \n    write_bin_error(c, PROTOCOL_BINARY_RESPONSE_EINVAL, 0);\n    if (settings.verbose) {\n        fprintf(stderr, \"Protocol error (opcode %02x), close connection %d\\n\",\n                c->binary_header.request.opcode, c->sfd);\n    }\n    c->write_and_go = conn_closing;\n}",
+            3
+        ],
+        [
+            "memcached.h",
+            "DATA_BUFFER_SIZE",
+            "#define DATA_BUFFER_SIZE 2048 /* <=== memcached.h:32:32:DATA_BUFFER_SIZE:0 */ ",
+            1
+        ],
+        [
+            "memcached.h",
+            "likely",
+            "#define likely(x)       __builtin_expect((x),1) /* <=== memcached.h:574:574:likely:1 */ ",
+            3
+        ],
+        [
+            "thread.c",
+            "ITEMS_PER_ALLOC",
+            "#define ITEMS_PER_ALLOC 64 /* <=== thread.c:18:18:ITEMS_PER_ALLOC:0 */ ",
+            3
+        ]
+    ],
+    "globalVars": [
+        "struct stats stats",
+        "struct settings settings"
+    ],
+    "importContext": [
+        "#include <sys/stat.h>",
+        "#include <sys/uio.h>",
+        "#include <assert.h>",
+        "#include <errno.h>",
+        "#include <arpa/inet.h>",
+        "#include \"memcached.h\"",
+        "#include <sys/mman.h>",
+        "#include <time.h>",
+        "#include <stdarg.h>",
+        "#include <netinet/tcp.h>",
+        "#include <fcntl.h>",
+        "#include <string.h>",
+        "#include <ctype.h>",
+        "#include <pwd.h>",
+        "#include <stdio.h>",
+        "#include <sysexits.h>",
+        "#include <sys/un.h>",
+        "#include <signal.h>",
+        "#include <stdlib.h>",
+        "#include <limits.h>",
+        "#include <sys/resource.h>",
+        "#include <stddef.h>",
+        "#include <sys/socket.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct settings {\n    size_t maxbytes;\n    int maxconns;\n    int port;\n    int udpport;\n    char *inter;\n    int verbose;\n    rel_time_t oldest_live; /* ignore existing items older than this */\n    int evict_to_free;\n    char *socketpath;   /* path to unix socket if using local socket */\n    int access;  /* access mask (a la chmod) for unix domain socket */\n    double factor;          /* chunk size growth factor */\n    int chunk_size;\n    int num_threads;        /* number of worker (without dispatcher) libevent threads to run */\n    int num_threads_per_udp; /* number of worker threads serving each udp socket */\n    char prefix_delimiter;  /* character that marks a key prefix (for stats) */\n    int detail_enabled;     /* nonzero if we're collecting detailed stats */\n    int reqs_per_event;     /* Maximum number of io to process on each\n                               io-event. */\n    bool use_cas;\n    enum protocol binding_protocol;\n    int backlog;\n    int item_size_max;        /* Maximum item size, and upper end for slabs */\n    bool sasl;              /* SASL on/off */\n    bool maxconns_fast;     /* Whether or not to early close connections */\n    bool slab_reassign;     /* Whether or not slab reassignment is allowed */\n    int slab_automove;     /* Whether or not to automatically move slabs */\n    int hashpower_init;     /* Starting hash power level */\n    bool shutdown_command; /* allow shutdown command */\n}",
+            "settings"
+        ],
+        [
+            "struct stats {\n    pthread_mutex_t mutex;\n    unsigned int  curr_items;\n    unsigned int  total_items;\n    uint64_t      curr_bytes;\n    unsigned int  curr_conns;\n    unsigned int  total_conns;\n    uint64_t      rejected_conns;\n    unsigned int  reserved_fds;\n    unsigned int  conn_structs;\n    uint64_t      get_cmds;\n    uint64_t      set_cmds;\n    uint64_t      touch_cmds;\n    uint64_t      get_hits;\n    uint64_t      get_misses;\n    uint64_t      touch_hits;\n    uint64_t      touch_misses;\n    uint64_t      evictions;\n    uint64_t      reclaimed;\n    time_t        started;          /* when the process was started */\n    bool          accepting_conns;  /* whether we are currently accepting */\n    uint64_t      listen_disabled_num;\n    unsigned int  hash_power_level; /* Better hope it's not over 9000 */\n    uint64_t      hash_bytes;       /* size used for hash tables */\n    bool          hash_is_expanding; /* If the hash table is being expanded */\n    uint64_t      expired_unfetched; /* items reclaimed but never touched */\n    uint64_t      evicted_unfetched; /* items evicted but never touched */\n    bool          slab_reassign_running; /* slab reassign in progress */\n    uint64_t      slabs_moved;       /* times slabs were moved around */\n}",
+            "stats"
+        ],
+        [
+            "typedef struct _stritem {\n    struct _stritem *next;\n    struct _stritem *prev;\n    struct _stritem *h_next;    /* hash chain next */\n    rel_time_t      time;       /* least recent access */\n    rel_time_t      exptime;    /* expire time */\n    int             nbytes;     /* size of data */\n    unsigned short  refcount;\n    uint8_t         nsuffix;    /* length of flags-and-length string */\n    uint8_t         it_flags;   /* ITEM_* above */\n    uint8_t         slabs_clsid;/* which slab class we're in */\n    uint8_t         nkey;       /* key length, w/terminating null and padding */\n    /* this odd type prevents type-punning issues when we do\n     * the little shuffle to save space when not using CAS. */\n    union {\n        uint64_t cas;\n        char end;\n    } data[];\n    /* if it_flags & ITEM_CAS we have 8 bytes CAS */\n    /* then null-terminated key */\n    /* then \" flags length\\r\\n\" (no terminating null) */\n    /* then data with terminating \\r\\n (no terminating null; it's binary!) */\n} item;",
+            "item"
+        ],
+        [
+            "struct conn {\n    int    sfd;\n    sasl_conn_t *sasl_conn;\n    enum conn_states  state;\n    enum bin_substates substate;\n    struct event event;\n    short  ev_flags;\n    short  which;   /** which events were just triggered */\n\n    char   *rbuf;   /** buffer to read commands into */\n    char   *rcurr;  /** but if we parsed some already, this is where we stopped */\n    int    rsize;   /** total allocated size of rbuf */\n    int    rbytes;  /** how much data, starting from rcur, do we have unparsed */\n\n    char   *wbuf;\n    char   *wcurr;\n    int    wsize;\n    int    wbytes;\n    /** which state to go into after finishing current write */\n    enum conn_states  write_and_go;\n    void   *write_and_free; /** free this memory after finishing writing */\n\n    char   *ritem;  /** when we read in an item's value, it goes here */\n    int    rlbytes;\n\n    /* data for the nread state */\n\n    /**\n     * item is used to hold an item structure created after reading the command\n     * line of set/add/replace commands, but before we finished reading the actual\n     * data. The data is read into ITEM_data(item) to avoid extra copying.\n     */\n\n    void   *item;     /* for commands set/add/replace  */\n\n    /* data for the swallow state */\n    int    sbytes;    /* how many bytes to swallow */\n\n    /* data for the mwrite state */\n    struct iovec *iov;\n    int    iovsize;   /* number of elements allocated in iov[] */\n    int    iovused;   /* number of elements used in iov[] */\n\n    struct msghdr *msglist;\n    int    msgsize;   /* number of elements allocated in msglist[] */\n    int    msgused;   /* number of elements used in msglist[] */\n    int    msgcurr;   /* element in msglist[] being transmitted now */\n    int    msgbytes;  /* number of bytes in current msg */\n\n    item   **ilist;   /* list of items to write out */\n    int    isize;\n    item   **icurr;\n    int    ileft;\n\n    char   **suffixlist;\n    int    suffixsize;\n    char   **suffixcurr;\n    int    suffixleft;\n\n    enum protocol protocol;   /* which protocol this connection speaks */\n    enum network_transport transport; /* what transport is used by this connection */\n\n    /* data for UDP clients */\n    int    request_id; /* Incoming UDP request ID, if this is a UDP \"connection\" */\n    struct sockaddr request_addr; /* Who sent the most recent request */\n    socklen_t request_addr_size;\n    unsigned char *hdrbuf; /* udp packet headers */\n    int    hdrsize;   /* number of headers' worth of space is allocated */\n\n    bool   noreply;   /* True if the reply should not be sent. */\n    /* current stats command */\n    struct {\n        char *buffer;\n        size_t size;\n        size_t offset;\n    } stats;\n\n    /* Binary protocol stuff */\n    /* This is where the binary header goes */\n    protocol_binary_request_header binary_header;\n    uint64_t cas; /* the cas to return */\n    short cmd; /* current command being processed */\n    int opaque;\n    int keylen;\n    conn   *next;     /* Used for generating a list of conn structures */\n    LIBEVENT_THREAD *thread; /* Pointer to the thread object serving this connection */\n}",
+            "conn"
+        ],
+        [
+            "enum transmit_result {\n    TRANSMIT_COMPLETE,   /** All done writing. */\n    TRANSMIT_INCOMPLETE, /** More data remaining to write. */\n    TRANSMIT_SOFT_ERROR, /** Can't write any more right now. */\n    TRANSMIT_HARD_ERROR  /** Can't write (c->state is set to conn_closing) */\n}",
+            "transmit_result"
+        ],
+        [
+            "enum try_read_result {\n    READ_DATA_RECEIVED,\n    READ_NO_DATA_RECEIVED,\n    READ_ERROR,            /** an error occured (on the socket) (or client closed connection) */\n    READ_MEMORY_ERROR      /** failed to allocate more memory */\n}",
+            "try_read_result"
+        ]
+    ],
+    "visitedLines_after": {
+        "memcached.c": [
+            3748,
+            3749,
+            3753,
+            3757,
+            3759,
+            3761,
+            3762,
+            3763,
+            3764,
+            3765,
+            3767,
+            3768,
+            3769,
+            3770,
+            3771,
+            3772,
+            3774,
+            3775,
+            3779,
+            3780,
+            3781,
+            3782,
+            3786,
+            3787,
+            3788,
+            3789,
+            3790,
+            3791,
+            3792,
+            3793,
+            3795,
+            3796,
+            3799,
+            3802,
+            3803,
+            3804,
+            3805,
+            3806,
+            3810,
+            3811,
+            3814,
+            3815,
+            3817,
+            3818,
+            3819,
+            3821,
+            3822,
+            3824,
+            3825,
+            3827,
+            3833,
+            3834,
+            3836,
+            3841,
+            3845,
+            3846,
+            3847,
+            3849,
+            3850,
+            3851,
+            3852,
+            3859,
+            3860,
+            3861,
+            3862,
+            3866,
+            3870,
+            3871,
+            3872,
+            3877,
+            3878,
+            3879,
+            3881,
+            3886,
+            3887,
+            3888,
+            3889,
+            3891,
+            3892,
+            3893,
+            3894,
+            3895,
+            3901,
+            3902,
+            3903,
+            3904,
+            3905,
+            3906,
+            3907,
+            3909,
+            3910,
+            3913,
+            3914,
+            3917,
+            3918,
+            3919,
+            3920,
+            3921,
+            3924,
+            3928,
+            3929,
+            3932,
+            3933,
+            3934,
+            3936,
+            3939,
+            3941,
+            3942,
+            3947,
+            3948,
+            3949,
+            3950,
+            3951,
+            3956,
+            3957,
+            3958,
+            3959,
+            3960,
+            3961,
+            3964,
+            3965,
+            3968,
+            3969,
+            3970,
+            3971,
+            3972,
+            3975,
+            3979,
+            3980,
+            3981,
+            3984,
+            3990,
+            3991,
+            3992,
+            3993,
+            3994,
+            4001,
+            4002,
+            4003,
+            4004,
+            4005,
+            4008,
+            4009,
+            4010,
+            4011,
+            4012,
+            4013,
+            4014,
+            4015,
+            4016,
+            4018,
+            4019,
+            4020,
+            4021,
+            4022,
+            4025,
+            4026,
+            4028,
+            4030,
+            4031,
+            4032,
+            4033,
+            4035,
+            4037,
+            4038,
+            4039,
+            4043,
+            4044,
+            4047,
+            4048,
+            4053,
+            4054,
+            4055,
+            4057,
+            4058,
+            4061,
+            4062
+        ]
+    },
+    "visitedLines_before": {
+        "memcached.c": [
+            3748,
+            3749,
+            3753,
+            3757,
+            3759,
+            3761,
+            3762,
+            3763,
+            3764,
+            3765,
+            3767,
+            3768,
+            3769,
+            3770,
+            3771,
+            3772,
+            3774,
+            3775,
+            3779,
+            3780,
+            3781,
+            3782,
+            3786,
+            3787,
+            3788,
+            3789,
+            3790,
+            3791,
+            3792,
+            3793,
+            3795,
+            3796,
+            3799,
+            3802,
+            3803,
+            3804,
+            3805,
+            3806,
+            3810,
+            3811,
+            3814,
+            3815,
+            3817,
+            3818,
+            3819,
+            3821,
+            3822,
+            3824,
+            3825,
+            3827,
+            3833,
+            3834,
+            3836,
+            3841,
+            3845,
+            3846,
+            3847,
+            3849,
+            3850,
+            3851,
+            3852,
+            3859,
+            3860,
+            3861,
+            3862,
+            3866,
+            3870,
+            3871,
+            3872,
+            3876,
+            3877,
+            3878,
+            3879,
+            3881,
+            3882,
+            3883,
+            3884,
+            3885,
+            3891,
+            3892,
+            3893,
+            3894,
+            3895,
+            3896,
+            3897,
+            3899,
+            3900,
+            3903,
+            3904,
+            3907,
+            3908,
+            3909,
+            3910,
+            3911,
+            3914,
+            3918,
+            3919,
+            3922,
+            3923,
+            3924,
+            3926,
+            3929,
+            3931,
+            3932,
+            3937,
+            3938,
+            3939,
+            3940,
+            3941,
+            3946,
+            3947,
+            3948,
+            3949,
+            3950,
+            3951,
+            3954,
+            3955,
+            3958,
+            3959,
+            3960,
+            3961,
+            3962,
+            3965,
+            3969,
+            3970,
+            3971,
+            3974,
+            3980,
+            3981,
+            3982,
+            3983,
+            3984,
+            3991,
+            3992,
+            3993,
+            3994,
+            3995,
+            3998,
+            3999,
+            4000,
+            4001,
+            4002,
+            4003,
+            4004,
+            4005,
+            4006,
+            4008,
+            4009,
+            4010,
+            4011,
+            4012,
+            4015,
+            4016,
+            4018,
+            4020,
+            4021,
+            4022,
+            4023,
+            4025,
+            4027,
+            4028,
+            4029,
+            4033,
+            4034,
+            4037,
+            4038,
+            4043,
+            4044,
+            4045,
+            4047,
+            4048,
+            4051,
+            4052
+        ]
+    },
+    "visitedParams": {
+        "memcached.c": [
+            [
+                "conn *c",
+                "drive_machine"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "memcached.c",
+            "drive_machine",
+            "static void drive_machine(conn *c) { /* <=== drive_machine */ \n    bool stop = false;\n    int sfd, flags = 1;\n    socklen_t addrlen;\n    struct sockaddr_storage addr;\n    int nreqs = settings.reqs_per_event;\n    int res;\n    const char *str;\n\n    assert(c != NULL);\n\n    while (!stop) {\n\n        switch(c->state) {\n        case conn_listening:\n            addrlen = sizeof(addr);\n            if ((sfd = accept(c->sfd, (struct sockaddr *)&addr, &addrlen)) == -1) {\n                if (errno == EAGAIN || errno == EWOULDBLOCK) {\n                    /* these are transient, so don't log anything */\n                    stop = true;\n                } else if (errno == EMFILE) {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Too many open connections\\n\");\n                    accept_new_conns(false);\n                    stop = true;\n                } else {\n                    perror(\"accept()\");\n                    stop = true;\n                }\n                break;\n            }\n            if ((flags = fcntl(sfd, F_GETFL, 0)) < 0 ||\n                fcntl(sfd, F_SETFL, flags | O_NONBLOCK) < 0) {\n                perror(\"setting O_NONBLOCK\");\n                close(sfd);\n                break;\n            }\n\n            if (settings.maxconns_fast &&\n                stats.curr_conns + stats.reserved_fds >= settings.maxconns - 1) {\n                str = \"ERROR Too many open connections\\r\\n\";\n                res = write(sfd, str, strlen(str));\n                close(sfd);\n                STATS_LOCK();\n                stats.rejected_conns++;\n                STATS_UNLOCK();\n            } else {\n                dispatch_conn_new(sfd, conn_new_cmd, EV_READ | EV_PERSIST,\n                                     DATA_BUFFER_SIZE, tcp_transport);\n            }\n\n            stop = true;\n            break;\n\n        case conn_waiting:\n            if (!update_event(c, EV_READ | EV_PERSIST)) {\n                if (settings.verbose > 0)\n                    fprintf(stderr, \"Couldn't update event\\n\");\n                conn_set_state(c, conn_closing);\n                break;\n            }\n\n            conn_set_state(c, conn_read);\n            stop = true;\n            break;\n\n        case conn_read:\n            res = IS_UDP(c->transport) ? try_read_udp(c) : try_read_network(c);\n\n            switch (res) {\n            case READ_NO_DATA_RECEIVED:\n                conn_set_state(c, conn_waiting);\n                break;\n            case READ_DATA_RECEIVED:\n                conn_set_state(c, conn_parse_cmd);\n                break;\n            case READ_ERROR:\n                conn_set_state(c, conn_closing);\n                break;\n            case READ_MEMORY_ERROR: /* Failed to allocate more memory */\n                /* State already set by try_read_network */\n                break;\n            }\n            break;\n\n        case conn_parse_cmd :\n            if (try_read_command(c) == 0) {\n                /* wee need more data! */\n                conn_set_state(c, conn_waiting);\n            }\n\n            break;\n\n        case conn_new_cmd:\n            /* Only process nreqs at a time to avoid starving other\n               connections */\n\n            --nreqs;\n            if (nreqs >= 0) {\n                reset_cmd_handler(c);\n            } else {\n                pthread_mutex_lock(&c->thread->stats.mutex);\n                c->thread->stats.conn_yields++;\n                pthread_mutex_unlock(&c->thread->stats.mutex);\n                if (c->rbytes > 0) {\n                    /* We have already read in data into the input buffer,\n                       so libevent will most likely not signal read events\n                       on the socket (unless more data is available. As a\n                       hack we should just put in a request to write data,\n                       because that should be possible ;-)\n                    */\n                    if (!update_event(c, EV_WRITE | EV_PERSIST)) {\n                        if (settings.verbose > 0)\n                            fprintf(stderr, \"Couldn't update event\\n\");\n                        conn_set_state(c, conn_closing);\n                        break;\n                    }\n                }\n                stop = true;\n            }\n            break;\n\n        case conn_nread:\n            if (c->rlbytes == 0) {\n                complete_nread(c);\n                break;\n            }\n\n            /* Check if rbytes < 0, to prevent crash */\n            if (c->rlbytes < 0) {\n                if (settings.verbose) {\n                    fprintf(stderr, \"Invalid rlbytes to read: len %d\\n\", c->rlbytes);\n                }\n                conn_set_state(c, conn_closing);\n                break;\n            }\n\n            /* first check if we have leftovers in the conn_read buffer */\n            if (c->rbytes > 0) {\n                int tocopy = c->rbytes > c->rlbytes ? c->rlbytes : c->rbytes;\n                if (c->ritem != c->rcurr) {\n                    memmove(c->ritem, c->rcurr, tocopy);\n                }\n                c->ritem += tocopy;\n                c->rlbytes -= tocopy;\n                c->rcurr += tocopy;\n                c->rbytes -= tocopy;\n                if (c->rlbytes == 0) {\n                    break;\n                }\n            }\n\n            /*  now try reading from the socket */\n            res = read(c->sfd, c->ritem, c->rlbytes);\n            if (res > 0) {\n                pthread_mutex_lock(&c->thread->stats.mutex);\n                c->thread->stats.bytes_read += res;\n                pthread_mutex_unlock(&c->thread->stats.mutex);\n                if (c->rcurr == c->ritem) {\n                    c->rcurr += res;\n                }\n                c->ritem += res;\n                c->rlbytes -= res;\n                break;\n            }\n            if (res == 0) { /* end of stream */\n                conn_set_state(c, conn_closing);\n                break;\n            }\n            if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {\n                if (!update_event(c, EV_READ | EV_PERSIST)) {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Couldn't update event\\n\");\n                    conn_set_state(c, conn_closing);\n                    break;\n                }\n                stop = true;\n                break;\n            }\n            /* otherwise we have a real error, on which we close the connection */\n            if (settings.verbose > 0) {\n                fprintf(stderr, \"Failed to read, and not due to blocking:\\n\"\n                        \"errno: %d %s \\n\"\n                        \"rcurr=%lx ritem=%lx rbuf=%lx rlbytes=%d rsize=%d\\n\",\n                        errno, strerror(errno),\n                        (long)c->rcurr, (long)c->ritem, (long)c->rbuf,\n                        (int)c->rlbytes, (int)c->rsize);\n            }\n            conn_set_state(c, conn_closing);\n            break;\n\n        case conn_swallow:\n            /* we are reading sbytes and throwing them away */\n            if (c->sbytes == 0) {\n                conn_set_state(c, conn_new_cmd);\n                break;\n            }\n\n            /* first check if we have leftovers in the conn_read buffer */\n            if (c->rbytes > 0) {\n                int tocopy = c->rbytes > c->sbytes ? c->sbytes : c->rbytes;\n                c->sbytes -= tocopy;\n                c->rcurr += tocopy;\n                c->rbytes -= tocopy;\n                break;\n            }\n\n            /*  now try reading from the socket */\n            res = read(c->sfd, c->rbuf, c->rsize > c->sbytes ? c->sbytes : c->rsize);\n            if (res > 0) {\n                pthread_mutex_lock(&c->thread->stats.mutex);\n                c->thread->stats.bytes_read += res;\n                pthread_mutex_unlock(&c->thread->stats.mutex);\n                c->sbytes -= res;\n                break;\n            }\n            if (res == 0) { /* end of stream */\n                conn_set_state(c, conn_closing);\n                break;\n            }\n            if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {\n                if (!update_event(c, EV_READ | EV_PERSIST)) {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Couldn't update event\\n\");\n                    conn_set_state(c, conn_closing);\n                    break;\n                }\n                stop = true;\n                break;\n            }\n            /* otherwise we have a real error, on which we close the connection */\n            if (settings.verbose > 0)\n                fprintf(stderr, \"Failed to read, and not due to blocking\\n\");\n            conn_set_state(c, conn_closing);\n            break;\n\n        case conn_write:\n            /*\n             * We want to write out a simple response. If we haven't already,\n             * assemble it into a msgbuf list (this will be a single-entry\n             * list for TCP or a two-entry list for UDP).\n             */\n            if (c->iovused == 0 || (IS_UDP(c->transport) && c->iovused == 1)) {\n                if (add_iov(c, c->wcurr, c->wbytes) != 0) {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Couldn't build response\\n\");\n                    conn_set_state(c, conn_closing);\n                    break;\n                }\n            }\n\n            /* fall through... */\n\n        case conn_mwrite:\n          if (IS_UDP(c->transport) && c->msgcurr == 0 && build_udp_headers(c) != 0) {\n            if (settings.verbose > 0)\n              fprintf(stderr, \"Failed to build UDP headers\\n\");\n            conn_set_state(c, conn_closing);\n            break;\n          }\n            switch (transmit(c)) {\n            case TRANSMIT_COMPLETE:\n                if (c->state == conn_mwrite) {\n                    while (c->ileft > 0) {\n                        item *it = *(c->icurr);\n                        assert((it->it_flags & ITEM_SLABBED) == 0);\n                        item_remove(it);\n                        c->icurr++;\n                        c->ileft--;\n                    }\n                    while (c->suffixleft > 0) {\n                        char *suffix = *(c->suffixcurr);\n                        cache_free(c->thread->suffix_cache, suffix);\n                        c->suffixcurr++;\n                        c->suffixleft--;\n                    }\n                    /* XXX:  I don't know why this wasn't the general case */\n                    if(c->protocol == binary_prot) {\n                        conn_set_state(c, c->write_and_go);\n                    } else {\n                        conn_set_state(c, conn_new_cmd);\n                    }\n                } else if (c->state == conn_write) {\n                    if (c->write_and_free) {\n                        free(c->write_and_free);\n                        c->write_and_free = 0;\n                    }\n                    conn_set_state(c, c->write_and_go);\n                } else {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Unexpected state %d\\n\", c->state);\n                    conn_set_state(c, conn_closing);\n                }\n                break;\n\n            case TRANSMIT_INCOMPLETE:\n            case TRANSMIT_HARD_ERROR:\n                break;                   /* Continue in state machine. */\n\n            case TRANSMIT_SOFT_ERROR:\n                stop = true;\n                break;\n            }\n            break;\n\n        case conn_closing:\n            if (IS_UDP(c->transport))\n                conn_cleanup(c);\n            else\n                conn_close(c);\n            stop = true;\n            break;\n\n        case conn_max_state:\n            assert(false);\n            break;\n        }\n    }\n\n    return;\n}",
+            3748
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "memcached.c",
+            "drive_machine",
+            "static void drive_machine(conn *c) { /* <=== drive_machine */ \n    bool stop = false;\n    int sfd, flags = 1;\n    socklen_t addrlen;\n    struct sockaddr_storage addr;\n    int nreqs = settings.reqs_per_event;\n    int res;\n    const char *str;\n\n    assert(c != NULL);\n\n    while (!stop) {\n\n        switch(c->state) {\n        case conn_listening:\n            addrlen = sizeof(addr);\n            if ((sfd = accept(c->sfd, (struct sockaddr *)&addr, &addrlen)) == -1) {\n                if (errno == EAGAIN || errno == EWOULDBLOCK) {\n                    /* these are transient, so don't log anything */\n                    stop = true;\n                } else if (errno == EMFILE) {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Too many open connections\\n\");\n                    accept_new_conns(false);\n                    stop = true;\n                } else {\n                    perror(\"accept()\");\n                    stop = true;\n                }\n                break;\n            }\n            if ((flags = fcntl(sfd, F_GETFL, 0)) < 0 ||\n                fcntl(sfd, F_SETFL, flags | O_NONBLOCK) < 0) {\n                perror(\"setting O_NONBLOCK\");\n                close(sfd);\n                break;\n            }\n\n            if (settings.maxconns_fast &&\n                stats.curr_conns + stats.reserved_fds >= settings.maxconns - 1) {\n                str = \"ERROR Too many open connections\\r\\n\";\n                res = write(sfd, str, strlen(str));\n                close(sfd);\n                STATS_LOCK();\n                stats.rejected_conns++;\n                STATS_UNLOCK();\n            } else {\n                dispatch_conn_new(sfd, conn_new_cmd, EV_READ | EV_PERSIST,\n                                     DATA_BUFFER_SIZE, tcp_transport);\n            }\n\n            stop = true;\n            break;\n\n        case conn_waiting:\n            if (!update_event(c, EV_READ | EV_PERSIST)) {\n                if (settings.verbose > 0)\n                    fprintf(stderr, \"Couldn't update event\\n\");\n                conn_set_state(c, conn_closing);\n                break;\n            }\n\n            conn_set_state(c, conn_read);\n            stop = true;\n            break;\n\n        case conn_read:\n            res = IS_UDP(c->transport) ? try_read_udp(c) : try_read_network(c);\n\n            switch (res) {\n            case READ_NO_DATA_RECEIVED:\n                conn_set_state(c, conn_waiting);\n                break;\n            case READ_DATA_RECEIVED:\n                conn_set_state(c, conn_parse_cmd);\n                break;\n            case READ_ERROR:\n                conn_set_state(c, conn_closing);\n                break;\n            case READ_MEMORY_ERROR: /* Failed to allocate more memory */\n                /* State already set by try_read_network */\n                break;\n            }\n            break;\n\n        case conn_parse_cmd :\n            if (try_read_command(c) == 0) {\n                /* wee need more data! */\n                conn_set_state(c, conn_waiting);\n            }\n\n            break;\n\n        case conn_new_cmd:\n            /* Only process nreqs at a time to avoid starving other\n               connections */\n\n            --nreqs;\n            if (nreqs >= 0) {\n                reset_cmd_handler(c);\n            } else {\n                pthread_mutex_lock(&c->thread->stats.mutex);\n                c->thread->stats.conn_yields++;\n                pthread_mutex_unlock(&c->thread->stats.mutex);\n                if (c->rbytes > 0) {\n                    /* We have already read in data into the input buffer,\n                       so libevent will most likely not signal read events\n                       on the socket (unless more data is available. As a\n                       hack we should just put in a request to write data,\n                       because that should be possible ;-)\n                    */\n                    if (!update_event(c, EV_WRITE | EV_PERSIST)) {\n                        if (settings.verbose > 0)\n                            fprintf(stderr, \"Couldn't update event\\n\");\n                        conn_set_state(c, conn_closing);\n                        break;\n                    }\n                }\n                stop = true;\n            }\n            break;\n\n        case conn_nread:\n            if (c->rlbytes == 0) {\n                complete_nread(c);\n                break;\n            }\n            /* first check if we have leftovers in the conn_read buffer */\n            if (c->rbytes > 0) {\n                int tocopy = c->rbytes > c->rlbytes ? c->rlbytes : c->rbytes;\n                if (c->ritem != c->rcurr) {\n                    memmove(c->ritem, c->rcurr, tocopy);\n                }\n                c->ritem += tocopy;\n                c->rlbytes -= tocopy;\n                c->rcurr += tocopy;\n                c->rbytes -= tocopy;\n                if (c->rlbytes == 0) {\n                    break;\n                }\n            }\n\n            /*  now try reading from the socket */\n            res = read(c->sfd, c->ritem, c->rlbytes);\n            if (res > 0) {\n                pthread_mutex_lock(&c->thread->stats.mutex);\n                c->thread->stats.bytes_read += res;\n                pthread_mutex_unlock(&c->thread->stats.mutex);\n                if (c->rcurr == c->ritem) {\n                    c->rcurr += res;\n                }\n                c->ritem += res;\n                c->rlbytes -= res;\n                break;\n            }\n            if (res == 0) { /* end of stream */\n                conn_set_state(c, conn_closing);\n                break;\n            }\n            if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {\n                if (!update_event(c, EV_READ | EV_PERSIST)) {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Couldn't update event\\n\");\n                    conn_set_state(c, conn_closing);\n                    break;\n                }\n                stop = true;\n                break;\n            }\n            /* otherwise we have a real error, on which we close the connection */\n            if (settings.verbose > 0) {\n                fprintf(stderr, \"Failed to read, and not due to blocking:\\n\"\n                        \"errno: %d %s \\n\"\n                        \"rcurr=%lx ritem=%lx rbuf=%lx rlbytes=%d rsize=%d\\n\",\n                        errno, strerror(errno),\n                        (long)c->rcurr, (long)c->ritem, (long)c->rbuf,\n                        (int)c->rlbytes, (int)c->rsize);\n            }\n            conn_set_state(c, conn_closing);\n            break;\n\n        case conn_swallow:\n            /* we are reading sbytes and throwing them away */\n            if (c->sbytes == 0) {\n                conn_set_state(c, conn_new_cmd);\n                break;\n            }\n\n            /* first check if we have leftovers in the conn_read buffer */\n            if (c->rbytes > 0) {\n                int tocopy = c->rbytes > c->sbytes ? c->sbytes : c->rbytes;\n                c->sbytes -= tocopy;\n                c->rcurr += tocopy;\n                c->rbytes -= tocopy;\n                break;\n            }\n\n            /*  now try reading from the socket */\n            res = read(c->sfd, c->rbuf, c->rsize > c->sbytes ? c->sbytes : c->rsize);\n            if (res > 0) {\n                pthread_mutex_lock(&c->thread->stats.mutex);\n                c->thread->stats.bytes_read += res;\n                pthread_mutex_unlock(&c->thread->stats.mutex);\n                c->sbytes -= res;\n                break;\n            }\n            if (res == 0) { /* end of stream */\n                conn_set_state(c, conn_closing);\n                break;\n            }\n            if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {\n                if (!update_event(c, EV_READ | EV_PERSIST)) {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Couldn't update event\\n\");\n                    conn_set_state(c, conn_closing);\n                    break;\n                }\n                stop = true;\n                break;\n            }\n            /* otherwise we have a real error, on which we close the connection */\n            if (settings.verbose > 0)\n                fprintf(stderr, \"Failed to read, and not due to blocking\\n\");\n            conn_set_state(c, conn_closing);\n            break;\n\n        case conn_write:\n            /*\n             * We want to write out a simple response. If we haven't already,\n             * assemble it into a msgbuf list (this will be a single-entry\n             * list for TCP or a two-entry list for UDP).\n             */\n            if (c->iovused == 0 || (IS_UDP(c->transport) && c->iovused == 1)) {\n                if (add_iov(c, c->wcurr, c->wbytes) != 0) {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Couldn't build response\\n\");\n                    conn_set_state(c, conn_closing);\n                    break;\n                }\n            }\n\n            /* fall through... */\n\n        case conn_mwrite:\n          if (IS_UDP(c->transport) && c->msgcurr == 0 && build_udp_headers(c) != 0) {\n            if (settings.verbose > 0)\n              fprintf(stderr, \"Failed to build UDP headers\\n\");\n            conn_set_state(c, conn_closing);\n            break;\n          }\n            switch (transmit(c)) {\n            case TRANSMIT_COMPLETE:\n                if (c->state == conn_mwrite) {\n                    while (c->ileft > 0) {\n                        item *it = *(c->icurr);\n                        assert((it->it_flags & ITEM_SLABBED) == 0);\n                        item_remove(it);\n                        c->icurr++;\n                        c->ileft--;\n                    }\n                    while (c->suffixleft > 0) {\n                        char *suffix = *(c->suffixcurr);\n                        cache_free(c->thread->suffix_cache, suffix);\n                        c->suffixcurr++;\n                        c->suffixleft--;\n                    }\n                    /* XXX:  I don't know why this wasn't the general case */\n                    if(c->protocol == binary_prot) {\n                        conn_set_state(c, c->write_and_go);\n                    } else {\n                        conn_set_state(c, conn_new_cmd);\n                    }\n                } else if (c->state == conn_write) {\n                    if (c->write_and_free) {\n                        free(c->write_and_free);\n                        c->write_and_free = 0;\n                    }\n                    conn_set_state(c, c->write_and_go);\n                } else {\n                    if (settings.verbose > 0)\n                        fprintf(stderr, \"Unexpected state %d\\n\", c->state);\n                    conn_set_state(c, conn_closing);\n                }\n                break;\n\n            case TRANSMIT_INCOMPLETE:\n            case TRANSMIT_HARD_ERROR:\n                break;                   /* Continue in state machine. */\n\n            case TRANSMIT_SOFT_ERROR:\n                stop = true;\n                break;\n            }\n            break;\n\n        case conn_closing:\n            if (IS_UDP(c->transport))\n                conn_cleanup(c);\n            else\n                conn_close(c);\n            stop = true;\n            break;\n\n        case conn_max_state:\n            assert(false);\n            break;\n        }\n    }\n\n    return;\n}",
+            3748
+        ]
+    ]
+}

@@ -1,0 +1,114 @@
+{
+    "calleeMethods": [
+        [
+            "lib/string.c",
+            "memset",
+            "void *memset(void *s, int c, size_t count) /* <=== memset */ \n{\n\tchar *xs = s;\n\n\twhile (count--)\n\t\t*xs++ = c;\n\treturn s;\n}",
+            1
+        ],
+        [
+            "arch/tile/lib/memset_32.c",
+            "CACHE_LINE_SIZE_IN_WORDS",
+            "#define CACHE_LINE_SIZE_IN_WORDS (CHIP_L2_LINE_SIZE() / 4) /* <=== arch/tile/lib/memset_32.c:75:75:CACHE_LINE_SIZE_IN_WORDS:0 */ ",
+            2
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "memset",
+            "void *memset(void *s, int c, size_t n) /* <=== memset */ \n{\n\tuint64_t *out64;\n\tint n64, to_align64;\n\tuint64_t v64;\n\tuint8_t *out8 = s;\n\n\t/* Experimentation shows that a trivial tight loop is a win up until\n\t * around a size of 20, where writing a word at a time starts to win.\n\t */\n#define BYTE_CUTOFF 20\n\n#if BYTE_CUTOFF < 7\n\t/* This must be at least at least this big, or some code later\n\t * on doesn't work.\n\t */\n#error \"BYTE_CUTOFF is too small\"\n#endif\n\n\tif (n < BYTE_CUTOFF) {\n\t\t/* Strangely, this turns out to be the tightest way to\n\t\t * write this loop.\n\t\t */\n\t\tif (n != 0) {\n\t\t\tdo {\n\t\t\t\t/* Strangely, combining these into one line\n\t\t\t\t * performs worse.\n\t\t\t\t */\n\t\t\t\t*out8 = c;\n\t\t\t\tout8++;\n\t\t\t} while (--n != 0);\n\t\t}\n\n\t\treturn s;\n\t}\n\n\t/* Align 'out8'. We know n >= 7 so this won't write past the end. */\n\twhile (((uintptr_t) out8 & 7) != 0) {\n\t\t*out8++ = c;\n\t\t--n;\n\t}\n\n\t/* Align 'n'. */\n\twhile (n & 7)\n\t\tout8[--n] = c;\n\n\tout64 = (uint64_t *) out8;\n\tn64 = n >> 3;\n\n\t/* Tile input byte out to 64 bits. */\n\tv64 = copy_byte(c);\n\n\t/* This must be at least 8 or the following loop doesn't work. */\n#define CACHE_LINE_SIZE_IN_DOUBLEWORDS (CHIP_L2_LINE_SIZE() / 8)\n\n\t/* Determine how many words we need to emit before the 'out32'\n\t * pointer becomes aligned modulo the cache line size.\n\t */\n\tto_align64 = (-((uintptr_t)out64 >> 3)) &\n\t\t(CACHE_LINE_SIZE_IN_DOUBLEWORDS - 1);\n\n\t/* Only bother aligning and using wh64 if there is at least\n\t * one full cache line to process.  This check also prevents\n\t * overrunning the end of the buffer with alignment words.\n\t */\n\tif (to_align64 <= n64 - CACHE_LINE_SIZE_IN_DOUBLEWORDS) {\n\t\tint lines_left;\n\n\t\t/* Align out64 mod the cache line size so we can use wh64. */\n\t\tn64 -= to_align64;\n\t\tfor (; to_align64 != 0; to_align64--) {\n\t\t\t*out64 = v64;\n\t\t\tout64++;\n\t\t}\n\n\t\t/* Use unsigned divide to turn this into a right shift. */\n\t\tlines_left = (unsigned)n64 / CACHE_LINE_SIZE_IN_DOUBLEWORDS;\n\n\t\tdo {\n\t\t\t/* Only wh64 a few lines at a time, so we don't\n\t\t\t * exceed the maximum number of victim lines.\n\t\t\t */\n\t\t\tint x = ((lines_left < CHIP_MAX_OUTSTANDING_VICTIMS())\n\t\t\t\t  ? lines_left\n\t\t\t\t  : CHIP_MAX_OUTSTANDING_VICTIMS());\n\t\t\tuint64_t *wh = out64;\n\t\t\tint i = x;\n\t\t\tint j;\n\n\t\t\tlines_left -= x;\n\n\t\t\tdo {\n\t\t\t\t__insn_wh64(wh);\n\t\t\t\twh += CACHE_LINE_SIZE_IN_DOUBLEWORDS;\n\t\t\t} while (--i);\n\n\t\t\tfor (j = x * (CACHE_LINE_SIZE_IN_DOUBLEWORDS / 4);\n\t\t\t     j != 0; j--) {\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t}\n\t\t} while (lines_left != 0);\n\n\t\t/* We processed all full lines above, so only this many\n\t\t * words remain to be processed.\n\t\t */\n\t\tn64 &= CACHE_LINE_SIZE_IN_DOUBLEWORDS - 1;\n\t}\n\n\t/* Now handle any leftover values. */\n\tif (n64 != 0) {\n\t\tdo {\n\t\t\t*out64 = v64;\n\t\t\tout64++;\n\t\t} while (--n64 != 0);\n\t}\n\n\treturn s;\n}",
+            1
+        ],
+        [
+            "arch/tile/lib/memset_32.c",
+            "memset",
+            "void *memset(void *s, int c, size_t n) /* <=== memset */ \n{\n\tuint32_t *out32;\n\tint n32;\n\tuint32_t v16, v32;\n\tuint8_t *out8 = s;\n\tint to_align32;\n\n\t/* Experimentation shows that a trivial tight loop is a win up until\n\t * around a size of 20, where writing a word at a time starts to win.\n\t */\n#define BYTE_CUTOFF 20\n\n#if BYTE_CUTOFF < 3\n\t/* This must be at least at least this big, or some code later\n\t * on doesn't work.\n\t */\n#error \"BYTE_CUTOFF is too small\"\n#endif\n\n\tif (n < BYTE_CUTOFF) {\n\t\t/* Strangely, this turns out to be the tightest way to\n\t\t * write this loop.\n\t\t */\n\t\tif (n != 0) {\n\t\t\tdo {\n\t\t\t\t/* Strangely, combining these into one line\n\t\t\t\t * performs worse.\n\t\t\t\t */\n\t\t\t\t*out8 = c;\n\t\t\t\tout8++;\n\t\t\t} while (--n != 0);\n\t\t}\n\n\t\treturn s;\n\t}\n\n\t/* Align 'out8'. We know n >= 3 so this won't write past the end. */\n\twhile (((uintptr_t) out8 & 3) != 0) {\n\t\t*out8++ = c;\n\t\t--n;\n\t}\n\n\t/* Align 'n'. */\n\twhile (n & 3)\n\t\tout8[--n] = c;\n\n\tout32 = (uint32_t *) out8;\n\tn32 = n >> 2;\n\n\t/* Tile input byte out to 32 bits. */\n\tv16 = __insn_intlb(c, c);\n\tv32 = __insn_intlh(v16, v16);\n\n\t/* This must be at least 8 or the following loop doesn't work. */\n#define CACHE_LINE_SIZE_IN_WORDS (CHIP_L2_LINE_SIZE() / 4)\n\n\t/* Determine how many words we need to emit before the 'out32'\n\t * pointer becomes aligned modulo the cache line size.\n\t */\n\tto_align32 =\n\t\t(-((uintptr_t)out32 >> 2)) & (CACHE_LINE_SIZE_IN_WORDS - 1);\n\n\t/* Only bother aligning and using wh64 if there is at least\n\t * one full cache line to process.  This check also prevents\n\t * overrunning the end of the buffer with alignment words.\n\t */\n\tif (to_align32 <= n32 - CACHE_LINE_SIZE_IN_WORDS) {\n\t\tint lines_left;\n\n\t\t/* Align out32 mod the cache line size so we can use wh64. */\n\t\tn32 -= to_align32;\n\t\tfor (; to_align32 != 0; to_align32--) {\n\t\t\t*out32 = v32;\n\t\t\tout32++;\n\t\t}\n\n\t\t/* Use unsigned divide to turn this into a right shift. */\n\t\tlines_left = (unsigned)n32 / CACHE_LINE_SIZE_IN_WORDS;\n\n\t\tdo {\n\t\t\t/* Only wh64 a few lines at a time, so we don't\n\t\t\t * exceed the maximum number of victim lines.\n\t\t\t */\n\t\t\tint x = ((lines_left < CHIP_MAX_OUTSTANDING_VICTIMS())\n\t\t\t\t  ? lines_left\n\t\t\t\t  : CHIP_MAX_OUTSTANDING_VICTIMS());\n\t\t\tuint32_t *wh = out32;\n\t\t\tint i = x;\n\t\t\tint j;\n\n\t\t\tlines_left -= x;\n\n\t\t\tdo {\n\t\t\t\t__insn_wh64(wh);\n\t\t\t\twh += CACHE_LINE_SIZE_IN_WORDS;\n\t\t\t} while (--i);\n\n\t\t\tfor (j = x * (CACHE_LINE_SIZE_IN_WORDS / 4);\n\t\t\t     j != 0; j--) {\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t}\n\t\t} while (lines_left != 0);\n\n\t\t/* We processed all full lines above, so only this many\n\t\t * words remain to be processed.\n\t\t */\n\t\tn32 &= CACHE_LINE_SIZE_IN_WORDS - 1;\n\t}\n\n\t/* Now handle any leftover values. */\n\tif (n32 != 0) {\n\t\tdo {\n\t\t\t*out32 = v32;\n\t\t\tout32++;\n\t\t} while (--n32 != 0);\n\t}\n\n\treturn s;\n}",
+            1
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "BYTE_CUTOFF",
+            "#define BYTE_CUTOFF 20 /* <=== arch/tile/lib/memset_64.c:31:31:BYTE_CUTOFF:0 */ ",
+            2
+        ],
+        [
+            "arch/tile/lib/memset_32.c",
+            "BYTE_CUTOFF",
+            "#define BYTE_CUTOFF 20 /* <=== arch/tile/lib/memset_32.c:31:31:BYTE_CUTOFF:0 */ ",
+            2
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "CACHE_LINE_SIZE_IN_DOUBLEWORDS",
+            "#define CACHE_LINE_SIZE_IN_DOUBLEWORDS (CHIP_L2_LINE_SIZE() / 8) /* <=== arch/tile/lib/memset_64.c:74:74:CACHE_LINE_SIZE_IN_DOUBLEWORDS:0 */ ",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/videodev2.h>",
+        "#include <media/v4l2-fh.h>",
+        "#include <media/v4l2-event.h>",
+        "#include <linux/fb.h>",
+        "#include <media/v4l2-ioctl.h>",
+        "#include <media/videobuf2-vmalloc.h>",
+        "#include \"vivid-osd.h\"",
+        "#include <linux/module.h>",
+        "#include <linux/kernel.h>",
+        "#include <linux/init.h>",
+        "#include <media/v4l2-ctrls.h>",
+        "#include <media/v4l2-device.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/font.h>",
+        "#include <linux/errno.h>",
+        "#include <linux/sched.h>",
+        "#include <media/v4l2-common.h>",
+        "#include <linux/kthread.h>",
+        "#include \"vivid-core.h\"",
+        "#include <linux/mutex.h>",
+        "#include <linux/freezer.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct fb_vblank {\n\t__u32 flags;\t\t\t/* FB_VBLANK flags */\n\t__u32 count;\t\t\t/* counter of retraces since boot */\n\t__u32 vcount;\t\t\t/* current scanline position */\n\t__u32 hcount;\t\t\t/* current scandot position */\n\t__u32 reserved[4];\t\t/* reserved for future compatibility */\n}",
+            "fb_vblank"
+        ]
+    ],
+    "visitedLines_after": {
+        "drivers/media/platform/vivid/vivid-osd.c": [
+            80,
+            84,
+            88,
+            89,
+            91,
+            92,
+            93
+        ]
+    },
+    "visitedLines_before": {
+        "drivers/media/platform/vivid/vivid-osd.c": [
+            80,
+            84,
+            88,
+            90,
+            91,
+            92
+        ]
+    },
+    "visitedParams": {},
+    "vulnerableMethods_after": [
+        [
+            "drivers/media/platform/vivid/vivid-osd.c",
+            "vivid_fb_ioctl",
+            "static int vivid_fb_ioctl(struct fb_info *info, unsigned cmd, unsigned long arg) /* <=== vivid_fb_ioctl */ \n{\n\tstruct vivid_dev *dev = (struct vivid_dev *)info->par;\n\n\tswitch (cmd) {\n\tcase FBIOGET_VBLANK: {\n\t\tstruct fb_vblank vblank;\n\n\t\tmemset(&vblank, 0, sizeof(vblank));\n\t\tvblank.flags = FB_VBLANK_HAVE_COUNT | FB_VBLANK_HAVE_VCOUNT |\n\t\t\tFB_VBLANK_HAVE_VSYNC;\n\t\tvblank.count = 0;\n\t\tvblank.vcount = 0;\n\t\tvblank.hcount = 0;\n\t\tif (copy_to_user((void __user *)arg, &vblank, sizeof(vblank)))\n\t\t\treturn -EFAULT;\n\t\treturn 0;\n\t}\n\n\tdefault:\n\t\tdprintk(dev, 1, \"Unknown ioctl %08x\\n\", cmd);\n\t\treturn -EINVAL;\n\t}\n\treturn 0;\n}",
+            80
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "drivers/media/platform/vivid/vivid-osd.c",
+            "vivid_fb_ioctl",
+            "static int vivid_fb_ioctl(struct fb_info *info, unsigned cmd, unsigned long arg) /* <=== vivid_fb_ioctl */ \n{\n\tstruct vivid_dev *dev = (struct vivid_dev *)info->par;\n\n\tswitch (cmd) {\n\tcase FBIOGET_VBLANK: {\n\t\tstruct fb_vblank vblank;\n\n\t\tvblank.flags = FB_VBLANK_HAVE_COUNT | FB_VBLANK_HAVE_VCOUNT |\n\t\t\tFB_VBLANK_HAVE_VSYNC;\n\t\tvblank.count = 0;\n\t\tvblank.vcount = 0;\n\t\tvblank.hcount = 0;\n\t\tif (copy_to_user((void __user *)arg, &vblank, sizeof(vblank)))\n\t\t\treturn -EFAULT;\n\t\treturn 0;\n\t}\n\n\tdefault:\n\t\tdprintk(dev, 1, \"Unknown ioctl %08x\\n\", cmd);\n\t\treturn -EINVAL;\n\t}\n\treturn 0;\n}",
+            80
+        ]
+    ]
+}

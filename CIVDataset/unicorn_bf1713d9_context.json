@@ -1,0 +1,248 @@
+{
+    "calleeMethods": [
+        [
+            "uc.c",
+            "uc_reg_read",
+            "uc_err uc_reg_read(uc_engine *uc, int regid, void *value) /* <=== uc_reg_read */ \n{\n    return uc_reg_read_batch(uc, &regid, &value, 1);\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "uc_reg_read_batch",
+            "uc_err uc_reg_read_batch(uc_engine *uc, int *ids, void **vals, int count) /* <=== uc_reg_read_batch */ \n{\n    if (uc->reg_read)\n        uc->reg_read(uc, (unsigned int *)ids, vals, count);\n    else\n        return -1;  // FIXME: need a proper uc_err\n\n    return UC_ERR_OK;\n}",
+            2
+        ],
+        [
+            "qemu/include/qom/object.h",
+            "OBJECT",
+            "#define OBJECT(obj) \\ /* <=== qemu/include/qom/object.h:493:494:OBJECT:1 */ \n    ((Object *)(obj))",
+            2
+        ],
+        [
+            "uc.c",
+            "uc_mem_map",
+            "uc_err uc_mem_map(uc_engine *uc, uint64_t address, size_t size, uint32_t perms) /* <=== uc_mem_map */ \n{\n    uc_err res;\n\n    if (uc->mem_redirect) {\n        address = uc->mem_redirect(address);\n    }\n\n    res = mem_map_check(uc, address, size, perms);\n    if (res)\n        return res;\n\n    return mem_map(uc, address, size, perms, uc->memory_map(uc, address, size, perms));\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "check_mem_area",
+            "static bool check_mem_area(uc_engine *uc, uint64_t address, size_t size) /* <=== check_mem_area */ \n{\n    size_t count = 0, len;\n\n    while(count < size) {\n        MemoryRegion *mr = memory_mapping(uc, address);\n        if (mr) {\n            len = (size_t)MIN(size - count, mr->end - address);\n            count += len;\n            address += len;\n        } else  // this address is not mapped in yet\n            break;\n    }\n\n    return (count == size);\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "clear_deleted_hooks",
+            "static void clear_deleted_hooks(uc_engine *uc) /* <=== clear_deleted_hooks */ \n{\n    struct list_item * cur;\n    struct hook * hook;\n    int i;\n    \n    for (cur = uc->hooks_to_del.head; cur != NULL && (hook = (struct hook *)cur->data); cur = cur->next) {\n        assert(hook->to_delete);\n        for (i = 0; i < UC_HOOK_MAX; i++) {\n            if (list_remove(&uc->hook[i], (void *)hook)) {\n                if (--hook->refs == 0) {\n                    free(hook);\n                }\n\n                // a hook cannot be twice in the same list\n                break;\n            }\n        }\n    }\n\n    list_clear(&uc->hooks_to_del);\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "uc_mem_write",
+            "uc_err uc_mem_write(uc_engine *uc, uint64_t address, const void *_bytes, size_t size) /* <=== uc_mem_write */ \n{\n    size_t count = 0, len;\n    const uint8_t *bytes = _bytes;\n\n    if (uc->mem_redirect) {\n        address = uc->mem_redirect(address);\n    }\n\n    if (!check_mem_area(uc, address, size))\n        return UC_ERR_WRITE_UNMAPPED;\n\n    // memory area can overlap adjacent memory blocks\n    while(count < size) {\n        MemoryRegion *mr = memory_mapping(uc, address);\n        if (mr) {\n            uint32_t operms = mr->perms;\n            if (!(operms & UC_PROT_WRITE)) // write protected\n                // but this is not the program accessing memory, so temporarily mark writable\n                uc->readonly_mem(mr, false);\n\n            len = (size_t)MIN(size - count, mr->end - address);\n            if (uc->write_mem(&uc->as, address, bytes, len) == false)\n                break;\n\n            if (!(operms & UC_PROT_WRITE)) // write protected\n                // now write protect it again\n                uc->readonly_mem(mr, true);\n\n            count += len;\n            address += len;\n            bytes += len;\n        } else  // this address is not mapped in yet\n            break;\n    }\n\n    if (count == size)\n        return UC_ERR_OK;\n    else\n        return UC_ERR_WRITE_UNMAPPED;\n}",
+            1
+        ],
+        [
+            "samples/sample_arm.c",
+            "ARM_THUM_COND_CODE",
+            "#define ARM_THUM_COND_CODE \"\\x9a\\x42\\x14\\xbf\\x68\\x22\\x4d\\x22\" // 'cmp r2, r3\\nit ne\\nmov r2, #0x68\\nmov r2, #0x4d' /* <=== samples/sample_arm.c:14:14:ARM_THUM_COND_CODE:0 */ ",
+            1
+        ],
+        [
+            "uc.c",
+            "mem_map_check",
+            "static uc_err mem_map_check(uc_engine *uc, uint64_t address, size_t size, uint32_t perms) /* <=== mem_map_check */ \n{\n    if (size == 0)\n        // invalid memory mapping\n        return UC_ERR_ARG;\n\n    // address cannot wrapp around\n    if (address + size - 1 < address)\n        return UC_ERR_ARG;\n\n    // address must be aligned to uc->target_page_size\n    if ((address & uc->target_page_align) != 0)\n        return UC_ERR_ARG;\n\n    // size must be multiple of uc->target_page_size\n    if ((size & uc->target_page_align) != 0)\n        return UC_ERR_ARG;\n\n    // check for only valid permissions\n    if ((perms & ~UC_PROT_ALL) != 0)\n        return UC_ERR_ARG;\n\n    // this area overlaps existing mapped regions?\n    if (memory_overlap(uc, address, size)) {\n        return UC_ERR_MAP;\n    }\n\n    return UC_ERR_OK;\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "uc_reg_write_batch",
+            "uc_err uc_reg_write_batch(uc_engine *uc, int *ids, void *const *vals, int count) /* <=== uc_reg_write_batch */ \n{\n    int ret = UC_ERR_OK;\n    if (uc->reg_write)\n        ret = uc->reg_write(uc, (unsigned int *)ids, vals, count);\n    else\n        return UC_ERR_EXCEPTION;  // FIXME: need a proper uc_err\n\n    return ret;\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "uc_close",
+            "uc_err uc_close(uc_engine *uc) /* <=== uc_close */ \n{\n    int i;\n    struct list_item *cur;\n    struct hook *hook;\n\n    // Cleanup internally.\n    if (uc->release)\n        uc->release(uc->tcg_ctx);\n    g_free(uc->tcg_ctx);\n\n    // Cleanup CPU.\n    g_free(uc->cpu->tcg_as_listener);\n    g_free(uc->cpu->thread);\n\n    // Cleanup all objects.\n    OBJECT(uc->machine_state->accelerator)->ref = 1;\n    OBJECT(uc->machine_state)->ref = 1;\n    OBJECT(uc->owner)->ref = 1;\n    OBJECT(uc->root)->ref = 1;\n\n    object_unref(uc, OBJECT(uc->machine_state->accelerator));\n    object_unref(uc, OBJECT(uc->machine_state));\n    object_unref(uc, OBJECT(uc->cpu));\n    object_unref(uc, OBJECT(&uc->io_mem_notdirty));\n    object_unref(uc, OBJECT(&uc->io_mem_unassigned));\n    object_unref(uc, OBJECT(&uc->io_mem_rom));\n    object_unref(uc, OBJECT(uc->root));\n\n    // System memory.\n    g_free(uc->system_memory);\n\n    // Thread relateds.\n    if (uc->qemu_thread_data)\n        g_free(uc->qemu_thread_data);\n\n    // Other auxilaries.\n    free(uc->l1_map);\n\n    if (uc->bounce.buffer) {\n        free(uc->bounce.buffer);\n    }\n\n    g_hash_table_foreach(uc->type_table, free_table, uc);\n    g_hash_table_destroy(uc->type_table);\n\n    for (i = 0; i < DIRTY_MEMORY_NUM; i++) {\n        free(uc->ram_list.dirty_memory[i]);\n    }\n\n    // free hooks and hook lists\n    for (i = 0; i < UC_HOOK_MAX; i++) {\n        cur = uc->hook[i].head;\n        // hook can be in more than one list\n        // so we refcount to know when to free\n        while (cur) {\n            hook = (struct hook *)cur->data;\n            if (--hook->refs == 0) {\n                free(hook);\n            }\n            cur = cur->next;\n        }\n        list_clear(&uc->hook[i]);\n    }\n\n    free(uc->mapped_blocks);\n\n    // free the saved contexts list and notify them that uc has been closed.\n    cur = uc->saved_contexts.head;\n    while (cur != NULL) {\n        struct list_item *next = cur->next;\n        struct uc_context *context = (struct uc_context*)cur->data;\n        context->uc = NULL;\n        cur = next;\n    }\n    list_clear(&uc->saved_contexts);\n\n    // finally, free uc itself.\n    memset(uc, 0, sizeof(*uc));\n    free(uc);\n    \n    return UC_ERR_OK;\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "enable_emu_timer",
+            "static void enable_emu_timer(uc_engine *uc, uint64_t timeout) /* <=== enable_emu_timer */ \n{\n    uc->timeout = timeout;\n    qemu_thread_create(uc, &uc->timer, \"timeout\", _timeout_fn,\n            uc, QEMU_THREAD_JOINABLE);\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "memory_mapping",
+            "MemoryRegion *memory_mapping(struct uc_struct* uc, uint64_t address) /* <=== memory_mapping */ \n{\n    unsigned int i;\n\n    if (uc->mapped_block_count == 0)\n        return NULL;\n\n    if (uc->mem_redirect) {\n        address = uc->mem_redirect(address);\n    }\n\n    // try with the cache index first\n    i = uc->mapped_block_cache_index;\n\n    if (i < uc->mapped_block_count && address >= uc->mapped_blocks[i]->addr && address < uc->mapped_blocks[i]->end)\n        return uc->mapped_blocks[i];\n\n    for(i = 0; i < uc->mapped_block_count; i++) {\n        if (address >= uc->mapped_blocks[i]->addr && address <= uc->mapped_blocks[i]->end - 1) {\n            // cache this index for the next query\n            uc->mapped_block_cache_index = i;\n            return uc->mapped_blocks[i];\n        }\n    }\n\n    // not found\n    return NULL;\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "memory_overlap",
+            "static bool memory_overlap(struct uc_struct *uc, uint64_t begin, size_t size) /* <=== memory_overlap */ \n{\n    unsigned int i;\n    uint64_t end = begin + size - 1;\n\n    for(i = 0; i < uc->mapped_block_count; i++) {\n        // begin address falls inside this region?\n        if (begin >= uc->mapped_blocks[i]->addr && begin <= uc->mapped_blocks[i]->end - 1)\n            return true;\n\n        // end address falls inside this region?\n        if (end >= uc->mapped_blocks[i]->addr && end <= uc->mapped_blocks[i]->end - 1)\n            return true;\n\n        // this region falls totally inside this range?\n        if (begin < uc->mapped_blocks[i]->addr && end > uc->mapped_blocks[i]->end - 1)\n            return true;\n    }\n\n    // not found\n    return false;\n}",
+            3
+        ],
+        [
+            "samples/sample_arm.c",
+            "ADDRESS",
+            "#define ADDRESS 0x10000 /* <=== samples/sample_arm.c:17:17:ADDRESS:0 */ ",
+            1
+        ],
+        [
+            "qemu/include/qemu/thread.h",
+            "QEMU_THREAD_JOINABLE",
+            "#define QEMU_THREAD_JOINABLE 0 /* <=== qemu/include/qemu/thread.h:14:14:QEMU_THREAD_JOINABLE:0 */ ",
+            3
+        ],
+        [
+            "uc.c",
+            "uc_reg_write",
+            "uc_err uc_reg_write(uc_engine *uc, int regid, const void *value) /* <=== uc_reg_write */ \n{\n    return uc_reg_write_batch(uc, &regid, (void *const *)&value, 1);\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "uc_open",
+            "uc_err uc_open(uc_arch arch, uc_mode mode, uc_engine **result) /* <=== uc_open */ \n{\n    struct uc_struct *uc;\n\n    if (arch < UC_ARCH_MAX) {\n        uc = calloc(1, sizeof(*uc));\n        if (!uc) {\n            // memory insufficient\n            return UC_ERR_NOMEM;\n        }\n\n        uc->errnum = UC_ERR_OK;\n        uc->arch = arch;\n        uc->mode = mode;\n\n        // uc->ram_list = { .blocks = QTAILQ_HEAD_INITIALIZER(ram_list.blocks) };\n        uc->ram_list.blocks.tqh_first = NULL;\n        uc->ram_list.blocks.tqh_last = &(uc->ram_list.blocks.tqh_first);\n\n        uc->memory_listeners.tqh_first = NULL;\n        uc->memory_listeners.tqh_last = &uc->memory_listeners.tqh_first;\n\n        uc->address_spaces.tqh_first = NULL;\n        uc->address_spaces.tqh_last = &uc->address_spaces.tqh_first;\n\n        switch(arch) {\n            default:\n                break;\n#ifdef UNICORN_HAS_M68K\n            case UC_ARCH_M68K:\n                if ((mode & ~UC_MODE_M68K_MASK) ||\n                        !(mode & UC_MODE_BIG_ENDIAN)) {\n                    free(uc);\n                    return UC_ERR_MODE;\n                }\n                uc->init_arch = m68k_uc_init;\n                break;\n#endif\n#ifdef UNICORN_HAS_X86\n            case UC_ARCH_X86:\n                if ((mode & ~UC_MODE_X86_MASK) ||\n                        (mode & UC_MODE_BIG_ENDIAN) ||\n                        !(mode & (UC_MODE_16|UC_MODE_32|UC_MODE_64))) {\n                    free(uc);\n                    return UC_ERR_MODE;\n                }\n                uc->init_arch = x86_uc_init;\n                break;\n#endif\n#ifdef UNICORN_HAS_ARM\n            case UC_ARCH_ARM:\n                if ((mode & ~UC_MODE_ARM_MASK)) {\n                    free(uc);\n                    return UC_ERR_MODE;\n                }\n                if (mode & UC_MODE_BIG_ENDIAN) {\n#ifdef UNICORN_HAS_ARMEB\n                    uc->init_arch = armeb_uc_init;\n#else\n                    return UC_ERR_MODE;\n#endif\n                } else {\n                    uc->init_arch = arm_uc_init;\n                }\n\n                if (mode & UC_MODE_THUMB)\n                    uc->thumb = 1;\n                break;\n#endif\n#ifdef UNICORN_HAS_ARM64\n            case UC_ARCH_ARM64:\n                if (mode & ~UC_MODE_ARM_MASK) {\n                    free(uc);\n                    return UC_ERR_MODE;\n                }\n                if (mode & UC_MODE_BIG_ENDIAN) {\n                    uc->init_arch = arm64eb_uc_init;\n                } else {\n                    uc->init_arch = arm64_uc_init;\n                }\n                break;\n#endif\n\n#if defined(UNICORN_HAS_MIPS) || defined(UNICORN_HAS_MIPSEL) || defined(UNICORN_HAS_MIPS64) || defined(UNICORN_HAS_MIPS64EL)\n            case UC_ARCH_MIPS:\n                if ((mode & ~UC_MODE_MIPS_MASK) ||\n                        !(mode & (UC_MODE_MIPS32|UC_MODE_MIPS64))) {\n                    free(uc);\n                    return UC_ERR_MODE;\n                }\n                if (mode & UC_MODE_BIG_ENDIAN) {\n#ifdef UNICORN_HAS_MIPS\n                    if (mode & UC_MODE_MIPS32)\n                        uc->init_arch = mips_uc_init;\n#endif\n#ifdef UNICORN_HAS_MIPS64\n                    if (mode & UC_MODE_MIPS64)\n                        uc->init_arch = mips64_uc_init;\n#endif\n                } else {    // little endian\n#ifdef UNICORN_HAS_MIPSEL\n                    if (mode & UC_MODE_MIPS32)\n                        uc->init_arch = mipsel_uc_init;\n#endif\n#ifdef UNICORN_HAS_MIPS64EL\n                    if (mode & UC_MODE_MIPS64)\n                        uc->init_arch = mips64el_uc_init;\n#endif\n                }\n                break;\n#endif\n\n#ifdef UNICORN_HAS_SPARC\n            case UC_ARCH_SPARC:\n                if ((mode & ~UC_MODE_SPARC_MASK) ||\n                        !(mode & UC_MODE_BIG_ENDIAN) ||\n                        !(mode & (UC_MODE_SPARC32|UC_MODE_SPARC64))) {\n                    free(uc);\n                    return UC_ERR_MODE;\n                }\n                if (mode & UC_MODE_SPARC64)\n                    uc->init_arch = sparc64_uc_init;\n                else\n                    uc->init_arch = sparc_uc_init;\n                break;\n#endif\n        }\n\n        if (uc->init_arch == NULL) {\n            return UC_ERR_ARCH;\n        }\n\n        if (machine_initialize(uc))\n            return UC_ERR_RESOURCE;\n\n        *result = uc;\n\n        if (uc->reg_reset)\n            uc->reg_reset(uc);\n\n        return UC_ERR_OK;\n    } else {\n        return UC_ERR_ARCH;\n    }\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "uc_strerror",
+            "const char *uc_strerror(uc_err code) /* <=== uc_strerror */ \n{\n    switch(code) {\n        default:\n            return \"Unknown error code\";\n        case UC_ERR_OK:\n            return \"OK (UC_ERR_OK)\";\n        case UC_ERR_NOMEM:\n            return \"No memory available or memory not present (UC_ERR_NOMEM)\";\n        case UC_ERR_ARCH:\n            return \"Invalid/unsupported architecture (UC_ERR_ARCH)\";\n        case UC_ERR_HANDLE:\n            return \"Invalid handle (UC_ERR_HANDLE)\";\n        case UC_ERR_MODE:\n            return \"Invalid mode (UC_ERR_MODE)\";\n        case UC_ERR_VERSION:\n            return \"Different API version between core & binding (UC_ERR_VERSION)\";\n        case UC_ERR_READ_UNMAPPED:\n            return \"Invalid memory read (UC_ERR_READ_UNMAPPED)\";\n        case UC_ERR_WRITE_UNMAPPED:\n            return \"Invalid memory write (UC_ERR_WRITE_UNMAPPED)\";\n        case UC_ERR_FETCH_UNMAPPED:\n            return \"Invalid memory fetch (UC_ERR_FETCH_UNMAPPED)\";\n        case UC_ERR_HOOK:\n            return \"Invalid hook type (UC_ERR_HOOK)\";\n        case UC_ERR_INSN_INVALID:\n            return \"Invalid instruction (UC_ERR_INSN_INVALID)\";\n        case UC_ERR_MAP:\n            return \"Invalid memory mapping (UC_ERR_MAP)\";\n        case UC_ERR_WRITE_PROT:\n            return \"Write to write-protected memory (UC_ERR_WRITE_PROT)\";\n        case UC_ERR_READ_PROT:\n            return \"Read from non-readable memory (UC_ERR_READ_PROT)\";\n        case UC_ERR_FETCH_PROT:\n            return \"Fetch from non-executable memory (UC_ERR_FETCH_PROT)\";\n        case UC_ERR_ARG:\n            return \"Invalid argument (UC_ERR_ARG)\";\n        case UC_ERR_READ_UNALIGNED:\n            return \"Read from unaligned memory (UC_ERR_READ_UNALIGNED)\";\n        case UC_ERR_WRITE_UNALIGNED:\n            return \"Write to unaligned memory (UC_ERR_WRITE_UNALIGNED)\";\n        case UC_ERR_FETCH_UNALIGNED:\n            return \"Fetch from unaligned memory (UC_ERR_FETCH_UNALIGNED)\";\n        case UC_ERR_RESOURCE:\n            return \"Insufficient resource (UC_ERR_RESOURCE)\";\n        case UC_ERR_EXCEPTION:\n            return \"Unhandled CPU exception (UC_ERR_EXCEPTION)\";\n    }\n}",
+            1
+        ],
+        [
+            "qemu/include/qemu/osdep.h",
+            "MIN",
+            "#define MIN(a, b) (((a) < (b)) ? (a) : (b)) /* <=== qemu/include/qemu/osdep.h:67:67:MIN:2 */ ",
+            2
+        ],
+        [
+            "qemu/include/exec/memory.h",
+            "DIRTY_MEMORY_NUM",
+            "#define DIRTY_MEMORY_NUM       1        /* num of dirty bits */ /* <=== qemu/include/exec/memory.h:20:20:DIRTY_MEMORY_NUM:0 */ ",
+            2
+        ],
+        [
+            "uc.c",
+            "uc_hook_del",
+            "uc_err uc_hook_del(uc_engine *uc, uc_hook hh) /* <=== uc_hook_del */ \n{\n    int i;\n    struct hook *hook = (struct hook *)hh;\n\n    // we can't dereference hook->type if hook is invalid\n    // so for now we need to iterate over all possible types to remove the hook\n    // which is less efficient\n    // an optimization would be to align the hook pointer\n    // and store the type mask in the hook pointer.\n    for (i = 0; i < UC_HOOK_MAX; i++) {\n        if (list_exists(&uc->hook[i], (void *) hook)) {\n            hook->to_delete = true;\n            list_append(&uc->hooks_to_del, hook);\n        }\n    }\n\n    return UC_ERR_OK;\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "uc_emu_start",
+            "uc_err uc_emu_start(uc_engine* uc, uint64_t begin, uint64_t until, uint64_t timeout, size_t count) /* <=== uc_emu_start */ \n{\n    // reset the counter\n    uc->emu_counter = 0;\n    uc->invalid_error = UC_ERR_OK;\n    uc->block_full = false;\n    uc->emulation_done = false;\n    uc->size_recur_mem = 0;\n    uc->timed_out = false;\n\n    switch(uc->arch) {\n        default:\n            break;\n#ifdef UNICORN_HAS_M68K\n        case UC_ARCH_M68K:\n            uc_reg_write(uc, UC_M68K_REG_PC, &begin);\n            break;\n#endif\n#ifdef UNICORN_HAS_X86\n        case UC_ARCH_X86:\n            switch(uc->mode) {\n                default:\n                    break;\n                case UC_MODE_16: {\n                    uint64_t ip;\n                    uint16_t cs;\n\n                    uc_reg_read(uc, UC_X86_REG_CS, &cs);\n                    // compensate for later adding up IP & CS\n                    ip = begin - cs*16;\n                    uc_reg_write(uc, UC_X86_REG_IP, &ip);\n                    break;\n                }\n                case UC_MODE_32:\n                    uc_reg_write(uc, UC_X86_REG_EIP, &begin);\n                    break;\n                case UC_MODE_64:\n                    uc_reg_write(uc, UC_X86_REG_RIP, &begin);\n                    break;\n            }\n            break;\n#endif\n#ifdef UNICORN_HAS_ARM\n        case UC_ARCH_ARM:\n            uc_reg_write(uc, UC_ARM_REG_R15, &begin);\n            break;\n#endif\n#ifdef UNICORN_HAS_ARM64\n        case UC_ARCH_ARM64:\n            uc_reg_write(uc, UC_ARM64_REG_PC, &begin);\n            break;\n#endif\n#ifdef UNICORN_HAS_MIPS\n        case UC_ARCH_MIPS:\n            // TODO: MIPS32/MIPS64/BIGENDIAN etc\n            uc_reg_write(uc, UC_MIPS_REG_PC, &begin);\n            break;\n#endif\n#ifdef UNICORN_HAS_SPARC\n        case UC_ARCH_SPARC:\n            // TODO: Sparc/Sparc64\n            uc_reg_write(uc, UC_SPARC_REG_PC, &begin);\n            break;\n#endif\n    }\n\n    uc->stop_request = false;\n\n    uc->emu_count = count;\n    // remove count hook if counting isn't necessary\n    if (count <= 0 && uc->count_hook != 0) {\n        uc_hook_del(uc, uc->count_hook);\n        uc->count_hook = 0;\n    }\n    // set up count hook to count instructions.\n    if (count > 0 && uc->count_hook == 0) {\n        uc_err err;\n        // callback to count instructions must be run before everything else,\n        // so instead of appending, we must insert the hook at the begin\n        // of the hook list\n        uc->hook_insert = 1;\n        err = uc_hook_add(uc, &uc->count_hook, UC_HOOK_CODE, hook_count_cb, NULL, 1, 0);\n        // restore to append mode for uc_hook_add()\n        uc->hook_insert = 0;\n        if (err != UC_ERR_OK) {\n            return err;\n        }\n    }\n\n    uc->addr_end = until;\n\n    if (timeout)\n        enable_emu_timer(uc, timeout * 1000);   // microseconds -> nanoseconds\n\n    if (uc->vm_start(uc)) {\n        return UC_ERR_RESOURCE;\n    }\n\n    // emulation is done\n    uc->emulation_done = true;\n\n    // remove hooks to delete\n    clear_deleted_hooks(uc);\n\n    if (timeout) {\n        // wait for the timer to finish\n        qemu_thread_join(&uc->timer);\n    }\n\n    return uc->invalid_error;\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "mem_map",
+            "static uc_err mem_map(uc_engine *uc, uint64_t address, size_t size, uint32_t perms, MemoryRegion *block) /* <=== mem_map */ \n{\n    MemoryRegion **regions;\n\n    if (block == NULL)\n        return UC_ERR_NOMEM;\n\n    if ((uc->mapped_block_count & (MEM_BLOCK_INCR - 1)) == 0) {  //time to grow\n        regions = (MemoryRegion**)g_realloc(uc->mapped_blocks,\n                sizeof(MemoryRegion*) * (uc->mapped_block_count + MEM_BLOCK_INCR));\n        if (regions == NULL) {\n            return UC_ERR_NOMEM;\n        }\n        uc->mapped_blocks = regions;\n    }\n\n    uc->mapped_blocks[uc->mapped_block_count] = block;\n    uc->mapped_block_count++;\n\n    return UC_ERR_OK;\n}",
+            2
+        ],
+        [
+            "include/uc_priv.h",
+            "MEM_BLOCK_INCR",
+            "#define MEM_BLOCK_INCR 32 /* <=== include/uc_priv.h:146:146:MEM_BLOCK_INCR:0 */ ",
+            3
+        ],
+        [
+            "uc.c",
+            "uc_hook_add",
+            "uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback, /* <=== uc_hook_add */ \n        void *user_data, uint64_t begin, uint64_t end, ...)\n{\n    int ret = UC_ERR_OK;\n    int i = 0;\n\n    struct hook *hook = calloc(1, sizeof(struct hook));\n    if (hook == NULL) {\n        return UC_ERR_NOMEM;\n    }\n\n    hook->begin = begin;\n    hook->end = end;\n    hook->type = type;\n    hook->callback = callback;\n    hook->user_data = user_data;\n    hook->refs = 0;\n    hook->to_delete = false;\n    *hh = (uc_hook)hook;\n\n    // UC_HOOK_INSN has an extra argument for instruction ID\n    if (type & UC_HOOK_INSN) {\n        va_list valist;\n\n        va_start(valist, end);\n        hook->insn = va_arg(valist, int);\n        va_end(valist);\n\n        if (uc->insn_hook_validate) {\n            if (! uc->insn_hook_validate(hook->insn)) {\n                free(hook);\n                return UC_ERR_HOOK;\n            }\n        }\n\n        if (uc->hook_insert) {\n            if (list_insert(&uc->hook[UC_HOOK_INSN_IDX], hook) == NULL) {\n                free(hook);\n                return UC_ERR_NOMEM;\n            }\n        } else {\n            if (list_append(&uc->hook[UC_HOOK_INSN_IDX], hook) == NULL) {\n                free(hook);\n                return UC_ERR_NOMEM;\n            }\n        }\n\n        hook->refs++;\n        return UC_ERR_OK;\n    }\n\n    while ((type >> i) > 0) {\n        if ((type >> i) & 1) {\n            // TODO: invalid hook error?\n            if (i < UC_HOOK_MAX) {\n                if (uc->hook_insert) {\n                    if (list_insert(&uc->hook[i], hook) == NULL) {\n                        if (hook->refs == 0) {\n                            free(hook);\n                        }\n                        return UC_ERR_NOMEM;\n                    }\n                } else {\n                    if (list_append(&uc->hook[i], hook) == NULL) {\n                        if (hook->refs == 0) {\n                            free(hook);\n                        }\n                        return UC_ERR_NOMEM;\n                    }\n                }\n                hook->refs++;\n            }\n        }\n        i++;\n    }\n\n    // we didn't use the hook\n    // TODO: return an error?\n    if (hook->refs == 0) {\n        free(hook);\n    }\n\n    return ret;\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <string.h>",
+        "#include <unicorn/unicorn.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct uc_struct uc_engine;",
+            "uc_engine"
+        ],
+        [
+            "typedef enum uc_err {\n    UC_ERR_OK = 0,   // No error: everything was fine\n    UC_ERR_NOMEM,      // Out-Of-Memory error: uc_open(), uc_emulate()\n    UC_ERR_ARCH,     // Unsupported architecture: uc_open()\n    UC_ERR_HANDLE,   // Invalid handle\n    UC_ERR_MODE,     // Invalid/unsupported mode: uc_open()\n    UC_ERR_VERSION,  // Unsupported version (bindings)\n    UC_ERR_READ_UNMAPPED, // Quit emulation due to READ on unmapped memory: uc_emu_start()\n    UC_ERR_WRITE_UNMAPPED, // Quit emulation due to WRITE on unmapped memory: uc_emu_start()\n    UC_ERR_FETCH_UNMAPPED, // Quit emulation due to FETCH on unmapped memory: uc_emu_start()\n    UC_ERR_HOOK,    // Invalid hook type: uc_hook_add()\n    UC_ERR_INSN_INVALID, // Quit emulation due to invalid instruction: uc_emu_start()\n    UC_ERR_MAP, // Invalid memory mapping: uc_mem_map()\n    UC_ERR_WRITE_PROT, // Quit emulation due to UC_MEM_WRITE_PROT violation: uc_emu_start()\n    UC_ERR_READ_PROT, // Quit emulation due to UC_MEM_READ_PROT violation: uc_emu_start()\n    UC_ERR_FETCH_PROT, // Quit emulation due to UC_MEM_FETCH_PROT violation: uc_emu_start()\n    UC_ERR_ARG,     // Inavalid argument provided to uc_xxx function (See specific function API)\n    UC_ERR_READ_UNALIGNED,  // Unaligned read\n    UC_ERR_WRITE_UNALIGNED,  // Unaligned write\n    UC_ERR_FETCH_UNALIGNED,  // Unaligned fetch\n    UC_ERR_HOOK_EXIST,  // hook for this event already existed\n    UC_ERR_RESOURCE,    // Insufficient resource: uc_emu_start()\n    UC_ERR_EXCEPTION, // Unhandled CPU exception\n}",
+            "uc_err"
+        ]
+    ],
+    "visitedLines_after": {
+        "samples/sample_arm.c": [
+            135,
+            136,
+            137,
+            139,
+            140,
+            141,
+            143,
+            145,
+            146,
+            147,
+            148,
+            149,
+            153,
+            155,
+            157,
+            159,
+            160,
+            163,
+            164,
+            165,
+            166,
+            168,
+            169,
+            171,
+            172,
+            175,
+            176,
+            177,
+            178,
+            179,
+            181,
+            184,
+            185,
+            187,
+            188,
+            190,
+            191,
+            194,
+            198,
+            214,
+            215
+        ]
+    },
+    "visitedLines_before": {
+        "samples/sample_arm.c": [
+            136
+        ]
+    },
+    "visitedParams": {},
+    "vulnerableMethods_after": [
+        [
+            "samples/sample_arm.c",
+            "test_thumb_ite",
+            "static void test_thumb_ite() { /* <=== test_thumb_ite */ \n    uc_engine *uc;\n    uc_err err;\n\n    uint32_t sp = 0x1234;\n    uint32_t r2 = 0, r3 = 1;\n    uint32_t step_r2, step_r3;\n\n    int i, addr=ADDRESS;\n\n    printf(\"Emulate a THUMB ITE block as a whole or per instruction.\\n\");\n    err = uc_open(UC_ARCH_ARM, UC_MODE_THUMB, &uc);\n    if (err) {\n        printf(\"Failed on uc_open() with error returned: %u (%s)\\n\",\n                err, uc_strerror(err));\n        return;\n    }\n\n    uc_mem_map(uc, ADDRESS, 2 * 1024 * 1024, UC_PROT_ALL);\n\n    uc_mem_write(uc, ADDRESS, ARM_THUM_COND_CODE, sizeof(ARM_THUM_COND_CODE) - 1);\n\n    uc_reg_write(uc, UC_ARM_REG_SP, &sp);\n\n    uc_reg_write(uc, UC_ARM_REG_R2, &r2);\n    uc_reg_write(uc, UC_ARM_REG_R3, &r3);\n\n    // Run once.\n    printf(\"Running the entire binary.\\n\");\n    err = uc_emu_start(uc, ADDRESS | 1, ADDRESS + sizeof(ARM_THUM_COND_CODE) - 1, 0, 0);\n    if (err) {\n        printf(\"Failed on uc_emu_start() with error returned: %u\\n\", err);\n    }\n    uc_reg_read(uc, UC_ARM_REG_R2, &r2);\n    uc_reg_read(uc, UC_ARM_REG_R3, &r3);\n\n    printf(\">>> R2: %d\\n\", r2);\n    printf(\">>> R3: %d\\n\\n\", r3);\n\n    // Step each instruction.\n    printf(\"Running the binary one instruction at a time.\\n\");\n    for (i = 0; i < sizeof(ARM_THUM_COND_CODE) / 2; i++) {\n        err = uc_emu_start(uc, addr | 1, ADDRESS + sizeof(ARM_THUM_COND_CODE) - 1, 0, 1);\n        if (err) {\n            printf(\"Failed on uc_emu_start() with error returned: %u\\n\", err);\n        }\n        uc_reg_read(uc, UC_ARM_REG_PC, &addr);\n    }\n\n    uc_reg_read(uc, UC_ARM_REG_R2, &step_r2);\n    uc_reg_read(uc, UC_ARM_REG_R3, &step_r3);\n\n    printf(\">>> R2: %d\\n\", step_r2);\n    printf(\">>> R3: %d\\n\\n\", step_r3);\n\n    if (step_r2 != r2 || step_r3 != r3) {\n        printf(\"Failed with ARM ITE blocks stepping!\\n\");\n    }\n\n    uc_close(uc);\n}",
+            135
+        ],
+        [
+            "samples/sample_arm.c",
+            "main",
+            "int main(int argc, char **argv, char **envp) /* <=== main */ \n{\n    // dynamically load shared library\n#ifdef DYNLOAD\n    if (!uc_dyn_load(NULL, 0)) {\n        printf(\"Error dynamically loading shared library.\\n\");\n        printf(\"Please check that unicorn.dll/unicorn.so is available as well as\\n\");\n        printf(\"any other dependent dll/so files.\\n\");\n        printf(\"The easiest way is to place them in the same directory as this app.\\n\");\n        return 1;\n    }\n#endif\n    \n    test_arm();\n    printf(\"==========================\\n\");\n    test_thumb();\n    printf(\"==========================\\n\");\n    test_thumb_ite();\n    // dynamically free shared library\n#ifdef DYNLOAD\n    uc_dyn_free();\n#endif\n    \n    return 0;\n}",
+            198
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "samples/sample_arm.c",
+            "main",
+            "int main(int argc, char **argv, char **envp) /* <=== main */ \n{\n    // dynamically load shared library\n#ifdef DYNLOAD\n    if (!uc_dyn_load(NULL, 0)) {\n        printf(\"Error dynamically loading shared library.\\n\");\n        printf(\"Please check that unicorn.dll/unicorn.so is available as well as\\n\");\n        printf(\"any other dependent dll/so files.\\n\");\n        printf(\"The easiest way is to place them in the same directory as this app.\\n\");\n        return 1;\n    }\n#endif\n    \n    test_arm();\n    printf(\"==========================\\n\");\n    test_thumb();\n\n    // dynamically free shared library\n#ifdef DYNLOAD\n    uc_dyn_free();\n#endif\n    \n    return 0;\n}",
+            133
+        ]
+    ]
+}

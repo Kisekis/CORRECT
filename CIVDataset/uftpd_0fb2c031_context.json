@@ -1,0 +1,101 @@
+{
+    "calleeMethods": [
+        [
+            "src/ftpcmd.c",
+            "is_cont",
+            "static int is_cont(char *msg) /* <=== is_cont */ \n{\n\tchar *ptr;\n\n\tptr = strchr(msg, '\\r');\n\tif (ptr) {\n\t\tptr++;\n\t\tif (strchr(ptr, '\\r'))\n\t\t\treturn 1;\n\t}\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "src/uftpd.h",
+            "logit",
+            "void    logit(int severity, const char *fmt, ...); /* <=== logit */ ",
+            1
+        ],
+        [
+            "src/uftpd.h",
+            "ERR",
+            "#define ERR(code, fmt, args...)  LOGIT(LOG_ERR, code, fmt, ##args) /* <=== src/uftpd.h:85:85:ERR:3 */ ",
+            1
+        ],
+        [
+            "src/uftpd.h",
+            "DBG",
+            "#define DBG(fmt, args...)        LOGIT(LOG_DEBUG, 0, fmt, ##args) /* <=== src/uftpd.h:89:89:DBG:2 */ ",
+            1
+        ],
+        [
+            "src/ftpcmd.c",
+            "send_msg",
+            "static int send_msg(int sd, char *msg) /* <=== send_msg */ \n{\n\tint n = 0;\n\tint l;\n\n\tif (!msg) {\n\terr:\n\t\tERR(EINVAL, \"Missing argument to send_msg()\");\n\t\treturn 1;\n\t}\n\n\tl = strlen(msg);\n\tif (l <= 0)\n\t\tgoto err;\n\n\twhile (n < l) {\n\t\tint result = send(sd, msg + n, l, 0);\n\n\t\tif (result < 0) {\n\t\t\tERR(errno, \"Failed sending message to client\");\n\t\t\treturn 1;\n\t\t}\n\n\t\tn += result;\n\t}\n\n\tDBG(\"Sent: %s%s\", is_cont(msg) ? \"\\n\" : \"\", msg);\n\n\treturn 0;\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <ctype.h>",
+        "#include <arpa/ftp.h>",
+        "# include <sys/time.h>",
+        "#include \"uftpd.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct {\n\tint sd;\n\tint type;\n\n\tchar cwd[PATH_MAX];\n\n\tstruct sockaddr_storage server_sa;\n\tstruct sockaddr_storage client_sa;\n\n\tchar serveraddr[INET_ADDRSTRLEN];\n\tchar clientaddr[INET_ADDRSTRLEN];\n\n\t/* Event loop context and session watchers */\n\tuev_t      io_watcher, data_watcher, timeout_watcher;\n\tuev_ctx_t *ctx;\n\n\t/* Session buffer */\n\tchar    *buf;\t\t/* Pointer to segment buffer */\n\tsize_t   bufsz;\t\t/* Size of buf */\n\n\tchar     facts[10];\n\tchar     pending; \t/* Pending op: LIST, RETR, STOR */\n\tchar     list_mode;\t/* Current LIST mode */\n\tchar    *file;\t        /* Current file name to fetch */\n\toff_t    offset;\t/* Offset/block in current file, for REST/WRQ */\n\tFILE    *fp;\t\t/* Current file in operation */\n\tint      i;\t\t/* i of d_num in 'd' */\n\tint      d_num;\t\t/* Number of entries in 'd' */\n\tstruct dirent **d;\t/* Current directory in LIST op */\n\tstruct timeval tv;\t/* Progress indicator */\n\n\t/* TFTP */\n\ttftp_t  *th;\t\t/* Same as buf, only as tftp_t */\n\tsize_t   segsize;\t/* SEGSIZE, or per session negotiated */\n\tint      timeout;\t/* INACTIVITY_TIMER, or per session neg. */\n\tuint32_t tftp_options;\t/* %1:blksize */\n\n\t/* User credentials */\n\tchar name[20];\n\tchar pass[20];\n\n\t/* PASV */\n\tint data_sd;\n\tint data_listen_sd;\n\n\t/* PORT */\n\tchar data_address[INET_ADDRSTRLEN];\n\tint  data_port;\n}",
+            "ctrl_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/ftpcmd.c": [
+            430,
+            433,
+            443,
+            444,
+            447,
+            448,
+            449,
+            453,
+            454,
+            456,
+            457
+        ]
+    },
+    "visitedLines_before": {
+        "src/ftpcmd.c": [
+            430,
+            433,
+            443,
+            444,
+            447,
+            448,
+            449,
+            453,
+            454,
+            456,
+            457
+        ]
+    },
+    "visitedParams": {
+        "src/ftpcmd.c": [
+            [
+                "char *str",
+                "handle_PORT"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/ftpcmd.c",
+            "handle_PORT",
+            "static void handle_PORT(ctrl_t *ctrl, char *str) /* <=== handle_PORT */ \n{\n\tint a, b, c, d, e, f;\n\tchar addr[INET_ADDRSTRLEN];\n\tstruct sockaddr_in sin;\n\n\tif (ctrl->data_sd > 0) {\n\t\tuev_io_stop(&ctrl->data_watcher);\n\t\tclose(ctrl->data_sd);\n\t\tctrl->data_sd = -1;\n\t}\n\n\t/* Convert PORT command's argument to IP address + port */\n\tsscanf(str, \"%d,%d,%d,%d,%d,%d\", &a, &b, &c, &d, &e, &f);\n\tsnprintf(addr, sizeof(addr), \"%d.%d.%d.%d\", a, b, c, d);\n\n\t/* Check IPv4 address using inet_aton(), throw away converted result */\n\tif (!inet_aton(addr, &(sin.sin_addr))) {\n\t\tERR(0, \"Invalid address '%s' given to PORT command\", addr);\n\t\tsend_msg(ctrl->sd, \"500 Illegal PORT command.\\r\\n\");\n\t\treturn;\n\t}\n\n\tstrlcpy(ctrl->data_address, addr, sizeof(ctrl->data_address));\n\tctrl->data_port = e * 256 + f;\n\n\tDBG(\"Client PORT command accepted for %s:%d\", ctrl->data_address, ctrl->data_port);\n\tsend_msg(ctrl->sd, \"200 PORT command successful.\\r\\n\");\n}",
+            430
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/ftpcmd.c",
+            "handle_PORT",
+            "static void handle_PORT(ctrl_t *ctrl, char *str) /* <=== handle_PORT */ \n{\n\tint a, b, c, d, e, f;\n\tchar addr[INET_ADDRSTRLEN];\n\tstruct sockaddr_in sin;\n\n\tif (ctrl->data_sd > 0) {\n\t\tuev_io_stop(&ctrl->data_watcher);\n\t\tclose(ctrl->data_sd);\n\t\tctrl->data_sd = -1;\n\t}\n\n\t/* Convert PORT command's argument to IP address + port */\n\tsscanf(str, \"%d,%d,%d,%d,%d,%d\", &a, &b, &c, &d, &e, &f);\n\tsprintf(addr, \"%d.%d.%d.%d\", a, b, c, d);\n\n\t/* Check IPv4 address using inet_aton(), throw away converted result */\n\tif (!inet_aton(addr, &(sin.sin_addr))) {\n\t\tERR(0, \"Invalid address '%s' given to PORT command\", addr);\n\t\tsend_msg(ctrl->sd, \"500 Illegal PORT command.\\r\\n\");\n\t\treturn;\n\t}\n\n\tstrlcpy(ctrl->data_address, addr, sizeof(ctrl->data_address));\n\tctrl->data_port = e * 256 + f;\n\n\tDBG(\"Client PORT command accepted for %s:%d\", ctrl->data_address, ctrl->data_port);\n\tsend_msg(ctrl->sd, \"200 PORT command successful.\\r\\n\");\n}",
+            430
+        ]
+    ]
+}

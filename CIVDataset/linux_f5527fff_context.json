@@ -1,0 +1,178 @@
+{
+    "calleeMethods": [
+        [
+            "lib/mpi/mpiutil.c",
+            "mpi_free_limb_space",
+            "void mpi_free_limb_space(mpi_ptr_t a) /* <=== mpi_free_limb_space */ \n{\n\tif (!a)\n\t\treturn;\n\n\tkzfree(a);\n}",
+            2
+        ],
+        [
+            "lib/mpi/mpiutil.c",
+            "mpi_resize",
+            "int mpi_resize(MPI a, unsigned nlimbs) /* <=== mpi_resize */ \n{\n\tvoid *p;\n\n\tif (nlimbs <= a->alloced)\n\t\treturn 0;\t/* no need to do it */\n\n\tif (a->d) {\n\t\tp = kmalloc(nlimbs * sizeof(mpi_limb_t), GFP_KERNEL);\n\t\tif (!p)\n\t\t\treturn -ENOMEM;\n\t\tmemcpy(p, a->d, a->alloced * sizeof(mpi_limb_t));\n\t\tkzfree(a->d);\n\t\ta->d = p;\n\t} else {\n\t\ta->d = kzalloc(nlimbs * sizeof(mpi_limb_t), GFP_KERNEL);\n\t\tif (!a->d)\n\t\t\treturn -ENOMEM;\n\t}\n\ta->alloced = nlimbs;\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kmalloc",
+            "static inline void *kmalloc(size_t s, gfp_t gfp) /* <=== kmalloc */ \n{\n\tif (__kmalloc_fake)\n\t\treturn __kmalloc_fake;\n\treturn malloc(s);\n}",
+            2
+        ],
+        [
+            "arch/arm64/include/asm/string.h",
+            "__memcpy",
+            "extern void *__memcpy(void *, const void *, __kernel_size_t); /* <=== __memcpy */ ",
+            3
+        ],
+        [
+            "lib/mpi/mpiutil.c",
+            "mpi_assign_limb_space",
+            "void mpi_assign_limb_space(MPI a, mpi_ptr_t ap, unsigned nlimbs) /* <=== mpi_assign_limb_space */ \n{\n\tmpi_free_limb_space(a->d);\n\ta->d = ap;\n\ta->alloced = nlimbs;\n}",
+            1
+        ],
+        [
+            "mm/kasan/kasan.c",
+            "memset",
+            "void *memset(void *addr, int c, size_t len) /* <=== memset */ \n{\n\tcheck_memory_region((unsigned long)addr, len, true, _RET_IP_);\n\n\treturn __memset(addr, c, len);\n}",
+            3
+        ],
+        [
+            "arch/tile/lib/memset_32.c",
+            "memset",
+            "void *memset(void *s, int c, size_t n) /* <=== memset */ \n{\n\tuint32_t *out32;\n\tint n32;\n\tuint32_t v16, v32;\n\tuint8_t *out8 = s;\n\tint to_align32;\n\n\t/* Experimentation shows that a trivial tight loop is a win up until\n\t * around a size of 20, where writing a word at a time starts to win.\n\t */\n#define BYTE_CUTOFF 20\n\n#if BYTE_CUTOFF < 3\n\t/* This must be at least at least this big, or some code later\n\t * on doesn't work.\n\t */\n#error \"BYTE_CUTOFF is too small\"\n#endif\n\n\tif (n < BYTE_CUTOFF) {\n\t\t/* Strangely, this turns out to be the tightest way to\n\t\t * write this loop.\n\t\t */\n\t\tif (n != 0) {\n\t\t\tdo {\n\t\t\t\t/* Strangely, combining these into one line\n\t\t\t\t * performs worse.\n\t\t\t\t */\n\t\t\t\t*out8 = c;\n\t\t\t\tout8++;\n\t\t\t} while (--n != 0);\n\t\t}\n\n\t\treturn s;\n\t}\n\n\t/* Align 'out8'. We know n >= 3 so this won't write past the end. */\n\twhile (((uintptr_t) out8 & 3) != 0) {\n\t\t*out8++ = c;\n\t\t--n;\n\t}\n\n\t/* Align 'n'. */\n\twhile (n & 3)\n\t\tout8[--n] = c;\n\n\tout32 = (uint32_t *) out8;\n\tn32 = n >> 2;\n\n\t/* Tile input byte out to 32 bits. */\n\tv16 = __insn_intlb(c, c);\n\tv32 = __insn_intlh(v16, v16);\n\n\t/* This must be at least 8 or the following loop doesn't work. */\n#define CACHE_LINE_SIZE_IN_WORDS (CHIP_L2_LINE_SIZE() / 4)\n\n\t/* Determine how many words we need to emit before the 'out32'\n\t * pointer becomes aligned modulo the cache line size.\n\t */\n\tto_align32 =\n\t\t(-((uintptr_t)out32 >> 2)) & (CACHE_LINE_SIZE_IN_WORDS - 1);\n\n\t/* Only bother aligning and using wh64 if there is at least\n\t * one full cache line to process.  This check also prevents\n\t * overrunning the end of the buffer with alignment words.\n\t */\n\tif (to_align32 <= n32 - CACHE_LINE_SIZE_IN_WORDS) {\n\t\tint lines_left;\n\n\t\t/* Align out32 mod the cache line size so we can use wh64. */\n\t\tn32 -= to_align32;\n\t\tfor (; to_align32 != 0; to_align32--) {\n\t\t\t*out32 = v32;\n\t\t\tout32++;\n\t\t}\n\n\t\t/* Use unsigned divide to turn this into a right shift. */\n\t\tlines_left = (unsigned)n32 / CACHE_LINE_SIZE_IN_WORDS;\n\n\t\tdo {\n\t\t\t/* Only wh64 a few lines at a time, so we don't\n\t\t\t * exceed the maximum number of victim lines.\n\t\t\t */\n\t\t\tint x = ((lines_left < CHIP_MAX_OUTSTANDING_VICTIMS())\n\t\t\t\t  ? lines_left\n\t\t\t\t  : CHIP_MAX_OUTSTANDING_VICTIMS());\n\t\t\tuint32_t *wh = out32;\n\t\t\tint i = x;\n\t\t\tint j;\n\n\t\t\tlines_left -= x;\n\n\t\t\tdo {\n\t\t\t\t__insn_wh64(wh);\n\t\t\t\twh += CACHE_LINE_SIZE_IN_WORDS;\n\t\t\t} while (--i);\n\n\t\t\tfor (j = x * (CACHE_LINE_SIZE_IN_WORDS / 4);\n\t\t\t     j != 0; j--) {\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t}\n\t\t} while (lines_left != 0);\n\n\t\t/* We processed all full lines above, so only this many\n\t\t * words remain to be processed.\n\t\t */\n\t\tn32 &= CACHE_LINE_SIZE_IN_WORDS - 1;\n\t}\n\n\t/* Now handle any leftover values. */\n\tif (n32 != 0) {\n\t\tdo {\n\t\t\t*out32 = v32;\n\t\t\tout32++;\n\t\t} while (--n32 != 0);\n\t}\n\n\treturn s;\n}",
+            3
+        ],
+        [
+            "include/linux/slab.h",
+            "kzfree",
+            "void kzfree(const void *); /* <=== kzfree */ ",
+            3
+        ],
+        [
+            "mm/kasan/kasan.c",
+            "memcpy",
+            "void *memcpy(void *dest, const void *src, size_t len) /* <=== memcpy */ \n{\n\tcheck_memory_region((unsigned long)src, len, false, _RET_IP_);\n\tcheck_memory_region((unsigned long)dest, len, true, _RET_IP_);\n\n\treturn __memcpy(dest, src, len);\n}",
+            2
+        ],
+        [
+            "mm/kasan/kasan.c",
+            "check_memory_region",
+            "static void check_memory_region(unsigned long addr, /* <=== check_memory_region */ \n\t\t\t\tsize_t size, bool write,\n\t\t\t\tunsigned long ret_ip)\n{\n\tcheck_memory_region_inline(addr, size, write, ret_ip);\n}",
+            3
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kzalloc",
+            "static inline void *kzalloc(size_t s, gfp_t gfp) /* <=== kzalloc */ \n{\n\tvoid *p = kmalloc(s, gfp);\n\n\tmemset(p, 0, s);\n\treturn p;\n}",
+            2
+        ],
+        [
+            "include/linux/slab.h",
+            "kzalloc",
+            "static inline void *kzalloc(size_t size, gfp_t flags) /* <=== kzalloc */ \n{\n\treturn kmalloc(size, flags | __GFP_ZERO);\n}",
+            2
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "memset",
+            "void *memset(void *s, int c, size_t n) /* <=== memset */ \n{\n\tuint64_t *out64;\n\tint n64, to_align64;\n\tuint64_t v64;\n\tuint8_t *out8 = s;\n\n\t/* Experimentation shows that a trivial tight loop is a win up until\n\t * around a size of 20, where writing a word at a time starts to win.\n\t */\n#define BYTE_CUTOFF 20\n\n#if BYTE_CUTOFF < 7\n\t/* This must be at least at least this big, or some code later\n\t * on doesn't work.\n\t */\n#error \"BYTE_CUTOFF is too small\"\n#endif\n\n\tif (n < BYTE_CUTOFF) {\n\t\t/* Strangely, this turns out to be the tightest way to\n\t\t * write this loop.\n\t\t */\n\t\tif (n != 0) {\n\t\t\tdo {\n\t\t\t\t/* Strangely, combining these into one line\n\t\t\t\t * performs worse.\n\t\t\t\t */\n\t\t\t\t*out8 = c;\n\t\t\t\tout8++;\n\t\t\t} while (--n != 0);\n\t\t}\n\n\t\treturn s;\n\t}\n\n\t/* Align 'out8'. We know n >= 7 so this won't write past the end. */\n\twhile (((uintptr_t) out8 & 7) != 0) {\n\t\t*out8++ = c;\n\t\t--n;\n\t}\n\n\t/* Align 'n'. */\n\twhile (n & 7)\n\t\tout8[--n] = c;\n\n\tout64 = (uint64_t *) out8;\n\tn64 = n >> 3;\n\n\t/* Tile input byte out to 64 bits. */\n\tv64 = copy_byte(c);\n\n\t/* This must be at least 8 or the following loop doesn't work. */\n#define CACHE_LINE_SIZE_IN_DOUBLEWORDS (CHIP_L2_LINE_SIZE() / 8)\n\n\t/* Determine how many words we need to emit before the 'out32'\n\t * pointer becomes aligned modulo the cache line size.\n\t */\n\tto_align64 = (-((uintptr_t)out64 >> 3)) &\n\t\t(CACHE_LINE_SIZE_IN_DOUBLEWORDS - 1);\n\n\t/* Only bother aligning and using wh64 if there is at least\n\t * one full cache line to process.  This check also prevents\n\t * overrunning the end of the buffer with alignment words.\n\t */\n\tif (to_align64 <= n64 - CACHE_LINE_SIZE_IN_DOUBLEWORDS) {\n\t\tint lines_left;\n\n\t\t/* Align out64 mod the cache line size so we can use wh64. */\n\t\tn64 -= to_align64;\n\t\tfor (; to_align64 != 0; to_align64--) {\n\t\t\t*out64 = v64;\n\t\t\tout64++;\n\t\t}\n\n\t\t/* Use unsigned divide to turn this into a right shift. */\n\t\tlines_left = (unsigned)n64 / CACHE_LINE_SIZE_IN_DOUBLEWORDS;\n\n\t\tdo {\n\t\t\t/* Only wh64 a few lines at a time, so we don't\n\t\t\t * exceed the maximum number of victim lines.\n\t\t\t */\n\t\t\tint x = ((lines_left < CHIP_MAX_OUTSTANDING_VICTIMS())\n\t\t\t\t  ? lines_left\n\t\t\t\t  : CHIP_MAX_OUTSTANDING_VICTIMS());\n\t\t\tuint64_t *wh = out64;\n\t\t\tint i = x;\n\t\t\tint j;\n\n\t\t\tlines_left -= x;\n\n\t\t\tdo {\n\t\t\t\t__insn_wh64(wh);\n\t\t\t\twh += CACHE_LINE_SIZE_IN_DOUBLEWORDS;\n\t\t\t} while (--i);\n\n\t\t\tfor (j = x * (CACHE_LINE_SIZE_IN_DOUBLEWORDS / 4);\n\t\t\t     j != 0; j--) {\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t}\n\t\t} while (lines_left != 0);\n\n\t\t/* We processed all full lines above, so only this many\n\t\t * words remain to be processed.\n\t\t */\n\t\tn64 &= CACHE_LINE_SIZE_IN_DOUBLEWORDS - 1;\n\t}\n\n\t/* Now handle any leftover values. */\n\tif (n64 != 0) {\n\t\tdo {\n\t\t\t*out64 = v64;\n\t\t\tout64++;\n\t\t} while (--n64 != 0);\n\t}\n\n\treturn s;\n}",
+            3
+        ],
+        [
+            "include/linux/slab.h",
+            "kzfree",
+            "void kzfree(const void *); /* <=== kzfree */ ",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"longlong.h\"",
+        "#include <linux/string.h>",
+        "#include \"mpi-internal.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef mpi_limb_t *mpi_ptr_t;",
+            "mpi_ptr_t"
+        ],
+        [
+            "typedef int mpi_size_t;",
+            "mpi_size_t"
+        ],
+        [
+            "typedef struct gcry_mpi *MPI;",
+            "MPI"
+        ]
+    ],
+    "visitedLines_after": {
+        "lib/mpi/mpi-pow.c": [
+            36,
+            52,
+            53,
+            54,
+            56,
+            58,
+            61,
+            64,
+            67,
+            68,
+            69,
+            71,
+            72,
+            74,
+            312,
+            315,
+            326
+        ]
+    },
+    "visitedLines_before": {
+        "lib/mpi/mpi-pow.c": [
+            36,
+            52,
+            53,
+            54,
+            56,
+            58,
+            61,
+            64,
+            67,
+            69,
+            307,
+            310,
+            321
+        ]
+    },
+    "visitedParams": {
+        "lib/mpi/mpi-pow.c": [
+            [
+                "MPI exp",
+                "mpi_powm"
+            ],
+            [
+                "MPI mod",
+                "mpi_powm"
+            ],
+            [
+                "MPI res",
+                "mpi_powm"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "lib/mpi/mpi-pow.c",
+            "mpi_powm",
+            "int mpi_powm(MPI res, MPI base, MPI exp, MPI mod) /* <=== mpi_powm */ \n{\n\tmpi_ptr_t mp_marker = NULL, bp_marker = NULL, ep_marker = NULL;\n\tmpi_ptr_t xp_marker = NULL;\n\tmpi_ptr_t tspace = NULL;\n\tmpi_ptr_t rp, ep, mp, bp;\n\tmpi_size_t esize, msize, bsize, rsize;\n\tint esign, msign, bsign, rsign;\n\tmpi_size_t size;\n\tint mod_shift_cnt;\n\tint negative_result;\n\tint assign_rp = 0;\n\tmpi_size_t tsize = 0;\t/* to avoid compiler warning */\n\t/* fixme: we should check that the warning is void */\n\tint rc = -ENOMEM;\n\n\tesize = exp->nlimbs;\n\tmsize = mod->nlimbs;\n\tsize = 2 * msize;\n\tesign = exp->sign;\n\tmsign = mod->sign;\n\n\trp = res->d;\n\tep = exp->d;\n\n\tif (!msize)\n\t\treturn -EINVAL;\n\n\tif (!esize) {\n\t\t/* Exponent is zero, result is 1 mod MOD, i.e., 1 or 0\n\t\t * depending on if MOD equals 1.  */\n\t\tres->nlimbs = (msize == 1 && mod->d[0] == 1) ? 0 : 1;\n\t\tif (res->nlimbs) {\n\t\t\tif (mpi_resize(res, 1) < 0)\n\t\t\t\tgoto enomem;\n\t\t\trp = res->d;\n\t\t\trp[0] = 1;\n\t\t}\n\t\tres->sign = 0;\n\t\tgoto leave;\n\t}\n\n\t/* Normalize MOD (i.e. make its most significant bit set) as required by\n\t * mpn_divrem.  This will make the intermediate values in the calculation\n\t * slightly larger, but the correct result is obtained after a final\n\t * reduction using the original MOD value.  */\n\tmp = mp_marker = mpi_alloc_limb_space(msize);\n\tif (!mp)\n\t\tgoto enomem;\n\tmod_shift_cnt = count_leading_zeros(mod->d[msize - 1]);\n\tif (mod_shift_cnt)\n\t\tmpihelp_lshift(mp, mod->d, msize, mod_shift_cnt);\n\telse\n\t\tMPN_COPY(mp, mod->d, msize);\n\n\tbsize = base->nlimbs;\n\tbsign = base->sign;\n\tif (bsize > msize) {\t/* The base is larger than the module. Reduce it. */\n\t\t/* Allocate (BSIZE + 1) with space for remainder and quotient.\n\t\t * (The quotient is (bsize - msize + 1) limbs.)  */\n\t\tbp = bp_marker = mpi_alloc_limb_space(bsize + 1);\n\t\tif (!bp)\n\t\t\tgoto enomem;\n\t\tMPN_COPY(bp, base->d, bsize);\n\t\t/* We don't care about the quotient, store it above the remainder,\n\t\t * at BP + MSIZE.  */\n\t\tmpihelp_divrem(bp + msize, 0, bp, bsize, mp, msize);\n\t\tbsize = msize;\n\t\t/* Canonicalize the base, since we are going to multiply with it\n\t\t * quite a few times.  */\n\t\tMPN_NORMALIZE(bp, bsize);\n\t} else\n\t\tbp = base->d;\n\n\tif (!bsize) {\n\t\tres->nlimbs = 0;\n\t\tres->sign = 0;\n\t\tgoto leave;\n\t}\n\n\tif (res->alloced < size) {\n\t\t/* We have to allocate more space for RES.  If any of the input\n\t\t * parameters are identical to RES, defer deallocation of the old\n\t\t * space.  */\n\t\tif (rp == ep || rp == mp || rp == bp) {\n\t\t\trp = mpi_alloc_limb_space(size);\n\t\t\tif (!rp)\n\t\t\t\tgoto enomem;\n\t\t\tassign_rp = 1;\n\t\t} else {\n\t\t\tif (mpi_resize(res, size) < 0)\n\t\t\t\tgoto enomem;\n\t\t\trp = res->d;\n\t\t}\n\t} else {\t\t/* Make BASE, EXP and MOD not overlap with RES.  */\n\t\tif (rp == bp) {\n\t\t\t/* RES and BASE are identical.  Allocate temp. space for BASE.  */\n\t\t\tBUG_ON(bp_marker);\n\t\t\tbp = bp_marker = mpi_alloc_limb_space(bsize);\n\t\t\tif (!bp)\n\t\t\t\tgoto enomem;\n\t\t\tMPN_COPY(bp, rp, bsize);\n\t\t}\n\t\tif (rp == ep) {\n\t\t\t/* RES and EXP are identical.  Allocate temp. space for EXP.  */\n\t\t\tep = ep_marker = mpi_alloc_limb_space(esize);\n\t\t\tif (!ep)\n\t\t\t\tgoto enomem;\n\t\t\tMPN_COPY(ep, rp, esize);\n\t\t}\n\t\tif (rp == mp) {\n\t\t\t/* RES and MOD are identical.  Allocate temporary space for MOD. */\n\t\t\tBUG_ON(mp_marker);\n\t\t\tmp = mp_marker = mpi_alloc_limb_space(msize);\n\t\t\tif (!mp)\n\t\t\t\tgoto enomem;\n\t\t\tMPN_COPY(mp, rp, msize);\n\t\t}\n\t}\n\n\tMPN_COPY(rp, bp, bsize);\n\trsize = bsize;\n\trsign = bsign;\n\n\t{\n\t\tmpi_size_t i;\n\t\tmpi_ptr_t xp;\n\t\tint c;\n\t\tmpi_limb_t e;\n\t\tmpi_limb_t carry_limb;\n\t\tstruct karatsuba_ctx karactx;\n\n\t\txp = xp_marker = mpi_alloc_limb_space(2 * (msize + 1));\n\t\tif (!xp)\n\t\t\tgoto enomem;\n\n\t\tmemset(&karactx, 0, sizeof karactx);\n\t\tnegative_result = (ep[0] & 1) && base->sign;\n\n\t\ti = esize - 1;\n\t\te = ep[i];\n\t\tc = count_leading_zeros(e);\n\t\te = (e << c) << 1;\t/* shift the exp bits to the left, lose msb */\n\t\tc = BITS_PER_MPI_LIMB - 1 - c;\n\n\t\t/* Main loop.\n\t\t *\n\t\t * Make the result be pointed to alternately by XP and RP.  This\n\t\t * helps us avoid block copying, which would otherwise be necessary\n\t\t * with the overlap restrictions of mpihelp_divmod. With 50% probability\n\t\t * the result after this loop will be in the area originally pointed\n\t\t * by RP (==RES->d), and with 50% probability in the area originally\n\t\t * pointed to by XP.\n\t\t */\n\n\t\tfor (;;) {\n\t\t\twhile (c) {\n\t\t\t\tmpi_ptr_t tp;\n\t\t\t\tmpi_size_t xsize;\n\n\t\t\t\t/*if (mpihelp_mul_n(xp, rp, rp, rsize) < 0) goto enomem */\n\t\t\t\tif (rsize < KARATSUBA_THRESHOLD)\n\t\t\t\t\tmpih_sqr_n_basecase(xp, rp, rsize);\n\t\t\t\telse {\n\t\t\t\t\tif (!tspace) {\n\t\t\t\t\t\ttsize = 2 * rsize;\n\t\t\t\t\t\ttspace =\n\t\t\t\t\t\t    mpi_alloc_limb_space(tsize);\n\t\t\t\t\t\tif (!tspace)\n\t\t\t\t\t\t\tgoto enomem;\n\t\t\t\t\t} else if (tsize < (2 * rsize)) {\n\t\t\t\t\t\tmpi_free_limb_space(tspace);\n\t\t\t\t\t\ttsize = 2 * rsize;\n\t\t\t\t\t\ttspace =\n\t\t\t\t\t\t    mpi_alloc_limb_space(tsize);\n\t\t\t\t\t\tif (!tspace)\n\t\t\t\t\t\t\tgoto enomem;\n\t\t\t\t\t}\n\t\t\t\t\tmpih_sqr_n(xp, rp, rsize, tspace);\n\t\t\t\t}\n\n\t\t\t\txsize = 2 * rsize;\n\t\t\t\tif (xsize > msize) {\n\t\t\t\t\tmpihelp_divrem(xp + msize, 0, xp, xsize,\n\t\t\t\t\t\t       mp, msize);\n\t\t\t\t\txsize = msize;\n\t\t\t\t}\n\n\t\t\t\ttp = rp;\n\t\t\t\trp = xp;\n\t\t\t\txp = tp;\n\t\t\t\trsize = xsize;\n\n\t\t\t\tif ((mpi_limb_signed_t) e < 0) {\n\t\t\t\t\t/*mpihelp_mul( xp, rp, rsize, bp, bsize ); */\n\t\t\t\t\tif (bsize < KARATSUBA_THRESHOLD) {\n\t\t\t\t\t\tmpi_limb_t tmp;\n\t\t\t\t\t\tif (mpihelp_mul\n\t\t\t\t\t\t    (xp, rp, rsize, bp, bsize,\n\t\t\t\t\t\t     &tmp) < 0)\n\t\t\t\t\t\t\tgoto enomem;\n\t\t\t\t\t} else {\n\t\t\t\t\t\tif (mpihelp_mul_karatsuba_case\n\t\t\t\t\t\t    (xp, rp, rsize, bp, bsize,\n\t\t\t\t\t\t     &karactx) < 0)\n\t\t\t\t\t\t\tgoto enomem;\n\t\t\t\t\t}\n\n\t\t\t\t\txsize = rsize + bsize;\n\t\t\t\t\tif (xsize > msize) {\n\t\t\t\t\t\tmpihelp_divrem(xp + msize, 0,\n\t\t\t\t\t\t\t       xp, xsize, mp,\n\t\t\t\t\t\t\t       msize);\n\t\t\t\t\t\txsize = msize;\n\t\t\t\t\t}\n\n\t\t\t\t\ttp = rp;\n\t\t\t\t\trp = xp;\n\t\t\t\t\txp = tp;\n\t\t\t\t\trsize = xsize;\n\t\t\t\t}\n\t\t\t\te <<= 1;\n\t\t\t\tc--;\n\t\t\t}\n\n\t\t\ti--;\n\t\t\tif (i < 0)\n\t\t\t\tbreak;\n\t\t\te = ep[i];\n\t\t\tc = BITS_PER_MPI_LIMB;\n\t\t}\n\n\t\t/* We shifted MOD, the modulo reduction argument, left MOD_SHIFT_CNT\n\t\t * steps.  Adjust the result by reducing it with the original MOD.\n\t\t *\n\t\t * Also make sure the result is put in RES->d (where it already\n\t\t * might be, see above).\n\t\t */\n\t\tif (mod_shift_cnt) {\n\t\t\tcarry_limb =\n\t\t\t    mpihelp_lshift(res->d, rp, rsize, mod_shift_cnt);\n\t\t\trp = res->d;\n\t\t\tif (carry_limb) {\n\t\t\t\trp[rsize] = carry_limb;\n\t\t\t\trsize++;\n\t\t\t}\n\t\t} else {\n\t\t\tMPN_COPY(res->d, rp, rsize);\n\t\t\trp = res->d;\n\t\t}\n\n\t\tif (rsize >= msize) {\n\t\t\tmpihelp_divrem(rp + msize, 0, rp, rsize, mp, msize);\n\t\t\trsize = msize;\n\t\t}\n\n\t\t/* Remove any leading zero words from the result.  */\n\t\tif (mod_shift_cnt)\n\t\t\tmpihelp_rshift(rp, rp, rsize, mod_shift_cnt);\n\t\tMPN_NORMALIZE(rp, rsize);\n\n\t\tmpihelp_release_karatsuba_ctx(&karactx);\n\t}\n\n\tif (negative_result && rsize) {\n\t\tif (mod_shift_cnt)\n\t\t\tmpihelp_rshift(mp, mp, msize, mod_shift_cnt);\n\t\tmpihelp_sub(rp, mp, msize, rp, rsize);\n\t\trsize = msize;\n\t\trsign = msign;\n\t\tMPN_NORMALIZE(rp, rsize);\n\t}\n\tres->nlimbs = rsize;\n\tres->sign = rsign;\n\nleave:\n\trc = 0;\nenomem:\n\tif (assign_rp)\n\t\tmpi_assign_limb_space(res, rp, size);\n\tif (mp_marker)\n\t\tmpi_free_limb_space(mp_marker);\n\tif (bp_marker)\n\t\tmpi_free_limb_space(bp_marker);\n\tif (ep_marker)\n\t\tmpi_free_limb_space(ep_marker);\n\tif (xp_marker)\n\t\tmpi_free_limb_space(xp_marker);\n\tif (tspace)\n\t\tmpi_free_limb_space(tspace);\n\treturn rc;\n}",
+            36
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "lib/mpi/mpi-pow.c",
+            "mpi_powm",
+            "int mpi_powm(MPI res, MPI base, MPI exp, MPI mod) /* <=== mpi_powm */ \n{\n\tmpi_ptr_t mp_marker = NULL, bp_marker = NULL, ep_marker = NULL;\n\tmpi_ptr_t xp_marker = NULL;\n\tmpi_ptr_t tspace = NULL;\n\tmpi_ptr_t rp, ep, mp, bp;\n\tmpi_size_t esize, msize, bsize, rsize;\n\tint esign, msign, bsign, rsign;\n\tmpi_size_t size;\n\tint mod_shift_cnt;\n\tint negative_result;\n\tint assign_rp = 0;\n\tmpi_size_t tsize = 0;\t/* to avoid compiler warning */\n\t/* fixme: we should check that the warning is void */\n\tint rc = -ENOMEM;\n\n\tesize = exp->nlimbs;\n\tmsize = mod->nlimbs;\n\tsize = 2 * msize;\n\tesign = exp->sign;\n\tmsign = mod->sign;\n\n\trp = res->d;\n\tep = exp->d;\n\n\tif (!msize)\n\t\treturn -EINVAL;\n\n\tif (!esize) {\n\t\t/* Exponent is zero, result is 1 mod MOD, i.e., 1 or 0\n\t\t * depending on if MOD equals 1.  */\n\t\trp[0] = 1;\n\t\tres->nlimbs = (msize == 1 && mod->d[0] == 1) ? 0 : 1;\n\t\tres->sign = 0;\n\t\tgoto leave;\n\t}\n\n\t/* Normalize MOD (i.e. make its most significant bit set) as required by\n\t * mpn_divrem.  This will make the intermediate values in the calculation\n\t * slightly larger, but the correct result is obtained after a final\n\t * reduction using the original MOD value.  */\n\tmp = mp_marker = mpi_alloc_limb_space(msize);\n\tif (!mp)\n\t\tgoto enomem;\n\tmod_shift_cnt = count_leading_zeros(mod->d[msize - 1]);\n\tif (mod_shift_cnt)\n\t\tmpihelp_lshift(mp, mod->d, msize, mod_shift_cnt);\n\telse\n\t\tMPN_COPY(mp, mod->d, msize);\n\n\tbsize = base->nlimbs;\n\tbsign = base->sign;\n\tif (bsize > msize) {\t/* The base is larger than the module. Reduce it. */\n\t\t/* Allocate (BSIZE + 1) with space for remainder and quotient.\n\t\t * (The quotient is (bsize - msize + 1) limbs.)  */\n\t\tbp = bp_marker = mpi_alloc_limb_space(bsize + 1);\n\t\tif (!bp)\n\t\t\tgoto enomem;\n\t\tMPN_COPY(bp, base->d, bsize);\n\t\t/* We don't care about the quotient, store it above the remainder,\n\t\t * at BP + MSIZE.  */\n\t\tmpihelp_divrem(bp + msize, 0, bp, bsize, mp, msize);\n\t\tbsize = msize;\n\t\t/* Canonicalize the base, since we are going to multiply with it\n\t\t * quite a few times.  */\n\t\tMPN_NORMALIZE(bp, bsize);\n\t} else\n\t\tbp = base->d;\n\n\tif (!bsize) {\n\t\tres->nlimbs = 0;\n\t\tres->sign = 0;\n\t\tgoto leave;\n\t}\n\n\tif (res->alloced < size) {\n\t\t/* We have to allocate more space for RES.  If any of the input\n\t\t * parameters are identical to RES, defer deallocation of the old\n\t\t * space.  */\n\t\tif (rp == ep || rp == mp || rp == bp) {\n\t\t\trp = mpi_alloc_limb_space(size);\n\t\t\tif (!rp)\n\t\t\t\tgoto enomem;\n\t\t\tassign_rp = 1;\n\t\t} else {\n\t\t\tif (mpi_resize(res, size) < 0)\n\t\t\t\tgoto enomem;\n\t\t\trp = res->d;\n\t\t}\n\t} else {\t\t/* Make BASE, EXP and MOD not overlap with RES.  */\n\t\tif (rp == bp) {\n\t\t\t/* RES and BASE are identical.  Allocate temp. space for BASE.  */\n\t\t\tBUG_ON(bp_marker);\n\t\t\tbp = bp_marker = mpi_alloc_limb_space(bsize);\n\t\t\tif (!bp)\n\t\t\t\tgoto enomem;\n\t\t\tMPN_COPY(bp, rp, bsize);\n\t\t}\n\t\tif (rp == ep) {\n\t\t\t/* RES and EXP are identical.  Allocate temp. space for EXP.  */\n\t\t\tep = ep_marker = mpi_alloc_limb_space(esize);\n\t\t\tif (!ep)\n\t\t\t\tgoto enomem;\n\t\t\tMPN_COPY(ep, rp, esize);\n\t\t}\n\t\tif (rp == mp) {\n\t\t\t/* RES and MOD are identical.  Allocate temporary space for MOD. */\n\t\t\tBUG_ON(mp_marker);\n\t\t\tmp = mp_marker = mpi_alloc_limb_space(msize);\n\t\t\tif (!mp)\n\t\t\t\tgoto enomem;\n\t\t\tMPN_COPY(mp, rp, msize);\n\t\t}\n\t}\n\n\tMPN_COPY(rp, bp, bsize);\n\trsize = bsize;\n\trsign = bsign;\n\n\t{\n\t\tmpi_size_t i;\n\t\tmpi_ptr_t xp;\n\t\tint c;\n\t\tmpi_limb_t e;\n\t\tmpi_limb_t carry_limb;\n\t\tstruct karatsuba_ctx karactx;\n\n\t\txp = xp_marker = mpi_alloc_limb_space(2 * (msize + 1));\n\t\tif (!xp)\n\t\t\tgoto enomem;\n\n\t\tmemset(&karactx, 0, sizeof karactx);\n\t\tnegative_result = (ep[0] & 1) && base->sign;\n\n\t\ti = esize - 1;\n\t\te = ep[i];\n\t\tc = count_leading_zeros(e);\n\t\te = (e << c) << 1;\t/* shift the exp bits to the left, lose msb */\n\t\tc = BITS_PER_MPI_LIMB - 1 - c;\n\n\t\t/* Main loop.\n\t\t *\n\t\t * Make the result be pointed to alternately by XP and RP.  This\n\t\t * helps us avoid block copying, which would otherwise be necessary\n\t\t * with the overlap restrictions of mpihelp_divmod. With 50% probability\n\t\t * the result after this loop will be in the area originally pointed\n\t\t * by RP (==RES->d), and with 50% probability in the area originally\n\t\t * pointed to by XP.\n\t\t */\n\n\t\tfor (;;) {\n\t\t\twhile (c) {\n\t\t\t\tmpi_ptr_t tp;\n\t\t\t\tmpi_size_t xsize;\n\n\t\t\t\t/*if (mpihelp_mul_n(xp, rp, rp, rsize) < 0) goto enomem */\n\t\t\t\tif (rsize < KARATSUBA_THRESHOLD)\n\t\t\t\t\tmpih_sqr_n_basecase(xp, rp, rsize);\n\t\t\t\telse {\n\t\t\t\t\tif (!tspace) {\n\t\t\t\t\t\ttsize = 2 * rsize;\n\t\t\t\t\t\ttspace =\n\t\t\t\t\t\t    mpi_alloc_limb_space(tsize);\n\t\t\t\t\t\tif (!tspace)\n\t\t\t\t\t\t\tgoto enomem;\n\t\t\t\t\t} else if (tsize < (2 * rsize)) {\n\t\t\t\t\t\tmpi_free_limb_space(tspace);\n\t\t\t\t\t\ttsize = 2 * rsize;\n\t\t\t\t\t\ttspace =\n\t\t\t\t\t\t    mpi_alloc_limb_space(tsize);\n\t\t\t\t\t\tif (!tspace)\n\t\t\t\t\t\t\tgoto enomem;\n\t\t\t\t\t}\n\t\t\t\t\tmpih_sqr_n(xp, rp, rsize, tspace);\n\t\t\t\t}\n\n\t\t\t\txsize = 2 * rsize;\n\t\t\t\tif (xsize > msize) {\n\t\t\t\t\tmpihelp_divrem(xp + msize, 0, xp, xsize,\n\t\t\t\t\t\t       mp, msize);\n\t\t\t\t\txsize = msize;\n\t\t\t\t}\n\n\t\t\t\ttp = rp;\n\t\t\t\trp = xp;\n\t\t\t\txp = tp;\n\t\t\t\trsize = xsize;\n\n\t\t\t\tif ((mpi_limb_signed_t) e < 0) {\n\t\t\t\t\t/*mpihelp_mul( xp, rp, rsize, bp, bsize ); */\n\t\t\t\t\tif (bsize < KARATSUBA_THRESHOLD) {\n\t\t\t\t\t\tmpi_limb_t tmp;\n\t\t\t\t\t\tif (mpihelp_mul\n\t\t\t\t\t\t    (xp, rp, rsize, bp, bsize,\n\t\t\t\t\t\t     &tmp) < 0)\n\t\t\t\t\t\t\tgoto enomem;\n\t\t\t\t\t} else {\n\t\t\t\t\t\tif (mpihelp_mul_karatsuba_case\n\t\t\t\t\t\t    (xp, rp, rsize, bp, bsize,\n\t\t\t\t\t\t     &karactx) < 0)\n\t\t\t\t\t\t\tgoto enomem;\n\t\t\t\t\t}\n\n\t\t\t\t\txsize = rsize + bsize;\n\t\t\t\t\tif (xsize > msize) {\n\t\t\t\t\t\tmpihelp_divrem(xp + msize, 0,\n\t\t\t\t\t\t\t       xp, xsize, mp,\n\t\t\t\t\t\t\t       msize);\n\t\t\t\t\t\txsize = msize;\n\t\t\t\t\t}\n\n\t\t\t\t\ttp = rp;\n\t\t\t\t\trp = xp;\n\t\t\t\t\txp = tp;\n\t\t\t\t\trsize = xsize;\n\t\t\t\t}\n\t\t\t\te <<= 1;\n\t\t\t\tc--;\n\t\t\t}\n\n\t\t\ti--;\n\t\t\tif (i < 0)\n\t\t\t\tbreak;\n\t\t\te = ep[i];\n\t\t\tc = BITS_PER_MPI_LIMB;\n\t\t}\n\n\t\t/* We shifted MOD, the modulo reduction argument, left MOD_SHIFT_CNT\n\t\t * steps.  Adjust the result by reducing it with the original MOD.\n\t\t *\n\t\t * Also make sure the result is put in RES->d (where it already\n\t\t * might be, see above).\n\t\t */\n\t\tif (mod_shift_cnt) {\n\t\t\tcarry_limb =\n\t\t\t    mpihelp_lshift(res->d, rp, rsize, mod_shift_cnt);\n\t\t\trp = res->d;\n\t\t\tif (carry_limb) {\n\t\t\t\trp[rsize] = carry_limb;\n\t\t\t\trsize++;\n\t\t\t}\n\t\t} else {\n\t\t\tMPN_COPY(res->d, rp, rsize);\n\t\t\trp = res->d;\n\t\t}\n\n\t\tif (rsize >= msize) {\n\t\t\tmpihelp_divrem(rp + msize, 0, rp, rsize, mp, msize);\n\t\t\trsize = msize;\n\t\t}\n\n\t\t/* Remove any leading zero words from the result.  */\n\t\tif (mod_shift_cnt)\n\t\t\tmpihelp_rshift(rp, rp, rsize, mod_shift_cnt);\n\t\tMPN_NORMALIZE(rp, rsize);\n\n\t\tmpihelp_release_karatsuba_ctx(&karactx);\n\t}\n\n\tif (negative_result && rsize) {\n\t\tif (mod_shift_cnt)\n\t\t\tmpihelp_rshift(mp, mp, msize, mod_shift_cnt);\n\t\tmpihelp_sub(rp, mp, msize, rp, rsize);\n\t\trsize = msize;\n\t\trsign = msign;\n\t\tMPN_NORMALIZE(rp, rsize);\n\t}\n\tres->nlimbs = rsize;\n\tres->sign = rsign;\n\nleave:\n\trc = 0;\nenomem:\n\tif (assign_rp)\n\t\tmpi_assign_limb_space(res, rp, size);\n\tif (mp_marker)\n\t\tmpi_free_limb_space(mp_marker);\n\tif (bp_marker)\n\t\tmpi_free_limb_space(bp_marker);\n\tif (ep_marker)\n\t\tmpi_free_limb_space(ep_marker);\n\tif (xp_marker)\n\t\tmpi_free_limb_space(xp_marker);\n\tif (tspace)\n\t\tmpi_free_limb_space(tspace);\n\treturn rc;\n}",
+            36
+        ]
+    ]
+}

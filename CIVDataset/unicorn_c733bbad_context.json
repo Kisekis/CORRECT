@@ -1,0 +1,322 @@
+{
+    "calleeMethods": [
+        [
+            "uc.c",
+            "uc_mem_unmap",
+            "uc_err uc_mem_unmap(struct uc_struct *uc, uint64_t address, size_t size) /* <=== uc_mem_unmap */ \n{\n    MemoryRegion *mr;\n    uint64_t addr;\n    size_t count, len;\n\n    UC_INIT(uc);\n\n    if (size == 0) {\n        // nothing to unmap\n        return UC_ERR_OK;\n    }\n\n    // address must be aligned to uc->target_page_size\n    if ((address & uc->target_page_align) != 0) {\n        return UC_ERR_ARG;\n    }\n\n    // size must be multiple of uc->target_page_size\n    if ((size & uc->target_page_align) != 0) {\n        return UC_ERR_ARG;\n    }\n\n    if (uc->mem_redirect) {\n        address = uc->mem_redirect(address);\n    }\n\n    // check that user's entire requested block is mapped\n    if (!check_mem_area(uc, address, size)) {\n        return UC_ERR_NOMEM;\n    }\n\n    // Now we know entire region is mapped, so do the unmap\n    // We may need to split regions if this area spans adjacent regions\n    addr = address;\n    count = 0;\n    while (count < size) {\n        mr = memory_mapping(uc, addr);\n        len = (size_t)MIN(size - count, mr->end - addr);\n        if (!split_region(uc, mr, addr, len, true)) {\n            return UC_ERR_NOMEM;\n        }\n\n        // if we can retrieve the mapping, then no splitting took place\n        // so unmap here\n        mr = memory_mapping(uc, addr);\n        if (mr != NULL) {\n            uc->memory_unmap(uc, mr);\n        }\n        count += len;\n        addr += len;\n    }\n\n    return UC_ERR_OK;\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "memory_mapping",
+            "MemoryRegion *memory_mapping(struct uc_struct *uc, uint64_t address) /* <=== memory_mapping */ \n{\n    unsigned int i;\n\n    if (uc->mapped_block_count == 0) {\n        return NULL;\n    }\n\n    if (uc->mem_redirect) {\n        address = uc->mem_redirect(address);\n    }\n\n    // try with the cache index first\n    i = uc->mapped_block_cache_index;\n\n    if (i < uc->mapped_block_count && address >= uc->mapped_blocks[i]->addr &&\n        address < uc->mapped_blocks[i]->end) {\n        return uc->mapped_blocks[i];\n    }\n\n    i = bsearch_mapped_blocks(uc, address);\n\n    if (i < uc->mapped_block_count && address >= uc->mapped_blocks[i]->addr &&\n        address <= uc->mapped_blocks[i]->end - 1)\n        return uc->mapped_blocks[i];\n\n    // not found\n    return NULL;\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "uc_mem_map",
+            "uc_err uc_mem_map(uc_engine *uc, uint64_t address, size_t size, uint32_t perms) /* <=== uc_mem_map */ \n{\n    uc_err res;\n\n    UC_INIT(uc);\n\n    if (uc->mem_redirect) {\n        address = uc->mem_redirect(address);\n    }\n\n    res = mem_map_check(uc, address, size, perms);\n    if (res) {\n        return res;\n    }\n\n    return mem_map(uc, address, size, perms,\n                   uc->memory_map(uc, address, size, perms));\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "uc_mem_map_ptr",
+            "uc_err uc_mem_map_ptr(uc_engine *uc, uint64_t address, size_t size, /* <=== uc_mem_map_ptr */ \n                      uint32_t perms, void *ptr)\n{\n    uc_err res;\n\n    UC_INIT(uc);\n\n    if (ptr == NULL) {\n        return UC_ERR_ARG;\n    }\n\n    if (uc->mem_redirect) {\n        address = uc->mem_redirect(address);\n    }\n\n    res = mem_map_check(uc, address, size, perms);\n    if (res) {\n        return res;\n    }\n\n    return mem_map(uc, address, size, UC_PROT_ALL,\n                   uc->memory_map_ptr(uc, address, size, perms, ptr));\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "check_mem_area",
+            "static bool check_mem_area(uc_engine *uc, uint64_t address, size_t size) /* <=== check_mem_area */ \n{\n    size_t count = 0, len;\n\n    while (count < size) {\n        MemoryRegion *mr = memory_mapping(uc, address);\n        if (mr) {\n            len = (size_t)MIN(size - count, mr->end - address);\n            count += len;\n            address += len;\n        } else { // this address is not mapped in yet\n            break;\n        }\n    }\n\n    return (count == size);\n}",
+            2
+        ],
+        [
+            "include/uc_priv.h",
+            "MEM_BLOCK_INCR",
+            "#define MEM_BLOCK_INCR 32 /* <=== include/uc_priv.h:226:226:MEM_BLOCK_INCR:0 */ ",
+            3
+        ],
+        [
+            "uc.c",
+            "memory_overlap",
+            "static bool memory_overlap(struct uc_struct *uc, uint64_t begin, size_t size) /* <=== memory_overlap */ \n{\n    unsigned int i;\n    uint64_t end = begin + size - 1;\n\n    i = bsearch_mapped_blocks(uc, begin);\n\n    // is this the highest region with no possible overlap?\n    if (i >= uc->mapped_block_count)\n        return false;\n\n    // end address overlaps this region?\n    if (end >= uc->mapped_blocks[i]->addr)\n        return true;\n\n    // not found\n    return false;\n}",
+            3
+        ],
+        [
+            "uc.c",
+            "bsearch_mapped_blocks",
+            "static int bsearch_mapped_blocks(const uc_engine *uc, uint64_t address) /* <=== bsearch_mapped_blocks */ \n{\n    int left, right, mid;\n    MemoryRegion *mapping;\n\n    left = 0;\n    right = uc->mapped_block_count;\n\n    while (left < right) {\n        mid = left + (right - left) / 2;\n\n        mapping = uc->mapped_blocks[mid];\n\n        if (mapping->end - 1 < address) {\n            left = mid + 1;\n        } else if (mapping->addr > address) {\n            right = mid;\n        } else {\n            return mid;\n        }\n    }\n\n    return left;\n}",
+            3
+        ],
+        [
+            "uc.c",
+            "mem_map",
+            "static uc_err mem_map(uc_engine *uc, uint64_t address, size_t size, /* <=== mem_map */ \n                      uint32_t perms, MemoryRegion *block)\n{\n    MemoryRegion **regions;\n    int pos;\n\n    if (block == NULL) {\n        return UC_ERR_NOMEM;\n    }\n\n    if ((uc->mapped_block_count & (MEM_BLOCK_INCR - 1)) == 0) { // time to grow\n        regions = (MemoryRegion **)g_realloc(\n            uc->mapped_blocks,\n            sizeof(MemoryRegion *) * (uc->mapped_block_count + MEM_BLOCK_INCR));\n        if (regions == NULL) {\n            return UC_ERR_NOMEM;\n        }\n        uc->mapped_blocks = regions;\n    }\n\n    pos = bsearch_mapped_blocks(uc, block->addr);\n\n    // shift the array right to give space for the new pointer\n    memmove(&uc->mapped_blocks[pos + 1], &uc->mapped_blocks[pos],\n            sizeof(MemoryRegion *) * (uc->mapped_block_count - pos));\n\n    uc->mapped_blocks[pos] = block;\n    uc->mapped_block_count++;\n\n    return UC_ERR_OK;\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "copy_region",
+            "static uint8_t *copy_region(struct uc_struct *uc, MemoryRegion *mr) /* <=== copy_region */ \n{\n    uint8_t *block = (uint8_t *)g_malloc0((size_t)int128_get64(mr->size));\n    if (block != NULL) {\n        uc_err err =\n            uc_mem_read(uc, mr->addr, block, (size_t)int128_get64(mr->size));\n        if (err != UC_ERR_OK) {\n            free(block);\n            block = NULL;\n        }\n    }\n\n    return block;\n}",
+            1
+        ],
+        [
+            "qemu/include/qemu/osdep.h",
+            "MIN",
+            "#define MIN(a, b) (((a) < (b)) ? (a) : (b)) /* <=== qemu/include/qemu/osdep.h:259:259:MIN:2 */ ",
+            2
+        ],
+        [
+            "uc.c",
+            "uc_mem_write",
+            "uc_err uc_mem_write(uc_engine *uc, uint64_t address, const void *_bytes, /* <=== uc_mem_write */ \n                    size_t size)\n{\n    size_t count = 0, len;\n    const uint8_t *bytes = _bytes;\n\n    UC_INIT(uc);\n\n    // qemu cpu_physical_memory_rw() size is an int\n    if (size > INT_MAX)\n        return UC_ERR_ARG;\n\n    if (uc->mem_redirect) {\n        address = uc->mem_redirect(address);\n    }\n\n    if (!check_mem_area(uc, address, size)) {\n        return UC_ERR_WRITE_UNMAPPED;\n    }\n\n    // memory area can overlap adjacent memory blocks\n    while (count < size) {\n        MemoryRegion *mr = memory_mapping(uc, address);\n        if (mr) {\n            uint32_t operms = mr->perms;\n            if (!(operms & UC_PROT_WRITE)) { // write protected\n                // but this is not the program accessing memory, so temporarily\n                // mark writable\n                uc->readonly_mem(mr, false);\n            }\n\n            len = (size_t)MIN(size - count, mr->end - address);\n            if (uc->write_mem(&uc->address_space_memory, address, bytes, len) ==\n                false) {\n                break;\n            }\n\n            if (!(operms & UC_PROT_WRITE)) { // write protected\n                // now write protect it again\n                uc->readonly_mem(mr, true);\n            }\n\n            count += len;\n            address += len;\n            bytes += len;\n        } else { // this address is not mapped in yet\n            break;\n        }\n    }\n\n    if (count == size) {\n        return UC_ERR_OK;\n    } else {\n        return UC_ERR_WRITE_UNMAPPED;\n    }\n}",
+            1
+        ],
+        [
+            "uc.c",
+            "uc_init",
+            "static uc_err uc_init(uc_engine *uc) /* <=== uc_init */ \n{\n\n    if (uc->init_done) {\n        return UC_ERR_HANDLE;\n    }\n\n    uc->exits = g_tree_new_full(uc_exits_cmp, NULL, g_free, NULL);\n\n    if (machine_initialize(uc)) {\n        return UC_ERR_RESOURCE;\n    }\n\n    // init fpu softfloat\n    uc->softfloat_initialize();\n\n    if (uc->reg_reset) {\n        uc->reg_reset(uc);\n    }\n\n    uc->init_done = true;\n\n    return UC_ERR_OK;\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "UC_INIT",
+            "#define UC_INIT(uc)                                                            \\ /* <=== uc.c:140:146:UC_INIT:1 */ \n    if (unlikely(!(uc)->init_done)) {                                          \\\n        int __init_ret = uc_init(uc);                                          \\\n        if (unlikely(__init_ret != UC_ERR_OK)) {                               \\\n            return __init_ret;                                                 \\\n        }                                                                      \\\n    }",
+            2
+        ],
+        [
+            "uc.c",
+            "mem_map_check",
+            "static uc_err mem_map_check(uc_engine *uc, uint64_t address, size_t size, /* <=== mem_map_check */ \n                            uint32_t perms)\n{\n    if (size == 0) {\n        // invalid memory mapping\n        return UC_ERR_ARG;\n    }\n\n    // address cannot wrapp around\n    if (address + size - 1 < address) {\n        return UC_ERR_ARG;\n    }\n\n    // address must be aligned to uc->target_page_size\n    if ((address & uc->target_page_align) != 0) {\n        return UC_ERR_ARG;\n    }\n\n    // size must be multiple of uc->target_page_size\n    if ((size & uc->target_page_align) != 0) {\n        return UC_ERR_ARG;\n    }\n\n    // check for only valid permissions\n    if ((perms & ~UC_PROT_ALL) != 0) {\n        return UC_ERR_ARG;\n    }\n\n    // this area overlaps existing mapped regions?\n    if (memory_overlap(uc, address, size)) {\n        return UC_ERR_MAP;\n    }\n\n    return UC_ERR_OK;\n}",
+            2
+        ],
+        [
+            "uc.c",
+            "uc_mem_read",
+            "uc_err uc_mem_read(uc_engine *uc, uint64_t address, void *_bytes, size_t size) /* <=== uc_mem_read */ \n{\n    size_t count = 0, len;\n    uint8_t *bytes = _bytes;\n\n    UC_INIT(uc);\n\n    // qemu cpu_physical_memory_rw() size is an int\n    if (size > INT_MAX)\n        return UC_ERR_ARG;\n\n    if (uc->mem_redirect) {\n        address = uc->mem_redirect(address);\n    }\n\n    if (!check_mem_area(uc, address, size)) {\n        return UC_ERR_READ_UNMAPPED;\n    }\n\n    // memory area can overlap adjacent memory blocks\n    while (count < size) {\n        MemoryRegion *mr = memory_mapping(uc, address);\n        if (mr) {\n            len = (size_t)MIN(size - count, mr->end - address);\n            if (uc->read_mem(&uc->address_space_memory, address, bytes, len) ==\n                false) {\n                break;\n            }\n            count += len;\n            address += len;\n            bytes += len;\n        } else { // this address is not mapped in yet\n            break;\n        }\n    }\n\n    if (count == size) {\n        return UC_ERR_OK;\n    } else {\n        return UC_ERR_READ_UNMAPPED;\n    }\n}",
+            2
+        ],
+        [
+            "qemu/include/qemu/queue.h",
+            "QLIST_FOREACH",
+            "#define QLIST_FOREACH(var, head, field)                                 \\ /* <=== qemu/include/qemu/queue.h:166:169:QLIST_FOREACH:3 */ \n        for ((var) = ((head)->lh_first);                                \\\n                (var);                                                  \\\n                (var) = ((var)->field.le_next))",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"qemu/bitmap.h\"",
+        "#include \"qemu/target/arm/unicorn.h\"",
+        "#include \"qemu/timer.h\"",
+        "#include <stddef.h>",
+        "#include \"sysemu/tcg.h\"",
+        "#include <libkern/libkern.h>",
+        "#include \"qemu/osdep.h\"",
+        "#include \"qemu/target/sparc/unicorn.h\"",
+        "#include \"exec/exec-all.h\"",
+        "#include <string.h>",
+        "#include \"translate-all.h\"",
+        "#include \"cpu.h\"",
+        "#include \"qemu/target/mips/unicorn.h\"",
+        "#include \"qemu/target/i386/unicorn.h\"",
+        "#include \"exec/tb-hash.h\"",
+        "#include \"uc_priv.h\"",
+        "#include \"exec/ram_addr.h\"",
+        "#include \"qemu/target/riscv/unicorn.h\"",
+        "#include <stdio.h>",
+        "#include \"qemu/target/m68k/unicorn.h\"",
+        "#include \"qemu/units.h\"",
+        "#include \"exec/cputlb.h\"",
+        "#include <time.h>",
+        "#include \"qemu/include/qemu/queue.h\"",
+        "#include \"tcg/tcg.h\"",
+        "#include \"sysemu/cpus.h\"",
+        "#include \"qemu/target/ppc/unicorn.h\"",
+        "#include \"qemu-common.h\"",
+        "#include <stdlib.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef enum uc_err {\n    UC_ERR_OK = 0,         // No error: everything was fine\n    UC_ERR_NOMEM,          // Out-Of-Memory error: uc_open(), uc_emulate()\n    UC_ERR_ARCH,           // Unsupported architecture: uc_open()\n    UC_ERR_HANDLE,         // Invalid handle\n    UC_ERR_MODE,           // Invalid/unsupported mode: uc_open()\n    UC_ERR_VERSION,        // Unsupported version (bindings)\n    UC_ERR_READ_UNMAPPED,  // Quit emulation due to READ on unmapped memory:\n                           // uc_emu_start()\n    UC_ERR_WRITE_UNMAPPED, // Quit emulation due to WRITE on unmapped memory:\n                           // uc_emu_start()\n    UC_ERR_FETCH_UNMAPPED, // Quit emulation due to FETCH on unmapped memory:\n                           // uc_emu_start()\n    UC_ERR_HOOK,           // Invalid hook type: uc_hook_add()\n    UC_ERR_INSN_INVALID,   // Quit emulation due to invalid instruction:\n                           // uc_emu_start()\n    UC_ERR_MAP,            // Invalid memory mapping: uc_mem_map()\n    UC_ERR_WRITE_PROT,     // Quit emulation due to UC_MEM_WRITE_PROT violation:\n                           // uc_emu_start()\n    UC_ERR_READ_PROT,      // Quit emulation due to UC_MEM_READ_PROT violation:\n                           // uc_emu_start()\n    UC_ERR_FETCH_PROT,     // Quit emulation due to UC_MEM_FETCH_PROT violation:\n                           // uc_emu_start()\n    UC_ERR_ARG, // Inavalid argument provided to uc_xxx function (See specific\n                // function API)\n    UC_ERR_READ_UNALIGNED,  // Unaligned read\n    UC_ERR_WRITE_UNALIGNED, // Unaligned write\n    UC_ERR_FETCH_UNALIGNED, // Unaligned fetch\n    UC_ERR_HOOK_EXIST,      // hook for this event already existed\n    UC_ERR_RESOURCE,        // Insufficient resource: uc_emu_start()\n    UC_ERR_EXCEPTION,       // Unhandled CPU exception\n}",
+            "uc_err"
+        ],
+        [
+            "struct MemoryRegion",
+            "MemoryRegion"
+        ],
+        [
+            "struct RAMBlock {\n    struct MemoryRegion *mr;\n    uint8_t *host;\n    ram_addr_t offset;\n    ram_addr_t used_length;\n    ram_addr_t max_length;\n    uint32_t flags;\n    /* RCU-enabled, writes protected by the ramlist lock */\n    QLIST_ENTRY(RAMBlock) next;\n    size_t page_size;\n}",
+            "RAMBlock"
+        ],
+        [
+            "struct uc_struct {\n    uc_arch arch;\n    uc_mode mode;\n    uc_err errnum; // qemu/cpu-exec.c\n    AddressSpace address_space_memory;\n    AddressSpace address_space_io;\n    query_t query;\n    reg_read_t reg_read;\n    reg_write_t reg_write;\n    reg_reset_t reg_reset;\n\n    uc_write_mem_t write_mem;\n    uc_read_mem_t read_mem;\n    uc_args_void_t release;  // release resource when uc_close()\n    uc_args_uc_u64_t set_pc; // set PC for tracecode\n    uc_args_int_t\n        stop_interrupt; // check if the interrupt should stop emulation\n    uc_memory_map_io_t memory_map_io;\n\n    uc_args_uc_t init_arch, cpu_exec_init_all;\n    uc_args_int_uc_t vm_start;\n    uc_args_uc_long_t tcg_exec_init;\n    uc_args_uc_ram_size_t memory_map;\n    uc_args_uc_ram_size_ptr_t memory_map_ptr;\n    uc_mem_unmap_t memory_unmap;\n    uc_readonly_mem_t readonly_mem;\n    uc_mem_redirect_t mem_redirect;\n    uc_cpus_init cpus_init;\n    uc_target_page_init target_page;\n    uc_softfloat_initialize softfloat_initialize;\n    uc_tcg_flush_tlb tcg_flush_tlb;\n    uc_invalidate_tb_t uc_invalidate_tb;\n    uc_gen_tb_t uc_gen_tb;\n    uc_add_inline_hook_t add_inline_hook;\n    uc_del_inline_hook_t del_inline_hook;\n\n    /*  only 1 cpu in unicorn,\n        do not need current_cpu to handle current running cpu. */\n    CPUState *cpu;\n\n    uc_insn_hook_validate insn_hook_validate;\n    uc_opcode_hook_validate_t opcode_hook_invalidate;\n\n    MemoryRegion *system_memory;    // qemu/exec.c\n    MemoryRegion *system_io;        // qemu/exec.c\n    MemoryRegion io_mem_unassigned; // qemu/exec.c\n    RAMList ram_list;               // qemu/exec.c\n    /* qemu/exec.c */\n    unsigned int alloc_hint;\n    /* qemu/exec-vary.c */\n    TargetPageBits *init_target_page;\n    int target_bits; // User defined page bits by uc_ctl\n    int cpu_model;\n    BounceBuffer bounce;                // qemu/cpu-exec.c\n    volatile sig_atomic_t exit_request; // qemu/cpu-exec.c\n    /* qemu/accel/tcg/cpu-exec-common.c */\n    /* always be true after call tcg_exec_init(). */\n    bool tcg_allowed;\n    /* This is a multi-level map on the virtual address space.\n       The bottom level has pointers to PageDesc.  */\n    void **l1_map; // qemu/accel/tcg/translate-all.c\n    size_t l1_map_size;\n    /* qemu/accel/tcg/translate-all.c */\n    int v_l1_size;\n    int v_l1_shift;\n    int v_l2_levels;\n    /* code generation context */\n    TCGContext *tcg_ctx;\n    /* memory.c */\n    QTAILQ_HEAD(memory_listeners, MemoryListener) memory_listeners;\n    QTAILQ_HEAD(, AddressSpace) address_spaces;\n    GHashTable *flat_views;\n    bool memory_region_update_pending;\n\n    // linked lists containing hooks per type\n    struct list hook[UC_HOOK_MAX];\n    struct list hooks_to_del;\n    int hooks_count[UC_HOOK_MAX];\n\n    // hook to count number of instructions for uc_emu_start()\n    uc_hook count_hook;\n\n    size_t emu_counter; // current counter of uc_emu_start()\n    size_t emu_count;   // save counter of uc_emu_start()\n\n    int size_recur_mem; // size for mem access when in a recursive call\n\n    bool init_tcg;       // already initialized local TCGv variables?\n    bool stop_request;   // request to immediately stop emulation - for\n                         // uc_emu_stop()\n    bool quit_request;   // request to quit the current TB, but continue to\n                         // emulate - for uc_mem_protect()\n    bool emulation_done; // emulation is done by uc_emu_start()\n    bool timed_out;      // emulation timed out, that can retrieve via\n                         // uc_query(UC_QUERY_TIMEOUT)\n    QemuThread timer;    // timer for emulation timeout\n    uint64_t timeout;    // timeout for uc_emu_start()\n\n    uint64_t invalid_addr; // invalid address to be accessed\n    int invalid_error;     // invalid memory code: 1 = READ, 2 = WRITE, 3 = CODE\n\n    int use_exits;\n    GTree *exits; // addresses where emulation stops (@until param of\n                  // uc_emu_start()) Also see UC_CTL_USE_EXITS for more details.\n\n    int thumb; // thumb mode for ARM\n    MemoryRegion **mapped_blocks;\n    uint32_t mapped_block_count;\n    uint32_t mapped_block_cache_index;\n    void *qemu_thread_data; // to support cross compile to Windows\n                            // (qemu-thread-win32.c)\n    uint32_t target_page_size;\n    uint32_t target_page_align;\n    uint64_t qemu_host_page_size;\n    uint64_t qemu_real_host_page_size;\n    int qemu_icache_linesize;\n    /* ARCH_REGS_STORAGE_SIZE */\n    int cpu_context_size;\n    uint64_t next_pc; // save next PC for some special cases\n    bool hook_insert; // insert new hook at begin of the hook list (append by\n                      // default)\n    bool first_tb; // is this the first Translation-Block ever generated since\n                   // uc_emu_start()?\n    bool no_exit_request; // Disable check_exit_request temporarily. A\n                          // workaround to treat the IT block as a whole block.\n    bool init_done;       // Whether the initialization is done.\n\n    sigjmp_buf jmp_bufs[UC_MAX_NESTED_LEVEL]; // To support nested uc_emu_start\n    int nested_level;                         // Current nested_level\n\n    struct TranslationBlock* last_tb; // The real last tb we executed.\n}",
+            "uc_struct"
+        ]
+    ],
+    "visitedLines_after": {
+        "uc.c": [
+            1063,
+            1064,
+            1070,
+            1073,
+            1077,
+            1081,
+            1086,
+            1091,
+            1094,
+            1095,
+            1100,
+            1101,
+            1106,
+            1108,
+            1109,
+            1111,
+            1112,
+            1113,
+            1119,
+            1120,
+            1121,
+            1124,
+            1125,
+            1137,
+            1138,
+            1140,
+            1141,
+            1145,
+            1146,
+            1147,
+            1153,
+            1154,
+            1155,
+            1158,
+            1162,
+            1168,
+            1169,
+            1170,
+            1173,
+            1174,
+            1178,
+            1179,
+            1185,
+            1186,
+            1187,
+            1190,
+            1191,
+            1195,
+            1196,
+            1202,
+            1203,
+            1205,
+            1208,
+            1209,
+            1211
+        ]
+    },
+    "visitedLines_before": {
+        "uc.c": [
+            1063,
+            1064,
+            1070,
+            1073,
+            1077,
+            1081,
+            1086,
+            1091,
+            1093,
+            1094,
+            1099,
+            1100,
+            1105,
+            1107,
+            1108,
+            1110,
+            1111,
+            1112,
+            1118,
+            1119,
+            1120,
+            1123,
+            1124,
+            1136,
+            1137,
+            1139,
+            1140,
+            1144,
+            1145,
+            1146,
+            1152,
+            1153,
+            1154,
+            1157,
+            1161,
+            1167,
+            1168,
+            1169,
+            1172,
+            1173,
+            1177,
+            1178,
+            1184,
+            1185,
+            1186,
+            1189,
+            1190,
+            1194,
+            1195,
+            1201,
+            1202,
+            1204,
+            1207,
+            1208,
+            1210
+        ]
+    },
+    "visitedParams": {
+        "uc.c": [
+            [
+                "MemoryRegion *mr",
+                "split_region"
+            ],
+            [
+                "size_t size",
+                "split_region"
+            ],
+            [
+                "struct uc_struct *uc",
+                "split_region"
+            ],
+            [
+                "uint64_t address",
+                "split_region"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "qemu/accel/tcg/translate-all.c",
+            "uc_invalidate_tb",
+            "static void uc_invalidate_tb(struct uc_struct *uc, uint64_t start_addr, size_t len)  /* <=== uc_invalidate_tb */ \n{\n    tb_page_addr_t start, end;\n\n    // GVA to GPA \n    // (GPA -> HVA via memory_region_get_ram_addr(mr) + GPA + block->host,\n    // HVA->HPA via host mmu)\n    start = get_page_addr_code(uc->cpu->env_ptr, start_addr) & (target_ulong)(-1);\n    \n    // For 32bit target.\n    end = (start + len) & (target_ulong)(-1);\n\n    // We get a wrap?\n    if (start > end) {\n        return;\n    }\n\n    tb_invalidate_phys_range(uc, start, end);\n}",
+            984
+        ],
+        [
+            "uc.c",
+            "split_region",
+            "static bool split_region(struct uc_struct *uc, MemoryRegion *mr, /* <=== split_region */ \n                         uint64_t address, size_t size, bool do_delete)\n{\n    uint8_t *backup;\n    uint32_t perms;\n    uint64_t begin, end, chunk_end;\n    size_t l_size, m_size, r_size;\n    RAMBlock *block = NULL;\n    bool prealloc = false;\n\n    chunk_end = address + size;\n\n    // if this region belongs to area [address, address+size],\n    // then there is no work to do.\n    if (address <= mr->addr && chunk_end >= mr->end) {\n        return true;\n    }\n\n    if (size == 0) {\n        // trivial case\n        return true;\n    }\n\n    if (address >= mr->end || chunk_end <= mr->addr) {\n        // impossible case\n        return false;\n    }\n\n    QLIST_FOREACH(block, &uc->ram_list.blocks, next)\n    {\n        // block->offset is the offset within ram_addr_t, not GPA\n        if (block->mr->addr <= mr->addr &&\n            block->used_length >= (mr->end - mr->addr)) {\n            break;\n        }\n    }\n\n    if (block == NULL) {\n        return false;\n    }\n\n    // RAM_PREALLOC is not defined outside exec.c and I didn't feel like\n    // moving it\n    prealloc = !!(block->flags & 1);\n\n    if (block->flags & 1) {\n        backup = block->host;\n    } else {\n        backup = copy_region(uc, mr);\n        if (backup == NULL) {\n            return false;\n        }\n    }\n\n    // save the essential information required for the split before mr gets\n    // deleted\n    perms = mr->perms;\n    begin = mr->addr;\n    end = mr->end;\n\n    // unmap this region first, then do split it later\n    if (uc_mem_unmap(uc, mr->addr, (size_t)int128_get64(mr->size)) !=\n        UC_ERR_OK) {\n        goto error;\n    }\n\n    /* overlapping cases\n     *               |------mr------|\n     * case 1    |---size--|\n     * case 2           |--size--|\n     * case 3                  |---size--|\n     */\n\n    // adjust some things\n    if (address < begin) {\n        address = begin;\n    }\n    if (chunk_end > end) {\n        chunk_end = end;\n    }\n\n    // compute sub region sizes\n    l_size = (size_t)(address - begin);\n    r_size = (size_t)(end - chunk_end);\n    m_size = (size_t)(chunk_end - address);\n\n    // If there are error in any of the below operations, things are too far\n    // gone at that point to recover. Could try to remap orignal region, but\n    // these smaller allocation just failed so no guarantee that we can recover\n    // the original allocation at this point\n    if (l_size > 0) {\n        if (!prealloc) {\n            if (uc_mem_map(uc, begin, l_size, perms) != UC_ERR_OK) {\n                goto error;\n            }\n            if (uc_mem_write(uc, begin, backup, l_size) != UC_ERR_OK) {\n                goto error;\n            }\n        } else {\n            if (uc_mem_map_ptr(uc, begin, l_size, perms, backup) != UC_ERR_OK) {\n                goto error;\n            }\n        }\n    }\n\n    if (m_size > 0 && !do_delete) {\n        if (!prealloc) {\n            if (uc_mem_map(uc, address, m_size, perms) != UC_ERR_OK) {\n                goto error;\n            }\n            if (uc_mem_write(uc, address, backup + l_size, m_size) !=\n                UC_ERR_OK) {\n                goto error;\n            }\n        } else {\n            if (uc_mem_map_ptr(uc, address, m_size, perms, backup + l_size) !=\n                UC_ERR_OK) {\n                goto error;\n            }\n        }\n    }\n\n    if (r_size > 0) {\n        if (!prealloc) {\n            if (uc_mem_map(uc, chunk_end, r_size, perms) != UC_ERR_OK) {\n                goto error;\n            }\n            if (uc_mem_write(uc, chunk_end, backup + l_size + m_size, r_size) !=\n                UC_ERR_OK) {\n                goto error;\n            }\n        } else {\n            if (uc_mem_map_ptr(uc, chunk_end, r_size, perms,\n                               backup + l_size + m_size) != UC_ERR_OK) {\n                goto error;\n            }\n        }\n    }\n\n    if (!prealloc) {\n        free(backup);\n    }\n    return true;\n\nerror:\n    if (!prealloc) {\n        free(backup);\n    }\n    return false;\n}",
+            1063
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "qemu/accel/tcg/translate-all.c",
+            "uc_invalidate_tb",
+            "static void uc_invalidate_tb(struct uc_struct *uc, uint64_t start_addr, size_t len)  /* <=== uc_invalidate_tb */ \n{\n    tb_page_addr_t start, end;\n\n    // GVA to GPA (GPA -> HVA via page_find, HVA->HPA via host mmu)\n    start = get_page_addr_code(uc->cpu->env_ptr, start_addr) & (target_ulong)(-1);\n    \n    // For 32bit target.\n    end = (start + len) & (target_ulong)(-1);\n\n    // We get a wrap?\n    if (start > end) {\n        return;\n    }\n\n    tb_invalidate_phys_range(uc, start, end);\n}",
+            984
+        ],
+        [
+            "uc.c",
+            "split_region",
+            "static bool split_region(struct uc_struct *uc, MemoryRegion *mr, /* <=== split_region */ \n                         uint64_t address, size_t size, bool do_delete)\n{\n    uint8_t *backup;\n    uint32_t perms;\n    uint64_t begin, end, chunk_end;\n    size_t l_size, m_size, r_size;\n    RAMBlock *block = NULL;\n    bool prealloc = false;\n\n    chunk_end = address + size;\n\n    // if this region belongs to area [address, address+size],\n    // then there is no work to do.\n    if (address <= mr->addr && chunk_end >= mr->end) {\n        return true;\n    }\n\n    if (size == 0) {\n        // trivial case\n        return true;\n    }\n\n    if (address >= mr->end || chunk_end <= mr->addr) {\n        // impossible case\n        return false;\n    }\n\n    QLIST_FOREACH(block, &uc->ram_list.blocks, next)\n    {\n        if (block->offset <= mr->addr &&\n            block->used_length >= (mr->end - mr->addr)) {\n            break;\n        }\n    }\n\n    if (block == NULL) {\n        return false;\n    }\n\n    // RAM_PREALLOC is not defined outside exec.c and I didn't feel like\n    // moving it\n    prealloc = !!(block->flags & 1);\n\n    if (block->flags & 1) {\n        backup = block->host;\n    } else {\n        backup = copy_region(uc, mr);\n        if (backup == NULL) {\n            return false;\n        }\n    }\n\n    // save the essential information required for the split before mr gets\n    // deleted\n    perms = mr->perms;\n    begin = mr->addr;\n    end = mr->end;\n\n    // unmap this region first, then do split it later\n    if (uc_mem_unmap(uc, mr->addr, (size_t)int128_get64(mr->size)) !=\n        UC_ERR_OK) {\n        goto error;\n    }\n\n    /* overlapping cases\n     *               |------mr------|\n     * case 1    |---size--|\n     * case 2           |--size--|\n     * case 3                  |---size--|\n     */\n\n    // adjust some things\n    if (address < begin) {\n        address = begin;\n    }\n    if (chunk_end > end) {\n        chunk_end = end;\n    }\n\n    // compute sub region sizes\n    l_size = (size_t)(address - begin);\n    r_size = (size_t)(end - chunk_end);\n    m_size = (size_t)(chunk_end - address);\n\n    // If there are error in any of the below operations, things are too far\n    // gone at that point to recover. Could try to remap orignal region, but\n    // these smaller allocation just failed so no guarantee that we can recover\n    // the original allocation at this point\n    if (l_size > 0) {\n        if (!prealloc) {\n            if (uc_mem_map(uc, begin, l_size, perms) != UC_ERR_OK) {\n                goto error;\n            }\n            if (uc_mem_write(uc, begin, backup, l_size) != UC_ERR_OK) {\n                goto error;\n            }\n        } else {\n            if (uc_mem_map_ptr(uc, begin, l_size, perms, backup) != UC_ERR_OK) {\n                goto error;\n            }\n        }\n    }\n\n    if (m_size > 0 && !do_delete) {\n        if (!prealloc) {\n            if (uc_mem_map(uc, address, m_size, perms) != UC_ERR_OK) {\n                goto error;\n            }\n            if (uc_mem_write(uc, address, backup + l_size, m_size) !=\n                UC_ERR_OK) {\n                goto error;\n            }\n        } else {\n            if (uc_mem_map_ptr(uc, address, m_size, perms, backup + l_size) !=\n                UC_ERR_OK) {\n                goto error;\n            }\n        }\n    }\n\n    if (r_size > 0) {\n        if (!prealloc) {\n            if (uc_mem_map(uc, chunk_end, r_size, perms) != UC_ERR_OK) {\n                goto error;\n            }\n            if (uc_mem_write(uc, chunk_end, backup + l_size + m_size, r_size) !=\n                UC_ERR_OK) {\n                goto error;\n            }\n        } else {\n            if (uc_mem_map_ptr(uc, chunk_end, r_size, perms,\n                               backup + l_size + m_size) != UC_ERR_OK) {\n                goto error;\n            }\n        }\n    }\n\n    if (!prealloc) {\n        free(backup);\n    }\n    return true;\n\nerror:\n    if (!prealloc) {\n        free(backup);\n    }\n    return false;\n}",
+            1063
+        ]
+    ]
+}

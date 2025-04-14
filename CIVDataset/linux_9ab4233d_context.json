@@ -1,0 +1,188 @@
+{
+    "calleeMethods": [
+        [
+            "fs/file_table.c",
+            "drop_file_write_access",
+            "static void drop_file_write_access(struct file *file) /* <=== drop_file_write_access */ \n{\n\tstruct vfsmount *mnt = file->f_path.mnt;\n\tstruct dentry *dentry = file->f_path.dentry;\n\tstruct inode *inode = dentry->d_inode;\n\n\tput_write_access(inode);\n\n\tif (special_file(inode->i_mode))\n\t\treturn;\n\tif (file_check_writeable(file) != 0)\n\t\treturn;\n\tmnt_drop_write(mnt);\n\tfile_release_write(file);\n}",
+            3
+        ],
+        [
+            "fs/file_table.c",
+            "__fput",
+            "static void __fput(struct file *file) /* <=== __fput */ \n{\n\tstruct dentry *dentry = file->f_path.dentry;\n\tstruct vfsmount *mnt = file->f_path.mnt;\n\tstruct inode *inode = dentry->d_inode;\n\n\tmight_sleep();\n\n\tfsnotify_close(file);\n\t/*\n\t * The function eventpoll_release() should be the first called\n\t * in the file cleanup chain.\n\t */\n\teventpoll_release(file);\n\tlocks_remove_flock(file);\n\n\tif (unlikely(file->f_flags & FASYNC)) {\n\t\tif (file->f_op && file->f_op->fasync)\n\t\t\tfile->f_op->fasync(-1, file, 0);\n\t}\n\tif (file->f_op && file->f_op->release)\n\t\tfile->f_op->release(inode, file);\n\tsecurity_file_free(file);\n\tima_file_free(file);\n\tif (unlikely(S_ISCHR(inode->i_mode) && inode->i_cdev != NULL &&\n\t\t     !(file->f_mode & FMODE_PATH))) {\n\t\tcdev_put(inode->i_cdev);\n\t}\n\tfops_put(file->f_op);\n\tput_pid(file->f_owner.pid);\n\tfile_sb_list_del(file);\n\tif ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)\n\t\ti_readcount_dec(inode);\n\tif (file->f_mode & FMODE_WRITE)\n\t\tdrop_file_write_access(file);\n\tfile->f_path.dentry = NULL;\n\tfile->f_path.mnt = NULL;\n\tfile_free(file);\n\tdput(dentry);\n\tmntput(mnt);\n}",
+            2
+        ],
+        [
+            "include/linux/rwsem.h",
+            "down_read",
+            "extern void down_read(struct rw_semaphore *sem); /* <=== down_read */ ",
+            1
+        ],
+        [
+            "kernel/rwsem.c",
+            "up_read",
+            "void up_read(struct rw_semaphore *sem) /* <=== up_read */ \n{\n\trwsem_release(&sem->dep_map, 1, _RET_IP_);\n\n\t__up_read(sem);\n}",
+            1
+        ],
+        [
+            "fs/file_table.c",
+            "file_free",
+            "static inline void file_free(struct file *f) /* <=== file_free */ \n{\n\tpercpu_counter_dec(&nr_files);\n\tfile_check_state(f);\n\tcall_rcu(&f->f_u.fu_rcuhead, file_free_rcu);\n}",
+            3
+        ],
+        [
+            "fs/file_table.c",
+            "fput",
+            "void fput(struct file *file) /* <=== fput */ \n{\n\tif (atomic_long_dec_and_test(&file->f_count))\n\t\t__fput(file);\n}",
+            1
+        ],
+        [
+            "include/linux/dcache.h",
+            "dput",
+            "extern void dput(struct dentry *); /* <=== dput */ ",
+            3
+        ],
+        [
+            "fs/file_table.c",
+            "file_sb_list_del",
+            "void file_sb_list_del(struct file *file) /* <=== file_sb_list_del */ \n{\n\tif (!list_empty(&file->f_u.fu_list)) {\n\t\tlg_local_lock_cpu(&files_lglock, file_list_cpu(file));\n\t\tlist_del_init(&file->f_u.fu_list);\n\t\tlg_local_unlock_cpu(&files_lglock, file_list_cpu(file));\n\t}\n}",
+            3
+        ],
+        [
+            "fs/open.c",
+            "do_fallocate",
+            "int do_fallocate(struct file *file, int mode, loff_t offset, loff_t len) /* <=== do_fallocate */ \n{\n\tstruct inode *inode = file->f_path.dentry->d_inode;\n\tlong ret;\n\n\tif (offset < 0 || len <= 0)\n\t\treturn -EINVAL;\n\n\t/* Return error if mode is not supported */\n\tif (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE))\n\t\treturn -EOPNOTSUPP;\n\n\t/* Punch hole must have keep size set */\n\tif ((mode & FALLOC_FL_PUNCH_HOLE) &&\n\t    !(mode & FALLOC_FL_KEEP_SIZE))\n\t\treturn -EOPNOTSUPP;\n\n\tif (!(file->f_mode & FMODE_WRITE))\n\t\treturn -EBADF;\n\n\t/* It's not possible punch hole on append only file */\n\tif (mode & FALLOC_FL_PUNCH_HOLE && IS_APPEND(inode))\n\t\treturn -EPERM;\n\n\tif (IS_IMMUTABLE(inode))\n\t\treturn -EPERM;\n\n\t/*\n\t * Revalidate the write permissions, in case security policy has\n\t * changed since the files were opened.\n\t */\n\tret = security_file_permission(file, MAY_WRITE);\n\tif (ret)\n\t\treturn ret;\n\n\tif (S_ISFIFO(inode->i_mode))\n\t\treturn -ESPIPE;\n\n\t/*\n\t * Let individual file system decide if it supports preallocation\n\t * for directories or not.\n\t */\n\tif (!S_ISREG(inode->i_mode) && !S_ISDIR(inode->i_mode))\n\t\treturn -ENODEV;\n\n\t/* Check for wrap through zero too */\n\tif (((offset + len) > inode->i_sb->s_maxbytes) || ((offset + len) < 0))\n\t\treturn -EFBIG;\n\n\tif (!file->f_op->fallocate)\n\t\treturn -EOPNOTSUPP;\n\n\treturn file->f_op->fallocate(file, mode, offset, len);\n}",
+            1
+        ],
+        [
+            "include/linux/pid.h",
+            "put_pid",
+            "extern void put_pid(struct pid *pid); /* <=== put_pid */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/mempolicy.h>",
+        "#include <linux/sched.h>",
+        "#include <linux/fs.h>",
+        "#include <linux/file.h>",
+        "#include <linux/pagemap.h>",
+        "#include <linux/falloc.h>",
+        "#include <linux/ksm.h>",
+        "#include <linux/syscalls.h>",
+        "#include <linux/hugetlb.h>",
+        "#include <linux/page-isolation.h>",
+        "#include <linux/mman.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct file",
+            "file"
+        ],
+        [
+            "struct vm_area_struct {\n\tstruct mm_struct * vm_mm;\t/* The address space we belong to. */\n\tunsigned long vm_start;\t\t/* Our start address within vm_mm. */\n\tunsigned long vm_end;\t\t/* The first byte after our end address\n\t\t\t\t\t   within vm_mm. */\n\n\t/* linked list of VM areas per task, sorted by address */\n\tstruct vm_area_struct *vm_next, *vm_prev;\n\n\tpgprot_t vm_page_prot;\t\t/* Access permissions of this VMA. */\n\tunsigned long vm_flags;\t\t/* Flags, see mm.h. */\n\n\tstruct rb_node vm_rb;\n\n\t/*\n\t * For areas with an address space and backing store,\n\t * linkage into the address_space->i_mmap prio tree, or\n\t * linkage to the list of like vmas hanging off its node, or\n\t * linkage of vma in the address_space->i_mmap_nonlinear list.\n\t */\n\tunion {\n\t\tstruct {\n\t\t\tstruct list_head list;\n\t\t\tvoid *parent;\t/* aligns with prio_tree_node parent */\n\t\t\tstruct vm_area_struct *head;\n\t\t} vm_set;\n\n\t\tstruct raw_prio_tree_node prio_tree_node;\n\t} shared;\n\n\t/*\n\t * A file's MAP_PRIVATE vma can be in both i_mmap tree and anon_vma\n\t * list, after a COW of one of the file pages.\tA MAP_SHARED vma\n\t * can only be in the i_mmap tree.  An anonymous MAP_PRIVATE, stack\n\t * or brk vma (with NULL file) can only be in an anon_vma list.\n\t */\n\tstruct list_head anon_vma_chain; /* Serialized by mmap_sem &\n\t\t\t\t\t  * page_table_lock */\n\tstruct anon_vma *anon_vma;\t/* Serialized by page_table_lock */\n\n\t/* Function pointers to deal with this struct. */\n\tconst struct vm_operations_struct *vm_ops;\n\n\t/* Information about our backing store: */\n\tunsigned long vm_pgoff;\t\t/* Offset (within vm_file) in PAGE_SIZE\n\t\t\t\t\t   units, *not* PAGE_CACHE_SIZE */\n\tstruct file * vm_file;\t\t/* File we map to (can be NULL). */\n\tvoid * vm_private_data;\t\t/* was vm_pte (shared mem) */\n\n#ifndef CONFIG_MMU\n\tstruct vm_region *vm_region;\t/* NOMMU mapping region */\n#endif\n#ifdef CONFIG_NUMA\n\tstruct mempolicy *vm_policy;\t/* NUMA policy for the VMA */\n#endif\n}",
+            "vm_area_struct"
+        ],
+        [
+            "extern struct file",
+            "file"
+        ],
+        [
+            "struct vm_area_struct",
+            "vm_area_struct"
+        ]
+    ],
+    "visitedLines_after": {
+        "mm/madvise.c": [
+            201,
+            202,
+            203,
+            204,
+            208,
+            211,
+            212,
+            214,
+            215,
+            217,
+            218,
+            220,
+            221,
+            222,
+            223,
+            224,
+            225,
+            226,
+            227,
+            229,
+            231,
+            233,
+            234,
+            235,
+            236,
+            237,
+            238,
+            239,
+            240
+        ]
+    },
+    "visitedLines_before": {
+        "mm/madvise.c": [
+            201,
+            202,
+            203,
+            204,
+            210,
+            211,
+            213,
+            214,
+            215,
+            216,
+            218,
+            219,
+            220,
+            221,
+            222,
+            224,
+            225,
+            226,
+            227,
+            228,
+            229,
+            230,
+            231
+        ]
+    },
+    "visitedParams": {
+        "mm/madvise.c": [
+            [
+                "struct vm_area_struct *vma",
+                "madvise_remove"
+            ],
+            [
+                "unsigned long end",
+                "madvise_remove"
+            ],
+            [
+                "unsigned long start",
+                "madvise_remove"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "mm/madvise.c",
+            "madvise_remove",
+            "static long madvise_remove(struct vm_area_struct *vma, /* <=== madvise_remove */ \n\t\t\t\tstruct vm_area_struct **prev,\n\t\t\t\tunsigned long start, unsigned long end)\n{\n\tloff_t offset;\n\tint error;\n\tstruct file *f;\n\n\t*prev = NULL;\t/* tell sys_madvise we drop mmap_sem */\n\n\tif (vma->vm_flags & (VM_LOCKED|VM_NONLINEAR|VM_HUGETLB))\n\t\treturn -EINVAL;\n\n\tf = vma->vm_file;\n\n\tif (!f || !f->f_mapping || !f->f_mapping->host) {\n\t\t\treturn -EINVAL;\n\t}\n\n\tif ((vma->vm_flags & (VM_SHARED|VM_WRITE)) != (VM_SHARED|VM_WRITE))\n\t\treturn -EACCES;\n\n\toffset = (loff_t)(start - vma->vm_start)\n\t\t\t+ ((loff_t)vma->vm_pgoff << PAGE_SHIFT);\n\n\t/*\n\t * Filesystem's fallocate may need to take i_mutex.  We need to\n\t * explicitly grab a reference because the vma (and hence the\n\t * vma's reference to the file) can go away as soon as we drop\n\t * mmap_sem.\n\t */\n\tget_file(f);\n\tup_read(&current->mm->mmap_sem);\n\terror = do_fallocate(f,\n\t\t\t\tFALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,\n\t\t\t\toffset, end - start);\n\tfput(f);\n\tdown_read(&current->mm->mmap_sem);\n\treturn error;\n}",
+            202
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "mm/madvise.c",
+            "madvise_remove",
+            "static long madvise_remove(struct vm_area_struct *vma, /* <=== madvise_remove */ \n\t\t\t\tstruct vm_area_struct **prev,\n\t\t\t\tunsigned long start, unsigned long end)\n{\n\tloff_t offset;\n\tint error;\n\n\t*prev = NULL;\t/* tell sys_madvise we drop mmap_sem */\n\n\tif (vma->vm_flags & (VM_LOCKED|VM_NONLINEAR|VM_HUGETLB))\n\t\treturn -EINVAL;\n\n\tif (!vma->vm_file || !vma->vm_file->f_mapping\n\t\t|| !vma->vm_file->f_mapping->host) {\n\t\t\treturn -EINVAL;\n\t}\n\n\tif ((vma->vm_flags & (VM_SHARED|VM_WRITE)) != (VM_SHARED|VM_WRITE))\n\t\treturn -EACCES;\n\n\toffset = (loff_t)(start - vma->vm_start)\n\t\t\t+ ((loff_t)vma->vm_pgoff << PAGE_SHIFT);\n\n\t/* filesystem's fallocate may need to take i_mutex */\n\tup_read(&current->mm->mmap_sem);\n\terror = do_fallocate(vma->vm_file,\n\t\t\t\tFALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,\n\t\t\t\toffset, end - start);\n\tdown_read(&current->mm->mmap_sem);\n\treturn error;\n}",
+            201
+        ]
+    ]
+}

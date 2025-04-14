@@ -1,0 +1,447 @@
+{
+    "calleeMethods": [
+        [
+            "src/libsystemd/sd-bus/bus-gvariant.c",
+            "bus_gvariant_determine_word_size",
+            "size_t bus_gvariant_determine_word_size(size_t sz, size_t extra) { /* <=== bus_gvariant_determine_word_size */ \n        if (sz + extra <= 0xFF)\n                return 1;\n        else if (sz + extra*2 <= 0xFFFF)\n                return 2;\n        else if (sz + extra*4 <= 0xFFFFFFFF)\n                return 4;\n        else\n                return 8;\n}",
+            3
+        ],
+        [
+            "src/basic/log.h",
+            "LOG_REALM_REMOVE_LEVEL",
+            "#define LOG_REALM_REMOVE_LEVEL(realm_level) ((realm_level) >> 10) /* <=== src/basic/log.h:41:41:LOG_REALM_REMOVE_LEVEL:1 */ ",
+            3
+        ],
+        [
+            "src/basic/string-util.h",
+            "streq",
+            "#define streq(a,b) (strcmp((a),(b)) == 0) /* <=== src/basic/string-util.h:25:25:streq:2 */ ",
+            3
+        ],
+        [
+            "src/boot/efi/util.h",
+            "_cleanup_",
+            "#define _cleanup_(x) __attribute__((__cleanup__(x))) /* <=== src/boot/efi/util.h:44:44:_cleanup_:1 */ ",
+            2
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "build_struct_offsets",
+            "static int build_struct_offsets( /* <=== build_struct_offsets */ \n                sd_bus_message *m,\n                const char *signature,\n                size_t size,\n                size_t *item_size,\n                size_t **offsets,\n                size_t *n_offsets) {\n\n        unsigned n_variable = 0, n_total = 0, v;\n        size_t previous, where;\n        const char *p;\n        size_t sz;\n        void *q;\n        int r;\n\n        assert(m);\n        assert(item_size);\n        assert(offsets);\n        assert(n_offsets);\n\n        if (isempty(signature)) {\n                /* Unary type is encoded as *fixed* 1 byte padding */\n                r = message_peek_body(m, &m->rindex, 1, 1, &q);\n                if (r < 0)\n                        return r;\n\n                if (*(uint8_t *) q != 0)\n                        return -EBADMSG;\n\n                *item_size = 0;\n                *offsets = NULL;\n                *n_offsets = 0;\n                return 0;\n        }\n\n        sz = bus_gvariant_determine_word_size(size, 0);\n        if (sz <= 0)\n                return -EBADMSG;\n\n        /* First, loop over signature and count variable elements and\n         * elements in general. We use this to know how large the\n         * offset array is at the end of the structure. Note that\n         * GVariant only stores offsets for all variable size elements\n         * that are not the last item. */\n\n        p = signature;\n        while (*p != 0) {\n                size_t n;\n\n                r = signature_element_length(p, &n);\n                if (r < 0)\n                        return r;\n                else {\n                        char t[n+1];\n\n                        memcpy(t, p, n);\n                        t[n] = 0;\n\n                        r = bus_gvariant_is_fixed_size(t);\n                }\n\n                if (r < 0)\n                        return r;\n                if (r == 0 && p[n] != 0) /* except the last item */\n                        n_variable++;\n                n_total++;\n\n                p += n;\n        }\n\n        if (size < n_variable * sz)\n                return -EBADMSG;\n\n        where = m->rindex + size - (n_variable * sz);\n        r = message_peek_body(m, &where, 1, n_variable * sz, &q);\n        if (r < 0)\n                return r;\n\n        v = n_variable;\n\n        *offsets = new(size_t, n_total);\n        if (!*offsets)\n                return -ENOMEM;\n\n        *n_offsets = 0;\n\n        /* Second, loop again and build an offset table */\n        p = signature;\n        previous = m->rindex;\n        while (*p != 0) {\n                size_t n, offset;\n                int k;\n\n                r = signature_element_length(p, &n);\n                if (r < 0)\n                        return r;\n                else {\n                        char t[n+1];\n\n                        memcpy(t, p, n);\n                        t[n] = 0;\n\n                        size_t align = bus_gvariant_get_alignment(t);\n                        assert(align > 0);\n\n                        /* The possible start of this member after including alignment */\n                        size_t start = ALIGN_TO(previous, align);\n\n                        k = bus_gvariant_get_size(t);\n                        if (k < 0) {\n                                size_t x;\n\n                                /* Variable size */\n                                if (v > 0) {\n                                        v--;\n\n                                        x = bus_gvariant_read_word_le((uint8_t*) q + v*sz, sz);\n                                        if (x >= size)\n                                                return -EBADMSG;\n                                } else\n                                        /* The last item's end is determined\n                                         * from the start of the offset array */\n                                        x = size - (n_variable * sz);\n\n                                offset = m->rindex + x;\n                                if (offset < start)\n                                        return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),\n                                                               \"For type %s with alignment %zu, message specifies offset %zu which is smaller than previous end %zu + alignment = %zu\",\n                                                               t, align,\n                                                               offset,\n                                                               previous,\n                                                               start);\n                        } else\n                                /* Fixed size */\n                                offset = start + k;\n                }\n\n                previous = (*offsets)[(*n_offsets)++] = offset;\n                p += n;\n        }\n\n        assert(v == 0);\n        assert(*n_offsets == n_total);\n\n        *item_size = (*offsets)[0] - m->rindex;\n        return 0;\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "bus_message_from_header",
+            "int bus_message_from_header( /* <=== bus_message_from_header */ \n                sd_bus *bus,\n                void *header,\n                size_t header_accessible,\n                void *footer,\n                size_t footer_accessible,\n                size_t message_size,\n                int *fds,\n                size_t n_fds,\n                const char *label,\n                size_t extra,\n                sd_bus_message **ret) {\n\n        _cleanup_free_ sd_bus_message *m = NULL;\n        struct bus_header *h;\n        size_t a, label_sz;\n\n        assert(bus);\n        assert(header || header_accessible <= 0);\n        assert(footer || footer_accessible <= 0);\n        assert(fds || n_fds <= 0);\n        assert(ret);\n\n        if (header_accessible < sizeof(struct bus_header))\n                return -EBADMSG;\n\n        if (header_accessible > message_size)\n                return -EBADMSG;\n        if (footer_accessible > message_size)\n                return -EBADMSG;\n\n        h = header;\n        if (!IN_SET(h->version, 1, 2))\n                return -EBADMSG;\n\n        if (h->type == _SD_BUS_MESSAGE_TYPE_INVALID)\n                return -EBADMSG;\n\n        if (!IN_SET(h->endian, BUS_LITTLE_ENDIAN, BUS_BIG_ENDIAN))\n                return -EBADMSG;\n\n        /* Note that we are happy with unknown flags in the flags header! */\n\n        a = ALIGN(sizeof(sd_bus_message)) + ALIGN(extra);\n\n        if (label) {\n                label_sz = strlen(label);\n                a += label_sz + 1;\n        }\n\n        m = malloc0(a);\n        if (!m)\n                return -ENOMEM;\n\n        m->n_ref = 1;\n        m->sealed = true;\n        m->header = header;\n        m->header_accessible = header_accessible;\n        m->footer = footer;\n        m->footer_accessible = footer_accessible;\n\n        if (BUS_MESSAGE_IS_GVARIANT(m)) {\n                size_t ws;\n\n                if (h->dbus2.cookie == 0)\n                        return -EBADMSG;\n\n                /* dbus2 derives the sizes from the message size and\n                the offset table at the end, since it is formatted as\n                gvariant \"yyyyuta{tv}v\". Since the message itself is a\n                structure with precisely to variable sized entries,\n                there's only one offset in the table, which marks the\n                end of the fields array. */\n\n                ws = bus_gvariant_determine_word_size(message_size, 0);\n                if (footer_accessible < ws)\n                        return -EBADMSG;\n\n                m->fields_size = bus_gvariant_read_word_le((uint8_t*) footer + footer_accessible - ws, ws);\n                if (ALIGN8(m->fields_size) > message_size - ws)\n                        return -EBADMSG;\n                if (m->fields_size < sizeof(struct bus_header))\n                        return -EBADMSG;\n\n                m->fields_size -= sizeof(struct bus_header);\n                m->body_size = message_size - (sizeof(struct bus_header) + ALIGN8(m->fields_size));\n        } else {\n                if (h->dbus1.serial == 0)\n                        return -EBADMSG;\n\n                /* dbus1 has the sizes in the header */\n                m->fields_size = BUS_MESSAGE_BSWAP32(m, h->dbus1.fields_size);\n                m->body_size = BUS_MESSAGE_BSWAP32(m, h->dbus1.body_size);\n\n                if (sizeof(struct bus_header) + ALIGN8(m->fields_size) + m->body_size != message_size)\n                        return -EBADMSG;\n        }\n\n        m->fds = fds;\n        m->n_fds = n_fds;\n\n        if (label) {\n                m->creds.label = (char*) m + ALIGN(sizeof(sd_bus_message)) + ALIGN(extra);\n                memcpy(m->creds.label, label, label_sz + 1);\n\n                m->creds.mask |= SD_BUS_CREDS_SELINUX_CONTEXT;\n        }\n\n        m->bus = sd_bus_ref(bus);\n        *ret = TAKE_PTR(m);\n\n        return 0;\n}",
+            2
+        ],
+        [
+            "src/basic/util.h",
+            "PROTECT_ERRNO",
+            "#define PROTECT_ERRNO                                                   \\ /* <=== src/basic/util.h:183:184:PROTECT_ERRNO:0 */ \n        _cleanup_(_reset_errno_) _unused_ int _saved_errno_ = errno",
+            3
+        ],
+        [
+            "src/basic/log.c",
+            "log_internalv_realm",
+            "int log_internalv_realm( /* <=== log_internalv_realm */ \n                int level,\n                int error,\n                const char *file,\n                int line,\n                const char *func,\n                const char *format,\n                va_list ap) {\n\n        LogRealm realm = LOG_REALM_REMOVE_LEVEL(level);\n        char buffer[LINE_MAX];\n        PROTECT_ERRNO;\n\n        if (_likely_(LOG_PRI(level) > log_max_level[realm]))\n                return -ERRNO_VALUE(error);\n\n        /* Make sure that %m maps to the specified error (or \"Success\"). */\n        errno = ERRNO_VALUE(error);\n\n        (void) vsnprintf(buffer, sizeof buffer, format, ap);\n\n        return log_dispatch_internal(level, error, file, line, func, NULL, NULL, NULL, NULL, buffer);\n}",
+            2
+        ],
+        [
+            "src/basic/log.c",
+            "log_internal_realm",
+            "int log_internal_realm( /* <=== log_internal_realm */ \n                int level,\n                int error,\n                const char *file,\n                int line,\n                const char *func,\n                const char *format, ...) {\n\n        va_list ap;\n        int r;\n\n        va_start(ap, format);\n        r = log_internalv_realm(level, error, file, line, func, format, ap);\n        va_end(ap);\n\n        return r;\n}",
+            1
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "message_peek_field_uint64",
+            "static int message_peek_field_uint64( /* <=== message_peek_field_uint64 */ \n                sd_bus_message *m,\n                size_t *ri,\n                size_t item_size,\n                uint64_t *ret) {\n\n        int r;\n        void *q;\n\n        assert(m);\n        assert(ri);\n\n        if (BUS_MESSAGE_IS_GVARIANT(m) && item_size != 8)\n                return -EBADMSG;\n\n        /* identical for gvariant and dbus1 */\n\n        r = message_peek_fields(m, ri, 8, 8, &q);\n        if (r < 0)\n                return r;\n\n        if (ret)\n                *ret = BUS_MESSAGE_BSWAP64(m, *(uint64_t*) q);\n\n        return 0;\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.h",
+            "BUS_MESSAGE_BSWAP64",
+            "static inline uint64_t BUS_MESSAGE_BSWAP64(sd_bus_message *m, uint64_t u) { /* <=== BUS_MESSAGE_BSWAP64 */ \n        return BUS_MESSAGE_NEED_BSWAP(m) ? bswap_64(u) : u;\n}",
+            3
+        ],
+        [
+            "src/basic/log.c",
+            "log_assert_failed_realm",
+            "_noreturn_ void log_assert_failed_realm( /* <=== log_assert_failed_realm */ \n                LogRealm realm,\n                const char *text,\n                const char *file,\n                int line,\n                const char *func) {\n        log_open();\n        log_assert(LOG_REALM_PLUS_LEVEL(realm, LOG_CRIT), text, file, line, func,\n                   \"Assertion '%s' failed at %s:%u, function %s(). Aborting.\");\n        abort();\n}",
+            2
+        ],
+        [
+            "src/basic/log.c",
+            "log_get_max_level_realm",
+            "int log_get_max_level_realm(LogRealm realm) { /* <=== log_get_max_level_realm */ \n        return log_max_level[realm];\n}",
+            1
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "bus_message_from_malloc",
+            "int bus_message_from_malloc( /* <=== bus_message_from_malloc */ \n                sd_bus *bus,\n                void *buffer,\n                size_t length,\n                int *fds,\n                size_t n_fds,\n                const char *label,\n                sd_bus_message **ret) {\n\n        _cleanup_(message_freep) sd_bus_message *m = NULL;\n        size_t sz;\n        int r;\n\n        r = bus_message_from_header(\n                        bus,\n                        buffer, length, /* in this case the initial bytes and the final bytes are the same */\n                        buffer, length,\n                        length,\n                        fds, n_fds,\n                        label,\n                        0, &m);\n        if (r < 0)\n                return r;\n\n        sz = length - sizeof(struct bus_header) - ALIGN8(m->fields_size);\n        if (sz > 0) {\n                m->n_body_parts = 1;\n                m->body.data = (uint8_t*) buffer + sizeof(struct bus_header) + ALIGN8(m->fields_size);\n                m->body.size = sz;\n                m->body.sealed = true;\n                m->body.memfd = -1;\n        }\n\n        m->n_iovec = 1;\n        m->iovec = m->iovec_fixed;\n        m->iovec[0] = IOVEC_MAKE(buffer, length);\n\n        r = bus_message_parse_fields(m);\n        if (r < 0)\n                return r;\n\n        /* We take possession of the memory and fds now */\n        m->free_header = true;\n        m->free_fds = true;\n\n        *ret = TAKE_PTR(m);\n        return 0;\n}",
+            1
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "sd_bus_message_read",
+            "_public_ int sd_bus_message_read(sd_bus_message *m, const char *types, ...) { /* <=== sd_bus_message_read */ \n        va_list ap;\n        int r;\n\n        va_start(ap, types);\n        r = sd_bus_message_readv(m, types, ap);\n        va_end(ap);\n\n        return r;\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "message_peek_field_uint32",
+            "static int message_peek_field_uint32( /* <=== message_peek_field_uint32 */ \n                sd_bus_message *m,\n                size_t *ri,\n                size_t item_size,\n                uint32_t *ret) {\n\n        int r;\n        void *q;\n\n        assert(m);\n        assert(ri);\n\n        if (BUS_MESSAGE_IS_GVARIANT(m) && item_size != 4)\n                return -EBADMSG;\n\n        /* identical for gvariant and dbus1 */\n\n        r = message_peek_fields(m, ri, 4, 4, &q);\n        if (r < 0)\n                return r;\n\n        if (ret)\n                *ret = BUS_MESSAGE_BSWAP32(m, *(uint32_t*) q);\n\n        return 0;\n}",
+            3
+        ],
+        [
+            "src/basic/log.h",
+            "LOG_REALM_PLUS_LEVEL",
+            "#define LOG_REALM_PLUS_LEVEL(realm, level)  ((realm) << 10 | (level)) /* <=== src/basic/log.h:40:40:LOG_REALM_PLUS_LEVEL:2 */ ",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "message_peek_field_signature",
+            "static int message_peek_field_signature( /* <=== message_peek_field_signature */ \n                sd_bus_message *m,\n                size_t *ri,\n                size_t item_size,\n                const char **ret) {\n\n        size_t l;\n        int r;\n        void *q;\n\n        assert(m);\n        assert(ri);\n\n        if (BUS_MESSAGE_IS_GVARIANT(m)) {\n\n                if (item_size <= 0)\n                        return -EBADMSG;\n\n                r = message_peek_fields(m, ri, 1, item_size, &q);\n                if (r < 0)\n                        return r;\n\n                l = item_size - 1;\n        } else {\n                r = message_peek_fields(m, ri, 1, 1, &q);\n                if (r < 0)\n                        return r;\n\n                l = *(uint8_t*) q;\n                if (l == UINT8_MAX)\n                        /* avoid overflow right below */\n                        return -EBADMSG;\n\n                r = message_peek_fields(m, ri, 1, l+1, &q);\n                if (r < 0)\n                        return r;\n        }\n\n        if (!validate_signature(q, l))\n                return -EBADMSG;\n\n        if (ret)\n                *ret = q;\n\n        return 0;\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.h",
+            "BUS_MESSAGE_IS_GVARIANT",
+            "static inline bool BUS_MESSAGE_IS_GVARIANT(sd_bus_message *m) { /* <=== BUS_MESSAGE_IS_GVARIANT */ \n        return m->header->version == 2;\n}",
+            3
+        ],
+        [
+            "src/basic/io-util.h",
+            "IOVEC_MAKE",
+            "#define IOVEC_MAKE(base, len) (struct iovec) IOVEC_INIT(base, len) /* <=== src/basic/io-util.h:71:71:IOVEC_MAKE:2 */ ",
+            2
+        ],
+        [
+            "src/basic/alloc-util.h",
+            "malloc0",
+            "#define malloc0(n) (calloc(1, (n))) /* <=== src/basic/alloc-util.h:41:41:malloc0:1 */ ",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/sd-bus.c",
+            "bus_rqueue_make_room",
+            "int bus_rqueue_make_room(sd_bus *bus) { /* <=== bus_rqueue_make_room */ \n        assert(bus);\n\n        if (bus->rqueue_size >= BUS_RQUEUE_MAX)\n                return -ENOBUFS;\n\n        if (!GREEDY_REALLOC(bus->rqueue, bus->rqueue_allocated, bus->rqueue_size + 1))\n                return -ENOMEM;\n\n        return 0;\n}",
+            1
+        ],
+        [
+            "src/basic/macro.h",
+            "_likely_",
+            "#define _likely_(x) (__builtin_expect(!!(x), 1)) /* <=== src/basic/macro.h:29:29:_likely_:1 */ ",
+            3
+        ],
+        [
+            "src/basic/log.c",
+            "log_assert",
+            "static void log_assert( /* <=== log_assert */ \n                int level,\n                const char *text,\n                const char *file,\n                int line,\n                const char *func,\n                const char *format) {\n\n        static char buffer[LINE_MAX];\n        LogRealm realm = LOG_REALM_REMOVE_LEVEL(level);\n\n        if (_likely_(LOG_PRI(level) > log_max_level[realm]))\n                return;\n\n        DISABLE_WARNING_FORMAT_NONLITERAL;\n        (void) snprintf(buffer, sizeof buffer, format, text, file, line, func);\n        REENABLE_WARNING;\n\n        log_abort_msg = buffer;\n\n        log_dispatch_internal(level, 0, file, line, func, NULL, NULL, NULL, NULL, buffer);\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "message_peek_field_string",
+            "static int message_peek_field_string( /* <=== message_peek_field_string */ \n                sd_bus_message *m,\n                bool (*validate)(const char *p),\n                size_t *ri,\n                size_t item_size,\n                const char **ret) {\n\n        uint32_t l;\n        int r;\n        void *q;\n\n        assert(m);\n        assert(ri);\n\n        if (BUS_MESSAGE_IS_GVARIANT(m)) {\n\n                if (item_size <= 0)\n                        return -EBADMSG;\n\n                r = message_peek_fields(m, ri, 1, item_size, &q);\n                if (r < 0)\n                        return r;\n\n                l = item_size - 1;\n        } else {\n                r = message_peek_field_uint32(m, ri, 4, &l);\n                if (r < 0)\n                        return r;\n\n                if (l == UINT32_MAX)\n                        /* avoid overflow right below */\n                        return -EBADMSG;\n\n                r = message_peek_fields(m, ri, 1, l+1, &q);\n                if (r < 0)\n                        return r;\n        }\n\n        if (validate) {\n                if (!validate_nul(q, l))\n                        return -EBADMSG;\n\n                if (!validate(q))\n                        return -EBADMSG;\n        } else {\n                if (!validate_string(q, l))\n                        return -EBADMSG;\n        }\n\n        if (ret)\n                *ret = q;\n\n        return 0;\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-internal.h",
+            "error_name_is_valid",
+            "#define error_name_is_valid interface_name_is_valid /* <=== src/libsystemd/sd-bus/bus-internal.h:360:360:error_name_is_valid:0 */ ",
+            3
+        ],
+        [
+            "src/basic/macro.h",
+            "IN_SET",
+            "#define IN_SET(x, ...)                          \\ /* <=== src/basic/macro.h:451:467:IN_SET:2 */ \n        ({                                      \\\n                bool _found = false;            \\\n                /* If the build breaks in the line below, you need to extend the case macros. (We use \"long double\" as  \\\n                 * type for the array, in the hope that checkers such as ubsan don't complain that the initializers for \\\n                 * the array are not representable by the base type. Ideally we'd use typeof(x) as base type, but that  \\\n                 * doesn't work, as we want to use this on bitfields and gcc refuses typeof() on bitfields.) */         \\\n                assert_cc((sizeof((long double[]){__VA_ARGS__})/sizeof(long double)) <= 20); \\\n                switch(x) {                     \\\n                FOR_EACH_MAKE_CASE(__VA_ARGS__) \\\n                        _found = true;          \\\n                        break;                  \\\n                default:                        \\\n                        break;                  \\\n                }                               \\\n                _found;                         \\\n        })",
+            3
+        ],
+        [
+            "src/basic/log.c",
+            "log_open",
+            "int log_open(void) { /* <=== log_open */ \n        int r;\n\n        /* Do not call from library code. */\n\n        /* If we don't use the console we close it here, to not get\n         * killed by SAK. If we don't use syslog we close it here so\n         * that we are not confused by somebody deleting the socket in\n         * the fs, and to make sure we don't use it if prohibit_ipc is\n         * set. If we don't use /dev/kmsg we still keep it open,\n         * because there is no reason to close it. */\n\n        if (log_target == LOG_TARGET_NULL) {\n                log_close_journal();\n                log_close_syslog();\n                log_close_console();\n                return 0;\n        }\n\n        if (log_target != LOG_TARGET_AUTO ||\n            getpid_cached() == 1 ||\n            isatty(STDERR_FILENO) <= 0) {\n\n                if (!prohibit_ipc &&\n                    IN_SET(log_target, LOG_TARGET_AUTO,\n                                       LOG_TARGET_JOURNAL_OR_KMSG,\n                                       LOG_TARGET_JOURNAL)) {\n                        r = log_open_journal();\n                        if (r >= 0) {\n                                log_close_syslog();\n                                log_close_console();\n                                return r;\n                        }\n                }\n\n                if (!prohibit_ipc &&\n                    IN_SET(log_target, LOG_TARGET_SYSLOG_OR_KMSG,\n                                       LOG_TARGET_SYSLOG)) {\n                        r = log_open_syslog();\n                        if (r >= 0) {\n                                log_close_journal();\n                                log_close_console();\n                                return r;\n                        }\n                }\n\n                if (IN_SET(log_target, LOG_TARGET_AUTO,\n                                       LOG_TARGET_JOURNAL_OR_KMSG,\n                                       LOG_TARGET_SYSLOG_OR_KMSG,\n                                       LOG_TARGET_KMSG)) {\n                        r = log_open_kmsg();\n                        if (r >= 0) {\n                                log_close_journal();\n                                log_close_syslog();\n                                log_close_console();\n                                return r;\n                        }\n                }\n        }\n\n        log_close_journal();\n        log_close_syslog();\n\n        return log_open_console();\n}",
+            3
+        ],
+        [
+            "src/basic/log.h",
+            "log_debug_errno",
+            "#define log_debug_errno(error, ...)     log_full_errno(LOG_DEBUG,   error, __VA_ARGS__) /* <=== src/basic/log.h:228:228:log_debug_errno:2 */ ",
+            1
+        ],
+        [
+            "src/basic/string-util.h",
+            "strna",
+            "static inline const char *strna(const char *s) { /* <=== strna */ \n        return s ?: \"n/a\";\n}",
+            1
+        ],
+        [
+            "src/libsystemd/sd-bus/sd-bus.c",
+            "sd_bus_ref",
+            "DEFINE_PUBLIC_ATOMIC_REF_UNREF_FUNC(sd_bus, sd_bus, bus_free); /* <=== sd_bus_ref */ ",
+            3
+        ],
+        [
+            "src/basic/alloc-util.h",
+            "TAKE_PTR",
+            "#define TAKE_PTR(ptr)                           \\ /* <=== src/basic/alloc-util.h:157:162:TAKE_PTR:1 */ \n        ({                                      \\\n                typeof(ptr) _ptr_ = (ptr);      \\\n                (ptr) = NULL;                   \\\n                _ptr_;                          \\\n        })",
+            2
+        ],
+        [
+            "src/basic/macro.h",
+            "ALIGN8",
+            "#define ALIGN8(l) (((l) + 7) & ~7) /* <=== src/basic/macro.h:135:135:ALIGN8:1 */ ",
+            2
+        ],
+        [
+            "src/basic/macro.h",
+            "ALIGN_TO",
+            "static inline size_t ALIGN_TO(size_t l, size_t ali) { /* <=== ALIGN_TO */ \n        return ((l + ali - 1) & ~(ali - 1));\n}",
+            3
+        ],
+        [
+            "src/basic/macro.h",
+            "MAX",
+            "#define MAX(a, b) __MAX(UNIQ, (a), UNIQ, (b)) /* <=== src/basic/macro.h:201:201:MAX:2 */ ",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-internal.h",
+            "BUS_RQUEUE_MAX",
+            "#define BUS_RQUEUE_MAX (192*1024) /* <=== src/libsystemd/sd-bus/bus-internal.h:331:331:BUS_RQUEUE_MAX:0 */ ",
+            2
+        ],
+        [
+            "src/basic/string-util.h",
+            "streq_ptr",
+            "static inline bool streq_ptr(const char *a, const char *b) { /* <=== streq_ptr */ \n        return strcmp_ptr(a, b) == 0;\n}",
+            3
+        ],
+        [
+            "src/basic/log.h",
+            "ERRNO_VALUE",
+            "#define ERRNO_VALUE(val)                    (abs(val) & 255) /* <=== src/basic/log.h:44:44:ERRNO_VALUE:1 */ ",
+            3
+        ],
+        [
+            "src/basic/alloc-util.c",
+            "greedy_realloc",
+            "void* greedy_realloc(void **p, size_t *allocated, size_t need, size_t size) { /* <=== greedy_realloc */ \n        size_t a, newalloc;\n        void *q;\n\n        assert(p);\n        assert(allocated);\n\n        if (*allocated >= need)\n                return *p;\n\n        newalloc = MAX(need * 2, 64u / size);\n        a = newalloc * size;\n\n        /* check for overflows */\n        if (a < size * need)\n                return NULL;\n\n        q = realloc(*p, a);\n        if (!q)\n                return NULL;\n\n        *p = q;\n        *allocated = newalloc;\n        return q;\n}",
+            2
+        ],
+        [
+            "src/basic/macro.h",
+            "assert",
+            "#define assert(expr) assert_message_se(expr, #expr) /* <=== src/basic/macro.h:334:334:assert:1 */ ",
+            1
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "bus_message_parse_fields",
+            "int bus_message_parse_fields(sd_bus_message *m) { /* <=== bus_message_parse_fields */ \n        size_t ri;\n        int r;\n        uint32_t unix_fds = 0;\n        bool unix_fds_set = false;\n        void *offsets = NULL;\n        unsigned n_offsets = 0;\n        size_t sz = 0;\n        unsigned i = 0;\n\n        assert(m);\n\n        if (BUS_MESSAGE_IS_GVARIANT(m)) {\n                char *p;\n\n                /* Read the signature from the end of the body variant first */\n                sz = bus_gvariant_determine_word_size(BUS_MESSAGE_SIZE(m), 0);\n                if (m->footer_accessible < 1 + sz)\n                        return -EBADMSG;\n\n                p = (char*) m->footer + m->footer_accessible - (1 + sz);\n                for (;;) {\n                        if (p < (char*) m->footer)\n                                return -EBADMSG;\n\n                        if (*p == 0) {\n                                char *k;\n                                size_t l;\n\n                                /* We found the beginning of the signature\n                                 * string, yay! We require the body to be a\n                                 * structure, so verify it and then strip the\n                                 * opening/closing brackets. */\n\n                                l = (char*) m->footer + m->footer_accessible - p - (1 + sz);\n                                if (l < 2 ||\n                                    p[1] != SD_BUS_TYPE_STRUCT_BEGIN ||\n                                    p[1 + l - 1] != SD_BUS_TYPE_STRUCT_END)\n                                        return -EBADMSG;\n\n                                k = memdup_suffix0(p + 1 + 1, l - 2);\n                                if (!k)\n                                        return -ENOMEM;\n\n                                free_and_replace(m->root_container.signature, k);\n                                break;\n                        }\n\n                        p--;\n                }\n\n                /* Calculate the actual user body size, by removing\n                 * the trailing variant signature and struct offset\n                 * table */\n                m->user_body_size = m->body_size - ((char*) m->footer + m->footer_accessible - p);\n\n                /* Pull out the offset table for the fields array */\n                sz = bus_gvariant_determine_word_size(m->fields_size, 0);\n                if (sz > 0) {\n                        size_t framing;\n                        void *q;\n\n                        ri = m->fields_size - sz;\n                        r = message_peek_fields(m, &ri, 1, sz, &q);\n                        if (r < 0)\n                                return r;\n\n                        framing = bus_gvariant_read_word_le(q, sz);\n                        if (framing >= m->fields_size - sz)\n                                return -EBADMSG;\n                        if ((m->fields_size - framing) % sz != 0)\n                                return -EBADMSG;\n\n                        ri = framing;\n                        r = message_peek_fields(m, &ri, 1, m->fields_size - framing, &offsets);\n                        if (r < 0)\n                                return r;\n\n                        n_offsets = (m->fields_size - framing) / sz;\n                }\n        } else\n                m->user_body_size = m->body_size;\n\n        ri = 0;\n        while (ri < m->fields_size) {\n                _cleanup_free_ char *sig = NULL;\n                const char *signature;\n                uint64_t field_type;\n                size_t item_size = (size_t) -1;\n\n                if (BUS_MESSAGE_IS_GVARIANT(m)) {\n                        uint64_t *u64;\n\n                        if (i >= n_offsets)\n                                break;\n\n                        if (i == 0)\n                                ri = 0;\n                        else\n                                ri = ALIGN_TO(bus_gvariant_read_word_le((uint8_t*) offsets + (i-1)*sz, sz), 8);\n\n                        r = message_peek_fields(m, &ri, 8, 8, (void**) &u64);\n                        if (r < 0)\n                                return r;\n\n                        field_type = BUS_MESSAGE_BSWAP64(m, *u64);\n                } else {\n                        uint8_t *u8;\n\n                        r = message_peek_fields(m, &ri, 8, 1, (void**) &u8);\n                        if (r < 0)\n                                return r;\n\n                        field_type = *u8;\n                }\n\n                if (BUS_MESSAGE_IS_GVARIANT(m)) {\n                        size_t where, end;\n                        char *b;\n                        void *q;\n\n                        end = bus_gvariant_read_word_le((uint8_t*) offsets + i*sz, sz);\n\n                        if (end < ri)\n                                return -EBADMSG;\n\n                        where = ri = ALIGN_TO(ri, 8);\n                        item_size = end - ri;\n                        r = message_peek_fields(m, &where, 1, item_size, &q);\n                        if (r < 0)\n                                return r;\n\n                        b = memrchr(q, 0, item_size);\n                        if (!b)\n                                return -EBADMSG;\n\n                        sig = strndup(b+1, item_size - (b+1-(char*) q));\n                        if (!sig)\n                                return -ENOMEM;\n\n                        signature = sig;\n                        item_size = b - (char*) q;\n                } else {\n                        r = message_peek_field_signature(m, &ri, 0, &signature);\n                        if (r < 0)\n                                return r;\n                }\n\n                switch (field_type) {\n\n                case _BUS_MESSAGE_HEADER_INVALID:\n                        return -EBADMSG;\n\n                case BUS_MESSAGE_HEADER_PATH:\n\n                        if (m->path)\n                                return -EBADMSG;\n\n                        if (!streq(signature, \"o\"))\n                                return -EBADMSG;\n\n                        r = message_peek_field_string(m, object_path_is_valid, &ri, item_size, &m->path);\n                        break;\n\n                case BUS_MESSAGE_HEADER_INTERFACE:\n\n                        if (m->interface)\n                                return -EBADMSG;\n\n                        if (!streq(signature, \"s\"))\n                                return -EBADMSG;\n\n                        r = message_peek_field_string(m, interface_name_is_valid, &ri, item_size, &m->interface);\n                        break;\n\n                case BUS_MESSAGE_HEADER_MEMBER:\n\n                        if (m->member)\n                                return -EBADMSG;\n\n                        if (!streq(signature, \"s\"))\n                                return -EBADMSG;\n\n                        r = message_peek_field_string(m, member_name_is_valid, &ri, item_size, &m->member);\n                        break;\n\n                case BUS_MESSAGE_HEADER_ERROR_NAME:\n\n                        if (m->error.name)\n                                return -EBADMSG;\n\n                        if (!streq(signature, \"s\"))\n                                return -EBADMSG;\n\n                        r = message_peek_field_string(m, error_name_is_valid, &ri, item_size, &m->error.name);\n                        if (r >= 0)\n                                m->error._need_free = -1;\n\n                        break;\n\n                case BUS_MESSAGE_HEADER_DESTINATION:\n\n                        if (m->destination)\n                                return -EBADMSG;\n\n                        if (!streq(signature, \"s\"))\n                                return -EBADMSG;\n\n                        r = message_peek_field_string(m, service_name_is_valid, &ri, item_size, &m->destination);\n                        break;\n\n                case BUS_MESSAGE_HEADER_SENDER:\n\n                        if (m->sender)\n                                return -EBADMSG;\n\n                        if (!streq(signature, \"s\"))\n                                return -EBADMSG;\n\n                        r = message_peek_field_string(m, service_name_is_valid, &ri, item_size, &m->sender);\n\n                        if (r >= 0 && m->sender[0] == ':' && m->bus->bus_client) {\n                                m->creds.unique_name = (char*) m->sender;\n                                m->creds.mask |= SD_BUS_CREDS_UNIQUE_NAME & m->bus->creds_mask;\n                        }\n\n                        break;\n\n                case BUS_MESSAGE_HEADER_SIGNATURE: {\n                        const char *s;\n                        char *c;\n\n                        if (BUS_MESSAGE_IS_GVARIANT(m)) /* only applies to dbus1 */\n                                return -EBADMSG;\n\n                        if (m->root_container.signature)\n                                return -EBADMSG;\n\n                        if (!streq(signature, \"g\"))\n                                return -EBADMSG;\n\n                        r = message_peek_field_signature(m, &ri, item_size, &s);\n                        if (r < 0)\n                                return r;\n\n                        c = strdup(s);\n                        if (!c)\n                                return -ENOMEM;\n\n                        free_and_replace(m->root_container.signature, c);\n                        break;\n                }\n\n                case BUS_MESSAGE_HEADER_REPLY_SERIAL:\n\n                        if (m->reply_cookie != 0)\n                                return -EBADMSG;\n\n                        if (BUS_MESSAGE_IS_GVARIANT(m)) {\n                                /* 64bit on dbus2 */\n\n                                if (!streq(signature, \"t\"))\n                                        return -EBADMSG;\n\n                                r = message_peek_field_uint64(m, &ri, item_size, &m->reply_cookie);\n                                if (r < 0)\n                                        return r;\n                        } else {\n                                /* 32bit on dbus1 */\n                                uint32_t serial;\n\n                                if (!streq(signature, \"u\"))\n                                        return -EBADMSG;\n\n                                r = message_peek_field_uint32(m, &ri, item_size, &serial);\n                                if (r < 0)\n                                        return r;\n\n                                m->reply_cookie = serial;\n                        }\n\n                        if (m->reply_cookie == 0)\n                                return -EBADMSG;\n\n                        break;\n\n                case BUS_MESSAGE_HEADER_UNIX_FDS:\n                        if (unix_fds_set)\n                                return -EBADMSG;\n\n                        if (!streq(signature, \"u\"))\n                                return -EBADMSG;\n\n                        r = message_peek_field_uint32(m, &ri, item_size, &unix_fds);\n                        if (r < 0)\n                                return -EBADMSG;\n\n                        unix_fds_set = true;\n                        break;\n\n                default:\n                        if (!BUS_MESSAGE_IS_GVARIANT(m))\n                                r = message_skip_fields(m, &ri, (uint32_t) -1, (const char **) &signature);\n                }\n\n                if (r < 0)\n                        return r;\n\n                i++;\n        }\n\n        if (m->n_fds != unix_fds)\n                return -EBADMSG;\n\n        switch (m->header->type) {\n\n        case SD_BUS_MESSAGE_SIGNAL:\n                if (!m->path || !m->interface || !m->member)\n                        return -EBADMSG;\n\n                if (m->reply_cookie != 0)\n                        return -EBADMSG;\n\n                break;\n\n        case SD_BUS_MESSAGE_METHOD_CALL:\n\n                if (!m->path || !m->member)\n                        return -EBADMSG;\n\n                if (m->reply_cookie != 0)\n                        return -EBADMSG;\n\n                break;\n\n        case SD_BUS_MESSAGE_METHOD_RETURN:\n\n                if (m->reply_cookie == 0)\n                        return -EBADMSG;\n                break;\n\n        case SD_BUS_MESSAGE_METHOD_ERROR:\n\n                if (m->reply_cookie == 0 || !m->error.name)\n                        return -EBADMSG;\n                break;\n        }\n\n        /* Refuse non-local messages that claim they are local */\n        if (streq_ptr(m->path, \"/org/freedesktop/DBus/Local\"))\n                return -EBADMSG;\n        if (streq_ptr(m->interface, \"org.freedesktop.DBus.Local\"))\n                return -EBADMSG;\n        if (streq_ptr(m->sender, \"org.freedesktop.DBus.Local\"))\n                return -EBADMSG;\n\n        m->root_container.end = m->user_body_size;\n\n        if (BUS_MESSAGE_IS_GVARIANT(m)) {\n                r = build_struct_offsets(\n                                m,\n                                m->root_container.signature,\n                                m->user_body_size,\n                                &m->root_container.item_size,\n                                &m->root_container.offsets,\n                                &m->root_container.n_offsets);\n                if (r == -EINVAL)\n                        return -EBADMSG;\n                if (r < 0)\n                        return r;\n        }\n\n        /* Try to read the error message, but if we can't it's a non-issue */\n        if (m->header->type == SD_BUS_MESSAGE_METHOD_ERROR)\n                (void) sd_bus_message_read(m, \"s\", &m->error.message);\n\n        return 0;\n}",
+            2
+        ],
+        [
+            "src/basic/alloc-util.h",
+            "free_and_replace",
+            "#define free_and_replace(a, b)                  \\ /* <=== src/basic/alloc-util.h:48:54:free_and_replace:2 */ \n        ({                                      \\\n                free(a);                        \\\n                (a) = (b);                      \\\n                (b) = NULL;                     \\\n                0;                              \\\n        })",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-gvariant.c",
+            "bus_gvariant_read_word_le",
+            "size_t bus_gvariant_read_word_le(void *p, size_t sz) { /* <=== bus_gvariant_read_word_le */ \n        union {\n                uint16_t u16;\n                uint32_t u32;\n                uint64_t u64;\n        } x;\n\n        assert(p);\n\n        if (sz == 1)\n                return *(uint8_t*) p;\n\n        memcpy(&x, p, sz);\n\n        if (sz == 2)\n                return le16toh(x.u16);\n        else if (sz == 4)\n                return le32toh(x.u32);\n        else if (sz == 8)\n                return le64toh(x.u64);\n\n        assert_not_reached(\"unknown word width\");\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.h",
+            "BUS_MESSAGE_BSWAP32",
+            "static inline uint32_t BUS_MESSAGE_BSWAP32(sd_bus_message *m, uint32_t u) { /* <=== BUS_MESSAGE_BSWAP32 */ \n        return BUS_MESSAGE_NEED_BSWAP(m) ? bswap_32(u) : u;\n}",
+            3
+        ],
+        [
+            "src/basic/alloc-util.h",
+            "_cleanup_free_",
+            "#define _cleanup_free_ _cleanup_(freep) /* <=== src/basic/alloc-util.h:82:82:_cleanup_free_:0 */ ",
+            3
+        ],
+        [
+            "src/basic/log.c",
+            "log_dispatch_internal",
+            "int log_dispatch_internal( /* <=== log_dispatch_internal */ \n                int level,\n                int error,\n                const char *file,\n                int line,\n                const char *func,\n                const char *object_field,\n                const char *object,\n                const char *extra_field,\n                const char *extra,\n                char *buffer) {\n\n        assert_raw(buffer);\n\n        if (log_target == LOG_TARGET_NULL)\n                return -ERRNO_VALUE(error);\n\n        /* Patch in LOG_DAEMON facility if necessary */\n        if ((level & LOG_FACMASK) == 0)\n                level |= log_facility;\n\n        if (open_when_needed)\n                log_open();\n\n        do {\n                char *e;\n                int k = 0;\n\n                buffer += strspn(buffer, NEWLINE);\n\n                if (buffer[0] == 0)\n                        break;\n\n                if ((e = strpbrk(buffer, NEWLINE)))\n                        *(e++) = 0;\n\n                if (IN_SET(log_target, LOG_TARGET_AUTO,\n                                       LOG_TARGET_JOURNAL_OR_KMSG,\n                                       LOG_TARGET_JOURNAL)) {\n\n                        k = write_to_journal(level, error, file, line, func, object_field, object, extra_field, extra, buffer);\n                        if (k < 0 && k != -EAGAIN)\n                                log_close_journal();\n                }\n\n                if (IN_SET(log_target, LOG_TARGET_SYSLOG_OR_KMSG,\n                                       LOG_TARGET_SYSLOG)) {\n\n                        k = write_to_syslog(level, error, file, line, func, buffer);\n                        if (k < 0 && k != -EAGAIN)\n                                log_close_syslog();\n                }\n\n                if (k <= 0 &&\n                    IN_SET(log_target, LOG_TARGET_AUTO,\n                                       LOG_TARGET_SYSLOG_OR_KMSG,\n                                       LOG_TARGET_JOURNAL_OR_KMSG,\n                                       LOG_TARGET_KMSG)) {\n\n                        if (k < 0)\n                                log_open_kmsg();\n\n                        k = write_to_kmsg(level, error, file, line, func, buffer);\n                        if (k < 0) {\n                                log_close_kmsg();\n                                log_open_console();\n                        }\n                }\n\n                if (k <= 0)\n                        (void) write_to_console(level, error, file, line, func, buffer);\n\n                buffer = e;\n        } while (buffer);\n\n        if (open_when_needed)\n                log_close();\n\n        return -ERRNO_VALUE(error);\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "message_peek_fields",
+            "static int message_peek_fields( /* <=== message_peek_fields */ \n                sd_bus_message *m,\n                size_t *rindex,\n                size_t align,\n                size_t nbytes,\n                void **ret) {\n\n        assert(m);\n        assert(rindex);\n        assert(align > 0);\n\n        return buffer_peek(BUS_MESSAGE_FIELDS(m), m->fields_size, rindex, align, nbytes, ret);\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.c",
+            "message_skip_fields",
+            "static int message_skip_fields( /* <=== message_skip_fields */ \n                sd_bus_message *m,\n                size_t *ri,\n                uint32_t array_size,\n                const char **signature) {\n\n        size_t original_index;\n        int r;\n\n        assert(m);\n        assert(ri);\n        assert(signature);\n        assert(!BUS_MESSAGE_IS_GVARIANT(m));\n\n        original_index = *ri;\n\n        for (;;) {\n                char t;\n                size_t l;\n\n                if (array_size != (uint32_t) -1 &&\n                    array_size <= *ri - original_index)\n                        return 0;\n\n                t = **signature;\n                if (!t)\n                        return 0;\n\n                if (t == SD_BUS_TYPE_STRING) {\n\n                        r = message_peek_field_string(m, NULL, ri, 0, NULL);\n                        if (r < 0)\n                                return r;\n\n                        (*signature)++;\n\n                } else if (t == SD_BUS_TYPE_OBJECT_PATH) {\n\n                        r = message_peek_field_string(m, object_path_is_valid, ri, 0, NULL);\n                        if (r < 0)\n                                return r;\n\n                        (*signature)++;\n\n                } else if (t == SD_BUS_TYPE_SIGNATURE) {\n\n                        r = message_peek_field_signature(m, ri, 0, NULL);\n                        if (r < 0)\n                                return r;\n\n                        (*signature)++;\n\n                } else if (bus_type_is_basic(t)) {\n                        ssize_t align, k;\n\n                        align = bus_type_get_alignment(t);\n                        k = bus_type_get_size(t);\n                        assert(align > 0 && k > 0);\n\n                        r = message_peek_fields(m, ri, align, k, NULL);\n                        if (r < 0)\n                                return r;\n\n                        (*signature)++;\n\n                } else if (t == SD_BUS_TYPE_ARRAY) {\n\n                        r = signature_element_length(*signature + 1, &l);\n                        if (r < 0)\n                                return r;\n\n                        assert(l >= 1);\n                        {\n                                char sig[l + 1], *s = sig;\n                                uint32_t nas;\n                                int alignment;\n\n                                strncpy(sig, *signature + 1, l);\n                                sig[l] = '\\0';\n\n                                alignment = bus_type_get_alignment(sig[0]);\n                                if (alignment < 0)\n                                        return alignment;\n\n                                r = message_peek_field_uint32(m, ri, 0, &nas);\n                                if (r < 0)\n                                        return r;\n                                if (nas > BUS_ARRAY_MAX_SIZE)\n                                        return -EBADMSG;\n\n                                r = message_peek_fields(m, ri, alignment, 0, NULL);\n                                if (r < 0)\n                                        return r;\n\n                                r = message_skip_fields(m, ri, nas, (const char**) &s);\n                                if (r < 0)\n                                        return r;\n                        }\n\n                        (*signature) += 1 + l;\n\n                } else if (t == SD_BUS_TYPE_VARIANT) {\n                        const char *s;\n\n                        r = message_peek_field_signature(m, ri, 0, &s);\n                        if (r < 0)\n                                return r;\n\n                        r = message_skip_fields(m, ri, (uint32_t) -1, (const char**) &s);\n                        if (r < 0)\n                                return r;\n\n                        (*signature)++;\n\n                } else if (IN_SET(t, SD_BUS_TYPE_STRUCT, SD_BUS_TYPE_DICT_ENTRY)) {\n\n                        r = signature_element_length(*signature, &l);\n                        if (r < 0)\n                                return r;\n\n                        assert(l >= 2);\n                        {\n                                char sig[l + 1], *s = sig;\n                                strncpy(sig, *signature + 1, l);\n                                sig[l] = '\\0';\n\n                                r = message_skip_fields(m, ri, (uint32_t) -1, (const char**) &s);\n                                if (r < 0)\n                                        return r;\n                        }\n\n                        *signature += l;\n                } else\n                        return -EBADMSG;\n        }\n}",
+            3
+        ],
+        [
+            "src/libsystemd/sd-bus/bus-message.h",
+            "BUS_MESSAGE_SIZE",
+            "static inline size_t BUS_MESSAGE_SIZE(sd_bus_message *m) { /* <=== BUS_MESSAGE_SIZE */ \n        return\n                sizeof(struct bus_header) +\n                ALIGN8(m->fields_size) +\n                m->body_size;\n}",
+            3
+        ],
+        [
+            "src/basic/alloc-util.c",
+            "memdup_suffix0",
+            "void* memdup_suffix0(const void *p, size_t l) { /* <=== memdup_suffix0 */ \n        void *ret;\n\n        assert(l == 0 || p);\n\n        /* The same as memdup() but place a safety NUL byte after the allocated memory */\n\n        ret = malloc(l + 1);\n        if (!ret)\n                return NULL;\n\n        *((uint8_t*) mempcpy(ret, p, l)) = 0;\n        return ret;\n}",
+            3
+        ],
+        [
+            "src/basic/alloc-util.h",
+            "GREEDY_REALLOC",
+            "#define GREEDY_REALLOC(array, allocated, need)                          \\ /* <=== src/basic/alloc-util.h:121:122:GREEDY_REALLOC:3 */ \n        greedy_realloc((void**) &(array), &(allocated), (need), sizeof((array)[0]))",
+            2
+        ],
+        [
+            "src/basic/alloc-util.c",
+            "memdup",
+            "void* memdup(const void *p, size_t l) { /* <=== memdup */ \n        void *ret;\n\n        assert(l == 0 || p);\n\n        ret = malloc(l ?: 1);\n        if (!ret)\n                return NULL;\n\n        memcpy(ret, p, l);\n        return ret;\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <stdlib.h>",
+        "#include \"hexdecoct.h\"",
+        "#include \"bus-internal.h\"",
+        "#include \"macro.h\"",
+        "#include \"path-util.h\"",
+        "#include \"rlimit-util.h\"",
+        "#include \"fs-util.h\"",
+        "#include \"fd-util.h\"",
+        "#include \"missing.h\"",
+        "#include \"stdio-util.h\"",
+        "#include \"format-util.h\"",
+        "#include \"process-util.h\"",
+        "#include \"bus-socket.h\"",
+        "#include \"selinux-util.h\"",
+        "#include <endian.h>",
+        "#include \"sd-daemon.h\"",
+        "#include \"alloc-util.h\"",
+        "#include \"signal-util.h\"",
+        "#include \"string-util.h\"",
+        "#include \"utf8.h\"",
+        "#include <unistd.h>",
+        "#include <poll.h>",
+        "#include \"sd-bus.h\"",
+        "#include \"user-util.h\"",
+        "#include \"bus-message.h\"",
+        "#include \"io-util.h\"",
+        "#include \"util.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct sd_bus_message {\n        unsigned n_ref;\n\n        sd_bus *bus;\n\n        uint64_t reply_cookie;\n\n        const char *path;\n        const char *interface;\n        const char *member;\n        const char *destination;\n        const char *sender;\n\n        sd_bus_error error;\n\n        sd_bus_creds creds;\n\n        usec_t monotonic;\n        usec_t realtime;\n        uint64_t seqnum;\n        int64_t priority;\n        uint64_t verify_destination_id;\n\n        bool sealed:1;\n        bool dont_send:1;\n        bool allow_fds:1;\n        bool free_header:1;\n        bool free_fds:1;\n        bool poisoned:1;\n\n        /* The first and last bytes of the message */\n        struct bus_header *header;\n        void *footer;\n\n        /* How many bytes are accessible in the above pointers */\n        size_t header_accessible;\n        size_t footer_accessible;\n\n        size_t fields_size;\n        size_t body_size;\n        size_t user_body_size;\n\n        struct bus_body_part body;\n        struct bus_body_part *body_end;\n        unsigned n_body_parts;\n\n        size_t rindex;\n        struct bus_body_part *cached_rindex_part;\n        size_t cached_rindex_part_begin;\n\n        uint32_t n_fds;\n        int *fds;\n\n        struct bus_container root_container, *containers;\n        size_t n_containers;\n        size_t containers_allocated;\n\n        struct iovec *iovec;\n        struct iovec iovec_fixed[2];\n        unsigned n_iovec;\n\n        char *peeked_signature;\n\n        /* If set replies to this message must carry the signature\n         * specified here to successfully seal. This is initialized\n         * from the vtable data */\n        const char *enforced_reply_signature;\n\n        usec_t timeout;\n\n        size_t header_offsets[_BUS_MESSAGE_HEADER_MAX];\n        unsigned n_header_offsets;\n}",
+            "sd_bus_message"
+        ],
+        [
+            "struct sd_bus {\n        /* We use atomic ref counting here since sd_bus_message\n           objects retain references to their originating sd_bus but\n           we want to allow them to be processed in a different\n           thread. We won't provide full thread safety, but only the\n           bare minimum that makes it possible to use sd_bus and\n           sd_bus_message objects independently and on different\n           threads as long as each object is used only once at the\n           same time. */\n        RefCount n_ref;\n\n        enum bus_state state;\n        int input_fd, output_fd;\n        int inotify_fd;\n        int message_version;\n        int message_endian;\n\n        bool can_fds:1;\n        bool bus_client:1;\n        bool ucred_valid:1;\n        bool is_server:1;\n        bool anonymous_auth:1;\n        bool prefer_readv:1;\n        bool prefer_writev:1;\n        bool match_callbacks_modified:1;\n        bool filter_callbacks_modified:1;\n        bool nodes_modified:1;\n        bool trusted:1;\n        bool manual_peer_interface:1;\n        bool is_system:1;\n        bool is_user:1;\n        bool allow_interactive_authorization:1;\n        bool exit_on_disconnect:1;\n        bool exited:1;\n        bool exit_triggered:1;\n        bool is_local:1;\n        bool watch_bind:1;\n        bool is_monitor:1;\n        bool accept_fd:1;\n        bool attach_timestamp:1;\n        bool connected_signal:1;\n        bool close_on_exit:1;\n\n        int use_memfd;\n\n        void *rbuffer;\n        size_t rbuffer_size;\n\n        sd_bus_message **rqueue;\n        unsigned rqueue_size;\n        size_t rqueue_allocated;\n\n        sd_bus_message **wqueue;\n        unsigned wqueue_size;\n        size_t windex;\n        size_t wqueue_allocated;\n\n        uint64_t cookie;\n\n        char *unique_name;\n        uint64_t unique_id;\n\n        struct bus_match_node match_callbacks;\n        Prioq *reply_callbacks_prioq;\n        OrderedHashmap *reply_callbacks;\n        LIST_HEAD(struct filter_callback, filter_callbacks);\n\n        Hashmap *nodes;\n        Hashmap *vtable_methods;\n        Hashmap *vtable_properties;\n\n        union sockaddr_union sockaddr;\n        socklen_t sockaddr_size;\n\n        char *machine;\n        pid_t nspid;\n\n        sd_id128_t server_id;\n\n        char *address;\n        unsigned address_index;\n\n        int last_connect_error;\n\n        enum bus_auth auth;\n        size_t auth_rbegin;\n        struct iovec auth_iovec[3];\n        unsigned auth_index;\n        char *auth_buffer;\n        usec_t auth_timeout;\n\n        struct ucred ucred;\n        char *label;\n        gid_t *groups;\n        size_t n_groups;\n\n        uint64_t creds_mask;\n\n        int *fds;\n        size_t n_fds;\n\n        char *exec_path;\n        char **exec_argv;\n\n        unsigned iteration_counter;\n\n        /* We do locking around the memfd cache, since we want to\n         * allow people to process a sd_bus_message in a different\n         * thread then it was generated on and free it there. Since\n         * adding something to the memfd cache might happen when a\n         * message is released, we hence need to protect this bit with\n         * a mutex. */\n        pthread_mutex_t memfd_cache_mutex;\n        struct memfd_cache memfd_cache[MEMFD_CACHE_MAX];\n        unsigned n_memfd_cache;\n\n        pid_t original_pid;\n        pid_t busexec_pid;\n\n        sd_event_source *input_io_event_source;\n        sd_event_source *output_io_event_source;\n        sd_event_source *time_event_source;\n        sd_event_source *quit_event_source;\n        sd_event_source *inotify_event_source;\n        sd_event *event;\n        int event_priority;\n\n        sd_bus_message *current_message;\n        sd_bus_slot *current_slot;\n        sd_bus_message_handler_t current_handler;\n        void *current_userdata;\n\n        sd_bus **default_bus_ptr;\n        pid_t tid;\n\n        char *description;\n        char *patch_sender;\n\n        sd_bus_track *track_queue;\n\n        LIST_HEAD(sd_bus_slot, slots);\n        LIST_HEAD(sd_bus_track, tracks);\n\n        int *inotify_watches;\n        size_t n_inotify_watches;\n\n        /* zero means use value specified by $SYSTEMD_BUS_TIMEOUT= environment variable or built-in default */\n        usec_t method_call_timeout;\n}",
+            "sd_bus"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/libsystemd/sd-bus/bus-socket.c": [
+            1074,
+            1075,
+            1079,
+            1080,
+            1081,
+            1083,
+            1084,
+            1087,
+            1088,
+            1089,
+            1090,
+            1093,
+            1095,
+            1096,
+            1097,
+            1098,
+            1099,
+            1100,
+            1101,
+            1102,
+            1103,
+            1104,
+            1107,
+            1108,
+            1110,
+            1111,
+            1113,
+            1114,
+            1116
+        ]
+    },
+    "visitedLines_before": {
+        "src/libsystemd/sd-bus/bus-socket.c": [
+            1074,
+            1075,
+            1079,
+            1080,
+            1081,
+            1083,
+            1084,
+            1087,
+            1088,
+            1089,
+            1090,
+            1093,
+            1095,
+            1096,
+            1097,
+            1098,
+            1099,
+            1100,
+            1101,
+            1102,
+            1105,
+            1106,
+            1108,
+            1109,
+            1111,
+            1113
+        ]
+    },
+    "visitedParams": {
+        "src/libsystemd/sd-bus/bus-socket.c": [
+            [
+                "sd_bus *bus",
+                "bus_socket_make_message"
+            ],
+            [
+                "size_t size",
+                "bus_socket_make_message"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/libsystemd/sd-bus/bus-socket.c",
+            "bus_socket_make_message",
+            "static int bus_socket_make_message(sd_bus *bus, size_t size) { /* <=== bus_socket_make_message */ \n        sd_bus_message *t = NULL;\n        void *b;\n        int r;\n\n        assert(bus);\n        assert(bus->rbuffer_size >= size);\n        assert(IN_SET(bus->state, BUS_RUNNING, BUS_HELLO));\n\n        r = bus_rqueue_make_room(bus);\n        if (r < 0)\n                return r;\n\n        if (bus->rbuffer_size > size) {\n                b = memdup((const uint8_t*) bus->rbuffer + size,\n                           bus->rbuffer_size - size);\n                if (!b)\n                        return -ENOMEM;\n        } else\n                b = NULL;\n\n        r = bus_message_from_malloc(bus,\n                                    bus->rbuffer, size,\n                                    bus->fds, bus->n_fds,\n                                    NULL,\n                                    &t);\n        if (r == -EBADMSG)\n                log_debug_errno(r, \"Received invalid message from connection %s, dropping.\", strna(bus->description));\n        else if (r < 0) {\n                free(b);\n                return r;\n        }\n\n        bus->rbuffer = b;\n        bus->rbuffer_size -= size;\n\n        bus->fds = NULL;\n        bus->n_fds = 0;\n\n        if (t)\n                bus->rqueue[bus->rqueue_size++] = t;\n\n        return 1;\n}",
+            1074
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/libsystemd/sd-bus/bus-socket.c",
+            "bus_socket_make_message",
+            "static int bus_socket_make_message(sd_bus *bus, size_t size) { /* <=== bus_socket_make_message */ \n        sd_bus_message *t;\n        void *b;\n        int r;\n\n        assert(bus);\n        assert(bus->rbuffer_size >= size);\n        assert(IN_SET(bus->state, BUS_RUNNING, BUS_HELLO));\n\n        r = bus_rqueue_make_room(bus);\n        if (r < 0)\n                return r;\n\n        if (bus->rbuffer_size > size) {\n                b = memdup((const uint8_t*) bus->rbuffer + size,\n                           bus->rbuffer_size - size);\n                if (!b)\n                        return -ENOMEM;\n        } else\n                b = NULL;\n\n        r = bus_message_from_malloc(bus,\n                                    bus->rbuffer, size,\n                                    bus->fds, bus->n_fds,\n                                    NULL,\n                                    &t);\n        if (r < 0) {\n                free(b);\n                return r;\n        }\n\n        bus->rbuffer = b;\n        bus->rbuffer_size -= size;\n\n        bus->fds = NULL;\n        bus->n_fds = 0;\n\n        bus->rqueue[bus->rqueue_size++] = t;\n\n        return 1;\n}",
+            1074
+        ]
+    ]
+}

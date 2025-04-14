@@ -1,0 +1,382 @@
+{
+    "calleeMethods": [
+        [
+            "libavformat/aviobuf.c",
+            "avio_seek",
+            "int64_t avio_seek(AVIOContext *s, int64_t offset, int whence) /* <=== avio_seek */ \n{\n    int64_t offset1;\n    int64_t pos;\n    int force = whence & AVSEEK_FORCE;\n    int buffer_size;\n    int short_seek;\n    whence &= ~AVSEEK_FORCE;\n\n    if(!s)\n        return AVERROR(EINVAL);\n\n    buffer_size = s->buf_end - s->buffer;\n    // pos is the absolute position that the beginning of s->buffer corresponds to in the file\n    pos = s->pos - (s->write_flag ? 0 : buffer_size);\n\n    if (whence != SEEK_CUR && whence != SEEK_SET)\n        return AVERROR(EINVAL);\n\n    if (whence == SEEK_CUR) {\n        offset1 = pos + (s->buf_ptr - s->buffer);\n        if (offset == 0)\n            return offset1;\n        if (offset > INT64_MAX - offset1)\n            return AVERROR(EINVAL);\n        offset += offset1;\n    }\n    if (offset < 0)\n        return AVERROR(EINVAL);\n\n    if (s->short_seek_get) {\n        short_seek = s->short_seek_get(s->opaque);\n        /* fallback to default short seek */\n        if (short_seek <= 0)\n            short_seek = s->short_seek_threshold;\n    } else\n        short_seek = s->short_seek_threshold;\n\n    offset1 = offset - pos; // \"offset1\" is the relative offset from the beginning of s->buffer\n    s->buf_ptr_max = FFMAX(s->buf_ptr_max, s->buf_ptr);\n    if ((!s->direct || !s->seek) &&\n        offset1 >= 0 && offset1 <= (s->write_flag ? s->buf_ptr_max - s->buffer : buffer_size)) {\n        /* can do the seek inside the buffer */\n        s->buf_ptr = s->buffer + offset1;\n    } else if ((!(s->seekable & AVIO_SEEKABLE_NORMAL) ||\n               offset1 <= buffer_size + short_seek) &&\n               !s->write_flag && offset1 >= 0 &&\n               (!s->direct || !s->seek) &&\n              (whence != SEEK_END || force)) {\n        while(s->pos < offset && !s->eof_reached)\n            fill_buffer(s);\n        if (s->eof_reached)\n            return AVERROR_EOF;\n        s->buf_ptr = s->buf_end - (s->pos - offset);\n    } else if(!s->write_flag && offset1 < 0 && -offset1 < buffer_size>>1 && s->seek && offset > 0) {\n        int64_t res;\n\n        pos -= FFMIN(buffer_size>>1, pos);\n        if ((res = s->seek(s->opaque, pos, SEEK_SET)) < 0)\n            return res;\n        s->buf_end =\n        s->buf_ptr = s->buffer;\n        s->pos = pos;\n        s->eof_reached = 0;\n        fill_buffer(s);\n        return avio_seek(s, offset, SEEK_SET | force);\n    } else {\n        int64_t res;\n        if (s->write_flag) {\n            flush_buffer(s);\n        }\n        if (!s->seek)\n            return AVERROR(EPIPE);\n        if ((res = s->seek(s->opaque, offset, SEEK_SET)) < 0)\n            return res;\n        s->seek_count ++;\n        if (!s->write_flag)\n            s->buf_end = s->buffer;\n        s->buf_ptr = s->buf_ptr_max = s->buffer;\n        s->pos = offset;\n    }\n    s->eof_reached = 0;\n    return offset;\n}",
+            1
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert2",
+            "#define av_assert2(cond) ((void)0) /* <=== libavutil/avassert.h:64:64:av_assert2:1 */ ",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "writeout",
+            "static void writeout(AVIOContext *s, const uint8_t *data, int len) /* <=== writeout */ \n{\n    if (!s->error) {\n        int ret = 0;\n        if (s->write_data_type)\n            ret = s->write_data_type(s->opaque, (uint8_t *)data,\n                                     len,\n                                     s->current_type,\n                                     s->last_time);\n        else if (s->write_packet)\n            ret = s->write_packet(s->opaque, (uint8_t *)data, len);\n        if (ret < 0) {\n            s->error = ret;\n        } else {\n            if (s->pos + len > s->written)\n                s->written = s->pos + len;\n        }\n    }\n    if (s->current_type == AVIO_DATA_MARKER_SYNC_POINT ||\n        s->current_type == AVIO_DATA_MARKER_BOUNDARY_POINT) {\n        s->current_type = AVIO_DATA_MARKER_UNKNOWN;\n    }\n    s->last_time = AV_NOPTS_VALUE;\n    s->writeout_count ++;\n    s->pos += len;\n}",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_EOF",
+            "#define AVERROR_EOF                FFERRTAG( 'E','O','F',' ') ///< End of file /* <=== libavutil/error.h:55:55:AVERROR_EOF:0 */ ",
+            2
+        ],
+        [
+            "libavutil/avutil.h",
+            "AV_NOPTS_VALUE",
+            "#define AV_NOPTS_VALUE          ((int64_t)UINT64_C(0x8000000000000000)) /* <=== libavutil/avutil.h:248:248:AV_NOPTS_VALUE:0 */ ",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_read",
+            "int avio_read(AVIOContext *s, unsigned char *buf, int size) /* <=== avio_read */ \n{\n    int len, size1;\n\n    size1 = size;\n    while (size > 0) {\n        len = FFMIN(s->buf_end - s->buf_ptr, size);\n        if (len == 0 || s->write_flag) {\n            if((s->direct || size > s->buffer_size) && !s->update_checksum) {\n                // bypass the buffer and read data directly into buf\n                if(s->read_packet)\n                    len = s->read_packet(s->opaque, buf, size);\n\n                if (len <= 0) {\n                    /* do not modify buffer if EOF reached so that a seek back can\n                    be done without rereading data */\n                    s->eof_reached = 1;\n                    if(len<0)\n                        s->error= len;\n                    break;\n                } else {\n                    s->pos += len;\n                    s->bytes_read += len;\n                    size -= len;\n                    buf += len;\n                    // reset the buffer\n                    s->buf_ptr = s->buffer;\n                    s->buf_end = s->buffer/* + len*/;\n                }\n            } else {\n                fill_buffer(s);\n                len = s->buf_end - s->buf_ptr;\n                if (len == 0)\n                    break;\n            }\n        } else {\n            memcpy(buf, s->buf_ptr, len);\n            buf += len;\n            s->buf_ptr += len;\n            size -= len;\n        }\n    }\n    if (size1 == size) {\n        if (s->error)      return s->error;\n        if (avio_feof(s))  return AVERROR_EOF;\n    }\n    return size1 - size;\n}",
+            2
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_INVALIDDATA",
+            "#define AVERROR_INVALIDDATA        FFERRTAG( 'I','N','D','A') ///< Invalid data found when processing input /* <=== libavutil/error.h:59:59:AVERROR_INVALIDDATA:0 */ ",
+            1
+        ],
+        [
+            "libavformat/utils.c",
+            "av_add_index_entry",
+            "int av_add_index_entry(AVStream *st, int64_t pos, int64_t timestamp, /* <=== av_add_index_entry */ \n                       int size, int distance, int flags)\n{\n    timestamp = wrap_timestamp(st, timestamp);\n    return ff_add_index_entry(&st->index_entries, &st->nb_index_entries,\n                              &st->index_entries_allocated_size, pos,\n                              timestamp, size, distance, flags);\n}",
+            1
+        ],
+        [
+            "libavutil/log.c",
+            "av_vlog",
+            "void av_vlog(void* avcl, int level, const char *fmt, va_list vl) /* <=== av_vlog */ \n{\n    void (*log_callback)(void*, int, const char*, va_list) = av_log_callback;\n    if (log_callback)\n        log_callback(avcl, level, fmt, vl);\n}",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_r8",
+            "int avio_r8(AVIOContext *s) /* <=== avio_r8 */ \n{\n    if (s->buf_ptr >= s->buf_end)\n        fill_buffer(s);\n    if (s->buf_ptr < s->buf_end)\n        return *s->buf_ptr++;\n    return 0;\n}",
+            2
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_rl16",
+            "unsigned int avio_rl16(AVIOContext *s) /* <=== avio_rl16 */ \n{\n    unsigned int val;\n    val = avio_r8(s);\n    val |= avio_r8(s) << 8;\n    return val;\n}",
+            1
+        ],
+        [
+            "libavutil/common.h",
+            "FFMIN",
+            "#define FFMIN(a,b) ((a) > (b) ? (b) : (a)) /* <=== libavutil/common.h:96:96:FFMIN:2 */ ",
+            2
+        ],
+        [
+            "libavformat/utils.c",
+            "wrap_timestamp",
+            "static int64_t wrap_timestamp(const AVStream *st, int64_t timestamp) /* <=== wrap_timestamp */ \n{\n    if (st->pts_wrap_behavior != AV_PTS_WRAP_IGNORE &&\n        st->pts_wrap_reference != AV_NOPTS_VALUE && timestamp != AV_NOPTS_VALUE) {\n        if (st->pts_wrap_behavior == AV_PTS_WRAP_ADD_OFFSET &&\n            timestamp < st->pts_wrap_reference)\n            return timestamp + (1ULL << st->pts_wrap_bits);\n        else if (st->pts_wrap_behavior == AV_PTS_WRAP_SUB_OFFSET &&\n            timestamp >= st->pts_wrap_reference)\n            return timestamp - (1ULL << st->pts_wrap_bits);\n    }\n    return timestamp;\n}",
+            2
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_FATAL",
+            "#define AV_LOG_FATAL     8 /* <=== libavutil/log.h:170:170:AV_LOG_FATAL:0 */ ",
+            3
+        ],
+        [
+            "libavformat/avformat.h",
+            "AVSEEK_FLAG_ANY",
+            "#define AVSEEK_FLAG_ANY      4 ///< seek to any frame, even non-keyframes /* <=== libavformat/avformat.h:2415:2415:AVSEEK_FLAG_ANY:0 */ ",
+            3
+        ],
+        [
+            "libavformat/avio.h",
+            "AVIO_SEEKABLE_NORMAL",
+            "#define AVIO_SEEKABLE_NORMAL (1 << 0) /* <=== libavformat/avio.h:40:40:AVIO_SEEKABLE_NORMAL:0 */ ",
+            2
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert0",
+            "#define av_assert0(cond) do {                                           \\ /* <=== libavutil/avassert.h:37:43:av_assert0:1 */ \n    if (!(cond)) {                                                      \\\n        av_log(NULL, AV_LOG_PANIC, \"Assertion %s failed at %s:%d\\n\",    \\\n               AV_STRINGIFY(cond), __FILE__, __LINE__);                 \\\n        abort();                                                        \\\n    }                                                                   \\\n} while (0)",
+            2
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_WARNING",
+            "#define AV_LOG_WARNING  24 /* <=== libavutil/log.h:182:182:AV_LOG_WARNING:0 */ ",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_feof",
+            "int avio_feof(AVIOContext *s) /* <=== avio_feof */ \n{\n    if(!s)\n        return 0;\n    if(s->eof_reached){\n        s->eof_reached=0;\n        fill_buffer(s);\n    }\n    return s->eof_reached;\n}",
+            1
+        ],
+        [
+            "libavutil/mathematics.c",
+            "av_rescale_rnd",
+            "int64_t av_rescale_rnd(int64_t a, int64_t b, int64_t c, enum AVRounding rnd) /* <=== av_rescale_rnd */ \n{\n    int64_t r = 0;\n    av_assert2(c > 0);\n    av_assert2(b >=0);\n    av_assert2((unsigned)(rnd&~AV_ROUND_PASS_MINMAX)<=5 && (rnd&~AV_ROUND_PASS_MINMAX)!=4);\n\n    if (c <= 0 || b < 0 || !((unsigned)(rnd&~AV_ROUND_PASS_MINMAX)<=5 && (rnd&~AV_ROUND_PASS_MINMAX)!=4))\n        return INT64_MIN;\n\n    if (rnd & AV_ROUND_PASS_MINMAX) {\n        if (a == INT64_MIN || a == INT64_MAX)\n            return a;\n        rnd -= AV_ROUND_PASS_MINMAX;\n    }\n\n    if (a < 0)\n        return -(uint64_t)av_rescale_rnd(-FFMAX(a, -INT64_MAX), b, c, rnd ^ ((rnd >> 1) & 1));\n\n    if (rnd == AV_ROUND_NEAR_INF)\n        r = c / 2;\n    else if (rnd & 1)\n        r = c - 1;\n\n    if (b <= INT_MAX && c <= INT_MAX) {\n        if (a <= INT_MAX)\n            return (a * b + r) / c;\n        else {\n            int64_t ad = a / c;\n            int64_t a2 = (a % c * b + r) / c;\n            if (ad >= INT32_MAX && b && ad > (INT64_MAX - a2) / b)\n                return INT64_MIN;\n            return ad * b + a2;\n        }\n    } else {\n#if 1\n        uint64_t a0  = a & 0xFFFFFFFF;\n        uint64_t a1  = a >> 32;\n        uint64_t b0  = b & 0xFFFFFFFF;\n        uint64_t b1  = b >> 32;\n        uint64_t t1  = a0 * b1 + a1 * b0;\n        uint64_t t1a = t1 << 32;\n        int i;\n\n        a0  = a0 * b0 + t1a;\n        a1  = a1 * b1 + (t1 >> 32) + (a0 < t1a);\n        a0 += r;\n        a1 += a0 < r;\n\n        for (i = 63; i >= 0; i--) {\n            a1 += a1 + ((a0 >> i) & 1);\n            t1 += t1;\n            if (c <= a1) {\n                a1 -= c;\n                t1++;\n            }\n        }\n        if (t1 > INT64_MAX)\n            return INT64_MIN;\n        return t1;\n#else\n        /* reference code doing (a*b + r) / c, requires libavutil/integer.h */\n        AVInteger ai;\n        ai = av_mul_i(av_int2i(a), av_int2i(b));\n        ai = av_add_i(ai, av_int2i(r));\n\n        return av_i2int(av_div_i(ai, av_int2i(c)));\n#endif\n    }\n}",
+            2
+        ],
+        [
+            "libavformat/utils.c",
+            "ff_add_index_entry",
+            "int ff_add_index_entry(AVIndexEntry **index_entries, /* <=== ff_add_index_entry */ \n                       int *nb_index_entries,\n                       unsigned int *index_entries_allocated_size,\n                       int64_t pos, int64_t timestamp,\n                       int size, int distance, int flags)\n{\n    AVIndexEntry *entries, *ie;\n    int index;\n\n    if ((unsigned) *nb_index_entries + 1 >= UINT_MAX / sizeof(AVIndexEntry))\n        return -1;\n\n    if (timestamp == AV_NOPTS_VALUE)\n        return AVERROR(EINVAL);\n\n    if (size < 0 || size > 0x3FFFFFFF)\n        return AVERROR(EINVAL);\n\n    if (is_relative(timestamp)) //FIXME this maintains previous behavior but we should shift by the correct offset once known\n        timestamp -= RELATIVE_TS_BASE;\n\n    entries = av_fast_realloc(*index_entries,\n                              index_entries_allocated_size,\n                              (*nb_index_entries + 1) *\n                              sizeof(AVIndexEntry));\n    if (!entries)\n        return -1;\n\n    *index_entries = entries;\n\n    index = ff_index_search_timestamp(*index_entries, *nb_index_entries,\n                                      timestamp, AVSEEK_FLAG_ANY);\n\n    if (index < 0) {\n        index = (*nb_index_entries)++;\n        ie    = &entries[index];\n        av_assert0(index == 0 || ie[-1].timestamp < timestamp);\n    } else {\n        ie = &entries[index];\n        if (ie->timestamp != timestamp) {\n            if (ie->timestamp <= timestamp)\n                return -1;\n            memmove(entries + index + 1, entries + index,\n                    sizeof(AVIndexEntry) * (*nb_index_entries - index));\n            (*nb_index_entries)++;\n        } else if (ie->pos == pos && distance < ie->min_distance)\n            // do not reduce the distance\n            distance = ie->min_distance;\n    }\n\n    ie->pos          = pos;\n    ie->timestamp    = timestamp;\n    ie->min_distance = distance;\n    ie->size         = size;\n    ie->flags        = flags;\n\n    return index;\n}",
+            2
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "fill_buffer",
+            "static void fill_buffer(AVIOContext *s) /* <=== fill_buffer */ \n{\n    int max_buffer_size = s->max_packet_size ?\n                          s->max_packet_size : IO_BUFFER_SIZE;\n    uint8_t *dst        = s->buf_end - s->buffer + max_buffer_size < s->buffer_size ?\n                          s->buf_end : s->buffer;\n    int len             = s->buffer_size - (dst - s->buffer);\n\n    /* can't fill the buffer without read_packet, just set EOF if appropriate */\n    if (!s->read_packet && s->buf_ptr >= s->buf_end)\n        s->eof_reached = 1;\n\n    /* no need to do anything if EOF already reached */\n    if (s->eof_reached)\n        return;\n\n    if (s->update_checksum && dst == s->buffer) {\n        if (s->buf_end > s->checksum_ptr)\n            s->checksum = s->update_checksum(s->checksum, s->checksum_ptr,\n                                             s->buf_end - s->checksum_ptr);\n        s->checksum_ptr = s->buffer;\n    }\n\n    /* make buffer smaller in case it ended up large after probing */\n    if (s->read_packet && s->orig_buffer_size && s->buffer_size > s->orig_buffer_size) {\n        if (dst == s->buffer && s->buf_ptr != dst) {\n            int ret = ffio_set_buf_size(s, s->orig_buffer_size);\n            if (ret < 0)\n                av_log(s, AV_LOG_WARNING, \"Failed to decrease buffer size\\n\");\n\n            s->checksum_ptr = dst = s->buffer;\n        }\n        av_assert0(len >= s->orig_buffer_size);\n        len = s->orig_buffer_size;\n    }\n\n    if (s->read_packet)\n        len = s->read_packet(s->opaque, dst, len);\n    else\n        len = 0;\n    if (len <= 0) {\n        /* do not modify buffer if EOF reached so that a seek back can\n           be done without rereading data */\n        s->eof_reached = 1;\n        if (len < 0)\n            s->error = len;\n    } else {\n        s->pos += len;\n        s->buf_ptr = dst;\n        s->buf_end = dst + len;\n        s->bytes_read += len;\n    }\n}",
+            2
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_rl32",
+            "unsigned int avio_rl32(AVIOContext *s) /* <=== avio_rl32 */ \n{\n    unsigned int val;\n    val = avio_rl16(s);\n    val |= avio_rl16(s) << 16;\n    return val;\n}",
+            1
+        ],
+        [
+            "libavutil/common.h",
+            "FFMAX",
+            "#define FFMAX(a,b) ((a) > (b) ? (a) : (b)) /* <=== libavutil/common.h:94:94:FFMAX:2 */ ",
+            1
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR",
+            "#define AVERROR(e) (e) /* <=== libavutil/error.h:43:43:AVERROR:1 */ ",
+            2
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "IO_BUFFER_SIZE",
+            "#define IO_BUFFER_SIZE 32768 /* <=== libavformat/aviobuf.c:36:36:IO_BUFFER_SIZE:0 */ ",
+            3
+        ],
+        [
+            "libavutil/mathematics.c",
+            "av_rescale",
+            "int64_t av_rescale(int64_t a, int64_t b, int64_t c) /* <=== av_rescale */ \n{\n    return av_rescale_rnd(a, b, c, AV_ROUND_NEAR_INF);\n}",
+            1
+        ],
+        [
+            "libavformat/avformat.h",
+            "AVINDEX_KEYFRAME",
+            "#define AVINDEX_KEYFRAME 0x0001 /* <=== libavformat/avformat.h:818:818:AVINDEX_KEYFRAME:0 */ ",
+            1
+        ],
+        [
+            "libavformat/utils.c",
+            "RELATIVE_TS_BASE",
+            "#define RELATIVE_TS_BASE (INT64_MAX - (1LL<<48)) /* <=== libavformat/utils.c:80:80:RELATIVE_TS_BASE:0 */ ",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "ffio_set_buf_size",
+            "int ffio_set_buf_size(AVIOContext *s, int buf_size) /* <=== ffio_set_buf_size */ \n{\n    uint8_t *buffer;\n    buffer = av_malloc(buf_size);\n    if (!buffer)\n        return AVERROR(ENOMEM);\n\n    av_free(s->buffer);\n    s->buffer = buffer;\n    s->orig_buffer_size =\n    s->buffer_size = buf_size;\n    s->buf_ptr = s->buf_ptr_max = buffer;\n    url_resetbuf(s, s->write_flag ? AVIO_FLAG_WRITE : AVIO_FLAG_READ);\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavutil/log.c",
+            "av_log",
+            "void av_log(void* avcl, int level, const char *fmt, ...) /* <=== av_log */ \n{\n    AVClass* avc = avcl ? *(AVClass **) avcl : NULL;\n    va_list vl;\n    va_start(vl, fmt);\n    if (avc && avc->version >= (50 << 16 | 15 << 8 | 2) &&\n        avc->log_level_offset_offset && level >= AV_LOG_FATAL)\n        level += *(int *) (((uint8_t *) avcl) + avc->log_level_offset_offset);\n    av_vlog(avcl, level, fmt, vl);\n    va_end(vl);\n}",
+            2
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "flush_buffer",
+            "static void flush_buffer(AVIOContext *s) /* <=== flush_buffer */ \n{\n    s->buf_ptr_max = FFMAX(s->buf_ptr, s->buf_ptr_max);\n    if (s->write_flag && s->buf_ptr_max > s->buffer) {\n        writeout(s, s->buffer, s->buf_ptr_max - s->buffer);\n        if (s->update_checksum) {\n            s->checksum     = s->update_checksum(s->checksum, s->checksum_ptr,\n                                                 s->buf_ptr_max - s->checksum_ptr);\n            s->checksum_ptr = s->buffer;\n        }\n    }\n    s->buf_ptr = s->buf_ptr_max = s->buffer;\n    if (!s->write_flag)\n        s->buf_end = s->buffer;\n}",
+            2
+        ],
+        [
+            "libavformat/avformat.h",
+            "AV_PTS_WRAP_IGNORE",
+            "#define AV_PTS_WRAP_IGNORE      0   ///< ignore the wrap /* <=== libavformat/avformat.h:869:869:AV_PTS_WRAP_IGNORE:0 */ ",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_fast_realloc",
+            "void *av_fast_realloc(void *ptr, unsigned int *size, size_t min_size) /* <=== av_fast_realloc */ \n{\n    if (min_size < *size)\n        return ptr;\n\n    min_size = FFMAX(min_size + min_size / 16 + 32, min_size);\n\n    ptr = av_realloc(ptr, min_size);\n    /* we could set this to the unmodified min_size but this is safer\n     * if the user lost the ptr and uses NULL now\n     */\n    if (!ptr)\n        min_size = 0;\n\n    *size = min_size;\n\n    return ptr;\n}",
+            3
+        ],
+        [
+            "libavformat/utils.c",
+            "is_relative",
+            "static int is_relative(int64_t ts) { /* <=== is_relative */ \n    return ts > (RELATIVE_TS_BASE - (1LL<<48));\n}",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_rl64",
+            "uint64_t avio_rl64(AVIOContext *s) /* <=== avio_rl64 */ \n{\n    uint64_t val;\n    val = (uint64_t)avio_rl32(s);\n    val |= (uint64_t)avio_rl32(s) << 32;\n    return val;\n}",
+            1
+        ],
+        [
+            "libavformat/avio.h",
+            "AVSEEK_FORCE",
+            "#define AVSEEK_FORCE 0x20000 /* <=== libavformat/avio.h:538:538:AVSEEK_FORCE:0 */ ",
+            2
+        ],
+        [
+            "libavformat/utils.c",
+            "ff_index_search_timestamp",
+            "int ff_index_search_timestamp(const AVIndexEntry *entries, int nb_entries, /* <=== ff_index_search_timestamp */ \n                              int64_t wanted_timestamp, int flags)\n{\n    int a, b, m;\n    int64_t timestamp;\n\n    a = -1;\n    b = nb_entries;\n\n    // Optimize appending index entries at the end.\n    if (b && entries[b - 1].timestamp < wanted_timestamp)\n        a = b - 1;\n\n    while (b - a > 1) {\n        m         = (a + b) >> 1;\n\n        // Search for the next non-discarded packet.\n        while ((entries[m].flags & AVINDEX_DISCARD_FRAME) && m < b && m < nb_entries - 1) {\n            m++;\n            if (m == b && entries[m].timestamp >= wanted_timestamp) {\n                m = b - 1;\n                break;\n            }\n        }\n\n        timestamp = entries[m].timestamp;\n        if (timestamp >= wanted_timestamp)\n            b = m;\n        if (timestamp <= wanted_timestamp)\n            a = m;\n    }\n    m = (flags & AVSEEK_FLAG_BACKWARD) ? a : b;\n\n    if (!(flags & AVSEEK_FLAG_ANY))\n        while (m >= 0 && m < nb_entries &&\n               !(entries[m].flags & AVINDEX_KEYFRAME))\n            m += (flags & AVSEEK_FLAG_BACKWARD) ? -1 : 1;\n\n    if (m == nb_entries)\n        return -1;\n    return m;\n}",
+            3
+        ],
+        [
+            "libavformat/riffdec.c",
+            "ff_get_guid",
+            "int ff_get_guid(AVIOContext *s, ff_asf_guid *g) /* <=== ff_get_guid */ \n{\n    int ret;\n    av_assert0(sizeof(*g) == 16); //compiler will optimize this out\n    ret = avio_read(s, *g, sizeof(*g));\n    if (ret < (int)sizeof(*g)) {\n        memset(*g, 0, sizeof(*g));\n        return ret < 0 ? ret : AVERROR_INVALIDDATA;\n    }\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavformat/avformat.h",
+            "AV_PTS_WRAP_ADD_OFFSET",
+            "#define AV_PTS_WRAP_ADD_OFFSET  1   ///< add the format specific offset on wrap detection /* <=== libavformat/avformat.h:870:870:AV_PTS_WRAP_ADD_OFFSET:0 */ ",
+            3
+        ],
+        [
+            "libavformat/riff.h",
+            "ff_guidcmp",
+            "static av_always_inline int ff_guidcmp(const void *g1, const void *g2) /* <=== ff_guidcmp */ \n{\n    return memcmp(g1, g2, sizeof(ff_asf_guid));\n}",
+            1
+        ],
+        [
+            "libavformat/avformat.h",
+            "AV_PTS_WRAP_SUB_OFFSET",
+            "#define AV_PTS_WRAP_SUB_OFFSET  -1  ///< subtract the format specific offset on wrap detection /* <=== libavformat/avformat.h:871:871:AV_PTS_WRAP_SUB_OFFSET:0 */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"libavutil/avstring.h\"",
+        "#include \"id3v2.h\"",
+        "#include \"riff.h\"",
+        "#include \"libavutil/dict.h\"",
+        "#include <assert.h>",
+        "#include \"libavutil/avassert.h\"",
+        "#include \"libavutil/attributes.h\"",
+        "#include \"internal.h\"",
+        "#include \"asfcrypt.h\"",
+        "#include \"avio_internal.h\"",
+        "#include \"libavutil/mathematics.h\"",
+        "#include <inttypes.h>",
+        "#include \"libavutil/internal.h\"",
+        "#include \"avlanguage.h\"",
+        "#include \"asf.h\"",
+        "#include \"libavutil/bswap.h\"",
+        "#include \"libavutil/opt.h\"",
+        "#include \"libavutil/common.h\"",
+        "#include \"avformat.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct ASFContext {\n    const AVClass *class;\n    int asfid2avid[128];                 ///< conversion table from asf ID 2 AVStream ID\n    ASFStream streams[128];              ///< it's max number and it's not that big\n    uint32_t stream_bitrates[128];       ///< max number of streams, bitrate for each (for streaming)\n    AVRational dar[128];\n    char stream_languages[128][6];       ///< max number of streams, language for each (RFC1766, e.g. en-US)\n    /* non streamed additonnal info */\n    /* packet filling */\n    int packet_size_left;\n    /* only for reading */\n    uint64_t data_offset;                ///< beginning of the first data packet\n    uint64_t data_object_offset;         ///< data object offset (excl. GUID & size)\n    uint64_t data_object_size;           ///< size of the data object\n    int index_read;\n\n    ASFMainHeader hdr;\n\n    int packet_flags;\n    int packet_property;\n    int packet_timestamp;\n    int packet_segsizetype;\n    int packet_segments;\n    int packet_seq;\n    int packet_replic_size;\n    int packet_key_frame;\n    int packet_padsize;\n    unsigned int packet_frag_offset;\n    unsigned int packet_frag_size;\n    int64_t packet_frag_timestamp;\n    int ts_is_pts;\n    int packet_multi_size;\n    int packet_time_delta;\n    int packet_time_start;\n    int64_t packet_pos;\n\n    int stream_index;\n\n    ASFStream *asf_st;                   ///< currently decoded stream\n\n    int no_resync_search;\n    int export_xmp;\n\n    int uses_std_ecc;\n}",
+            "ASFContext"
+        ],
+        [
+            "typedef struct AVFormatContext {\n    /**\n     * A class for logging and @ref avoptions. Set by avformat_alloc_context().\n     * Exports (de)muxer private options if they exist.\n     */\n    const AVClass *av_class;\n\n    /**\n     * The input container format.\n     *\n     * Demuxing only, set by avformat_open_input().\n     */\n    struct AVInputFormat *iformat;\n\n    /**\n     * The output container format.\n     *\n     * Muxing only, must be set by the caller before avformat_write_header().\n     */\n    struct AVOutputFormat *oformat;\n\n    /**\n     * Format private data. This is an AVOptions-enabled struct\n     * if and only if iformat/oformat.priv_class is not NULL.\n     *\n     * - muxing: set by avformat_write_header()\n     * - demuxing: set by avformat_open_input()\n     */\n    void *priv_data;\n\n    /**\n     * I/O context.\n     *\n     * - demuxing: either set by the user before avformat_open_input() (then\n     *             the user must close it manually) or set by avformat_open_input().\n     * - muxing: set by the user before avformat_write_header(). The caller must\n     *           take care of closing / freeing the IO context.\n     *\n     * Do NOT set this field if AVFMT_NOFILE flag is set in\n     * iformat/oformat.flags. In such a case, the (de)muxer will handle\n     * I/O in some other way and this field will be NULL.\n     */\n    AVIOContext *pb;\n\n    /* stream info */\n    /**\n     * Flags signalling stream properties. A combination of AVFMTCTX_*.\n     * Set by libavformat.\n     */\n    int ctx_flags;\n\n    /**\n     * Number of elements in AVFormatContext.streams.\n     *\n     * Set by avformat_new_stream(), must not be modified by any other code.\n     */\n    unsigned int nb_streams;\n    /**\n     * A list of all streams in the file. New streams are created with\n     * avformat_new_stream().\n     *\n     * - demuxing: streams are created by libavformat in avformat_open_input().\n     *             If AVFMTCTX_NOHEADER is set in ctx_flags, then new streams may also\n     *             appear in av_read_frame().\n     * - muxing: streams are created by the user before avformat_write_header().\n     *\n     * Freed by libavformat in avformat_free_context().\n     */\n    AVStream **streams;\n\n    /**\n     * input or output filename\n     *\n     * - demuxing: set by avformat_open_input()\n     * - muxing: may be set by the caller before avformat_write_header()\n     */\n    char filename[1024];\n\n    /**\n     * Position of the first frame of the component, in\n     * AV_TIME_BASE fractional seconds. NEVER set this value directly:\n     * It is deduced from the AVStream values.\n     *\n     * Demuxing only, set by libavformat.\n     */\n    int64_t start_time;\n\n    /**\n     * Duration of the stream, in AV_TIME_BASE fractional\n     * seconds. Only set this value if you know none of the individual stream\n     * durations and also do not set any of them. This is deduced from the\n     * AVStream values if not set.\n     *\n     * Demuxing only, set by libavformat.\n     */\n    int64_t duration;\n\n    /**\n     * Total stream bitrate in bit/s, 0 if not\n     * available. Never set it directly if the file_size and the\n     * duration are known as FFmpeg can compute it automatically.\n     */\n    int64_t bit_rate;\n\n    unsigned int packet_size;\n    int max_delay;\n\n    /**\n     * Flags modifying the (de)muxer behaviour. A combination of AVFMT_FLAG_*.\n     * Set by the user before avformat_open_input() / avformat_write_header().\n     */\n    int flags;\n#define AVFMT_FLAG_GENPTS       0x0001 ///< Generate missing pts even if it requires parsing future frames.\n#define AVFMT_FLAG_IGNIDX       0x0002 ///< Ignore index.\n#define AVFMT_FLAG_NONBLOCK     0x0004 ///< Do not block when reading packets from input.\n#define AVFMT_FLAG_IGNDTS       0x0008 ///< Ignore DTS on frames that contain both DTS & PTS\n#define AVFMT_FLAG_NOFILLIN     0x0010 ///< Do not infer any values from other values, just return what is stored in the container\n#define AVFMT_FLAG_NOPARSE      0x0020 ///< Do not use AVParsers, you also must set AVFMT_FLAG_NOFILLIN as the fillin code works on frames and no parsing -> no frames. Also seeking to frames can not work if parsing to find frame boundaries has been disabled\n#define AVFMT_FLAG_NOBUFFER     0x0040 ///< Do not buffer frames when possible\n#define AVFMT_FLAG_CUSTOM_IO    0x0080 ///< The caller has supplied a custom AVIOContext, don't avio_close() it.\n#define AVFMT_FLAG_DISCARD_CORRUPT  0x0100 ///< Discard frames marked corrupted\n#define AVFMT_FLAG_FLUSH_PACKETS    0x0200 ///< Flush the AVIOContext every packet.\n/**\n * When muxing, try to avoid writing any random/volatile data to the output.\n * This includes any random IDs, real-time timestamps/dates, muxer version, etc.\n *\n * This flag is mainly intended for testing.\n */\n#define AVFMT_FLAG_BITEXACT         0x0400\n#define AVFMT_FLAG_MP4A_LATM    0x8000 ///< Enable RTP MP4A-LATM payload\n#define AVFMT_FLAG_SORT_DTS    0x10000 ///< try to interleave outputted packets by dts (using this flag can slow demuxing down)\n#define AVFMT_FLAG_PRIV_OPT    0x20000 ///< Enable use of private options by delaying codec open (this could be made default once all code is converted)\n#if FF_API_LAVF_KEEPSIDE_FLAG\n#define AVFMT_FLAG_KEEP_SIDE_DATA 0x40000 ///< Don't merge side data but keep it separate. Deprecated, will be the default.\n#endif\n#define AVFMT_FLAG_FAST_SEEK   0x80000 ///< Enable fast, but inaccurate seeks for some formats\n#define AVFMT_FLAG_SHORTEST   0x100000 ///< Stop muxing when the shortest stream stops.\n#define AVFMT_FLAG_AUTO_BSF   0x200000 ///< Wait for packet data before writing a header, and add bitstream filters as requested by the muxer\n\n    /**\n     * Maximum size of the data read from input for determining\n     * the input container format.\n     * Demuxing only, set by the caller before avformat_open_input().\n     */\n    int64_t probesize;\n\n    /**\n     * Maximum duration (in AV_TIME_BASE units) of the data read\n     * from input in avformat_find_stream_info().\n     * Demuxing only, set by the caller before avformat_find_stream_info().\n     * Can be set to 0 to let avformat choose using a heuristic.\n     */\n    int64_t max_analyze_duration;\n\n    const uint8_t *key;\n    int keylen;\n\n    unsigned int nb_programs;\n    AVProgram **programs;\n\n    /**\n     * Forced video codec_id.\n     * Demuxing: Set by user.\n     */\n    enum AVCodecID video_codec_id;\n\n    /**\n     * Forced audio codec_id.\n     * Demuxing: Set by user.\n     */\n    enum AVCodecID audio_codec_id;\n\n    /**\n     * Forced subtitle codec_id.\n     * Demuxing: Set by user.\n     */\n    enum AVCodecID subtitle_codec_id;\n\n    /**\n     * Maximum amount of memory in bytes to use for the index of each stream.\n     * If the index exceeds this size, entries will be discarded as\n     * needed to maintain a smaller size. This can lead to slower or less\n     * accurate seeking (depends on demuxer).\n     * Demuxers for which a full in-memory index is mandatory will ignore\n     * this.\n     * - muxing: unused\n     * - demuxing: set by user\n     */\n    unsigned int max_index_size;\n\n    /**\n     * Maximum amount of memory in bytes to use for buffering frames\n     * obtained from realtime capture devices.\n     */\n    unsigned int max_picture_buffer;\n\n    /**\n     * Number of chapters in AVChapter array.\n     * When muxing, chapters are normally written in the file header,\n     * so nb_chapters should normally be initialized before write_header\n     * is called. Some muxers (e.g. mov and mkv) can also write chapters\n     * in the trailer.  To write chapters in the trailer, nb_chapters\n     * must be zero when write_header is called and non-zero when\n     * write_trailer is called.\n     * - muxing: set by user\n     * - demuxing: set by libavformat\n     */\n    unsigned int nb_chapters;\n    AVChapter **chapters;\n\n    /**\n     * Metadata that applies to the whole file.\n     *\n     * - demuxing: set by libavformat in avformat_open_input()\n     * - muxing: may be set by the caller before avformat_write_header()\n     *\n     * Freed by libavformat in avformat_free_context().\n     */\n    AVDictionary *metadata;\n\n    /**\n     * Start time of the stream in real world time, in microseconds\n     * since the Unix epoch (00:00 1st January 1970). That is, pts=0 in the\n     * stream was captured at this real world time.\n     * - muxing: Set by the caller before avformat_write_header(). If set to\n     *           either 0 or AV_NOPTS_VALUE, then the current wall-time will\n     *           be used.\n     * - demuxing: Set by libavformat. AV_NOPTS_VALUE if unknown. Note that\n     *             the value may become known after some number of frames\n     *             have been received.\n     */\n    int64_t start_time_realtime;\n\n    /**\n     * The number of frames used for determining the framerate in\n     * avformat_find_stream_info().\n     * Demuxing only, set by the caller before avformat_find_stream_info().\n     */\n    int fps_probe_size;\n\n    /**\n     * Error recognition; higher values will detect more errors but may\n     * misdetect some more or less valid parts as errors.\n     * Demuxing only, set by the caller before avformat_open_input().\n     */\n    int error_recognition;\n\n    /**\n     * Custom interrupt callbacks for the I/O layer.\n     *\n     * demuxing: set by the user before avformat_open_input().\n     * muxing: set by the user before avformat_write_header()\n     * (mainly useful for AVFMT_NOFILE formats). The callback\n     * should also be passed to avio_open2() if it's used to\n     * open the file.\n     */\n    AVIOInterruptCB interrupt_callback;\n\n    /**\n     * Flags to enable debugging.\n     */\n    int debug;\n#define FF_FDEBUG_TS        0x0001\n\n    /**\n     * Maximum buffering duration for interleaving.\n     *\n     * To ensure all the streams are interleaved correctly,\n     * av_interleaved_write_frame() will wait until it has at least one packet\n     * for each stream before actually writing any packets to the output file.\n     * When some streams are...",
+            "AVFormatContext"
+        ],
+        [
+            "typedef uint8_t ff_asf_guid[16];",
+            "ff_asf_guid"
+        ]
+    ],
+    "visitedLines_after": {
+        "libavformat/asfdec_f.c": [
+            1568,
+            1571,
+            1572,
+            1575,
+            1579,
+            1584,
+            1585,
+            1586,
+            1589,
+            1590,
+            1595,
+            1598,
+            1599,
+            1601,
+            1602,
+            1603,
+            1607,
+            1608,
+            1609,
+            1610,
+            1611,
+            1613,
+            1614,
+            1618,
+            1621,
+            1622,
+            1623,
+            1626,
+            1632,
+            1633
+        ]
+    },
+    "visitedLines_before": {
+        "libavformat/asfdec_f.c": [
+            1568,
+            1571,
+            1572,
+            1575,
+            1579,
+            1584,
+            1585,
+            1586,
+            1589,
+            1590,
+            1595,
+            1598,
+            1599,
+            1601,
+            1602,
+            1603,
+            1607,
+            1608,
+            1609,
+            1610,
+            1611,
+            1613,
+            1616,
+            1617,
+            1618,
+            1621,
+            1627,
+            1628
+        ]
+    },
+    "visitedParams": {
+        "libavformat/asfdec_f.c": [
+            [
+                "AVFormatContext *s",
+                "asf_build_simple_index"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libavformat/asfdec_f.c",
+            "asf_build_simple_index",
+            "static int asf_build_simple_index(AVFormatContext *s, int stream_index) /* <=== asf_build_simple_index */ \n{\n    ff_asf_guid g;\n    ASFContext *asf     = s->priv_data;\n    int64_t current_pos = avio_tell(s->pb);\n    int64_t ret;\n\n    if((ret = avio_seek(s->pb, asf->data_object_offset + asf->data_object_size, SEEK_SET)) < 0) {\n        return ret;\n    }\n\n    if ((ret = ff_get_guid(s->pb, &g)) < 0)\n        goto end;\n\n    /* the data object can be followed by other top-level objects,\n     * skip them until the simple index object is reached */\n    while (ff_guidcmp(&g, &ff_asf_simple_index_header)) {\n        int64_t gsize = avio_rl64(s->pb);\n        if (gsize < 24 || avio_feof(s->pb)) {\n            goto end;\n        }\n        avio_skip(s->pb, gsize - 24);\n        if ((ret = ff_get_guid(s->pb, &g)) < 0)\n            goto end;\n    }\n\n    {\n        int64_t itime, last_pos = -1;\n        int pct, ict;\n        int i;\n        int64_t av_unused gsize = avio_rl64(s->pb);\n        if ((ret = ff_get_guid(s->pb, &g)) < 0)\n            goto end;\n        itime = avio_rl64(s->pb);\n        pct   = avio_rl32(s->pb);\n        ict   = avio_rl32(s->pb);\n        av_log(s, AV_LOG_DEBUG,\n               \"itime:0x%\"PRIx64\", pct:%d, ict:%d\\n\", itime, pct, ict);\n\n        for (i = 0; i < ict; i++) {\n            int pktnum        = avio_rl32(s->pb);\n            int pktct         = avio_rl16(s->pb);\n            int64_t pos       = s->internal->data_offset + s->packet_size * (int64_t)pktnum;\n            int64_t index_pts = FFMAX(av_rescale(itime, i, 10000) - asf->hdr.preroll, 0);\n\n            if (avio_feof(s->pb)) {\n                ret = AVERROR_INVALIDDATA;\n                goto end;\n            }\n\n            if (pos != last_pos) {\n                av_log(s, AV_LOG_DEBUG, \"pktnum:%d, pktct:%d  pts: %\"PRId64\"\\n\",\n                       pktnum, pktct, index_pts);\n                av_add_index_entry(s->streams[stream_index], pos, index_pts,\n                                   s->packet_size, 0, AVINDEX_KEYFRAME);\n                last_pos = pos;\n            }\n        }\n        asf->index_read = ict > 1;\n    }\nend:\n//     if (avio_feof(s->pb)) {\n//         ret = 0;\n//     }\n    avio_seek(s->pb, current_pos, SEEK_SET);\n    return ret;\n}",
+            1568
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libavformat/asfdec_f.c",
+            "asf_build_simple_index",
+            "static int asf_build_simple_index(AVFormatContext *s, int stream_index) /* <=== asf_build_simple_index */ \n{\n    ff_asf_guid g;\n    ASFContext *asf     = s->priv_data;\n    int64_t current_pos = avio_tell(s->pb);\n    int64_t ret;\n\n    if((ret = avio_seek(s->pb, asf->data_object_offset + asf->data_object_size, SEEK_SET)) < 0) {\n        return ret;\n    }\n\n    if ((ret = ff_get_guid(s->pb, &g)) < 0)\n        goto end;\n\n    /* the data object can be followed by other top-level objects,\n     * skip them until the simple index object is reached */\n    while (ff_guidcmp(&g, &ff_asf_simple_index_header)) {\n        int64_t gsize = avio_rl64(s->pb);\n        if (gsize < 24 || avio_feof(s->pb)) {\n            goto end;\n        }\n        avio_skip(s->pb, gsize - 24);\n        if ((ret = ff_get_guid(s->pb, &g)) < 0)\n            goto end;\n    }\n\n    {\n        int64_t itime, last_pos = -1;\n        int pct, ict;\n        int i;\n        int64_t av_unused gsize = avio_rl64(s->pb);\n        if ((ret = ff_get_guid(s->pb, &g)) < 0)\n            goto end;\n        itime = avio_rl64(s->pb);\n        pct   = avio_rl32(s->pb);\n        ict   = avio_rl32(s->pb);\n        av_log(s, AV_LOG_DEBUG,\n               \"itime:0x%\"PRIx64\", pct:%d, ict:%d\\n\", itime, pct, ict);\n\n        for (i = 0; i < ict; i++) {\n            int pktnum        = avio_rl32(s->pb);\n            int pktct         = avio_rl16(s->pb);\n            int64_t pos       = s->internal->data_offset + s->packet_size * (int64_t)pktnum;\n            int64_t index_pts = FFMAX(av_rescale(itime, i, 10000) - asf->hdr.preroll, 0);\n\n            if (pos != last_pos) {\n                av_log(s, AV_LOG_DEBUG, \"pktnum:%d, pktct:%d  pts: %\"PRId64\"\\n\",\n                       pktnum, pktct, index_pts);\n                av_add_index_entry(s->streams[stream_index], pos, index_pts,\n                                   s->packet_size, 0, AVINDEX_KEYFRAME);\n                last_pos = pos;\n            }\n        }\n        asf->index_read = ict > 1;\n    }\nend:\n//     if (avio_feof(s->pb)) {\n//         ret = 0;\n//     }\n    avio_seek(s->pb, current_pos, SEEK_SET);\n    return ret;\n}",
+            1568
+        ]
+    ]
+}

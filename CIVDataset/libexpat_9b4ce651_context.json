@@ -1,0 +1,207 @@
+{
+    "calleeMethods": [
+        [
+            "expat/lib/xmlparse.c",
+            "MALLOC",
+            "#define MALLOC(parser, s) (parser->m_mem.malloc_fcn((s))) /* <=== expat/lib/xmlparse.c:710:710:MALLOC:2 */ ",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#  include <unistd.h>",
+        "#include \"xmltok.h\"",
+        "#include <limits.h>",
+        "#include <math.h>",
+        "#  include \"winconfig.h\"",
+        "#include \"expat.h\"",
+        "#include <stdlib.h>",
+        "#include \"siphash.h\"",
+        "#    include <sys/random.h>",
+        "#include \"ascii.h\"",
+        "#include <stdio.h>",
+        "#  include <bsd/stdlib.h>",
+        "#include \"internal.h\"",
+        "#    include <unistd.h>",
+        "#    include <sys/syscall.h>",
+        "#include <stddef.h>",
+        "#  include <fcntl.h>",
+        "#  include <sys/time.h>",
+        "#include <stdint.h>",
+        "#  include <errno.h>",
+        "#include <string.h>",
+        "#  include <sys/types.h>",
+        "#include <expat_config.h>",
+        "#include <assert.h>",
+        "#include \"xmlrole.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct XML_ParserStruct *XML_Parser;",
+            "XML_Parser"
+        ],
+        [
+            "typedef struct XML_cp XML_Content;",
+            "XML_Content"
+        ],
+        [
+            "typedef char XML_Char;",
+            "XML_Char"
+        ]
+    ],
+    "visitedLines_after": {
+        "expat/lib/xmlparse.c": [
+            7320,
+            7321,
+            7325,
+            7326,
+            7327,
+            7328,
+            7335,
+            7338,
+            7342,
+            7343,
+            7345,
+            7347,
+            7348,
+            7350,
+            7351,
+            7359,
+            7361,
+            7369,
+            7371,
+            7375,
+            7377,
+            7383,
+            7384,
+            7385,
+            7386,
+            7387,
+            7388,
+            7390,
+            7392,
+            7394,
+            7397,
+            7398,
+            7399,
+            7400,
+            7401,
+            7402,
+            7404,
+            7405,
+            7407,
+            7409,
+            7410,
+            7412,
+            7413,
+            7414,
+            7415,
+            7416,
+            7421,
+            7422,
+            7423,
+            7424,
+            7429
+        ]
+    },
+    "visitedLines_before": {
+        "expat/lib/xmlparse.c": [
+            7320,
+            7321,
+            7322,
+            7323,
+            7324,
+            7325,
+            7326,
+            7327,
+            7328,
+            7329,
+            7331,
+            7332,
+            7334,
+            7336,
+            7337,
+            7339,
+            7340,
+            7341,
+            7342,
+            7343,
+            7344,
+            7345,
+            7346,
+            7348,
+            7351,
+            7352,
+            7353,
+            7354,
+            7356,
+            7357,
+            7359,
+            7361,
+            7364,
+            7367,
+            7369,
+            7371,
+            7372,
+            7375,
+            7376,
+            7377,
+            7379,
+            7380,
+            7383,
+            7384,
+            7386,
+            7387
+        ]
+    },
+    "visitedParams": {
+        "expat/lib/xmlparse.c": [
+            [
+                "XML_Char **strpos",
+                "build_node"
+            ],
+            [
+                "XML_Content **contpos",
+                "build_node"
+            ],
+            [
+                "XML_Content *dest",
+                "build_node"
+            ],
+            [
+                "XML_Parser parser",
+                "build_model"
+            ],
+            [
+                "XML_Parser parser",
+                "build_node"
+            ],
+            [
+                "int src_node",
+                "build_node"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "expat/lib/xmlparse.c",
+            "build_model",
+            "static XML_Content * /* <=== build_model */ \nbuild_model(XML_Parser parser) {\n  /* Function build_model transforms the existing parser->m_dtd->scaffold\n   * array of CONTENT_SCAFFOLD tree nodes into a new array of\n   * XML_Content tree nodes followed by a gapless list of zero-terminated\n   * strings. */\n  DTD *const dtd = parser->m_dtd; /* save one level of indirection */\n  XML_Content *ret;\n  XML_Char *str; /* the current string writing location */\n\n  /* Detect and prevent integer overflow.\n   * The preprocessor guard addresses the \"always false\" warning\n   * from -Wtype-limits on platforms where\n   * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */\n#if UINT_MAX >= SIZE_MAX\n  if (dtd->scaffCount > (size_t)(-1) / sizeof(XML_Content)) {\n    return NULL;\n  }\n  if (dtd->contentStringLen > (size_t)(-1) / sizeof(XML_Char)) {\n    return NULL;\n  }\n#endif\n  if (dtd->scaffCount * sizeof(XML_Content)\n      > (size_t)(-1) - dtd->contentStringLen * sizeof(XML_Char)) {\n    return NULL;\n  }\n\n  const size_t allocsize = (dtd->scaffCount * sizeof(XML_Content)\n                            + (dtd->contentStringLen * sizeof(XML_Char)));\n\n  ret = (XML_Content *)MALLOC(parser, allocsize);\n  if (! ret)\n    return NULL;\n\n  /* What follows is an iterative implementation (of what was previously done\n   * recursively in a dedicated function called \"build_node\".  The old recursive\n   * build_node could be forced into stack exhaustion from input as small as a\n   * few megabyte, and so that was a security issue.  Hence, a function call\n   * stack is avoided now by resolving recursion.)\n   *\n   * The iterative approach works as follows:\n   *\n   * - We use space in the target array for building a temporary stack structure\n   *   while that space is still unused.\n   *   The stack grows from the array's end downwards and the \"actual data\"\n   *   grows from the start upwards, sequentially.\n   *   (Because stack grows downwards, pushing onto the stack is a decrement\n   *   while popping off the stack is an increment.)\n   *\n   * - A stack element appears as a regular XML_Content node on the outside,\n   *   but only uses a single field -- numchildren -- to store the source\n   *   tree node array index.  These are the breadcrumbs leading the way back\n   *   during pre-order (node first) depth-first traversal.\n   *\n   * - The reason we know the stack will never grow into (or overlap with)\n   *   the area with data of value at the start of the array is because\n   *   the overall number of elements to process matches the size of the array,\n   *   and the sum of fully processed nodes and yet-to-be processed nodes\n   *   on the stack, cannot be more than the total number of nodes.\n   *   It is possible for the top of the stack and the about-to-write node\n   *   to meet, but that is safe because we get the source index out\n   *   before doing any writes on that node.\n   */\n  XML_Content *dest = ret; /* tree node writing location, moves upwards */\n  XML_Content *const destLimit = &ret[dtd->scaffCount];\n  XML_Content *const stackBottom = &ret[dtd->scaffCount];\n  XML_Content *stackTop = stackBottom; /* i.e. stack is initially empty */\n  str = (XML_Char *)&ret[dtd->scaffCount];\n\n  /* Push source tree root node index onto the stack */\n  (--stackTop)->numchildren = 0;\n\n  for (; dest < destLimit; dest++) {\n    /* Pop source tree node index off the stack */\n    const int src_node = (int)(stackTop++)->numchildren;\n\n    /* Convert item */\n    dest->type = dtd->scaffold[src_node].type;\n    dest->quant = dtd->scaffold[src_node].quant;\n    if (dest->type == XML_CTYPE_NAME) {\n      const XML_Char *src;\n      dest->name = str;\n      src = dtd->scaffold[src_node].name;\n      for (;;) {\n        *str++ = *src;\n        if (! *src)\n          break;\n        src++;\n      }\n      dest->numchildren = 0;\n      dest->children = NULL;\n    } else {\n      unsigned int i;\n      int cn;\n      dest->name = NULL;\n      dest->numchildren = dtd->scaffold[src_node].childcnt;\n      dest->children = &dest[1];\n\n      /* Push children to the stack\n       * in a way where the first child ends up at the top of the\n       * (downwards growing) stack, in order to be processed first. */\n      stackTop -= dest->numchildren;\n      for (i = 0, cn = dtd->scaffold[src_node].firstchild;\n           i < dest->numchildren; i++, cn = dtd->scaffold[cn].nextsib) {\n        (stackTop + i)->numchildren = (unsigned int)cn;\n      }\n    }\n  }\n\n  return ret;\n}",
+            7320
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "expat/lib/xmlparse.c",
+            "build_node",
+            "static void /* <=== build_node */ \nbuild_node(XML_Parser parser, int src_node, XML_Content *dest,\n           XML_Content **contpos, XML_Char **strpos) {\n  DTD *const dtd = parser->m_dtd; /* save one level of indirection */\n  dest->type = dtd->scaffold[src_node].type;\n  dest->quant = dtd->scaffold[src_node].quant;\n  if (dest->type == XML_CTYPE_NAME) {\n    const XML_Char *src;\n    dest->name = *strpos;\n    src = dtd->scaffold[src_node].name;\n    for (;;) {\n      *(*strpos)++ = *src;\n      if (! *src)\n        break;\n      src++;\n    }\n    dest->numchildren = 0;\n    dest->children = NULL;\n  } else {\n    unsigned int i;\n    int cn;\n    dest->numchildren = dtd->scaffold[src_node].childcnt;\n    dest->children = *contpos;\n    *contpos += dest->numchildren;\n    for (i = 0, cn = dtd->scaffold[src_node].firstchild; i < dest->numchildren;\n         i++, cn = dtd->scaffold[cn].nextsib) {\n      build_node(parser, cn, &(dest->children[i]), contpos, strpos);\n    }\n    dest->name = NULL;\n  }\n}",
+            7320
+        ],
+        [
+            "expat/lib/xmlparse.c",
+            "build_model",
+            "static XML_Content * /* <=== build_model */ \nbuild_model(XML_Parser parser) {\n  DTD *const dtd = parser->m_dtd; /* save one level of indirection */\n  XML_Content *ret;\n  XML_Content *cpos;\n  XML_Char *str;\n\n  /* Detect and prevent integer overflow.\n   * The preprocessor guard addresses the \"always false\" warning\n   * from -Wtype-limits on platforms where\n   * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */\n#if UINT_MAX >= SIZE_MAX\n  if (dtd->scaffCount > (size_t)(-1) / sizeof(XML_Content)) {\n    return NULL;\n  }\n  if (dtd->contentStringLen > (size_t)(-1) / sizeof(XML_Char)) {\n    return NULL;\n  }\n#endif\n  if (dtd->scaffCount * sizeof(XML_Content)\n      > (size_t)(-1) - dtd->contentStringLen * sizeof(XML_Char)) {\n    return NULL;\n  }\n\n  const size_t allocsize = (dtd->scaffCount * sizeof(XML_Content)\n                            + (dtd->contentStringLen * sizeof(XML_Char)));\n\n  ret = (XML_Content *)MALLOC(parser, allocsize);\n  if (! ret)\n    return NULL;\n\n  str = (XML_Char *)(&ret[dtd->scaffCount]);\n  cpos = &ret[1];\n\n  build_node(parser, 0, ret, &cpos, &str);\n  return ret;\n}",
+            7352
+        ]
+    ]
+}

@@ -1,0 +1,256 @@
+{
+    "calleeMethods": [
+        [
+            "libavformat/aviobuf.c",
+            "avio_rb64",
+            "uint64_t avio_rb64(AVIOContext *s) /* <=== avio_rb64 */ \n{\n    uint64_t val;\n    val = (uint64_t)avio_rb32(s) << 32;\n    val |= (uint64_t)avio_rb32(s);\n    return val;\n}",
+            1
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_r8",
+            "int avio_r8(AVIOContext *s) /* <=== avio_r8 */ \n{\n    if (s->buf_ptr >= s->buf_end)\n        fill_buffer(s);\n    if (s->buf_ptr < s->buf_end)\n        return *s->buf_ptr++;\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavutil/mem.c",
+            "av_mallocz",
+            "void *av_mallocz(size_t size) /* <=== av_mallocz */ \n{\n    void *ptr = av_malloc(size);\n    if (ptr)\n        memset(ptr, 0, size);\n    return ptr;\n}",
+            2
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "flush_buffer",
+            "static void flush_buffer(AVIOContext *s) /* <=== flush_buffer */ \n{\n    s->buf_ptr_max = FFMAX(s->buf_ptr, s->buf_ptr_max);\n    if (s->write_flag && s->buf_ptr_max > s->buffer) {\n        writeout(s, s->buffer, s->buf_ptr_max - s->buffer);\n        if (s->update_checksum) {\n            s->checksum     = s->update_checksum(s->checksum, s->checksum_ptr,\n                                                 s->buf_ptr_max - s->checksum_ptr);\n            s->checksum_ptr = s->buffer;\n        }\n    }\n    s->buf_ptr = s->buf_ptr_max = s->buffer;\n    if (!s->write_flag)\n        s->buf_end = s->buffer;\n}",
+            3
+        ],
+        [
+            "libavutil/log.c",
+            "av_log",
+            "void av_log(void* avcl, int level, const char *fmt, ...) /* <=== av_log */ \n{\n    AVClass* avc = avcl ? *(AVClass **) avcl : NULL;\n    va_list vl;\n    va_start(vl, fmt);\n    if (avc && avc->version >= (50 << 16 | 15 << 8 | 2) &&\n        avc->log_level_offset_offset && level >= AV_LOG_FATAL)\n        level += *(int *) (((uint8_t *) avcl) + avc->log_level_offset_offset);\n    av_vlog(avcl, level, fmt, vl);\n    va_end(vl);\n}",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_rb16",
+            "unsigned int avio_rb16(AVIOContext *s) /* <=== avio_rb16 */ \n{\n    unsigned int val;\n    val = avio_r8(s) << 8;\n    val |= avio_r8(s);\n    return val;\n}",
+            2
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_seek",
+            "int64_t avio_seek(AVIOContext *s, int64_t offset, int whence) /* <=== avio_seek */ \n{\n    int64_t offset1;\n    int64_t pos;\n    int force = whence & AVSEEK_FORCE;\n    int buffer_size;\n    int short_seek;\n    whence &= ~AVSEEK_FORCE;\n\n    if(!s)\n        return AVERROR(EINVAL);\n\n    buffer_size = s->buf_end - s->buffer;\n    // pos is the absolute position that the beginning of s->buffer corresponds to in the file\n    pos = s->pos - (s->write_flag ? 0 : buffer_size);\n\n    if (whence != SEEK_CUR && whence != SEEK_SET)\n        return AVERROR(EINVAL);\n\n    if (whence == SEEK_CUR) {\n        offset1 = pos + (s->buf_ptr - s->buffer);\n        if (offset == 0)\n            return offset1;\n        if (offset > INT64_MAX - offset1)\n            return AVERROR(EINVAL);\n        offset += offset1;\n    }\n    if (offset < 0)\n        return AVERROR(EINVAL);\n\n    if (s->short_seek_get) {\n        short_seek = s->short_seek_get(s->opaque);\n        /* fallback to default short seek */\n        if (short_seek <= 0)\n            short_seek = s->short_seek_threshold;\n    } else\n        short_seek = s->short_seek_threshold;\n\n    offset1 = offset - pos; // \"offset1\" is the relative offset from the beginning of s->buffer\n    s->buf_ptr_max = FFMAX(s->buf_ptr_max, s->buf_ptr);\n    if ((!s->direct || !s->seek) &&\n        offset1 >= 0 && offset1 <= (s->write_flag ? s->buf_ptr_max - s->buffer : buffer_size)) {\n        /* can do the seek inside the buffer */\n        s->buf_ptr = s->buffer + offset1;\n    } else if ((!(s->seekable & AVIO_SEEKABLE_NORMAL) ||\n               offset1 <= buffer_size + short_seek) &&\n               !s->write_flag && offset1 >= 0 &&\n               (!s->direct || !s->seek) &&\n              (whence != SEEK_END || force)) {\n        while(s->pos < offset && !s->eof_reached)\n            fill_buffer(s);\n        if (s->eof_reached)\n            return AVERROR_EOF;\n        s->buf_ptr = s->buf_end - (s->pos - offset);\n    } else if(!s->write_flag && offset1 < 0 && -offset1 < buffer_size>>1 && s->seek && offset > 0) {\n        int64_t res;\n\n        pos -= FFMIN(buffer_size>>1, pos);\n        if ((res = s->seek(s->opaque, pos, SEEK_SET)) < 0)\n            return res;\n        s->buf_end =\n        s->buf_ptr = s->buffer;\n        s->pos = pos;\n        s->eof_reached = 0;\n        fill_buffer(s);\n        return avio_seek(s, offset, SEEK_SET | force);\n    } else {\n        int64_t res;\n        if (s->write_flag) {\n            flush_buffer(s);\n        }\n        if (!s->seek)\n            return AVERROR(EPIPE);\n        if ((res = s->seek(s->opaque, offset, SEEK_SET)) < 0)\n            return res;\n        s->seek_count ++;\n        if (!s->write_flag)\n            s->buf_end = s->buffer;\n        s->buf_ptr = s->buf_ptr_max = s->buffer;\n        s->pos = offset;\n    }\n    s->eof_reached = 0;\n    return offset;\n}",
+            2
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_WARNING",
+            "#define AV_LOG_WARNING  24 /* <=== libavutil/log.h:182:182:AV_LOG_WARNING:0 */ ",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_rb32",
+            "unsigned int avio_rb32(AVIOContext *s) /* <=== avio_rb32 */ \n{\n    unsigned int val;\n    val = avio_rb16(s) << 16;\n    val |= avio_rb16(s);\n    return val;\n}",
+            1
+        ],
+        [
+            "libavutil/mem.c",
+            "av_calloc",
+            "void *av_calloc(size_t nmemb, size_t size) /* <=== av_calloc */ \n{\n    if (size <= 0 || nmemb >= INT_MAX / size)\n        return NULL;\n    return av_mallocz(nmemb * size);\n}",
+            1
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "fill_buffer",
+            "static void fill_buffer(AVIOContext *s) /* <=== fill_buffer */ \n{\n    int max_buffer_size = s->max_packet_size ?\n                          s->max_packet_size : IO_BUFFER_SIZE;\n    uint8_t *dst        = s->buf_end - s->buffer + max_buffer_size < s->buffer_size ?\n                          s->buf_end : s->buffer;\n    int len             = s->buffer_size - (dst - s->buffer);\n\n    /* can't fill the buffer without read_packet, just set EOF if appropriate */\n    if (!s->read_packet && s->buf_ptr >= s->buf_end)\n        s->eof_reached = 1;\n\n    /* no need to do anything if EOF already reached */\n    if (s->eof_reached)\n        return;\n\n    if (s->update_checksum && dst == s->buffer) {\n        if (s->buf_end > s->checksum_ptr)\n            s->checksum = s->update_checksum(s->checksum, s->checksum_ptr,\n                                             s->buf_end - s->checksum_ptr);\n        s->checksum_ptr = s->buffer;\n    }\n\n    /* make buffer smaller in case it ended up large after probing */\n    if (s->read_packet && s->orig_buffer_size && s->buffer_size > s->orig_buffer_size) {\n        if (dst == s->buffer && s->buf_ptr != dst) {\n            int ret = ffio_set_buf_size(s, s->orig_buffer_size);\n            if (ret < 0)\n                av_log(s, AV_LOG_WARNING, \"Failed to decrease buffer size\\n\");\n\n            s->checksum_ptr = dst = s->buffer;\n        }\n        av_assert0(len >= s->orig_buffer_size);\n        len = s->orig_buffer_size;\n    }\n\n    if (s->read_packet)\n        len = s->read_packet(s->opaque, dst, len);\n    else\n        len = 0;\n    if (len <= 0) {\n        /* do not modify buffer if EOF reached so that a seek back can\n           be done without rereading data */\n        s->eof_reached = 1;\n        if (len < 0)\n            s->error = len;\n    } else {\n        s->pos += len;\n        s->buf_ptr = dst;\n        s->buf_end = dst + len;\n        s->bytes_read += len;\n    }\n}",
+            2
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_INVALIDDATA",
+            "#define AVERROR_INVALIDDATA        FFERRTAG( 'I','N','D','A') ///< Invalid data found when processing input /* <=== libavutil/error.h:59:59:AVERROR_INVALIDDATA:0 */ ",
+            1
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_feof",
+            "int avio_feof(AVIOContext *s) /* <=== avio_feof */ \n{\n    if(!s)\n        return 0;\n    if(s->eof_reached){\n        s->eof_reached=0;\n        fill_buffer(s);\n    }\n    return s->eof_reached;\n}",
+            1
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert0",
+            "#define av_assert0(cond) do {                                           \\ /* <=== libavutil/avassert.h:37:43:av_assert0:1 */ \n    if (!(cond)) {                                                      \\\n        av_log(NULL, AV_LOG_PANIC, \"Assertion %s failed at %s:%d\\n\",    \\\n               AV_STRINGIFY(cond), __FILE__, __LINE__);                 \\\n        abort();                                                        \\\n    }                                                                   \\\n} while (0)",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_malloc",
+            "void *av_malloc(size_t size) /* <=== av_malloc */ \n{\n    void *ptr = NULL;\n\n    /* let's disallow possibly ambiguous cases */\n    if (size > (max_alloc_size - 32))\n        return NULL;\n\n#if HAVE_POSIX_MEMALIGN\n    if (size) //OS X on SDK 10.6 has a broken posix_memalign implementation\n    if (posix_memalign(&ptr, ALIGN, size))\n        ptr = NULL;\n#elif HAVE_ALIGNED_MALLOC\n    ptr = _aligned_malloc(size, ALIGN);\n#elif HAVE_MEMALIGN\n#ifndef __DJGPP__\n    ptr = memalign(ALIGN, size);\n#else\n    ptr = memalign(size, ALIGN);\n#endif\n    /* Why 64?\n     * Indeed, we should align it:\n     *   on  4 for 386\n     *   on 16 for 486\n     *   on 32 for 586, PPro - K6-III\n     *   on 64 for K7 (maybe for P3 too).\n     * Because L1 and L2 caches are aligned on those values.\n     * But I don't want to code such logic here!\n     */\n    /* Why 32?\n     * For AVX ASM. SSE / NEON needs only 16.\n     * Why not larger? Because I did not see a difference in benchmarks ...\n     */\n    /* benchmarks with P3\n     * memalign(64) + 1          3071, 3051, 3032\n     * memalign(64) + 2          3051, 3032, 3041\n     * memalign(64) + 4          2911, 2896, 2915\n     * memalign(64) + 8          2545, 2554, 2550\n     * memalign(64) + 16         2543, 2572, 2563\n     * memalign(64) + 32         2546, 2545, 2571\n     * memalign(64) + 64         2570, 2533, 2558\n     *\n     * BTW, malloc seems to do 8-byte alignment by default here.\n     */\n#else\n    ptr = malloc(size);\n#endif\n    if(!ptr && !size) {\n        size = 1;\n        ptr= av_malloc(1);\n    }\n#if CONFIG_MEMORY_POISONING\n    if (ptr)\n        memset(ptr, FF_MEMORY_POISON, size);\n#endif\n    return ptr;\n}",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR",
+            "#define AVERROR(e) (e) /* <=== libavutil/error.h:43:43:AVERROR:1 */ ",
+            1
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "IO_BUFFER_SIZE",
+            "#define IO_BUFFER_SIZE 32768 /* <=== libavformat/aviobuf.c:36:36:IO_BUFFER_SIZE:0 */ ",
+            3
+        ],
+        [
+            "libavutil/common.h",
+            "FFMAX",
+            "#define FFMAX(a,b) ((a) > (b) ? (a) : (b)) /* <=== libavutil/common.h:94:94:FFMAX:2 */ ",
+            3
+        ],
+        [
+            "libavformat/avio.h",
+            "AVIO_SEEKABLE_NORMAL",
+            "#define AVIO_SEEKABLE_NORMAL (1 << 0) /* <=== libavformat/avio.h:40:40:AVIO_SEEKABLE_NORMAL:0 */ ",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_EOF",
+            "#define AVERROR_EOF                FFERRTAG( 'E','O','F',' ') ///< End of file /* <=== libavutil/error.h:55:55:AVERROR_EOF:0 */ ",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "avio_skip",
+            "int64_t avio_skip(AVIOContext *s, int64_t offset) /* <=== avio_skip */ \n{\n    return avio_seek(s, offset, SEEK_CUR);\n}",
+            1
+        ],
+        [
+            "libavformat/avio.h",
+            "AVSEEK_FORCE",
+            "#define AVSEEK_FORCE 0x20000 /* <=== libavformat/avio.h:530:530:AVSEEK_FORCE:0 */ ",
+            3
+        ],
+        [
+            "libavformat/aviobuf.c",
+            "ffio_set_buf_size",
+            "int ffio_set_buf_size(AVIOContext *s, int buf_size) /* <=== ffio_set_buf_size */ \n{\n    uint8_t *buffer;\n    buffer = av_malloc(buf_size);\n    if (!buffer)\n        return AVERROR(ENOMEM);\n\n    av_free(s->buffer);\n    s->buffer = buffer;\n    s->orig_buffer_size =\n    s->buffer_size = buf_size;\n    s->buf_ptr = s->buf_ptr_max = buffer;\n    url_resetbuf(s, s->write_flag ? AVIO_FLAG_WRITE : AVIO_FLAG_READ);\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_free",
+            "void av_free(void *ptr) /* <=== av_free */ \n{\n#if HAVE_ALIGNED_MALLOC\n    _aligned_free(ptr);\n#else\n    free(ptr);\n#endif\n}",
+            2
+        ],
+        [
+            "libavutil/common.h",
+            "FFMIN",
+            "#define FFMIN(a,b) ((a) > (b) ? (b) : (a)) /* <=== libavutil/common.h:96:96:FFMIN:2 */ ",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_freep",
+            "void av_freep(void *arg) /* <=== av_freep */ \n{\n    void *val;\n\n    memcpy(&val, arg, sizeof(val));\n    memcpy(arg, &(void *){ NULL }, sizeof(val));\n    av_free(val);\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"libavutil/avassert.h\"",
+        "#include \"libavutil/parseutils.h\"",
+        "#include \"libavutil/timecode.h\"",
+        "#include \"mxf.h\"",
+        "#include \"libavcodec/bytestream.h\"",
+        "#include <inttypes.h>",
+        "#include \"internal.h\"",
+        "#include \"avformat.h\"",
+        "#include \"libavutil/mathematics.h\"",
+        "#include \"libavutil/intreadwrite.h\"",
+        "#include \"libavutil/aes.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct AVIOContext {\n    /**\n     * A class for private options.\n     *\n     * If this AVIOContext is created by avio_open2(), av_class is set and\n     * passes the options down to protocols.\n     *\n     * If this AVIOContext is manually allocated, then av_class may be set by\n     * the caller.\n     *\n     * warning -- this field can be NULL, be sure to not pass this AVIOContext\n     * to any av_opt_* functions in that case.\n     */\n    const AVClass *av_class;\n\n    /*\n     * The following shows the relationship between buffer, buf_ptr,\n     * buf_ptr_max, buf_end, buf_size, and pos, when reading and when writing\n     * (since AVIOContext is used for both):\n     *\n     **********************************************************************************\n     *                                   READING\n     **********************************************************************************\n     *\n     *                            |              buffer_size              |\n     *                            |---------------------------------------|\n     *                            |                                       |\n     *\n     *                         buffer          buf_ptr       buf_end\n     *                            +---------------+-----------------------+\n     *                            |/ / / / / / / /|/ / / / / / /|         |\n     *  read buffer:              |/ / consumed / | to be read /|         |\n     *                            |/ / / / / / / /|/ / / / / / /|         |\n     *                            +---------------+-----------------------+\n     *\n     *                                                         pos\n     *              +-------------------------------------------+-----------------+\n     *  input file: |                                           |                 |\n     *              +-------------------------------------------+-----------------+\n     *\n     *\n     **********************************************************************************\n     *                                   WRITING\n     **********************************************************************************\n     *\n     *                             |          buffer_size                 |\n     *                             |--------------------------------------|\n     *                             |                                      |\n     *\n     *                                                buf_ptr_max\n     *                          buffer                 (buf_ptr)       buf_end\n     *                             +-----------------------+--------------+\n     *                             |/ / / / / / / / / / / /|              |\n     *  write buffer:              | / / to be flushed / / |              |\n     *                             |/ / / / / / / / / / / /|              |\n     *                             +-----------------------+--------------+\n     *                               buf_ptr can be in this\n     *                               due to a backward seek\n     *\n     *                            pos\n     *               +-------------+----------------------------------------------+\n     *  output file: |             |                                              |\n     *               +-------------+----------------------------------------------+\n     *\n     */\n    unsigned char *buffer;  /**< Start of the buffer. */\n    int buffer_size;        /**< Maximum buffer size */\n    unsigned char *buf_ptr; /**< Current position in the buffer */\n    unsigned char *buf_end; /**< End of the data, may be less than\n                                 buffer+buffer_size if the read function returned\n                                 less data than requested, e.g. for streams where\n                                 no more data has been received yet. */\n    void *opaque;           /**< A private pointer, passed to the read/write/seek/...\n                                 functions. */\n    int (*read_packet)(void *opaque, uint8_t *buf, int buf_size);\n    int (*write_packet)(void *opaque, uint8_t *buf, int buf_size);\n    int64_t (*seek)(void *opaque, int64_t offset, int whence);\n    int64_t pos;            /**< position in the file of the current buffer */\n    int must_flush;         /**< unused */\n    int eof_reached;        /**< true if eof reached */\n    int write_flag;         /**< true if open for writing */\n    int max_packet_size;\n    unsigned long checksum;\n    unsigned char *checksum_ptr;\n    unsigned long (*update_checksum)(unsigned long checksum, const uint8_t *buf, unsigned int size);\n    int error;              /**< contains the error code or 0 if no error happened */\n    /**\n     * Pause or resume playback for network streaming protocols - e.g. MMS.\n     */\n    int (*read_pause)(void *opaque, int pause);\n    /**\n     * Seek to a given timestamp in stream with the specified stream_index.\n     * Needed for some network streaming protocols which don't support seeking\n     * to byte position.\n     */\n    int64_t (*read_seek)(void *opaque, int stream_index,\n                         int64_t timestamp, int flags);\n    /**\n     * A combination of AVIO_SEEKABLE_ flags or 0 when the stream is not seekable.\n     */\n    int seekable;\n\n    /**\n     * max filesize, used to limit allocations\n     * This field is internal to libavformat and access from outside is not allowed.\n     */\n    int64_t maxsize;\n\n    /**\n     * avio_read and avio_write should if possible be satisfied directly\n     * instead of going through a buffer, and avio_seek will always\n     * call the underlying seek function directly.\n     */\n    int direct;\n\n    /**\n     * Bytes read statistic\n     * This field is internal to libavformat and access from outside is not allowed.\n     */\n    int64_t bytes_read;\n\n    /**\n     * seek statistic\n     * This field is internal to libavformat and access from outside is not allowed.\n     */\n    int seek_count;\n\n    /**\n     * writeout statistic\n     * This field is internal to libavformat and access from outside is not allowed.\n     */\n    int writeout_count;\n\n    /**\n     * Original buffer size\n     * used internally after probing and ensure seekback to reset the buffer size\n     * This field is internal to libavformat and access from outside is not allowed.\n     */\n    int orig_buffer_size;\n\n    /**\n     * Threshold to favor readahead over seek.\n     * This is current internal only, do not use from outside.\n     */\n    int short_seek_threshold;\n\n    /**\n     * ',' separated list of allowed protocols.\n     */\n    const char *protocol_whitelist;\n\n    /**\n     * ',' separated list of disallowed protocols.\n     */\n    const char *protocol_blacklist;\n\n    /**\n     * A callback that is used instead of write_packet.\n     */\n    int (*write_data_type)(void *opaque, uint8_t *buf, int buf_size,\n                           enum AVIODataMarkerType type, int64_t time);\n    /**\n     * If set, don't call write_data_type separately for AVIO_DATA_MARKER_BOUNDARY_POINT,\n     * but ignore them and treat them as AVIO_DATA_MARKER_UNKNOWN (to avoid needlessly\n     * small chunks of data returned from the callback).\n     */\n    int ignore_boundary_point;\n\n    /**\n     * Internal, not meant to be used from outside of AVIOContext.\n     */\n    enum AVIODataMarkerType current_type;\n    int64_t last_time;\n\n    /**\n     * A callback that is used instead of short_seek_threshold.\n     * This is current internal only, do not use from outside.\n     */\n    int (*short_seek_get)(void *opaque);\n\n    int64_t written;\n\n    /**\n     * Maximum reached position before a backward seek in the write buffer,\n     * used keeping track of already written data for a later flush.\n     */\n    unsigned char *buf_ptr_max;\n\n    /**\n     * Try to buffer at least this amount of data before flushing it\n     */\n    int min_packet_size;\n}",
+            "AVIOContext"
+        ],
+        [
+            "typedef struct MXFIndexTableSegment {\n    UID uid;\n    enum MXFMetadataSetType type;\n    int edit_unit_byte_count;\n    int index_sid;\n    int body_sid;\n    AVRational index_edit_rate;\n    uint64_t index_start_position;\n    uint64_t index_duration;\n    int8_t *temporal_offset_entries;\n    int *flag_entries;\n    uint64_t *stream_offset_entries;\n    int nb_index_entries;\n} MXFIndexTableSegment;",
+            "MXFIndexTableSegment"
+        ]
+    ],
+    "visitedLines_after": {
+        "libavformat/mxfdec.c": [
+            895,
+            899,
+            901,
+            902,
+            903,
+            905,
+            906,
+            907,
+            908,
+            909,
+            910,
+            913,
+            914,
+            915,
+            916,
+            917,
+            918,
+            919,
+            920,
+            922
+        ]
+    },
+    "visitedLines_before": {
+        "libavformat/mxfdec.c": [
+            895,
+            899,
+            901,
+            903,
+            904,
+            905,
+            906,
+            907,
+            908,
+            911,
+            912,
+            913,
+            914,
+            915,
+            916,
+            918
+        ]
+    },
+    "visitedParams": {
+        "libavformat/mxfdec.c": [
+            [
+                "AVIOContext *pb",
+                "mxf_read_index_entry_array"
+            ],
+            [
+                "MXFIndexTableSegment *segment",
+                "mxf_read_index_entry_array"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libavformat/mxfdec.c",
+            "mxf_read_index_entry_array",
+            "static int mxf_read_index_entry_array(AVIOContext *pb, MXFIndexTableSegment *segment) /* <=== mxf_read_index_entry_array */ \n{\n    int i, length;\n\n    segment->nb_index_entries = avio_rb32(pb);\n\n    length = avio_rb32(pb);\n    if(segment->nb_index_entries && length < 11)\n        return AVERROR_INVALIDDATA;\n\n    if (!(segment->temporal_offset_entries=av_calloc(segment->nb_index_entries, sizeof(*segment->temporal_offset_entries))) ||\n        !(segment->flag_entries          = av_calloc(segment->nb_index_entries, sizeof(*segment->flag_entries))) ||\n        !(segment->stream_offset_entries = av_calloc(segment->nb_index_entries, sizeof(*segment->stream_offset_entries)))) {\n        av_freep(&segment->temporal_offset_entries);\n        av_freep(&segment->flag_entries);\n        return AVERROR(ENOMEM);\n    }\n\n    for (i = 0; i < segment->nb_index_entries; i++) {\n        if(avio_feof(pb))\n            return AVERROR_INVALIDDATA;\n        segment->temporal_offset_entries[i] = avio_r8(pb);\n        avio_r8(pb);                                        /* KeyFrameOffset */\n        segment->flag_entries[i] = avio_r8(pb);\n        segment->stream_offset_entries[i] = avio_rb64(pb);\n        avio_skip(pb, length - 11);\n    }\n    return 0;\n}",
+            895
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libavformat/mxfdec.c",
+            "mxf_read_index_entry_array",
+            "static int mxf_read_index_entry_array(AVIOContext *pb, MXFIndexTableSegment *segment) /* <=== mxf_read_index_entry_array */ \n{\n    int i, length;\n\n    segment->nb_index_entries = avio_rb32(pb);\n\n    length = avio_rb32(pb);\n\n    if (!(segment->temporal_offset_entries=av_calloc(segment->nb_index_entries, sizeof(*segment->temporal_offset_entries))) ||\n        !(segment->flag_entries          = av_calloc(segment->nb_index_entries, sizeof(*segment->flag_entries))) ||\n        !(segment->stream_offset_entries = av_calloc(segment->nb_index_entries, sizeof(*segment->stream_offset_entries)))) {\n        av_freep(&segment->temporal_offset_entries);\n        av_freep(&segment->flag_entries);\n        return AVERROR(ENOMEM);\n    }\n\n    for (i = 0; i < segment->nb_index_entries; i++) {\n        segment->temporal_offset_entries[i] = avio_r8(pb);\n        avio_r8(pb);                                        /* KeyFrameOffset */\n        segment->flag_entries[i] = avio_r8(pb);\n        segment->stream_offset_entries[i] = avio_rb64(pb);\n        avio_skip(pb, length - 11);\n    }\n    return 0;\n}",
+            895
+        ]
+    ]
+}

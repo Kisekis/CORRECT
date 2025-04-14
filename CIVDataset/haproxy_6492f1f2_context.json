@@ -1,0 +1,210 @@
+{
+    "calleeMethods": [],
+    "globalVars": [],
+    "importContext": [
+        "#include <haproxy/api.h>",
+        "#include <haproxy/http.h>",
+        "#include <haproxy/h1.h>",
+        "#include <haproxy/tools.h>",
+        "#include <haproxy/http-hdr.h>",
+        "#include <haproxy/base64.h>",
+        "#include <ctype.h>",
+        "#include <import/sha1.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct ist {\n\tchar  *ptr;\n\tsize_t len;\n}",
+            "ist"
+        ],
+        [
+            "const struct ist",
+            "ist"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/h1.c": [
+            30,
+            34,
+            37,
+            38,
+            40,
+            41,
+            47,
+            48,
+            50,
+            51,
+            53,
+            54,
+            55,
+            56,
+            57,
+            61,
+            63,
+            64,
+            66,
+            70,
+            73,
+            74,
+            75,
+            82,
+            86,
+            87,
+            88,
+            89,
+            93,
+            96,
+            98,
+            102,
+            104,
+            106
+        ],
+        "src/http.c": [
+            702,
+            703,
+            708,
+            710,
+            711,
+            713,
+            714,
+            720,
+            721,
+            723,
+            724,
+            726,
+            727,
+            728,
+            729,
+            730,
+            734,
+            736,
+            737,
+            739,
+            743,
+            746,
+            747,
+            748,
+            755,
+            759,
+            760,
+            761,
+            762,
+            765,
+            768,
+            769,
+            774,
+            778,
+            780
+        ]
+    },
+    "visitedLines_before": {
+        "src/h1.c": [
+            30,
+            34,
+            37,
+            38,
+            40,
+            42,
+            46,
+            47,
+            48,
+            50,
+            54,
+            56,
+            57,
+            59,
+            63,
+            66,
+            67,
+            68,
+            75,
+            79,
+            80,
+            81,
+            82,
+            90,
+            92
+        ],
+        "src/http.c": [
+            702,
+            703,
+            708,
+            710,
+            711,
+            713,
+            715,
+            719,
+            720,
+            721,
+            723,
+            727,
+            729,
+            730,
+            732,
+            736,
+            739,
+            740,
+            741,
+            748,
+            752,
+            753,
+            754,
+            755,
+            764,
+            766
+        ]
+    },
+    "visitedParams": {
+        "src/h1.c": [
+            [
+                "struct h1m *h1m",
+                "h1_parse_cont_len_header"
+            ],
+            [
+                "struct ist *value",
+                "h1_parse_cont_len_header"
+            ]
+        ],
+        "src/http.c": [
+            [
+                "int not_first",
+                "http_parse_cont_len_header"
+            ],
+            [
+                "struct ist *value",
+                "http_parse_cont_len_header"
+            ],
+            [
+                "unsigned long long *body_len",
+                "http_parse_cont_len_header"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/h1.c",
+            "h1_parse_cont_len_header",
+            "int h1_parse_cont_len_header(struct h1m *h1m, struct ist *value) /* <=== h1_parse_cont_len_header */ \n{\n\tchar *e, *n;\n\tlong long cl;\n\tint not_first = !!(h1m->flags & H1_MF_CLEN);\n\tstruct ist word;\n\n\tword.ptr = value->ptr;\n\te = value->ptr + value->len;\n\n\twhile (1) {\n\t\tif (word.ptr >= e) {\n\t\t\t/* empty header or empty value */\n\t\t\tgoto fail;\n\t\t}\n\n\t\t/* skip leading delimiter and blanks */\n\t\tif (unlikely(HTTP_IS_LWS(*word.ptr))) {\n\t\t\tword.ptr++;\n\t\t\tcontinue;\n\t\t}\n\n\t\t/* digits only now */\n\t\tfor (cl = 0, n = word.ptr; n < e; n++) {\n\t\t\tunsigned int c = *n - '0';\n\t\t\tif (unlikely(c > 9)) {\n\t\t\t\t/* non-digit */\n\t\t\t\tif (unlikely(n == word.ptr)) // spaces only\n\t\t\t\t\tgoto fail;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif (unlikely(cl > ULLONG_MAX / 10ULL))\n\t\t\t\tgoto fail; /* multiply overflow */\n\t\t\tcl = cl * 10ULL;\n\t\t\tif (unlikely(cl + c < cl))\n\t\t\t\tgoto fail; /* addition overflow */\n\t\t\tcl = cl + c;\n\t\t}\n\n\t\t/* keep a copy of the exact cleaned value */\n\t\tword.len = n - word.ptr;\n\n\t\t/* skip trailing LWS till next comma or EOL */\n\t\tfor (; n < e; n++) {\n\t\t\tif (!HTTP_IS_LWS(*n)) {\n\t\t\t\tif (unlikely(*n != ','))\n\t\t\t\t\tgoto fail;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\n\t\t/* if duplicate, must be equal */\n\t\tif (h1m->flags & H1_MF_CLEN && cl != h1m->body_len)\n\t\t\tgoto fail;\n\n\t\t/* OK, store this result as the one to be indexed */\n\t\th1m->flags |= H1_MF_CLEN;\n\t\th1m->curr_len = h1m->body_len = cl;\n\t\t*value = word;\n\n\t\t/* Now either n==e and we're done, or n points to the comma,\n\t\t * and we skip it and continue.\n\t\t */\n\t\tif (n++ == e)\n\t\t\tbreak;\n\n\t\tword.ptr = n;\n\t}\n\t/* here we've reached the end with a single value or a series of\n\t * identical values, all matching previous series if any. The last\n\t * parsed value was sent back into <value>. We just have to decide\n\t * if this occurrence has to be indexed (it's the first one) or\n\t * silently skipped (it's not the first one)\n\t */\n\treturn !not_first;\n fail:\n\treturn -1;\n}",
+            30
+        ],
+        [
+            "src/http.c",
+            "http_parse_cont_len_header",
+            "int http_parse_cont_len_header(struct ist *value, unsigned long long *body_len, /* <=== http_parse_cont_len_header */ \n                               int not_first)\n{\n\tchar *e, *n;\n\tunsigned long long cl;\n\tstruct ist word;\n\tint check_prev = not_first;\n\n\tword.ptr = value->ptr;\n\te = value->ptr + value->len;\n\n\twhile (1) {\n\t\tif (word.ptr >= e) {\n\t\t\t/* empty header or empty value */\n\t\t\tgoto fail;\n\t\t}\n\n\t\t/* skip leading delimiter and blanks */\n\t\tif (unlikely(HTTP_IS_LWS(*word.ptr))) {\n\t\t\tword.ptr++;\n\t\t\tcontinue;\n\t\t}\n\n\t\t/* digits only now */\n\t\tfor (cl = 0, n = word.ptr; n < e; n++) {\n\t\t\tunsigned int c = *n - '0';\n\t\t\tif (unlikely(c > 9)) {\n\t\t\t\t/* non-digit */\n\t\t\t\tif (unlikely(n == word.ptr)) // spaces only\n\t\t\t\t\tgoto fail;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif (unlikely(cl > ULLONG_MAX / 10ULL))\n\t\t\t\tgoto fail; /* multiply overflow */\n\t\t\tcl = cl * 10ULL;\n\t\t\tif (unlikely(cl + c < cl))\n\t\t\t\tgoto fail; /* addition overflow */\n\t\t\tcl = cl + c;\n\t\t}\n\n\t\t/* keep a copy of the exact cleaned value */\n\t\tword.len = n - word.ptr;\n\n\t\t/* skip trailing LWS till next comma or EOL */\n\t\tfor (; n < e; n++) {\n\t\t\tif (!HTTP_IS_LWS(*n)) {\n\t\t\t\tif (unlikely(*n != ','))\n\t\t\t\t\tgoto fail;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\n\t\t/* if duplicate, must be equal */\n\t\tif (check_prev && cl != *body_len)\n\t\t\tgoto fail;\n\n\t\t/* OK, store this result as the one to be indexed */\n\t\t*body_len = cl;\n\t\t*value = word;\n\n\t\t/* Now either n==e and we're done, or n points to the comma,\n\t\t * and we skip it and continue.\n\t\t */\n\t\tif (n++ == e)\n\t\t\tbreak;\n\n\t\tword.ptr = n;\n\t\tcheck_prev = 1;\n\t}\n\n\t/* here we've reached the end with a single value or a series of\n\t * identical values, all matching previous series if any. The last\n\t * parsed value was sent back into <value>. We just have to decide\n\t * if this occurrence has to be indexed (it's the first one) or\n\t * silently skipped (it's not the first one)\n\t */\n\treturn !not_first;\n fail:\n\treturn -1;\n}",
+            702
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/h1.c",
+            "h1_parse_cont_len_header",
+            "int h1_parse_cont_len_header(struct h1m *h1m, struct ist *value) /* <=== h1_parse_cont_len_header */ \n{\n\tchar *e, *n;\n\tlong long cl;\n\tint not_first = !!(h1m->flags & H1_MF_CLEN);\n\tstruct ist word;\n\n\tword.ptr = value->ptr - 1; // -1 for next loop's pre-increment\n\te = value->ptr + value->len;\n\n\twhile (++word.ptr < e) {\n\t\t/* skip leading delimiter and blanks */\n\t\tif (unlikely(HTTP_IS_LWS(*word.ptr)))\n\t\t\tcontinue;\n\n\t\t/* digits only now */\n\t\tfor (cl = 0, n = word.ptr; n < e; n++) {\n\t\t\tunsigned int c = *n - '0';\n\t\t\tif (unlikely(c > 9)) {\n\t\t\t\t/* non-digit */\n\t\t\t\tif (unlikely(n == word.ptr)) // spaces only\n\t\t\t\t\tgoto fail;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif (unlikely(cl > ULLONG_MAX / 10ULL))\n\t\t\t\tgoto fail; /* multiply overflow */\n\t\t\tcl = cl * 10ULL;\n\t\t\tif (unlikely(cl + c < cl))\n\t\t\t\tgoto fail; /* addition overflow */\n\t\t\tcl = cl + c;\n\t\t}\n\n\t\t/* keep a copy of the exact cleaned value */\n\t\tword.len = n - word.ptr;\n\n\t\t/* skip trailing LWS till next comma or EOL */\n\t\tfor (; n < e; n++) {\n\t\t\tif (!HTTP_IS_LWS(*n)) {\n\t\t\t\tif (unlikely(*n != ','))\n\t\t\t\t\tgoto fail;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\n\t\t/* if duplicate, must be equal */\n\t\tif (h1m->flags & H1_MF_CLEN && cl != h1m->body_len)\n\t\t\tgoto fail;\n\n\t\t/* OK, store this result as the one to be indexed */\n\t\th1m->flags |= H1_MF_CLEN;\n\t\th1m->curr_len = h1m->body_len = cl;\n\t\t*value = word;\n\t\tword.ptr = n;\n\t}\n\t/* here we've reached the end with a single value or a series of\n\t * identical values, all matching previous series if any. The last\n\t * parsed value was sent back into <value>. We just have to decide\n\t * if this occurrence has to be indexed (it's the first one) or\n\t * silently skipped (it's not the first one)\n\t */\n\treturn !not_first;\n fail:\n\treturn -1;\n}",
+            30
+        ],
+        [
+            "src/http.c",
+            "http_parse_cont_len_header",
+            "int http_parse_cont_len_header(struct ist *value, unsigned long long *body_len, /* <=== http_parse_cont_len_header */ \n                               int not_first)\n{\n\tchar *e, *n;\n\tunsigned long long cl;\n\tstruct ist word;\n\tint check_prev = not_first;\n\n\tword.ptr = value->ptr - 1; // -1 for next loop's pre-increment\n\te = value->ptr + value->len;\n\n\twhile (++word.ptr < e) {\n\t\t/* skip leading delimiter and blanks */\n\t\tif (unlikely(HTTP_IS_LWS(*word.ptr)))\n\t\t\tcontinue;\n\n\t\t/* digits only now */\n\t\tfor (cl = 0, n = word.ptr; n < e; n++) {\n\t\t\tunsigned int c = *n - '0';\n\t\t\tif (unlikely(c > 9)) {\n\t\t\t\t/* non-digit */\n\t\t\t\tif (unlikely(n == word.ptr)) // spaces only\n\t\t\t\t\tgoto fail;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif (unlikely(cl > ULLONG_MAX / 10ULL))\n\t\t\t\tgoto fail; /* multiply overflow */\n\t\t\tcl = cl * 10ULL;\n\t\t\tif (unlikely(cl + c < cl))\n\t\t\t\tgoto fail; /* addition overflow */\n\t\t\tcl = cl + c;\n\t\t}\n\n\t\t/* keep a copy of the exact cleaned value */\n\t\tword.len = n - word.ptr;\n\n\t\t/* skip trailing LWS till next comma or EOL */\n\t\tfor (; n < e; n++) {\n\t\t\tif (!HTTP_IS_LWS(*n)) {\n\t\t\t\tif (unlikely(*n != ','))\n\t\t\t\t\tgoto fail;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\n\t\t/* if duplicate, must be equal */\n\t\tif (check_prev && cl != *body_len)\n\t\t\tgoto fail;\n\n\t\t/* OK, store this result as the one to be indexed */\n\t\t*body_len = cl;\n\t\t*value = word;\n\t\tword.ptr = n;\n\t\tcheck_prev = 1;\n\t}\n\n\t/* here we've reached the end with a single value or a series of\n\t * identical values, all matching previous series if any. The last\n\t * parsed value was sent back into <value>. We just have to decide\n\t * if this occurrence has to be indexed (it's the first one) or\n\t * silently skipped (it's not the first one)\n\t */\n\treturn !not_first;\n fail:\n\treturn -1;\n}",
+            702
+        ]
+    ]
+}

@@ -1,0 +1,291 @@
+{
+    "calleeMethods": [
+        [
+            "src/mpi.h",
+            "mpi_is_secure",
+            "#define mpi_is_secure(a) ((a) && ((a)->flags&1)) /* <=== src/mpi.h:108:108:mpi_is_secure:1 */ ",
+            2
+        ],
+        [
+            "mpi/mpi-pow.c",
+            "_gcry_mpi_powm",
+            "void /* <=== _gcry_mpi_powm */ \ngcry_mpi_powm (gcry_mpi_t res,\n               gcry_mpi_t base, gcry_mpi_t expo, gcry_mpi_t mod)\n{\n  /* Pointer to the limbs of the arguments, their size and signs. */\n  mpi_ptr_t  rp, ep, mp, bp;\n  mpi_size_t esize, msize, bsize, rsize;\n  int               msign, bsign, rsign;\n  /* Flags telling the secure allocation status of the arguments.  */\n  int        esec,  msec,  bsec;\n  /* Size of the result including space for temporary values.  */\n  mpi_size_t size;\n  /* Helper.  */\n  int mod_shift_cnt;\n  int negative_result;\n  mpi_ptr_t mp_marker = NULL;\n  mpi_ptr_t bp_marker = NULL;\n  mpi_ptr_t ep_marker = NULL;\n  mpi_ptr_t xp_marker = NULL;\n  unsigned int mp_nlimbs = 0;\n  unsigned int bp_nlimbs = 0;\n  unsigned int ep_nlimbs = 0;\n  unsigned int xp_nlimbs = 0;\n  mpi_ptr_t b_2i3[SIZE_B_2I3]; /* Pre-computed array: BASE^3, ^5, ^7, ... */\n  mpi_size_t b_2i3size[SIZE_B_2I3];\n  mpi_size_t W;\n  mpi_ptr_t base_u;\n  mpi_size_t base_u_size;\n\n  esize = expo->nlimbs;\n  msize = mod->nlimbs;\n  size = 2 * msize;\n  msign = mod->sign;\n\n  if (esize * BITS_PER_MPI_LIMB > 512)\n    W = 5;\n  else if (esize * BITS_PER_MPI_LIMB > 256)\n    W = 4;\n  else if (esize * BITS_PER_MPI_LIMB > 128)\n    W = 3;\n  else if (esize * BITS_PER_MPI_LIMB > 64)\n    W = 2;\n  else\n    W = 1;\n\n  esec = mpi_is_secure(expo);\n  msec = mpi_is_secure(mod);\n  bsec = mpi_is_secure(base);\n\n  rp = res->d;\n  ep = expo->d;\n\n  if (!msize)\n    _gcry_divide_by_zero();\n\n  if (!esize)\n    {\n      /* Exponent is zero, result is 1 mod MOD, i.e., 1 or 0 depending\n         on if MOD equals 1.  */\n      res->nlimbs = (msize == 1 && mod->d[0] == 1) ? 0 : 1;\n      if (res->nlimbs)\n        {\n          RESIZE_IF_NEEDED (res, 1);\n          rp = res->d;\n          rp[0] = 1;\n        }\n      res->sign = 0;\n      goto leave;\n    }\n\n  /* Normalize MOD (i.e. make its most significant bit set) as\n     required by mpn_divrem.  This will make the intermediate values\n     in the calculation slightly larger, but the correct result is\n     obtained after a final reduction using the original MOD value. */\n  mp_nlimbs = msec? msize:0;\n  mp = mp_marker = mpi_alloc_limb_space(msize, msec);\n  count_leading_zeros (mod_shift_cnt, mod->d[msize-1]);\n  if (mod_shift_cnt)\n    _gcry_mpih_lshift (mp, mod->d, msize, mod_shift_cnt);\n  else\n    MPN_COPY( mp, mod->d, msize );\n\n  bsize = base->nlimbs;\n  bsign = base->sign;\n  if (bsize > msize)\n    {\n      /* The base is larger than the module.  Reduce it.\n\n         Allocate (BSIZE + 1) with space for remainder and quotient.\n         (The quotient is (bsize - msize + 1) limbs.)  */\n      bp_nlimbs = bsec ? (bsize + 1):0;\n      bp = bp_marker = mpi_alloc_limb_space( bsize + 1, bsec );\n      MPN_COPY ( bp, base->d, bsize );\n      /* We don't care about the quotient, store it above the\n       * remainder, at BP + MSIZE.  */\n      _gcry_mpih_divrem( bp + msize, 0, bp, bsize, mp, msize );\n      bsize = msize;\n      /* Canonicalize the base, since we are going to multiply with it\n         quite a few times.  */\n      MPN_NORMALIZE( bp, bsize );\n    }\n  else\n    bp = base->d;\n\n  if (!bsize)\n    {\n      res->nlimbs = 0;\n      res->sign = 0;\n      goto leave;\n    }\n\n\n  /* Make BASE, EXPO and MOD not overlap with RES.  */\n  if ( rp == bp )\n    {\n      /* RES and BASE are identical.  Allocate temp. space for BASE.  */\n      gcry_assert (!bp_marker);\n      bp_nlimbs = bsec? bsize:0;\n      bp = bp_marker = mpi_alloc_limb_space( bsize, bsec );\n      MPN_COPY(bp, rp, bsize);\n    }\n  if ( rp == ep )\n    {\n      /* RES and EXPO are identical.  Allocate temp. space for EXPO.  */\n      ep_nlimbs = esec? esize:0;\n      ep = ep_marker = mpi_alloc_limb_space( esize, esec );\n      MPN_COPY(ep, rp, esize);\n    }\n  if ( rp == mp )\n    {\n      /* RES and MOD are identical.  Allocate temporary space for MOD.*/\n      gcry_assert (!mp_marker);\n      mp_nlimbs = msec?msize:0;\n      mp = mp_marker = mpi_alloc_limb_space( msize, msec );\n      MPN_COPY(mp, rp, msize);\n    }\n\n  /* Copy base to the result.  */\n  if (res->alloced < size)\n    {\n      mpi_resize (res, size);\n      rp = res->d;\n    }\n\n  /* Main processing.  */\n  {\n    mpi_size_t i, j;\n    mpi_ptr_t xp;\n    mpi_size_t xsize;\n    int c;\n    mpi_limb_t e;\n    mpi_limb_t carry_limb;\n    struct karatsuba_ctx karactx;\n    mpi_ptr_t tp;\n\n    xp_nlimbs = msec? (2 * (msize + 1)):0;\n    xp = xp_marker = mpi_alloc_limb_space( 2 * (msize + 1), msec );\n\n    memset( &karactx, 0, sizeof karactx );\n    negative_result = (ep[0] & 1) && bsign;\n\n    /* Precompute B_2I3[], BASE^(2 * i + 3), BASE^3, ^5, ^7, ... */\n    if (W > 1)                  /* X := BASE^2 */\n      mul_mod (xp, &xsize, bp, bsize, bp, bsize, mp, msize, &karactx);\n    for (i = 0; i < (1 << (W - 1)) - 1; i++)\n      {                         /* B_2I3[i] = BASE^(2 * i + 3) */\n        if (i == 0)\n          {\n            base_u = bp;\n            base_u_size = bsize;\n          }\n        else\n          {\n            base_u = b_2i3[i-1];\n            base_u_size = b_2i3size[i-1];\n          }\n\n        if (xsize >= base_u_size)\n          mul_mod (rp, &rsize, xp, xsize, base_u, base_u_size,\n                   mp, msize, &karactx);\n        else\n          mul_mod (rp, &rsize, base_u, base_u_size, xp, xsize,\n                   mp, msize, &karactx);\n        b_2i3[i] = mpi_alloc_limb_space (rsize, esec);\n        b_2i3size[i] = rsize;\n        MPN_COPY (b_2i3[i], rp, rsize);\n      }\n\n    i = esize - 1;\n\n    /* Main loop.\n\n       Make the result be pointed to alternately by XP and RP.  This\n       helps us avoid block copying, which would otherwise be\n       necessary with the overlap restrictions of\n       _gcry_mpih_divmod. With 50% probability the result after this\n       loop will be in the area originally pointed by RP (==RES->d),\n       and with 50% probability in the area originally pointed to by XP. */\n    rsign = 0;\n    if (W == 1)\n      {\n        rsize = bsize;\n      }\n    else\n      {\n        rsize = msize;\n        MPN_ZERO (rp, rsize);\n      }\n    MPN_COPY ( rp, bp, bsize );\n\n    e = ep[i];\n    count_leading_zeros (c, e);\n    e = (e << c) << 1;\n    c = BITS_PER_MPI_LIMB - 1 - c;\n\n    j = 0;\n\n    for (;;)\n      if (e == 0)\n        {\n          j += c;\n          i--;\n          if ( i < 0 )\n            {\n              c = 0;\n              break;\n            }\n\n          e = ep[i];\n          c = BITS_PER_MPI_LIMB;\n        }\n      else\n        {\n          int c0;\n          mpi_limb_t e0;\n\n          count_leading_zeros (c0, e);\n          e = (e << c0);\n          c -= c0;\n          j += c0;\n\n          if (c >= W)\n            {\n              e0 = (e >> (BITS_PER_MPI_LIMB - W));\n              e = (e << W);\n              c -= W;\n            }\n          else\n            {\n              i--;\n              if ( i < 0 )\n                {\n                  e = (e >> (BITS_PER_MPI_LIMB - c));\n                  break;\n                }\n\n              c0 = c;\n              e0 = (e >> (BITS_PER_MPI_LIMB - W))\n                | (ep[i] >> (BITS_PER_MPI_LIMB - W + c0));\n              e = (ep[i] << (W - c0));\n              c = BITS_PER_MPI_LIMB - W + c0;\n            }\n\n          count_trailing_zeros (c0, e0);\n          e0 = (e0 >> c0) >> 1;\n\n          for (j += W - c0; j; j--)\n            {\n              mul_mod (xp, &xsize, rp, rsize, rp, rsize, mp, msize, &karactx);\n              tp = rp; rp = xp; xp = tp;\n              rsize = xsize;\n            }\n\n          if (e0 == 0)\n            {\n              base_u = bp;\n              base_u_size = bsize;\n            }\n          else\n            {\n              base_u = b_2i3[e0 - 1];\n              base_u_size = b_2i3size[e0 -1];\n            }\n\n          mul_mod (xp, &xsize, rp, rsize, base_u, base_u_size,\n                   mp, msize, &karactx);\n          tp = rp; rp = xp; xp = tp;\n          rsize = xsize;\n\n          j = c0;\n        }\n\n    if (c != 0)\n      {\n        j += c;\n        count_trailing_zeros (c, e);\n        e = (e >> c);\n        j -= c;\n      }\n\n    while (j--)\n      {\n        mul_mod (xp, &xsize, rp, rsize, rp, rsize, mp, msize, &karactx);\n        tp = rp; rp = xp; xp = tp;\n        rsize = xsize;\n      }\n\n    if (e != 0)\n      {\n        if ((e>>1) == 0)\n          {\n            base_u = bp;\n            base_u_size = bsize;\n          }\n        else\n          {\n            base_u = b_2i3[(e>>1) - 1];\n            base_u_size = b_2i3size[(e>>1) -1];\n          }\n\n        mul_mod (xp, &xsize, rp, rsize, base_u, base_u_size,\n                 mp, msize, &karactx);\n        tp = rp; rp = xp; xp = tp;\n        rsize = xsize;\n\n        for (; c; c--)\n          {\n            mul_mod (xp, &xsize, rp, rsize, rp, rsize, mp, msize, &karactx);\n            tp = rp; rp = xp; xp = tp;\n            rsize = xsize;\n          }\n      }\n\n    /* We shifted MOD, the modulo reduction argument, left\n       MOD_SHIFT_CNT steps.  Adjust the result by reducing it with the\n       original MOD.\n\n       Also make sure the result is put in RES->d (where it already\n       might be, see above).  */\n    if ( mod_shift_cnt )\n      {\n        carry_limb = _gcry_mpih_lshift( res->d, rp, rsize, mod_shift_cnt);\n        rp = res->d;\n        if ( carry_limb )\n          {\n            rp[rsize] = carry_limb;\n            rsize++;\n          }\n      }\n    else if (res->d != rp)\n      {\n        MPN_COPY (res->d, rp, rsize);\n        rp = res->d;\n      }\n\n    if ( rsize >= msize )\n      {\n        _gcry_mpih_divrem(rp + msize, 0, rp, rsize, mp, msize);\n        rsize = msize;\n      }\n\n    /* Remove any leading zero words from the result.  */\n    if ( mod_shift_cnt )\n      _gcry_mpih_rshift( rp, rp, rsize, mod_shift_cnt);\n    MPN_NORMALIZE (rp, rsize);\n\n    _gcry_mpih_release_karatsuba_ctx (&karactx );\n    for (i = 0; i < (1 << (W - 1)) - 1; i++)\n      _gcry_mpi_free_limb_space( b_2i3[i], esec ? b_2i3size[i] : 0 );\n  }\n\n  /* Fixup for negative results.  */\n  if ( negative_result && rsize )\n    {\n      if ( mod_shift_cnt )\n        _gcry_mpih_rshift( mp, mp, msize, mod_shift_cnt);\n      _gcry_mpih_sub( rp, mp, msize, rp, rsize);\n      rsize = msize;\n      rsign = msign;\n      MPN_NORMALIZE(rp, rsize);\n    }\n  gcry_assert (res->d == rp);\n  res->nlimbs = rsize;\n  res->sign = rsign;\n\n leave:\n  if (mp_marker)\n    _gcry_mpi_free_limb_space( mp_marker, mp_nlimbs );\n  if (bp_marker)\n    _gcry_mpi_free_limb_space( bp_marker, bp_nlimbs );\n  if (ep_marker)\n    _gcry_mpi_free_limb_space( ep_marker, ep_nlimbs );\n  if (xp_marker)\n    _gcry_mpi_free_limb_space( xp_marker, xp_nlimbs );\n}",
+            1
+        ],
+        [
+            "src/g10lib.h",
+            "_gcry_divide_by_zero",
+            "void _gcry_divide_by_zero (void) JNLIB_GCC_A_NR; /* <=== _gcry_divide_by_zero */ ",
+            2
+        ],
+        [
+            "mpi/mpi-internal.h",
+            "BITS_PER_MPI_LIMB",
+            "#define BITS_PER_MPI_LIMB    (8*BYTES_PER_MPI_LIMB) /* <=== mpi/mpi-internal.h:49:49:BITS_PER_MPI_LIMB:0 */ ",
+            2
+        ],
+        [
+            "mpi/mpi-internal.h",
+            "RESIZE_IF_NEEDED",
+            "#define RESIZE_IF_NEEDED(a,b) \\ /* <=== mpi/mpi-internal.h:77:81:RESIZE_IF_NEEDED:2 */ \n    do {\t\t\t   \\\n\tif( (a)->alloced < (b) )   \\\n\t    mpi_resize((a), (b));  \\\n    } while(0)",
+            2
+        ],
+        [
+            "src/mpi.h",
+            "mpi_snew",
+            "#define mpi_snew(n)           _gcry_mpi_snew ((n)) /* <=== src/mpi.h:118:118:mpi_snew:1 */ ",
+            1
+        ],
+        [
+            "src/mpi.h",
+            "mpi_free",
+            "# define mpi_free(a)\t       _gcry_mpi_free((a) ) /* <=== src/mpi.h:97:97:mpi_free:1 */ ",
+            1
+        ],
+        [
+            "mpi/longlong.h",
+            "count_trailing_zeros",
+            "#define count_trailing_zeros(count, x) \\ /* <=== mpi/longlong.h:1567:1573:count_trailing_zeros:2 */ \n  do {\t\t\t\t\t\t\t\t\t\\\n    UWtype __ctz_x = (x);\t\t\t\t\t\t\\\n    UWtype __ctz_c;\t\t\t\t\t\t\t\\\n    count_leading_zeros (__ctz_c, __ctz_x & -__ctz_x);\t\t\t\\\n    (count) = W_TYPE_SIZE - 1 - __ctz_c;\t\t\t\t\\\n  } while (0)",
+            2
+        ],
+        [
+            "src/g10lib.h",
+            "gcry_assert",
+            "#define gcry_assert(expr) ((expr)? (void)0 \\ /* <=== src/g10lib.h:128:129:gcry_assert:1 */ \n         : _gcry_assert_failed (STR(expr), __FILE__, __LINE__, __func__))",
+            2
+        ],
+        [
+            "mpi/mpi-internal.h",
+            "mpi_alloc_limb_space",
+            "#define mpi_alloc_limb_space(n,f)  _gcry_mpi_alloc_limb_space((n),(f)) /* <=== mpi/mpi-internal.h:172:172:mpi_alloc_limb_space:2 */ ",
+            2
+        ],
+        [
+            "src/g10lib.h",
+            "_gcry_assert_failed",
+            "void _gcry_assert_failed (const char *expr, const char *file, int line, /* <=== _gcry_assert_failed */ \n                          const char *func) GCC_ATTR_NORETURN;",
+            2
+        ],
+        [
+            "src/mpi.h",
+            "_gcry_mpi_new",
+            "gcry_mpi_t _gcry_mpi_new (unsigned int nbits); /* <=== _gcry_mpi_new */ ",
+            1
+        ],
+        [
+            "src/mpi.h",
+            "mpi_invm",
+            "#define mpi_invm(a,b,c) _gcry_mpi_invm ((a),(b),(c)) /* <=== src/mpi.h:228:228:mpi_invm:3 */ ",
+            1
+        ],
+        [
+            "mpi/mpi-internal.h",
+            "MPN_NORMALIZE",
+            "#define MPN_NORMALIZE(d, n)  \\ /* <=== mpi/mpi-internal.h:113:120:MPN_NORMALIZE:2 */ \n    do {\t\t       \\\n\twhile( (n) > 0 ) {     \\\n\t    if( (d)[(n)-1] ) \\\n\t\tbreak;\t       \\\n\t    (n)--;\t       \\\n\t}\t\t       \\\n    } while(0)",
+            2
+        ],
+        [
+            "src/g10lib.h",
+            "mpi_powm",
+            "#define mpi_powm(w,b,e,m)   gcry_mpi_powm( (w), (b), (e), (m) ) /* <=== src/g10lib.h:168:168:mpi_powm:4 */ ",
+            1
+        ],
+        [
+            "mpi/mpi-pow.c",
+            "mul_mod",
+            "static void /* <=== mul_mod */ \nmul_mod (mpi_ptr_t xp, mpi_size_t *xsize_p,\n         mpi_ptr_t rp, mpi_size_t rsize,\n         mpi_ptr_t sp, mpi_size_t ssize,\n         mpi_ptr_t mp, mpi_size_t msize,\n         struct karatsuba_ctx *karactx_p)\n{\n  if( ssize < KARATSUBA_THRESHOLD )\n    _gcry_mpih_mul ( xp, rp, rsize, sp, ssize );\n  else\n    _gcry_mpih_mul_karatsuba_case (xp, rp, rsize, sp, ssize, karactx_p);\n\n   if (rsize + ssize > msize)\n    {\n      _gcry_mpih_divrem (xp + msize, 0, xp, rsize + ssize, mp, msize);\n      *xsize_p = msize;\n    }\n   else\n     *xsize_p = rsize + ssize;\n}",
+            2
+        ],
+        [
+            "src/mpi.h",
+            "mpi_alloc_secure",
+            "# define mpi_alloc_secure(n)  _gcry_mpi_alloc_secure((n) ) /* <=== src/mpi.h:96:96:mpi_alloc_secure:1 */ ",
+            1
+        ],
+        [
+            "src/mpi.h",
+            "mpi_new",
+            "#define mpi_new(n)            _gcry_mpi_new ((n)) /* <=== src/mpi.h:117:117:mpi_new:1 */ ",
+            1
+        ],
+        [
+            "src/mpi.h",
+            "mpi_get_nbits",
+            "#define mpi_get_nbits(a)       gcry_mpi_get_nbits ((a)) /* <=== src/mpi.h:216:216:mpi_get_nbits:1 */ ",
+            1
+        ],
+        [
+            "mpi/mpi-internal.h",
+            "MPN_COPY",
+            "#define MPN_COPY( d, s, n) \\ /* <=== mpi/mpi-internal.h:84:89:MPN_COPY:3 */ \n    do {\t\t\t\t\\\n\tmpi_size_t _i;\t\t\t\\\n\tfor( _i = 0; _i < (n); _i++ )\t\\\n\t    (d)[_i] = (s)[_i];\t\t\\\n    } while(0)",
+            2
+        ],
+        [
+            "src/visibility.h",
+            "gcry_mpi_powm",
+            "#define gcry_mpi_powm               _gcry_mpi_powm /* <=== src/visibility.h:216:216:gcry_mpi_powm:0 */ ",
+            1
+        ],
+        [
+            "mpi/longlong.h",
+            "count_leading_zeros",
+            "#define count_leading_zeros(count, x) \\ /* <=== mpi/longlong.h:1540:1559:count_leading_zeros:2 */ \n  do {\t\t\t\t\t\t\t\t\t\\\n    UWtype __xr = (x);\t\t\t\t\t\t\t\\\n    UWtype __a; \t\t\t\t\t\t\t\\\n\t\t\t\t\t\t\t\t\t\\\n    if (W_TYPE_SIZE <= 32)\t\t\t\t\t\t\\\n      { \t\t\t\t\t\t\t\t\\\n\t__a = __xr < ((UWtype) 1 << 2*__BITS4)\t\t\t\t\\\n\t  ? (__xr < ((UWtype) 1 << __BITS4) ? 0 : __BITS4)\t\t\\\n\t  : (__xr < ((UWtype) 1 << 3*__BITS4) ?  2*__BITS4 : 3*__BITS4);\\\n      } \t\t\t\t\t\t\t\t\\\n    else\t\t\t\t\t\t\t\t\\\n      { \t\t\t\t\t\t\t\t\\\n\tfor (__a = W_TYPE_SIZE - 8; __a > 0; __a -= 8)\t\t\t\\\n\t  if (((__xr >> __a) & 0xff) != 0)\t\t\t\t\\\n\t    break;\t\t\t\t\t\t\t\\\n      } \t\t\t\t\t\t\t\t\\\n\t\t\t\t\t\t\t\t\t\\\n    (count) = W_TYPE_SIZE - (_gcry_clz_tab[__xr >> __a] + __a);\t\t\\\n  } while (0)",
+            2
+        ],
+        [
+            "mpi/mpi-internal.h",
+            "MPN_ZERO",
+            "#define MPN_ZERO(d, n) \\ /* <=== mpi/mpi-internal.h:106:111:MPN_ZERO:2 */ \n    do {\t\t\t\t  \\\n\tint  _i;\t\t\t  \\\n\tfor( _i = 0; _i < (n); _i++ )  \\\n\t    (d)[_i] = 0;\t\t    \\\n    } while (0)",
+            2
+        ],
+        [
+            "src/mpi.h",
+            "_gcry_mpi_alloc_secure",
+            "  gcry_mpi_t  _gcry_mpi_alloc_secure( unsigned nlimbs ); /* <=== _gcry_mpi_alloc_secure */ ",
+            1
+        ],
+        [
+            "src/mpi.h",
+            "_gcry_mpi_normalize",
+            "void _gcry_mpi_normalize( gcry_mpi_t a ); /* <=== _gcry_mpi_normalize */ ",
+            1
+        ],
+        [
+            "src/mpi.h",
+            "_gcry_mpi_resize",
+            "  void _gcry_mpi_resize( gcry_mpi_t a, unsigned nlimbs ); /* <=== _gcry_mpi_resize */ ",
+            2
+        ],
+        [
+            "mpi/mpi-pow.c",
+            "SIZE_B_2I3",
+            "#define SIZE_B_2I3 ((1 << (5 - 1)) - 1) /* <=== mpi/mpi-pow.c:384:384:SIZE_B_2I3:0 */ ",
+            2
+        ],
+        [
+            "src/mpi.h",
+            "_gcry_mpi_snew",
+            "gcry_mpi_t _gcry_mpi_snew (unsigned int nbits); /* <=== _gcry_mpi_snew */ ",
+            1
+        ],
+        [
+            "src/mpi.h",
+            "mpi_resize",
+            "# define mpi_resize(a,b)      _gcry_mpi_resize((a),(b)) /* <=== src/mpi.h:98:98:mpi_resize:2 */ ",
+            2
+        ],
+        [
+            "src/mpi.h",
+            "mpi_normalize",
+            "#define mpi_normalize(a)       _gcry_mpi_normalize ((a)) /* <=== src/mpi.h:215:215:mpi_normalize:1 */ ",
+            1
+        ],
+        [
+            "mpi/mpi-internal.h",
+            "KARATSUBA_THRESHOLD",
+            "#define KARATSUBA_THRESHOLD 16 /* <=== mpi/mpi-internal.h:61:61:KARATSUBA_THRESHOLD:0 */ ",
+            3
+        ],
+        [
+            "src/mpi.h",
+            "mpi_mulm",
+            "#define mpi_mulm(w,u,v,m)   gcry_mpi_mulm ((w),(u),(v),(m)) /* <=== src/mpi.h:152:152:mpi_mulm:4 */ ",
+            1
+        ],
+        [
+            "src/mpi.h",
+            "_gcry_mpi_free",
+            "  void _gcry_mpi_free( gcry_mpi_t a ); /* <=== _gcry_mpi_free */ ",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <string.h>",
+        "#include <stdlib.h>",
+        "#include \"mpi.h\"",
+        "#include \"g10lib.h\"",
+        "#include \"cipher.h\"",
+        "#include <stdio.h>",
+        "#include <config.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct\n{\n  gcry_mpi_t p;\t    /* prime */\n  gcry_mpi_t g;\t    /* group generator */\n  gcry_mpi_t y;\t    /* g^x mod p */\n  gcry_mpi_t x;\t    /* secret exponent */\n}",
+            "ELG_secret_key"
+        ]
+    ],
+    "visitedLines_after": {
+        "cipher/elgamal.c": [
+            486,
+            487,
+            492,
+            493,
+            495,
+            496,
+            498,
+            499,
+            501,
+            505,
+            506,
+            510,
+            513,
+            515,
+            516,
+            517,
+            519,
+            521,
+            522,
+            532,
+            544
+        ]
+    },
+    "visitedLines_before": {
+        "cipher/elgamal.c": [
+            486,
+            487,
+            489,
+            492,
+            493,
+            494,
+            495,
+            505
+        ]
+    },
+    "visitedParams": {
+        "cipher/elgamal.c": [
+            [
+                "ELG_secret_key *skey",
+                "decrypt"
+            ],
+            [
+                "gcry_mpi_t a",
+                "decrypt"
+            ],
+            [
+                "gcry_mpi_t b",
+                "decrypt"
+            ],
+            [
+                "gcry_mpi_t output",
+                "decrypt"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "cipher/elgamal.c",
+            "decrypt",
+            "static void /* <=== decrypt */ \ndecrypt(gcry_mpi_t output, gcry_mpi_t a, gcry_mpi_t b, ELG_secret_key *skey )\n{\n  gcry_mpi_t t1, t2, r;\n  unsigned int nbits = mpi_get_nbits (skey->p);\n\n  mpi_normalize (a);\n  mpi_normalize (b);\n\n  t1 = mpi_snew (nbits);\n\n#ifdef USE_BLINDING\n\n  t2 = mpi_snew (nbits);\n  r  = mpi_new (nbits);\n\n  /* We need a random number of about the prime size.  The random\n     number merely needs to be unpredictable; thus we use level 0.  */\n  _gcry_mpi_randomize (r, nbits, GCRY_WEAK_RANDOM);\n\n  /* t1 = r^x mod p */\n  mpi_powm (t1, r, skey->x, skey->p);\n  /* t2 = (a * r)^-x mod p */\n  mpi_mulm (t2, a, r, skey->p);\n  mpi_powm (t2, t2, skey->x, skey->p);\n  mpi_invm (t2, t2, skey->p);\n  /* t1 = (t1 * t2) mod p*/\n  mpi_mulm (t1, t1, t2, skey->p);\n\n  mpi_free (r);\n  mpi_free (t2);\n\n#else /*!USE_BLINDING*/\n\n  /* output = b/(a^x) mod p */\n  mpi_powm (t1, a, skey->x, skey->p);\n  mpi_invm (t1, t1, skey->p);\n\n#endif /*!USE_BLINDING*/\n\n  mpi_mulm (output, b, t1, skey->p);\n\n#if 0\n  if( DBG_CIPHER )\n    {\n      log_mpidump(\"elg decrypted x= \", skey->x);\n      log_mpidump(\"elg decrypted p= \", skey->p);\n      log_mpidump(\"elg decrypted a= \", a);\n      log_mpidump(\"elg decrypted b= \", b);\n      log_mpidump(\"elg decrypted M= \", output);\n    }\n#endif\n  mpi_free (t1);\n}",
+            492
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "cipher/elgamal.c",
+            "decrypt",
+            "static void /* <=== decrypt */ \ndecrypt(gcry_mpi_t output, gcry_mpi_t a, gcry_mpi_t b, ELG_secret_key *skey )\n{\n  gcry_mpi_t t1 = mpi_alloc_secure( mpi_get_nlimbs( skey->p ) );\n\n  /* output = b/(a^x) mod p */\n  gcry_mpi_powm( t1, a, skey->x, skey->p );\n  mpi_invm( t1, t1, skey->p );\n  mpi_mulm( output, b, t1, skey->p );\n#if 0\n  if( DBG_CIPHER )\n    {\n      log_mpidump(\"elg decrypted x= \", skey->x);\n      log_mpidump(\"elg decrypted p= \", skey->p);\n      log_mpidump(\"elg decrypted a= \", a);\n      log_mpidump(\"elg decrypted b= \", b);\n      log_mpidump(\"elg decrypted M= \", output);\n    }\n#endif\n  mpi_free(t1);\n}",
+            486
+        ]
+    ]
+}

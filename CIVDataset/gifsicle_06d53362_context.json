@@ -1,0 +1,934 @@
+{
+    "calleeMethods": [
+        [
+            "src/giffunc.c",
+            "Gif_MakeImageEmpty",
+            "void Gif_MakeImageEmpty(Gif_Image* gfi) { /* <=== Gif_MakeImageEmpty */ \n    Gif_ReleaseUncompressedImage(gfi);\n    Gif_ReleaseCompressedImage(gfi);\n    gfi->left = gfi->top = 0;\n    gfi->width = gfi->height = 1;\n    gfi->transparent = 0;\n    Gif_CreateUncompressedImage(gfi, 0);\n    gfi->img[0][0] = 0;\n}",
+            2
+        ],
+        [
+            "src/ungifwrt.c",
+            "RUN_INV_THRESH",
+            "#define RUN_INV_THRESH ((unsigned) (1 << RUN_EWMA_SCALE) / 3000) /* <=== src/ungifwrt.c:176:176:RUN_INV_THRESH:0 */ ",
+            3
+        ],
+        [
+            "src/gifwrite.c",
+            "calculate_min_code_bits",
+            "static int /* <=== calculate_min_code_bits */ \ncalculate_min_code_bits(Gif_Image *gfi, const Gif_Writer *grr)\n{\n  int colors_used = -1, min_code_bits, i;\n\n  if (grr->gcinfo.flags & GIF_WRITE_CAREFUL_MIN_CODE_SIZE) {\n    /* calculate m_c_b based on colormap */\n    if (grr->local_size > 0)\n      colors_used = grr->local_size;\n    else if (grr->global_size > 0)\n      colors_used = grr->global_size;\n\n  } else if (gfi->img) {\n    /* calculate m_c_b from uncompressed data */\n    int x, y, width = gfi->width, height = gfi->height;\n    colors_used = 0;\n    for (y = 0; y < height && colors_used < 128; y++) {\n      uint8_t *data = gfi->img[y];\n      for (x = width; x > 0; x--, data++)\n        if (*data > colors_used)\n          colors_used = *data;\n    }\n    colors_used++;\n\n  } else if (gfi->compressed) {\n    /* take m_c_b from compressed image */\n    colors_used = 1 << gfi->compressed[0];\n\n  } else {\n    /* should never happen */\n    colors_used = 256;\n  }\n\n  min_code_bits = 2;            /* min_code_bits of 1 isn't allowed */\n  i = 4;\n  while (i < colors_used) {\n    min_code_bits++;\n    i *= 2;\n  }\n\n  return min_code_bits;\n}",
+            2
+        ],
+        [
+            "src/gifwrite.c",
+            "Gif_FullCompressImage",
+            "int /* <=== Gif_FullCompressImage */ \nGif_FullCompressImage(Gif_Stream *gfs, Gif_Image *gfi,\n                      const Gif_CompressInfo *gcinfo)\n{\n  int ok = 0;\n  uint8_t min_code_bits;\n  Gif_Writer grr;\n\n  if (!gif_writer_init(&grr, NULL, gcinfo)) {\n    if (!(grr.gcinfo.flags & GIF_WRITE_SHRINK))\n      Gif_ReleaseCompressedImage(gfi);\n    goto done;\n  }\n\n  grr.global_size = get_color_table_size(gfs, 0, &grr);\n  grr.local_size = get_color_table_size(gfs, gfi, &grr);\n\n  min_code_bits = calculate_min_code_bits(gfi, &grr);\n  ok = write_compressed_data(gfs, gfi, min_code_bits, &grr);\n  save_compression_result(gfi, &grr, ok);\n\n  if ((grr.gcinfo.flags & (GIF_WRITE_OPTIMIZE | GIF_WRITE_EAGER_CLEAR))\n      == GIF_WRITE_OPTIMIZE\n      && grr.cleared && ok) {\n    grr.gcinfo.flags |= GIF_WRITE_EAGER_CLEAR | GIF_WRITE_SHRINK;\n    if (write_compressed_data(gfs, gfi, min_code_bits, &grr))\n      save_compression_result(gfi, &grr, 1);\n  }\n\n done:\n  gif_writer_cleanup(&grr);\n  return ok;\n}",
+            1
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_CopyImage",
+            "Gif_Image * /* <=== Gif_CopyImage */ \nGif_CopyImage(Gif_Image *src)\n{\n  Gif_Image *dest;\n  uint8_t *data;\n  int i;\n  if (!src)\n    return 0;\n\n  dest = Gif_NewImage();\n  if (!dest)\n    return 0;\n\n  dest->identifier = Gif_CopyString(src->identifier);\n  if (!dest->identifier && src->identifier)\n      goto failure;\n  if (src->comment) {\n      dest->comment = Gif_NewComment();\n      if (!dest->comment)\n        goto failure;\n      for (i = 0; i < src->comment->count; i++)\n        if (!Gif_AddComment(dest->comment, src->comment->str[i],\n                            src->comment->len[i]))\n          goto failure;\n  }\n  if (src->extension_list) {\n      Gif_Extension* gfex = src->extension_list;\n      while (gfex) {\n          Gif_Extension* dstex = Gif_CopyExtension(gfex);\n          if (!dstex)\n              goto failure;\n          Gif_AddExtension(NULL, dest, dstex);\n          gfex = gfex->next;\n      }\n  }\n\n  dest->local = Gif_CopyColormap(src->local);\n  if (!dest->local && src->local)\n    goto failure;\n  dest->transparent = src->transparent;\n\n  dest->delay = src->delay;\n  dest->disposal = src->disposal;\n  dest->left = src->left;\n  dest->top = src->top;\n\n  dest->width = src->width;\n  dest->height = src->height;\n\n  dest->interlace = src->interlace;\n  if (src->img) {\n    dest->img = Gif_NewArray(uint8_t *, dest->height + 1);\n    dest->image_data = Gif_NewArray(uint8_t, (size_t) dest->width * (size_t) dest->height);\n    dest->free_image_data = Gif_Free;\n    if (!dest->img || !dest->image_data)\n      goto failure;\n    for (i = 0, data = dest->image_data; i < dest->height; i++) {\n      memcpy(data, src->img[i], dest->width);\n      dest->img[i] = data;\n      data += dest->width;\n    }\n    dest->img[dest->height] = 0;\n  }\n  if (src->compressed) {\n    if (src->free_compressed == 0)\n      dest->compressed = src->compressed;\n    else {\n      dest->compressed = Gif_NewArray(uint8_t, src->compressed_len);\n      dest->free_compressed = Gif_Free;\n      memcpy(dest->compressed, src->compressed, src->compressed_len);\n    }\n    dest->compressed_len = src->compressed_len;\n    dest->compressed_errors = src->compressed_errors;\n  }\n\n  return dest;\n\n failure:\n  Gif_DeleteImage(dest);\n  return 0;\n}",
+            1
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_CalculateScreenSize",
+            "void /* <=== Gif_CalculateScreenSize */ \nGif_CalculateScreenSize(Gif_Stream *gfs, int force)\n{\n  int i;\n  int screen_width = 0;\n  int screen_height = 0;\n\n  for (i = 0; i < gfs->nimages; i++) {\n    Gif_Image *gfi = gfs->images[i];\n    /* 17.Dec.1999 - I find this old behavior annoying. */\n    /* if (gfi->left != 0 || gfi->top != 0) continue; */\n    if (screen_width < gfi->left + gfi->width)\n      screen_width = gfi->left + gfi->width;\n    if (screen_height < gfi->top + gfi->height)\n      screen_height = gfi->top + gfi->height;\n  }\n\n  /* Only use the default 640x480 screen size if we are being forced to create\n     a new screen size or there's no screen size currently. */\n  if (screen_width == 0 && (gfs->screen_width == 0 || force))\n    screen_width = 640;\n  if (screen_height == 0 && (gfs->screen_height == 0 || force))\n    screen_height = 480;\n\n  if (gfs->screen_width < screen_width || force)\n    gfs->screen_width = screen_width;\n  if (gfs->screen_height < screen_height || force)\n    gfs->screen_height = screen_height;\n}",
+            1
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_DeleteStream",
+            "void /* <=== Gif_DeleteStream */ \nGif_DeleteStream(Gif_Stream *gfs)\n{\n  Gif_DeletionHook *hook;\n  int i;\n  if (!gfs || --gfs->refcount > 0)\n    return;\n\n  for (i = 0; i < gfs->nimages; i++)\n    Gif_DeleteImage(gfs->images[i]);\n  Gif_DeleteArray(gfs->images);\n\n  Gif_DeleteColormap(gfs->global);\n\n  Gif_DeleteComment(gfs->end_comment);\n  while (gfs->end_extension_list)\n      Gif_DeleteExtension(gfs->end_extension_list);\n\n  for (hook = all_hooks; hook; hook = hook->next)\n    if (hook->kind == GIF_T_STREAM)\n      (*hook->func)(GIF_T_STREAM, gfs, hook->callback_data);\n  Gif_Delete(gfs);\n}",
+            1
+        ],
+        [
+            "src/gifwrite.c",
+            "gfc_lookup_lossy",
+            "static struct selected_node /* <=== gfc_lookup_lossy */ \ngfc_lookup_lossy(Gif_CodeTable *gfc, const Gif_Colormap *gfcm, Gif_Image *gfi,\n  unsigned pos, Gif_Node *node, unsigned long base_diff, gfc_rgbdiff dither, const unsigned int max_diff)\n{\n  const unsigned image_endpos = gfi->width * gfi->height;\n\n  struct selected_node best_t = {node, pos, base_diff};\n  uint8_t suffix;\n  if (pos >= image_endpos) return best_t;\n\n  suffix = gif_pixel_at_pos(gfi, pos);\n  if (suffix >= gfc->clear_code)\n    /* should not happen unless GIF_WRITE_CAREFUL_MIN_CODE_BITS */\n    suffix = 0;\n  assert(!node || (node >= gfc->nodes && node < gfc->nodes + NODES_SIZE));\n  if (!node) {\n    gfc_rgbdiff zero_diff = {0, 0, 0};\n    /* prefix of the new node must be same as suffix of previously added node */\n    return gfc_lookup_lossy(gfc, gfcm, gfi, pos+1, &gfc->nodes[suffix], base_diff, zero_diff, max_diff);\n  }\n\n  /* search all nodes that are less than max_diff different from the desired pixel */\n  if (node->type == TABLE_TYPE) {\n    int i;\n    for(i=0; i < gfc->clear_code; i++) {\n      if (!node->child.m[i]) continue;\n      gfc_lookup_lossy_try_node(gfc, gfcm, gfi, pos, node->child.m[i], suffix, i, dither, base_diff, max_diff, &best_t);\n    }\n  }\n  else {\n    for (node = node->child.s; node; node = node->sibling) {\n      gfc_lookup_lossy_try_node(gfc, gfcm, gfi, pos, node, suffix, node->suffix, dither, base_diff, max_diff, &best_t);\n    }\n  }\n\n  return best_t;\n}",
+            3
+        ],
+        [
+            "src/xform.c",
+            "rotate_image",
+            "void /* <=== rotate_image */ \nrotate_image(Gif_Image* gfi, Gt_Frame* fr, int rotation)\n{\n  int x, y;\n  int width = gfi->width;\n  int height = gfi->height;\n  uint8_t **img = gfi->img;\n  uint8_t *new_data = Gif_NewArray(uint8_t, (unsigned) width * (unsigned) height);\n  uint8_t *trav = new_data;\n\n  /* this function can only rotate by 90 or 270 degrees */\n  assert(rotation == 1 || rotation == 3);\n\n  if (rotation == 1) {\n    for (x = 0; x < width; x++)\n      for (y = height - 1; y >= 0; y--)\n        *trav++ = img[y][x];\n    x = gfi->left;\n    gfi->left = fr->stream->screen_height - (gfi->top + height);\n    gfi->top = x;\n    if (fr->crop) {\n        x = fr->left_offset;\n        fr->left_offset = fr->stream->screen_height - (fr->top_offset + fr->crop->h);\n        fr->top_offset = x;\n    }\n\n  } else {\n    for (x = width - 1; x >= 0; x--)\n      for (y = 0; y < height; y++)\n        *trav++ = img[y][x];\n    y = gfi->top;\n    gfi->top = fr->stream->screen_width - (gfi->left + width);\n    gfi->left = y;\n    if (fr->crop) {\n        y = fr->top_offset;\n        fr->top_offset = fr->stream->screen_width - (fr->left_offset + fr->crop->w);\n        fr->left_offset = y;\n    }\n  }\n\n  Gif_ReleaseUncompressedImage(gfi);\n  gfi->width = height;\n  gfi->height = width;\n  Gif_SetUncompressedImage(gfi, new_data, Gif_Free, 0);\n}",
+            2
+        ],
+        [
+            "src/ungifwrt.c",
+            "RUN_EWMA_SCALE",
+            "#define RUN_EWMA_SCALE 19 /* <=== src/ungifwrt.c:175:175:RUN_EWMA_SCALE:0 */ ",
+            3
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_ReleaseCompressedImage",
+            "void /* <=== Gif_ReleaseCompressedImage */ \nGif_ReleaseCompressedImage(Gif_Image *gfi)\n{\n  if (gfi->compressed && gfi->free_compressed)\n    (*gfi->free_compressed)(gfi->compressed);\n  gfi->compressed = 0;\n  gfi->compressed_len = 0;\n  gfi->compressed_errors = 0;\n  gfi->free_compressed = 0;\n}",
+            1
+        ],
+        [
+            "src/merge.c",
+            "find_color_index",
+            "int /* <=== find_color_index */ \nfind_color_index(Gif_Color *c, int nc, Gif_Color *color)\n{\n  int index;\n  for (index = 0; index < nc; index++)\n    if (GIF_COLOREQ(&c[index], color))\n      return index;\n  return -1;\n}",
+            3
+        ],
+        [
+            "include/lcdf/clp.h",
+            "Clp_vsnprintf",
+            "int Clp_vsnprintf(Clp_Parser* clp, char* str, size_t size, /* <=== Clp_vsnprintf */ \n                  const char* format, va_list val);",
+            3
+        ],
+        [
+            "src/ungifwrt.c",
+            "get_color_table_size",
+            "static int /* <=== get_color_table_size */ \nget_color_table_size(const Gif_Stream *gfs, Gif_Image *gfi, Gif_Writer *grr)\n{\n  Gif_Colormap *gfcm = (gfi ? gfi->local : gfs->global);\n  int ncol, totalcol, i;\n\n  if (!gfcm || gfcm->ncol <= 0)\n    return 0;\n\n  /* Make sure ncol is reasonable */\n  ncol = gfcm->ncol;\n\n  /* Possibly bump up 'ncol' based on 'transparent' values, if\n     careful_min_code_bits */\n  if (grr->gcinfo.flags & GIF_WRITE_CAREFUL_MIN_CODE_SIZE) {\n    if (gfi && gfi->transparent >= ncol)\n      ncol = gfi->transparent + 1;\n    else if (!gfi)\n      for (i = 0; i < gfs->nimages; i++)\n\tif (gfs->images[i]->transparent >= ncol)\n\t  ncol = gfs->images[i]->transparent + 1;\n  }\n\n  /* Make sure the colormap is a power of two entries! */\n  /* GIF format doesn't allow a colormap with only 1 entry. */\n  if (ncol > 256)\n    ncol = 256;\n  for (totalcol = 2; totalcol < ncol; totalcol *= 2)\n    /* nada */;\n\n  return totalcol;\n}",
+            2
+        ],
+        [
+            "src/gifwrite.c",
+            "CUR_BUMP_CODE",
+            "#define CUR_BUMP_CODE   (1 << cur_code_bits) /* <=== src/gifwrite.c:442:442:CUR_BUMP_CODE:0 */ ",
+            3
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_CopyString",
+            "char * /* <=== Gif_CopyString */ \nGif_CopyString(const char *s)\n{\n  int l;\n  char *copy;\n  if (!s)\n    return 0;\n  l = strlen(s);\n  copy = Gif_NewArray(char, l + 1);\n  if (!copy)\n    return 0;\n  memcpy(copy, s, l + 1);\n  return copy;\n}",
+            1
+        ],
+        [
+            "src/gifwrite.c",
+            "NODES_SIZE",
+            "#define NODES_SIZE              GIF_MAX_CODE /* <=== src/gifwrite.c:27:27:NODES_SIZE:0 */ ",
+            3
+        ],
+        [
+            "src/merge.c",
+            "merge_comments",
+            "void /* <=== merge_comments */ \nmerge_comments(Gif_Comment *destc, Gif_Comment *srcc)\n{\n  int i;\n  for (i = 0; i < srcc->count; i++)\n    Gif_AddComment(destc, srcc->str[i], srcc->len[i]);\n}",
+            1
+        ],
+        [
+            "src/gifwrite.c",
+            "gif_line_endpos",
+            "static inline unsigned /* <=== gif_line_endpos */ \ngif_line_endpos(Gif_Image *gfi, unsigned pos)\n{\n  unsigned y = pos / gfi->width;\n  return (y + 1) * gfi->width;\n}",
+            3
+        ],
+        [
+            "src/xform.c",
+            "combine_crop",
+            "void /* <=== combine_crop */ \ncombine_crop(Gt_Crop* dstcrop, const Gt_Crop* srccrop, const Gif_Image* gfi)\n{\n    int cl = srccrop->x - gfi->left, cr = cl + srccrop->w,\n        ct = srccrop->y - gfi->top, cb = ct + srccrop->h,\n        dl = cl > 0 ? cl : 0, dr = cr < gfi->width ? cr : gfi->width,\n        dt = ct > 0 ? ct : 0, db = cb < gfi->height ? cb : gfi->height;\n\n    if (dl < dr) {\n        dstcrop->x = dl;\n        dstcrop->w = dr - dl;\n    } else {\n        dstcrop->x = (cl <= 0 ? 0 : srccrop->w - 1) + (srccrop->left_offset - gfi->left);\n        dstcrop->w = 0;\n    }\n    if (dt < db) {\n        dstcrop->y = dt;\n        dstcrop->h = db - dt;\n    } else {\n        dstcrop->y = (ct <= 0 ? 0 : srccrop->h - 1) + (srccrop->top_offset - gfi->top);\n        dstcrop->h = 0;\n    }\n}",
+            2
+        ],
+        [
+            "src/support.c",
+            "handle_screen",
+            "static void /* <=== handle_screen */ \nhandle_screen(Gif_Stream *dest, uint16_t width, uint16_t height)\n{\n    /* Set the screen width & height, if the current input width and height are\n       larger */\n    if (dest->screen_width < width)\n        dest->screen_width = width;\n    if (dest->screen_height < height)\n        dest->screen_height = height;\n}",
+            1
+        ],
+        [
+            "src/gifwrite.c",
+            "gfc_clear",
+            "static inline void /* <=== gfc_clear */ \ngfc_clear(Gif_CodeTable *gfc)\n{\n  int c;\n  /* The first clear_code nodes are reserved for single-pixel codes */\n  gfc->nodes_pos = gfc->clear_code;\n  gfc->links_pos = 0;\n  for (c = 0; c < gfc->clear_code; c++) {\n    gfc->nodes[c].code = c;\n    gfc->nodes[c].type = LINKS_TYPE;\n    gfc->nodes[c].suffix = c;\n    gfc->nodes[c].child.s = 0;\n  }\n}",
+            3
+        ],
+        [
+            "src/support.c",
+            "apply_frame_transparent",
+            "static inline int /* <=== apply_frame_transparent */ \napply_frame_transparent(Gif_Image *gfi, Gt_Frame *fr)\n{\n    int old_transparent = gfi->transparent;\n    if (fr->transparent.haspixel == 255)\n        gfi->transparent = -1;\n    else if (fr->transparent.haspixel) {\n        gfi->transparent =\n            find_color_or_error(&fr->transparent, fr->stream, gfi,\n                                \"transparent\");\n        if (gfi->transparent < 0)\n            fr->transparent.haspixel = 0;\n    }\n    return old_transparent;\n}",
+            1
+        ],
+        [
+            "src/support.c",
+            "handle_flip_and_screen",
+            "static void /* <=== handle_flip_and_screen */ \nhandle_flip_and_screen(Gif_Stream* dest, Gif_Image* desti, Gt_Frame* fr)\n{\n    Gif_Stream* gfs = fr->stream;\n\n    desti->left += fr->left_offset;\n    desti->top += fr->top_offset;\n\n    if (fr->flip_horizontal)\n        flip_image(desti, fr, 0);\n    if (fr->flip_vertical)\n        flip_image(desti, fr, 1);\n\n    if (fr->rotation == 1)\n        rotate_image(desti, fr, 1);\n    else if (fr->rotation == 2) {\n        flip_image(desti, fr, 0);\n        flip_image(desti, fr, 1);\n    } else if (fr->rotation == 3)\n        rotate_image(desti, fr, 3);\n\n    desti->left -= fr->left_offset;\n    desti->top -= fr->top_offset;\n\n    /* handle screen size, which might have height & width exchanged */\n    if (fr->rotation == 1 || fr->rotation == 3)\n        handle_screen(dest, gfs->screen_height, gfs->screen_width);\n    else\n        handle_screen(dest, gfs->screen_width, gfs->screen_height);\n}",
+            1
+        ],
+        [
+            "src/support.c",
+            "lwarning",
+            "void lwarning(const char* landmark, const char* format, ...) { /* <=== lwarning */ \n    va_list val;\n    va_start(val, format);\n    verror(landmark, 2, 1, format, val);\n    va_end(val);\n}",
+            2
+        ],
+        [
+            "src/ungifwrt.c",
+            "CUR_BUMP_CODE",
+            "#define CUR_BUMP_CODE   (1 << cur_code_bits) /* <=== src/ungifwrt.c:191:191:CUR_BUMP_CODE:0 */ ",
+            3
+        ],
+        [
+            "src/support.c",
+            "warning",
+            "void warning(int need_file, const char* format, ...) { /* <=== warning */ \n    va_list val;\n    va_start(val, format);\n    verror((const char*) 0, need_file, 1, format, val);\n    va_end(val);\n}",
+            2
+        ],
+        [
+            "src/gifsicle.h",
+            "MERGING",
+            "#define MERGING         1 /* <=== src/gifsicle.h:331:331:MERGING:0 */ ",
+            3
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_NewImage",
+            "Gif_Image * /* <=== Gif_NewImage */ \nGif_NewImage(void)\n{\n  Gif_Image *gfi = Gif_New(Gif_Image);\n  if (!gfi)\n    return 0;\n  gfi->width = gfi->height = 0;\n  gfi->img = 0;\n  gfi->image_data = 0;\n  gfi->left = gfi->top = 0;\n  gfi->delay = 0;\n  gfi->disposal = GIF_DISPOSAL_NONE;\n  gfi->interlace = 0;\n  gfi->local = 0;\n  gfi->transparent = -1;\n  gfi->user_flags = 0;\n  gfi->identifier = 0;\n  gfi->comment = 0;\n  gfi->extension_list = 0;\n  gfi->free_image_data = Gif_Free;\n  gfi->compressed_len = 0;\n  gfi->compressed_errors = 0;\n  gfi->compressed = 0;\n  gfi->free_compressed = 0;\n  gfi->user_data = 0;\n  gfi->free_user_data = 0;\n  gfi->refcount = 0;\n  return gfi;\n}",
+            2
+        ],
+        [
+            "src/ungifwrt.c",
+            "gif_writer_cleanup",
+            "static void /* <=== gif_writer_cleanup */ \ngif_writer_cleanup(Gif_Writer* grr)\n{\n  Gif_DeleteArray(grr->v);\n  Gif_DeleteArray(grr->rle_next);\n}",
+            2
+        ],
+        [
+            "src/gifwrite.c",
+            "gifputblock",
+            "#define gifputblock(b, l, grr)  ((*grr->block_putter)(b, l, grr)) /* <=== src/gifwrite.c:90:90:gifputblock:3 */ ",
+            3
+        ],
+        [
+            "src/support.c",
+            "find_color_or_error",
+            "static int /* <=== find_color_or_error */ \nfind_color_or_error(Gif_Color *color, Gif_Stream *gfs, Gif_Image *gfi,\n                    const char *color_context)\n{\n  Gif_Colormap *gfcm = gfs->global;\n  int index;\n  if (gfi && gfi->local)\n    gfcm = gfi->local;\n\n  if (color->haspixel == 2) {   /* have pixel value, not color */\n    if (!gfcm || color->pixel < (uint32_t)gfcm->ncol)\n      return color->pixel;\n    else {\n      if (color_context)\n          lwarning(gfs->landmark, \"%s color out of range\", color_context);\n      return -1;\n    }\n  }\n\n  index = gfcm ? Gif_FindColor(gfcm, color) : -1;\n  if (index < 0 && color_context)\n    lwarning(gfs->landmark, \"%s color not in colormap\", color_context);\n  return index;\n}",
+            2
+        ],
+        [
+            "src/support.c",
+            "fix_total_crop",
+            "static void /* <=== fix_total_crop */ \nfix_total_crop(Gif_Stream *dest, Gif_Image *srci, int merger_index)\n{\n  /* Salvage any relevant information from a frame that's been completely\n     cropped away. This ends up being comments and delay. */\n  Gt_Frame *fr = merger[merger_index];\n  Gt_Frame *next_fr = 0;\n  Gif_Image *prev_image;\n  assert(dest->nimages > 0);\n  prev_image = dest->images[dest->nimages - 1];\n  if (merger_index < nmerger - 1)\n    next_fr = merger[merger_index + 1];\n\n  /* Don't save identifiers since the frame that was to be identified, is\n     gone. Save comments though. */\n  if (!fr->no_comments && srci->comment && next_fr) {\n    if (!next_fr->comment)\n      next_fr->comment = Gif_NewComment();\n    merge_comments(next_fr->comment, srci->comment);\n  }\n  if (fr->comment && next_fr) {\n    if (!next_fr->comment)\n      next_fr->comment = Gif_NewComment();\n    merge_comments(next_fr->comment, fr->comment);\n    Gif_DeleteComment(fr->comment);\n    fr->comment = 0;\n  }\n\n  /* Save delay by adding it to the previous frame's delay. */\n  if (fr->delay < 0)\n    fr->delay = srci->delay;\n  prev_image->delay += fr->delay;\n\n  /* Mark this image as totally cropped. */\n  fr->total_crop = 1;\n}",
+            1
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_SetUncompressedImage",
+            "int /* <=== Gif_SetUncompressedImage */ \nGif_SetUncompressedImage(Gif_Image *gfi, uint8_t *image_data,\n                         void (*free_data)(void *), int data_interlaced)\n{\n  /* NB does not affect compressed image (and must not) */\n  unsigned i;\n  unsigned width = gfi->width;\n  unsigned height = gfi->height;\n  uint8_t **img;\n\n  Gif_ReleaseUncompressedImage(gfi);\n  if (!image_data)\n    return 0;\n\n  img = Gif_NewArray(uint8_t *, height + 1);\n  if (!img)\n    return 0;\n\n  if (data_interlaced)\n    for (i = 0; i < height; i++)\n      img[ Gif_InterlaceLine(i, height) ] = image_data + width * i;\n  else\n    for (i = 0; i < height; i++)\n      img[i] = image_data + width * i;\n  img[height] = 0;\n\n  gfi->img = img;\n  gfi->image_data = image_data;\n  gfi->free_image_data = free_data;\n  return 1;\n}",
+            3
+        ],
+        [
+            "src/xform.c",
+            "flip_image",
+            "void /* <=== flip_image */ \nflip_image(Gif_Image* gfi, Gt_Frame *fr, int is_vert)\n{\n  int x, y;\n  int width = gfi->width;\n  int height = gfi->height;\n  uint8_t **img = gfi->img;\n\n  /* horizontal flips */\n  if (!is_vert) {\n    uint8_t *buffer = Gif_NewArray(uint8_t, width);\n    uint8_t *trav;\n    for (y = 0; y < height; y++) {\n      memcpy(buffer, img[y], width);\n      trav = img[y] + width - 1;\n      for (x = 0; x < width; x++)\n        *trav-- = buffer[x];\n    }\n    gfi->left = fr->stream->screen_width - (gfi->left + width);\n    if (fr->crop)\n        fr->left_offset = fr->stream->screen_width - (fr->left_offset + fr->crop->w);\n    Gif_DeleteArray(buffer);\n  }\n\n  /* vertical flips */\n  if (is_vert) {\n    uint8_t **buffer = Gif_NewArray(uint8_t *, height);\n    memcpy(buffer, img, height * sizeof(uint8_t *));\n    for (y = 0; y < height; y++)\n      img[y] = buffer[height - y - 1];\n    gfi->top = fr->stream->screen_height - (gfi->top + height);\n    if (fr->crop)\n        fr->top_offset = fr->stream->screen_height - (fr->top_offset + fr->crop->h);\n    Gif_DeleteArray(buffer);\n  }\n}",
+            2
+        ],
+        [
+            "src/gifview.c",
+            "error",
+            "void error(const char* format, ...) { /* <=== error */ \n    char buf[BUFSIZ];\n    int n = snprintf(buf, BUFSIZ, \"%s: \", program_name);\n    va_list val;\n    va_start(val, format);\n    Clp_vsnprintf(clp, buf + n, BUFSIZ - n, format, val);\n    va_end(val);\n    fputs(buf, stderr);\n}",
+            1
+        ],
+        [
+            "src/ungifwrt.c",
+            "gifputblock",
+            "#define gifputblock(b, l, grr)\t((*grr->block_putter)(b, l, grr)) /* <=== src/ungifwrt.c:46:46:gifputblock:3 */ ",
+            3
+        ],
+        [
+            "src/support.c",
+            "verror",
+            "static void /* <=== verror */ \nverror(const char* landmark, int need_file,\n       int seriousness, const char *fmt, va_list val)\n{\n    char pbuf[256], buf[BUFSIZ], xbuf[BUFSIZ];\n    const char* xfmt;\n    int n, i, p;\n    size_t xi;\n\n    if (!fmt || !*fmt)\n        return;\n\n    if (!landmark && need_file && active_output_data.active_output_name\n        && mode != BLANK_MODE && mode != MERGING && nested_mode != MERGING)\n        landmark = active_output_data.active_output_name;\n    else if (!landmark)\n        landmark = \"\";\n\n    if (seriousness > 2)\n        xfmt = \"%s:%s%s fatal error: \";\n    else if (seriousness == 1)\n        xfmt = \"%s:%s%s warning: \";\n    else\n        xfmt = \"%s:%s%s \";\n    snprintf(pbuf, sizeof(pbuf), xfmt, program_name, landmark, *landmark ? \":\" : \"\");\n    p = strlen(pbuf);\n\n    Clp_vsnprintf(clp, buf, sizeof(buf), fmt, val);\n    n = strlen(buf);\n    if ((size_t) n + 1 < sizeof(buf) && (n == 0 || buf[n - 1] != '\\n')) {\n        buf[n++] = '\\n';\n        buf[n] = 0;\n    }\n\n    xi = 0;\n    for (i = 0; i != n; ) {\n        /* char* pos = (char*) memchr(&buf[i], '\\n', n - i);\n           int l = (pos ? &pos[1] - &buf[i] : n - i); */\n        int l = n - i;\n        int xd = snprintf(&xbuf[xi], sizeof(xbuf) - xi, \"%.*s%.*s\",\n                          (int) p, pbuf, (int) l, &buf[i]);\n        i += l;\n        xi = (xi + xd > sizeof(xbuf) ? sizeof(xbuf) : xi + xd);\n    }\n\n    if (seriousness == 1 && no_warnings)\n        return;\n    else if (seriousness > 1)\n        error_count++;\n\n    verbose_endline();\n    fwrite(xbuf, 1, xi, stderr);\n}",
+            3
+        ],
+        [
+            "src/merge.c",
+            "merge_colormap_if_possible",
+            "int /* <=== merge_colormap_if_possible */ \nmerge_colormap_if_possible(Gif_Colormap *dest, Gif_Colormap *src)\n{\n    Gif_Color *srccol;\n    Gif_Color *destcol = dest->col;\n    int destncol = dest->ncol;\n    int dest_user_flags = dest->user_flags;\n    int i, x;\n    int trivial_map = 1;\n\n    if (!src)\n        return 1;\n\n    srccol = src->col;\n    for (i = 0; i < src->ncol; i++) {\n        if (srccol[i].haspixel & 1) {\n            /* Store an image color cell's mapping to the global colormap in\n               its 'pixel' slot. This is useful caching: oftentimes many\n               input frames will share a colormap */\n            int mapto = (srccol[i].pixel < 256 ? (int)srccol[i].pixel : -1);\n\n            if (mapto == -1)\n                mapto = find_color_index(destcol, destncol, &srccol[i]);\n\n            if (mapto == -1 && destncol < 256) {\n                /* add the color */\n                mapto = destncol;\n                destcol[mapto] = srccol[i];\n                destncol++;\n            }\n\n            if (mapto == -1)\n                /* check for a pure-transparent color */\n                for (x = 0; x < destncol; x++)\n                    if (destcol[x].haspixel == 2) {\n                        mapto = x;\n                        destcol[mapto] = srccol[i];\n                        break;\n                    }\n\n            if (mapto == -1)\n                /* give up and require a local colormap */\n                goto local_colormap_required;\n\n            assert(mapto >= 0 && mapto < destncol);\n            assert(GIF_COLOREQ(&destcol[mapto], &srccol[i]));\n\n            srccol[i].pixel = mapto;\n            destcol[mapto].haspixel = 1;\n            if (mapto != i)\n                trivial_map = 0;\n\n        } else if (srccol[i].haspixel & 2) {\n            /* a dedicated transparent color; if trivial_map & at end of\n               colormap insert it with haspixel == 2. (strictly not\n               necessary; we do it to try to keep the map trivial.) */\n            if (trivial_map && i == destncol) {\n                destcol[destncol] = srccol[i];\n                destncol++;\n            }\n        }\n    }\n\n    /* success! save new number of colors */\n    dest->ncol = destncol;\n    dest->user_flags = dest_user_flags;\n    return 1;\n\n  /* failure: a local colormap is required */\n local_colormap_required:\n    if (warn_local_colormaps == 1) {\n        static int context = 0;\n        if (!context) {\n            warning(1, \"too many colors, using local colormaps\\n\"\n                    \"  (You may want to try %<--colors 256%>.)\");\n            context = 1;\n        } else\n            warning(1, \"too many colors, using local colormaps\");\n        warn_local_colormaps = 2;\n    }\n\n  /* 9.Dec.1998 - This must have been a longstanding bug! We MUST clear\n     the cached mappings of any pixels in the source colormap we\n     assigned this time through, since we are throwing those colors\n     away. We assigned it this time through if the cached mapping is >=\n     dest->ncol. */\n  for (x = 0; x < i; x++)\n    if ((srccol[x].haspixel & 1) && srccol[x].pixel >= (uint32_t)dest->ncol)\n      srccol[x].pixel = 256;\n\n  return 0;\n}",
+            2
+        ],
+        [
+            "include/lcdf/clp.h",
+            "Clp_vsnprintf",
+            "int Clp_vsnprintf(Clp_Parser* clp, char* str, size_t size, /* <=== Clp_vsnprintf */ \n                  const char* format, va_list val);",
+            2
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_CopyExtension",
+            "Gif_Extension* /* <=== Gif_CopyExtension */ \nGif_CopyExtension(Gif_Extension* src)\n{\n    Gif_Extension* dst = Gif_NewExtension(src->kind, src->appname, src->applength);\n    if (!dst)\n        return NULL;\n    if (!src->data || !src->free_data) {\n        dst->data = src->data;\n        dst->length = src->length;\n    } else {\n        dst->data = Gif_NewArray(uint8_t, src->length);\n        if (!dst->data) {\n            Gif_DeleteExtension(dst);\n            return NULL;\n        }\n        memcpy(dst->data, src->data, src->length);\n        dst->length = src->length;\n        dst->free_data = Gif_Free;\n    }\n    dst->packetized = src->packetized;\n    return dst;\n}",
+            2
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_NewStream",
+            "Gif_Stream * /* <=== Gif_NewStream */ \nGif_NewStream(void)\n{\n  Gif_Stream *gfs = Gif_New(Gif_Stream);\n  if (!gfs)\n    return 0;\n  gfs->images = 0;\n  gfs->nimages = gfs->imagescap = 0;\n  gfs->global = 0;\n  gfs->background = 256;\n  gfs->screen_width = gfs->screen_height = 0;\n  gfs->loopcount = -1;\n  gfs->end_comment = 0;\n  gfs->end_extension_list = 0;\n  gfs->errors = 0;\n  gfs->user_flags = 0;\n  gfs->refcount = 0;\n  gfs->landmark = 0;\n  return gfs;\n}",
+            1
+        ],
+        [
+            "src/ungifwrt.c",
+            "gifputbyte",
+            "#define gifputbyte(b, grr)\t((*grr->byte_putter)(b, grr)) /* <=== src/ungifwrt.c:45:45:gifputbyte:2 */ ",
+            3
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_AddImage",
+            "int /* <=== Gif_AddImage */ \nGif_AddImage(Gif_Stream *gfs, Gif_Image *gfi)\n{\n  if (gfs->nimages >= gfs->imagescap) {\n    if (gfs->imagescap)\n      gfs->imagescap *= 2;\n    else\n      gfs->imagescap = 2;\n    Gif_ReArray(gfs->images, Gif_Image *, gfs->imagescap);\n    if (!gfs->images)\n      return 0;\n  }\n  gfs->images[gfs->nimages] = gfi;\n  gfs->nimages++;\n  gfi->refcount++;\n  return 1;\n}",
+            2
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_DeleteExtension",
+            "void /* <=== Gif_DeleteExtension */ \nGif_DeleteExtension(Gif_Extension *gfex)\n{\n  if (!gfex)\n    return;\n  if (gfex->data && gfex->free_data)\n    (*gfex->free_data)(gfex->data);\n  Gif_DeleteArray(gfex->appname);\n  if (gfex->stream || gfex->image) {\n      Gif_Extension** pprev;\n      if (gfex->image)\n          pprev = &gfex->image->extension_list;\n      else\n          pprev = &gfex->stream->end_extension_list;\n      while (*pprev && *pprev != gfex)\n          pprev = &(*pprev)->next;\n      if (*pprev)\n          *pprev = gfex->next;\n  }\n  Gif_Delete(gfex);\n}",
+            2
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_ReleaseUncompressedImage",
+            "void /* <=== Gif_ReleaseUncompressedImage */ \nGif_ReleaseUncompressedImage(Gif_Image *gfi)\n{\n  Gif_DeleteArray(gfi->img);\n  if (gfi->image_data && gfi->free_image_data)\n    (*gfi->free_image_data)(gfi->image_data);\n  gfi->img = 0;\n  gfi->image_data = 0;\n  gfi->free_image_data = 0;\n}",
+            1
+        ],
+        [
+            "src/gifwrite.c",
+            "RUN_EWMA_SCALE",
+            "#define RUN_EWMA_SCALE 19 /* <=== src/gifwrite.c:428:428:RUN_EWMA_SCALE:0 */ ",
+            3
+        ],
+        [
+            "src/ungifwrt.c",
+            "calculate_min_code_bits",
+            "static int /* <=== calculate_min_code_bits */ \ncalculate_min_code_bits(Gif_Image *gfi, const Gif_Writer *grr)\n{\n  int colors_used = -1, min_code_bits, i;\n\n  if (grr->gcinfo.flags & GIF_WRITE_CAREFUL_MIN_CODE_SIZE) {\n    /* calculate m_c_b based on colormap */\n    if (grr->local_size > 0)\n      colors_used = grr->local_size;\n    else if (grr->global_size > 0)\n      colors_used = grr->global_size;\n\n  } else if (gfi->img) {\n    /* calculate m_c_b from uncompressed data */\n    int x, y, width = gfi->width, height = gfi->height;\n    colors_used = 0;\n    for (y = 0; y < height && colors_used < 128; y++) {\n      uint8_t *data = gfi->img[y];\n      for (x = width; x > 0; x--, data++)\n\tif (*data > colors_used)\n\t  colors_used = *data;\n    }\n    colors_used++;\n\n  } else if (gfi->compressed) {\n    /* take m_c_b from compressed image */\n    colors_used = 1 << gfi->compressed[0];\n\n  } else {\n    /* should never happen */\n    colors_used = 256;\n  }\n\n  min_code_bits = 2;\t\t/* min_code_bits of 1 isn't allowed */\n  i = 4;\n  while (i < colors_used) {\n    min_code_bits++;\n    i *= 2;\n  }\n\n  return min_code_bits;\n}",
+            2
+        ],
+        [
+            "src/merge.c",
+            "merge_image",
+            "Gif_Image * /* <=== merge_image */ \nmerge_image(Gif_Stream *dest, Gif_Stream *src, Gif_Image *srci,\n            Gt_Frame* srcfr, int same_compressed_ok)\n{\n  Gif_Colormap *imagecm;\n  int imagecm_ncol;\n  int i;\n  Gif_Colormap *localcm = 0;\n  Gif_Colormap *destcm = dest->global;\n\n  uint8_t map[256];             /* map[input pixel value] == output pixval */\n  int trivial_map;              /* does the map take input pixval --> the same\n                                   pixel value for all colors in the image? */\n  uint8_t inused[256];          /* inused[input pival] == 1 iff used */\n  uint8_t used[256];            /* used[output pixval K] == 1 iff K was used\n                                   in the image */\n\n\n  Gif_Image *desti;\n\n  /* mark colors that were actually used in this image */\n  imagecm = srci->local ? srci->local : src->global;\n  imagecm_ncol = imagecm ? imagecm->ncol : 0;\n  merge_image_input_colors(inused, srci);\n  for (i = imagecm_ncol; i != 256; ++i)\n      if (inused[i]) {\n          lwarning(srcfr->input_filename, \"some colors undefined by colormap\");\n          break;\n      }\n\n  /* map[old_pixel_value] == new_pixel_value */\n  for (i = 0; i < 256; i++)\n      map[i] = used[i] = 0;\n\n  /* Merge the colormap */\n  if (merge_colormap_if_possible(dest->global, imagecm)) {\n      /* Create 'map' and 'used' for global colormap. */\n      for (i = 0; i != imagecm_ncol; ++i)\n          if (inused[i])\n              map[i] = imagecm->col[i].pixel;\n\n  } else {\n      /* Need a local colormap. */\n      destcm = localcm = Gif_NewFullColormap(0, 256);\n      for (i = 0; i != imagecm_ncol; ++i)\n          if (inused[i]) {\n              map[i] = localcm->ncol;\n              localcm->col[localcm->ncol] = imagecm->col[i];\n              ++localcm->ncol;\n          }\n  }\n\n  trivial_map = 1;\n  for (i = 0; i != 256; ++i)\n      if (inused[i]) {\n          used[map[i]] = 1;\n          trivial_map = trivial_map && map[i] == i;\n      }\n\n  /* Decide on a transparent index */\n  if (srci->transparent >= 0) {\n    int found_transparent = -1;\n\n    /* try to keep the map trivial -- prefer same transparent index */\n    if (trivial_map && !used[srci->transparent])\n      found_transparent = srci->transparent;\n    else\n      for (i = destcm->ncol - 1; i >= 0; i--)\n        if (!used[i])\n          found_transparent = i;\n\n    /* 1.Aug.1999 - Allow for the case that the transparent index is bigger\n       than the number of colors we've created thus far. */\n    if (found_transparent < 0 || found_transparent >= destcm->ncol) {\n      Gif_Color *c;\n      found_transparent = destcm->ncol;\n      /* 1.Aug.1999 - Don't update destcm->ncol -- we want the output colormap\n         to be as small as possible. */\n      c = &destcm->col[found_transparent];\n      if (imagecm && srci->transparent < imagecm->ncol)\n        *c = imagecm->col[srci->transparent];\n      c->haspixel = 2;\n      assert(c->haspixel == 2 && found_transparent < 256);\n    }\n\n    map[srci->transparent] = found_transparent;\n    if (srci->transparent != found_transparent) trivial_map = 0;\n  }\n\n  assert(destcm->ncol <= 256);\n  /* Make the new image. */\n  desti = Gif_NewImage();\n\n  desti->identifier = Gif_CopyString(srci->identifier);\n  if (srci->transparent > -1)\n    desti->transparent = map[srci->transparent];\n  desti->delay = srci->delay;\n  desti->disposal = srci->disposal;\n  desti->left = srci->left;\n  desti->top = srci->top;\n  desti->interlace = srci->interlace;\n\n  desti->width = srci->width;\n  desti->height = srci->height;\n  desti->local = localcm;\n\n  if (trivial_map && same_compressed_ok && srci->compressed\n      && !srci->compressed_errors) {\n    desti->compressed_len = srci->compressed_len;\n    desti->compressed = Gif_NewArray(uint8_t, srci->compressed_len);\n    desti->free_compressed = Gif_Free;\n    memcpy(desti->compressed, srci->compressed, srci->compressed_len);\n  } else {\n    int i, j;\n    Gif_CreateUncompressedImage(desti, desti->interlace);\n\n    if (trivial_map)\n      for (j = 0; j < desti->height; j++)\n        memcpy(desti->img[j], srci->img[j], desti->width);\n\n    else\n      for (j = 0; j < desti->height; j++) {\n        uint8_t *srcdata = srci->img[j];\n        uint8_t *destdata = desti->img[j];\n        for (i = 0; i < desti->width; i++, srcdata++, destdata++)\n          *destdata = map[*srcdata];\n      }\n  }\n\n  /* comments and extensions */\n  if (srci->comment) {\n    desti->comment = Gif_NewComment();\n    merge_comments(desti->comment, srci->comment);\n  }\n  if (srci->extension_list && !srcfr->no_extensions) {\n      Gif_Extension* gfex;\n      for (gfex = srci->extension_list; gfex; gfex = gfex->next)\n          if (gfex->kind != 255 || !srcfr->no_app_extensions)\n              Gif_AddExtension(dest, desti, Gif_CopyExtension(gfex));\n  }\n  while (srcfr->extensions) {\n      Gif_Extension* next = srcfr->extensions->next;\n      Gif_AddExtension(dest, desti, srcfr->extensions);\n      srcfr->extensions = next;\n  }\n\n  Gif_AddImage(dest, desti);\n  return desti;\n}",
+            1
+        ],
+        [
+            "src/gifview.c",
+            "warning",
+            "void warning(const char* format, ...) { /* <=== warning */ \n    char buf[BUFSIZ];\n    int n = snprintf(buf, BUFSIZ, \"%s: warning: \", program_name);\n    va_list val;\n    va_start(val, format);\n    Clp_vsnprintf(clp, buf + n, BUFSIZ - n, format, val);\n    va_end(val);\n    fputs(buf, stderr);\n}",
+            2
+        ],
+        [
+            "src/ungifwrt.c",
+            "RUN_EWMA_SHIFT",
+            "#define RUN_EWMA_SHIFT 4 /* <=== src/ungifwrt.c:174:174:RUN_EWMA_SHIFT:0 */ ",
+            3
+        ],
+        [
+            "src/gifwrite.c",
+            "gfc_define",
+            "static inline void /* <=== gfc_define */ \ngfc_define(Gif_CodeTable *gfc, Gif_Node *work_node, uint8_t suffix,\n           Gif_Code next_code)\n{\n  /* Add a new code to our dictionary. First reserve a node for the\n     added code. It's LINKS_TYPE at first. */\n  Gif_Node *next_node = &gfc->nodes[gfc->nodes_pos];\n  gfc->nodes_pos++;\n  next_node->code = next_code;\n  next_node->type = LINKS_TYPE;\n  next_node->suffix = suffix;\n  next_node->child.s = 0;\n\n  /* link next_node into work_node's set of children */\n  if (work_node->type == TABLE_TYPE)\n    work_node->child.m[suffix] = next_node;\n  else if (work_node->type < MAX_LINKS_TYPE\n           || gfc->links_pos + gfc->clear_code > LINKS_SIZE) {\n    next_node->sibling = work_node->child.s;\n    work_node->child.s = next_node;\n    if (work_node->type < MAX_LINKS_TYPE)\n      work_node->type++;\n  } else\n    gfc_change_node_to_table(gfc, work_node, next_node);\n}",
+            3
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_ImageColorBound",
+            "int /* <=== Gif_ImageColorBound */ \nGif_ImageColorBound(const Gif_Image* gfi)\n{\n    if (gfi->compressed && gfi->compressed[0] > 0 && gfi->compressed[0] < 8)\n        return 1 << gfi->compressed[0];\n    else\n        return 256;\n}",
+            3
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_AddCommentTake",
+            "int /* <=== Gif_AddCommentTake */ \nGif_AddCommentTake(Gif_Comment *gfcom, char *x, int xlen)\n{\n  if (gfcom->count >= gfcom->cap) {\n    if (gfcom->cap)\n      gfcom->cap *= 2;\n    else\n      gfcom->cap = 2;\n    Gif_ReArray(gfcom->str, char *, gfcom->cap);\n    Gif_ReArray(gfcom->len, int, gfcom->cap);\n    if (!gfcom->str || !gfcom->len)\n      return 0;\n  }\n  if (xlen < 0)\n    xlen = strlen(x);\n  gfcom->str[ gfcom->count ] = x;\n  gfcom->len[ gfcom->count ] = xlen;\n  gfcom->count++;\n  return 1;\n}",
+            3
+        ],
+        [
+            "src/gifdiff.c",
+            "error",
+            "void error(const char* format, ...) { /* <=== error */ \n    char buf[BUFSIZ];\n    int n = snprintf(buf, BUFSIZ, \"%s: \", program_name);\n    va_list val;\n    va_start(val, format);\n    Clp_vsnprintf(clp, buf + n, BUFSIZ - n, format, val);\n    va_end(val);\n    fputs(buf, stderr);\n}",
+            1
+        ],
+        [
+            "src/gifwrite.c",
+            "gfc_lookup",
+            "static inline Gif_Node * /* <=== gfc_lookup */ \ngfc_lookup(Gif_CodeTable *gfc, Gif_Node *node, uint8_t suffix)\n{\n  assert(!node || (node >= gfc->nodes && node < gfc->nodes + NODES_SIZE));\n  assert(suffix < gfc->clear_code);\n  if (!node)\n    return &gfc->nodes[suffix];\n  else if (node->type == TABLE_TYPE)\n    return node->child.m[suffix];\n  else {\n    for (node = node->child.s; node; node = node->sibling)\n      if (node->suffix == suffix)\n        return node;\n    return NULL;\n  }\n}",
+            3
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_AddComment",
+            "int /* <=== Gif_AddComment */ \nGif_AddComment(Gif_Comment *gfcom, const char *x, int xlen)\n{\n  char *new_x;\n  if (xlen < 0)\n    xlen = strlen(x);\n  new_x = Gif_NewArray(char, xlen);\n  if (!new_x)\n    return 0;\n  memcpy(new_x, x, xlen);\n  if (Gif_AddCommentTake(gfcom, new_x, xlen) == 0) {\n    Gif_DeleteArray(new_x);\n    return 0;\n  } else\n    return 1;\n}",
+            2
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_DeleteComment",
+            "void /* <=== Gif_DeleteComment */ \nGif_DeleteComment(Gif_Comment *gfcom)\n{\n  int i;\n  if (!gfcom)\n    return;\n  for (i = 0; i < gfcom->count; i++)\n    Gif_DeleteArray(gfcom->str[i]);\n  Gif_DeleteArray(gfcom->str);\n  Gif_DeleteArray(gfcom->len);\n  Gif_Delete(gfcom);\n}",
+            1
+        ],
+        [
+            "src/support.c",
+            "set_background",
+            "static void /* <=== set_background */ \nset_background(Gif_Stream *gfs, Gt_OutputData *output_data)\n{\n    Gif_Color background;\n    int i, j, conflict, want_transparent;\n    Gif_Image *gfi;\n\n    /* Check for user-specified background. */\n    /* If they specified the number, silently cooperate. */\n    if (output_data->background.haspixel == 2) {\n        gfs->background = output_data->background.pixel;\n        return;\n    }\n\n    /* Otherwise, if they specified a color, search for it. */\n    if (output_data->background.haspixel) {\n        if (gfs->images[0]->transparent >= 0) {\n            static int context = 0;\n            if (!context) {\n                warning(1, \"irrelevant background color\\n\"\n                        \"  (The background will appear transparent because\"\n                        \"  the first image contains transparency.)\");\n                context = 1;\n            } else\n                warning(1, \"irrelevant background color\");\n        }\n        background = output_data->background;\n        goto search;\n    }\n\n    /* If we get here, user doesn't care about background. */\n    /* Search for required background colors. */\n    conflict = want_transparent = background.haspixel = 0;\n    for (i = j = 0; i < nmerger; i++) {\n        if (merger[i]->total_crop) /* frame does not correspond to an image */\n            continue;\n        gfi = gfs->images[j];\n        if (gfi->disposal == GIF_DISPOSAL_BACKGROUND\n            || (j == 0 && (gfi->left != 0 || gfi->top != 0\n                           || gfi->width != gfs->screen_width\n                           || gfi->height != gfs->screen_height))) {\n            /* transparent.haspixel set below, at merge_frame_done */\n            int original_bg_transparent = (merger[i]->transparent.haspixel == 2);\n            if ((original_bg_transparent && background.haspixel)\n                || (!original_bg_transparent && want_transparent))\n                conflict = 2;\n            else if (original_bg_transparent)\n                want_transparent = 1;\n            else if (merger[i]->transparent.haspixel) {\n                if (background.haspixel\n                    && !GIF_COLOREQ(&background, &merger[i]->transparent))\n                    conflict = 1;\n                else {\n                    background = merger[i]->transparent;\n                    background.haspixel = 1;\n                }\n            }\n        }\n        j++;\n    }\n\n    /* Report conflicts. */\n    if (conflict || (want_transparent && gfs->images[0]->transparent < 0)) {\n        static int context = 0;\n        if (!context) {\n            warning(1, \"input images have conflicting background colors\\n\"\n                    \"  (This means some animation frames may appear incorrect.)\");\n            context = 1;\n        } else\n            warning(1, \"input images have conflicting background colors\");\n    }\n\n    /* If no important background color, bag. */\n    if (!background.haspixel) {\n        gfs->background = 0;\n        return;\n    }\n\n  search:\n    i = find_color_or_error(&background, gfs, 0, \"background\");\n    gfs->background = (i >= 0 ? i : 0);\n}",
+            1
+        ],
+        [
+            "src/gifwrite.c",
+            "RUN_EWMA_SHIFT",
+            "#define RUN_EWMA_SHIFT 4 /* <=== src/gifwrite.c:427:427:RUN_EWMA_SHIFT:0 */ ",
+            3
+        ],
+        [
+            "src/merge.c",
+            "merge_image_input_colors",
+            "static void merge_image_input_colors(uint8_t* inused, const Gif_Image* srci) { /* <=== merge_image_input_colors */ \n    int i, x, y, nleft = Gif_ImageColorBound(srci);\n    for (i = 0; i != 256; ++i)\n        inused[i] = 0;\n    for (y = 0; y != srci->height && nleft > 0; ++y) {\n        const uint8_t* data = srci->img[y];\n        for (x = 0; x != srci->width; ++x, ++data) {\n            nleft -= 1 - inused[*data];\n            inused[*data] = 1;\n        }\n    }\n    if (srci->transparent >= 0)\n        inused[srci->transparent] = 0;\n}",
+            2
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_FindColor",
+            "int /* <=== Gif_FindColor */ \nGif_FindColor(Gif_Colormap *gfcm, Gif_Color *c)\n{\n  int i;\n  for (i = 0; i < gfcm->ncol; i++)\n    if (GIF_COLOREQ(&gfcm->col[i], c))\n      return i;\n  return -1;\n}",
+            3
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_CreateUncompressedImage",
+            "int /* <=== Gif_CreateUncompressedImage */ \nGif_CreateUncompressedImage(Gif_Image *gfi, int data_interlaced)\n{\n    size_t sz = (size_t) gfi->width * (size_t) gfi->height;\n    uint8_t *data = Gif_NewArray(uint8_t, sz ? sz : 1);\n    return Gif_SetUncompressedImage(gfi, data, Gif_Free, data_interlaced);\n}",
+            2
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_AddExtension",
+            "int /* <=== Gif_AddExtension */ \nGif_AddExtension(Gif_Stream* gfs, Gif_Image* gfi, Gif_Extension* gfex)\n{\n    Gif_Extension **pprev;\n    if (gfex->stream || gfex->image)\n        return 0;\n    pprev = gfi ? &gfi->extension_list : &gfs->end_extension_list;\n    while (*pprev)\n        pprev = &(*pprev)->next;\n    *pprev = gfex;\n    gfex->stream = gfs;\n    gfex->image = gfi;\n    gfex->next = 0;\n    return 1;\n}",
+            2
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_CopyColormap",
+            "Gif_Colormap * /* <=== Gif_CopyColormap */ \nGif_CopyColormap(Gif_Colormap *src)\n{\n  Gif_Colormap *dest;\n  if (!src)\n    return 0;\n\n  dest = Gif_NewFullColormap(src->ncol, src->capacity);\n  if (!dest)\n    return 0;\n\n  memcpy(dest->col, src->col, sizeof(src->col[0]) * src->ncol);\n  return dest;\n}",
+            2
+        ],
+        [
+            "src/gifsicle.h",
+            "GT_OPT_MASK",
+            "#define GT_OPT_MASK             0xFFFF /* <=== src/gifsicle.h:162:162:GT_OPT_MASK:0 */ ",
+            1
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_NewExtension",
+            "Gif_Extension * /* <=== Gif_NewExtension */ \nGif_NewExtension(int kind, const char* appname, int applength)\n{\n    Gif_Extension *gfex = Gif_New(Gif_Extension);\n    if (!gfex)\n        return 0;\n    gfex->kind = kind;\n    if (appname) {\n        gfex->appname = (char*) Gif_NewArray(char, applength + 1);\n        if (!gfex->appname) {\n            Gif_Delete(gfex);\n            return 0;\n        }\n        memcpy(gfex->appname, appname, applength);\n        gfex->appname[applength] = 0;\n        gfex->applength = applength;\n    } else {\n        gfex->appname = 0;\n        gfex->applength = 0;\n    }\n    gfex->data = 0;\n    gfex->stream = 0;\n    gfex->image = 0;\n    gfex->next = 0;\n    gfex->free_data = 0;\n    gfex->packetized = 0;\n    return gfex;\n}",
+            3
+        ],
+        [
+            "src/xform.c",
+            "crop_image",
+            "int /* <=== crop_image */ \ncrop_image(Gif_Image* gfi, Gt_Frame* fr, int preserve_total_crop)\n{\n    Gt_Crop c;\n    int j;\n\n    combine_crop(&c, fr->crop, gfi);\n\n    fr->left_offset = fr->crop->left_offset;\n    fr->top_offset = fr->crop->top_offset;\n\n    if (c.w > 0 && c.h > 0 && gfi->img) {\n        uint8_t** old_img = gfi->img;\n        gfi->img = Gif_NewArray(uint8_t *, c.h + 1);\n        for (j = 0; j < c.h; j++)\n            gfi->img[j] = old_img[c.y + j] + c.x;\n        gfi->img[c.h] = 0;\n        Gif_DeleteArray(old_img);\n        gfi->width = c.w;\n        gfi->height = c.h;\n    } else if (preserve_total_crop)\n        Gif_MakeImageEmpty(gfi);\n    else {\n        Gif_DeleteArray(gfi->img);\n        gfi->img = 0;\n        gfi->width = gfi->height = 0;\n    }\n\n    gfi->left += c.x - fr->left_offset;\n    gfi->top += c.y - fr->top_offset;\n    return gfi->img != 0;\n}",
+            1
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_NewComment",
+            "Gif_Comment * /* <=== Gif_NewComment */ \nGif_NewComment(void)\n{\n  Gif_Comment *gfcom = Gif_New(Gif_Comment);\n  if (!gfcom)\n    return 0;\n  gfcom->str = 0;\n  gfcom->len = 0;\n  gfcom->count = gfcom->cap = 0;\n  return gfcom;\n}",
+            1
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_DeleteColormap",
+            "void /* <=== Gif_DeleteColormap */ \nGif_DeleteColormap(Gif_Colormap *gfcm)\n{\n  Gif_DeletionHook *hook;\n  if (!gfcm || --gfcm->refcount > 0)\n    return;\n\n  for (hook = all_hooks; hook; hook = hook->next)\n    if (hook->kind == GIF_T_COLORMAP)\n      (*hook->func)(GIF_T_COLORMAP, gfcm, hook->callback_data);\n\n  Gif_DeleteArray(gfcm->col);\n  Gif_Delete(gfcm);\n}",
+            2
+        ],
+        [
+            "src/ungifwrt.c",
+            "save_compression_result",
+            "static void /* <=== save_compression_result */ \nsave_compression_result(Gif_Image *gfi, Gif_Writer *grr, int ok)\n{\n  if (!(grr->gcinfo.flags & GIF_WRITE_SHRINK)\n      || (ok && (!gfi->compressed || gfi->compressed_len > grr->pos))) {\n    if (gfi->compressed)\n      (*gfi->free_compressed)((void *) gfi->compressed);\n    if (ok) {\n      gfi->compressed_len = grr->pos;\n      gfi->compressed_errors = 0;\n      gfi->compressed = grr->v;\n      gfi->free_compressed = Gif_Free;\n      grr->v = 0;\n      grr->cap = 0;\n    } else\n      gfi->compressed = 0;\n  }\n  grr->pos = 0;\n}",
+            2
+        ],
+        [
+            "src/gifwrite.c",
+            "gif_writer_cleanup",
+            "static void /* <=== gif_writer_cleanup */ \ngif_writer_cleanup(Gif_Writer* grr)\n{\n  Gif_DeleteArray(grr->v);\n  Gif_DeleteArray(grr->code_table.nodes);\n  Gif_DeleteArray(grr->code_table.links);\n}",
+            2
+        ],
+        [
+            "src/ungifwrt.c",
+            "gif_imageline",
+            "static inline const uint8_t * /* <=== gif_imageline */ \ngif_imageline(Gif_Image *gfi, unsigned pos)\n{\n  unsigned y, x;\n  if (gfi->width == 0)\n    return NULL;\n  y = pos / gfi->width;\n  x = pos - y * gfi->width;\n  if (y == (unsigned) gfi->height)\n    return NULL;\n  else if (!gfi->interlace)\n    return gfi->img[y] + x;\n  else\n    return gfi->img[Gif_InterlaceLine(y, gfi->height)] + x;\n}",
+            3
+        ],
+        [
+            "src/gifwrite.c",
+            "get_color_table_size",
+            "static int /* <=== get_color_table_size */ \nget_color_table_size(const Gif_Stream *gfs, Gif_Image *gfi, Gif_Writer *grr)\n{\n  Gif_Colormap *gfcm = (gfi ? gfi->local : gfs->global);\n  int ncol, totalcol, i;\n\n  if (!gfcm || gfcm->ncol <= 0)\n    return 0;\n\n  /* Make sure ncol is reasonable */\n  ncol = gfcm->ncol;\n\n  /* Possibly bump up 'ncol' based on 'transparent' values, if\n     careful_min_code_bits */\n  if (grr->gcinfo.flags & GIF_WRITE_CAREFUL_MIN_CODE_SIZE) {\n    if (gfi && gfi->transparent >= ncol)\n      ncol = gfi->transparent + 1;\n    else if (!gfi)\n      for (i = 0; i < gfs->nimages; i++)\n        if (gfs->images[i]->transparent >= ncol)\n          ncol = gfs->images[i]->transparent + 1;\n  }\n\n  /* Make sure the colormap is a power of two entries! */\n  /* GIF format doesn't allow a colormap with only 1 entry. */\n  if (ncol > 256)\n    ncol = 256;\n  for (totalcol = 2; totalcol < ncol; totalcol *= 2)\n    /* nada */;\n\n  return totalcol;\n}",
+            2
+        ],
+        [
+            "src/support.c",
+            "verror",
+            "static void /* <=== verror */ \nverror(const char* landmark, int need_file,\n       int seriousness, const char *fmt, va_list val)\n{\n    char pbuf[256], buf[BUFSIZ], xbuf[BUFSIZ];\n    const char* xfmt;\n    int n, i, p;\n    size_t xi;\n\n    if (!fmt || !*fmt)\n        return;\n\n    if (!landmark && need_file && active_output_data.active_output_name\n        && mode != BLANK_MODE && mode != MERGING && nested_mode != MERGING)\n        landmark = active_output_data.active_output_name;\n    else if (!landmark)\n        landmark = \"\";\n\n    if (seriousness > 2)\n        xfmt = \"%s:%s%s fatal error: \";\n    else if (seriousness == 1)\n        xfmt = \"%s:%s%s warning: \";\n    else\n        xfmt = \"%s:%s%s \";\n    snprintf(pbuf, sizeof(pbuf), xfmt, program_name, landmark, *landmark ? \":\" : \"\");\n    p = strlen(pbuf);\n\n    Clp_vsnprintf(clp, buf, sizeof(buf), fmt, val);\n    n = strlen(buf);\n    if ((size_t) n + 1 < sizeof(buf) && (n == 0 || buf[n - 1] != '\\n')) {\n        buf[n++] = '\\n';\n        buf[n] = 0;\n    }\n\n    xi = 0;\n    for (i = 0; i != n; ) {\n        /* char* pos = (char*) memchr(&buf[i], '\\n', n - i);\n           int l = (pos ? &pos[1] - &buf[i] : n - i); */\n        int l = n - i;\n        int xd = snprintf(&xbuf[xi], sizeof(xbuf) - xi, \"%.*s%.*s\",\n                          (int) p, pbuf, (int) l, &buf[i]);\n        i += l;\n        xi = (xi + xd > sizeof(xbuf) ? sizeof(xbuf) : xi + xd);\n    }\n\n    if (seriousness == 1 && no_warnings)\n        return;\n    else if (seriousness > 1)\n        error_count++;\n\n    verbose_endline();\n    fwrite(xbuf, 1, xi, stderr);\n}",
+            2
+        ],
+        [
+            "src/gifwrite.c",
+            "write_compressed_data",
+            "static int /* <=== write_compressed_data */ \nwrite_compressed_data(Gif_Stream *gfs, Gif_Image *gfi,\n                      int min_code_bits, Gif_Writer *grr)\n{\n  Gif_CodeTable* gfc = &grr->code_table;\n  uint8_t stack_buffer[512 - 24];\n  uint8_t *buf = stack_buffer;\n  unsigned bufpos = 0;\n  unsigned bufcap = sizeof(stack_buffer) * 8;\n\n  unsigned pos;\n  unsigned clear_bufpos, clear_pos;\n  unsigned line_endpos;\n  const unsigned image_endpos = (size_t) gfi->height * (size_t) gfi->width;\n  const uint8_t *imageline;\n\n  unsigned run = 0;\n#define RUN_EWMA_SHIFT 4\n#define RUN_EWMA_SCALE 19\n#define RUN_INV_THRESH ((unsigned) (1 << RUN_EWMA_SCALE) / 3000)\n  unsigned run_ewma = 0;\n  Gif_Node *work_node;\n  Gif_Node *next_node;\n  Gif_Code next_code = 0;\n  Gif_Code output_code;\n  uint8_t suffix;\n  Gif_Colormap *gfcm = gfi->local ? gfi->local : gfs->global;\n\n  int cur_code_bits;\n\n  /* Here we go! */\n  gifputbyte(min_code_bits, grr);\n#define CUR_BUMP_CODE   (1 << cur_code_bits)\n  gfc->clear_code = (Gif_Code) (1 << min_code_bits);\n  grr->cleared = 0;\n\n  cur_code_bits = min_code_bits + 1;\n  /* next_code set by first runthrough of output clear_code */\n  GIF_DEBUG((\"clear(%d) eoi(%d) bits(%d) \", gfc->clear_code, gfc->clear_code + 1, cur_code_bits));\n\n  work_node = NULL;\n  output_code = gfc->clear_code;\n  /* Because output_code is clear_code, we'll initialize next_code, et al.\n     below. */\n\n  pos = clear_pos = clear_bufpos = 0;\n  line_endpos = gfi->width;\n  imageline = gif_imageline(gfi, pos);\n\n  while (1) {\n\n    /*****\n     * Output 'output_code' to the memory buffer. */\n    if (bufpos + 32 >= bufcap) {\n      unsigned ncap = bufcap * 2 + (24 << 3);\n      uint8_t *nbuf = Gif_NewArray(uint8_t, ncap >> 3);\n      if (!nbuf)\n        goto error;\n      memcpy(nbuf, buf, bufcap >> 3);\n      if (buf != stack_buffer)\n        Gif_DeleteArray(buf);\n      buf = nbuf;\n      bufcap = ncap;\n    }\n\n    {\n      unsigned endpos = bufpos + cur_code_bits;\n      do {\n        if (bufpos & 7)\n          buf[bufpos >> 3] |= output_code << (bufpos & 7);\n        else if (bufpos & 0x7FF)\n          buf[bufpos >> 3] = output_code >> (bufpos - endpos + cur_code_bits);\n        else {\n          buf[bufpos >> 3] = 255;\n          endpos += 8;\n        }\n\n        bufpos += 8 - (bufpos & 7);\n      } while (bufpos < endpos);\n      bufpos = endpos;\n    }\n\n\n    /*****\n     * Handle special codes. */\n\n    if (output_code == gfc->clear_code) {\n      /* Clear data and prepare gfc */\n      cur_code_bits = min_code_bits + 1;\n      next_code = gfc->clear_code + 2;\n      run_ewma = 1 << RUN_EWMA_SCALE;\n      run = 0;\n      gfc_clear(gfc);\n      clear_pos = clear_bufpos = 0;\n\n      GIF_DEBUG((\"clear \"));\n\n    } else if (output_code == gfc->clear_code + 1)\n      break;\n\n    else {\n      if (next_code > CUR_BUMP_CODE && cur_code_bits < GIF_MAX_CODE_BITS)\n        /* bump up compression size */\n        ++cur_code_bits;\n\n      /* Adjust current run length average. */\n      run = (run << RUN_EWMA_SCALE) + (1 << (RUN_EWMA_SHIFT - 1));\n      if (run < run_ewma)\n        run_ewma -= (run_ewma - run) >> RUN_EWMA_SHIFT;\n      else\n        run_ewma += (run - run_ewma) >> RUN_EWMA_SHIFT;\n\n      /* Reset run length. */\n      run = !!work_node;\n    }\n\n\n    /*****\n     * Find the next code to output. */\n    if (grr->gcinfo.loss) {\n      gfc_rgbdiff zero_diff = {0, 0, 0};\n      struct selected_node t = gfc_lookup_lossy(gfc, gfcm, gfi, pos, NULL, 0, zero_diff, grr->gcinfo.loss * 10);\n\n      work_node = t.node;\n      run = t.pos - pos;\n      pos = t.pos;\n\n      if (pos < image_endpos) {\n        /* Output the current code. */\n        if (next_code < GIF_MAX_CODE) {\n          gfc_define(gfc, work_node, gif_pixel_at_pos(gfi, pos), next_code);\n          next_code++;\n        } else\n          next_code = GIF_MAX_CODE + 1; /* to match \"> CUR_BUMP_CODE\" above */\n\n        /* Check whether to clear table. */\n        if (next_code > 4094) {\n          int do_clear = grr->gcinfo.flags & GIF_WRITE_EAGER_CLEAR;\n\n          if (!do_clear) {\n            unsigned pixels_left = image_endpos - pos - 1;\n            if (pixels_left) {\n              /* Always clear if run_ewma gets small relative to\n                 min_code_bits. Otherwise, clear if #images/run is smaller\n                 than an empirical threshold, meaning it will take more than\n                 3000 or so average runs to complete the image. */\n              if (run_ewma < ((36U << RUN_EWMA_SCALE) / min_code_bits)\n                  || pixels_left > UINT_MAX / RUN_INV_THRESH\n                  || run_ewma < pixels_left * RUN_INV_THRESH)\n                do_clear = 1;\n            }\n          }\n\n          if ((do_clear || run < 7) && !clear_pos) {\n            clear_pos = pos - run;\n            clear_bufpos = bufpos;\n          } else if (!do_clear && run > 50)\n            clear_pos = clear_bufpos = 0;\n\n          if (do_clear) {\n            GIF_DEBUG((\"rewind %u pixels/%d bits\", pos + 1 - clear_pos, bufpos + cur_code_bits - clear_bufpos));\n            output_code = gfc->clear_code;\n            pos = clear_pos;\n\n            bufpos = clear_bufpos;\n            buf[bufpos >> 3] &= (1 << (bufpos & 7)) - 1;\n            grr->cleared = 1;\n            continue;\n          }\n        }\n\n        /* Adjust current run length average. */\n        run = (run << RUN_EWMA_SCALE) + (1 << (RUN_EWMA_SHIFT - 1));\n        if (run < run_ewma)\n          run_ewma -= (run_ewma - run) >> RUN_EWMA_SHIFT;\n        else\n          run_ewma += (run - run_ewma) >> RUN_EWMA_SHIFT;\n      }\n\n      output_code = (work_node ? work_node->code : gfc->clear_code + 1);\n    } else {\n      /* If height is 0 -- no more pixels to write -- we output work_node next\n         time around. */\n      while (imageline) {\n        suffix = *imageline;\n        if (suffix >= gfc->clear_code)\n          /* should not happen unless GIF_WRITE_CAREFUL_MIN_CODE_BITS */\n          suffix = 0;\n        next_node = gfc_lookup(gfc, work_node, suffix);\n\n        imageline++;\n        pos++;\n        if (pos == line_endpos) {\n          imageline = gif_imageline(gfi, pos);\n          line_endpos += gfi->width;\n        }\n\n        if (next_node) {\n          work_node = next_node;\n          ++run;\n          continue;\n        }\n\n        /* Output the current code. */\n        if (next_code < GIF_MAX_CODE) {\n          gfc_define(gfc, work_node, suffix, next_code);\n          next_code++;\n        } else\n          next_code = GIF_MAX_CODE + 1; /* to match \"> CUR_BUMP_CODE\" above */\n\n        /* Check whether to clear table. */\n        if (next_code > 4094) {\n          int do_clear = grr->gcinfo.flags & GIF_WRITE_EAGER_CLEAR;\n\n          if (!do_clear) {\n            unsigned pixels_left = image_endpos - pos;\n            if (pixels_left) {\n              /* Always clear if run_ewma gets small relative to\n                 min_code_bits. Otherwise, clear if #images/run is smaller\n                 than an empirical threshold, meaning it will take more than\n                 3000 or so average runs to complete the image. */\n              if (run_ewma < ((36U << RUN_EWMA_SCALE) / min_code_bits)\n                  || pixels_left > UINT_MAX / RUN_INV_THRESH\n                  || run_ewma < pixels_left * RUN_INV_THRESH)\n                do_clear = 1;\n            }\n          }\n\n          if ((do_clear || run < 7) && !clear_pos) {\n            clear_pos = pos - (run + 1);\n            clear_bufpos = bufpos;\n          } else if (!do_clear && run > 50)\n            clear_pos = clear_bufpos = 0;\n\n          if (do_clear) {\n            GIF_DEBUG((\"rewind %u pixels/%d bits \", pos - clear_pos, bufpos + cur_code_bits - clear_bufpos));\n            output_code = gfc->clear_code;\n            pos = clear_pos;\n            imageline = gif_imageline(gfi, pos);\n            line_endpos = gif_line_endpos(gfi, pos);\n            bufpos = clear_bufpos;\n            buf[bufpos >> 3] &= (1 << (bufpos & 7)) - 1;\n            work_node = NULL;\n            grr->cleared = 1;\n            goto found_output_code;\n          }\n        }\n\n        output_code = work_node->code;\n        work_node = &gfc->nodes[suffix];\n        goto found_output_code;\n      }\n\n      /* Ran out of data if we get here. */\n      output_code = (work_node ? work_node->code : gfc->clear_code + 1);\n      work_node = NULL;\n\n      found_output_code: ;\n    }\n  }\n\n  /* Output memory buffer to stream. */\n  bufpos = (bufpos + 7) >> 3;\n  buf[(bufpos - 1) & 0xFFFFFF00] = (bufpos - 1) & 0xFF;\n  buf[bufpos] = 0;\n  gifputblock(buf, bufpos + 1, grr);\n\n  if (buf != stack_buffer)\n    Gif_DeleteArray(buf);\n  return 1;\n\n error:\n  if (buf != stack_buffer)\n    Gif_DeleteArray(buf);\n  return 0;\n}",
+            2
+        ],
+        [
+            "src/support.c",
+            "verbose_endline",
+            "void /* <=== verbose_endline */ \nverbose_endline(void)\n{\n  if (verbose_pos) {\n    fputc('\\n', stderr);\n    fflush(stderr);\n    verbose_pos = 0;\n  }\n}",
+            3
+        ],
+        [
+            "src/gifwrite.c",
+            "gifputbyte",
+            "#define gifputbyte(b, grr)      ((*grr->byte_putter)(b, grr)) /* <=== src/gifwrite.c:89:89:gifputbyte:2 */ ",
+            3
+        ],
+        [
+            "src/gifwrite.c",
+            "save_compression_result",
+            "static void /* <=== save_compression_result */ \nsave_compression_result(Gif_Image *gfi, Gif_Writer *grr, int ok)\n{\n  if (!(grr->gcinfo.flags & GIF_WRITE_SHRINK)\n      || (ok && (!gfi->compressed || gfi->compressed_len > grr->pos))) {\n    if (gfi->compressed)\n      (*gfi->free_compressed)((void *) gfi->compressed);\n    if (ok) {\n      gfi->compressed_len = grr->pos;\n      gfi->compressed_errors = 0;\n      gfi->compressed = grr->v;\n      gfi->free_compressed = Gif_Free;\n      grr->v = 0;\n      grr->cap = 0;\n    } else\n      gfi->compressed = 0;\n  }\n  grr->pos = 0;\n}",
+            2
+        ],
+        [
+            "src/gifwrite.c",
+            "gif_imageline",
+            "static inline const uint8_t * /* <=== gif_imageline */ \ngif_imageline(Gif_Image *gfi, unsigned pos)\n{\n  unsigned y, x;\n  if (gfi->width == 0)\n    return NULL;\n  y = pos / gfi->width;\n  x = pos - y * gfi->width;\n  if (y == (unsigned) gfi->height)\n    return NULL;\n  else if (!gfi->interlace)\n    return gfi->img[y] + x;\n  else\n    return gfi->img[Gif_InterlaceLine(y, gfi->height)] + x;\n}",
+            3
+        ],
+        [
+            "src/ungifwrt.c",
+            "CLEAR_CODE",
+            "#define CLEAR_CODE      ((Gif_Code) (1 << min_code_bits)) /* <=== src/ungifwrt.c:189:189:CLEAR_CODE:0 */ ",
+            3
+        ],
+        [
+            "src/gifwrite.c",
+            "RUN_INV_THRESH",
+            "#define RUN_INV_THRESH ((unsigned) (1 << RUN_EWMA_SCALE) / 3000) /* <=== src/gifwrite.c:429:429:RUN_INV_THRESH:0 */ ",
+            3
+        ],
+        [
+            "src/support.c",
+            "error",
+            "void error(int need_file, const char* format, ...) { /* <=== error */ \n    va_list val;\n    va_start(val, format);\n    verror((const char*) 0, need_file, 2, format, val);\n    va_end(val);\n}",
+            1
+        ],
+        [
+            "src/ungifwrt.c",
+            "Gif_FullCompressImage",
+            "int /* <=== Gif_FullCompressImage */ \nGif_FullCompressImage(Gif_Stream *gfs, Gif_Image *gfi,\n\t\t      const Gif_CompressInfo *gcinfo)\n{\n  int ok = 0;\n  uint8_t min_code_bits;\n  Gif_Writer grr;\n\n  if (!gif_writer_init(&grr, NULL, gcinfo)) {\n    if (!(grr.gcinfo.flags & GIF_WRITE_SHRINK))\n      Gif_ReleaseCompressedImage(gfi);\n    goto done;\n  }\n\n  grr.global_size = get_color_table_size(gfs, 0, &grr);\n  grr.local_size = get_color_table_size(gfs, gfi, &grr);\n\n  min_code_bits = calculate_min_code_bits(gfi, &grr);\n  ok = write_compressed_data(gfi, min_code_bits, &grr);\n  save_compression_result(gfi, &grr, ok);\n\n  if ((grr.gcinfo.flags & (GIF_WRITE_OPTIMIZE | GIF_WRITE_EAGER_CLEAR))\n      == GIF_WRITE_OPTIMIZE\n      && grr.cleared && ok) {\n    grr.gcinfo.flags |= GIF_WRITE_EAGER_CLEAR | GIF_WRITE_SHRINK;\n    if (write_compressed_data(gfi, min_code_bits, &grr))\n      save_compression_result(gfi, &grr, 1);\n  }\n\n done:\n  gif_writer_cleanup(&grr);\n  return ok;\n}",
+            1
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_DeleteImage",
+            "void /* <=== Gif_DeleteImage */ \nGif_DeleteImage(Gif_Image *gfi)\n{\n  Gif_DeletionHook *hook;\n  if (!gfi || --gfi->refcount > 0)\n    return;\n\n  for (hook = all_hooks; hook; hook = hook->next)\n    if (hook->kind == GIF_T_IMAGE)\n      (*hook->func)(GIF_T_IMAGE, gfi, hook->callback_data);\n\n  Gif_DeleteArray(gfi->identifier);\n  Gif_DeleteComment(gfi->comment);\n  while (gfi->extension_list)\n      Gif_DeleteExtension(gfi->extension_list);\n  Gif_DeleteColormap(gfi->local);\n  if (gfi->image_data && gfi->free_image_data)\n    (*gfi->free_image_data)((void *)gfi->image_data);\n  Gif_DeleteArray(gfi->img);\n  if (gfi->compressed && gfi->free_compressed)\n    (*gfi->free_compressed)((void *)gfi->compressed);\n  if (gfi->user_data && gfi->free_user_data)\n    (*gfi->free_user_data)(gfi->user_data);\n  Gif_Delete(gfi);\n}",
+            1
+        ],
+        [
+            "src/gifsicle.h",
+            "BLANK_MODE",
+            "#define BLANK_MODE      0 /* <=== src/gifsicle.h:330:330:BLANK_MODE:0 */ ",
+            3
+        ],
+        [
+            "src/ungifwrt.c",
+            "EOI_CODE",
+            "#define EOI_CODE        ((Gif_Code) (CLEAR_CODE + 1)) /* <=== src/ungifwrt.c:190:190:EOI_CODE:0 */ ",
+            3
+        ],
+        [
+            "src/ungifwrt.c",
+            "gif_writer_init",
+            "static int /* <=== gif_writer_init */ \ngif_writer_init(Gif_Writer* grr, FILE* f, const Gif_CompressInfo* gcinfo)\n{\n  grr->f = f;\n  grr->v = NULL;\n  grr->pos = grr->cap = 0;\n  if (gcinfo)\n    grr->gcinfo = *gcinfo;\n  else\n    Gif_InitCompressInfo(&grr->gcinfo);\n  grr->errors = 0;\n  grr->cleared = 0;\n  /* 27.Jul.2001: Must allocate GIF_MAX_CODE + 1 because we assign to\n     rle_next[GIF_MAX_CODE]! Thanks, Jeff Brown <jabrown@ipn.caida.org>, for\n     supplying the buggy files. */\n  grr->rle_next = Gif_NewArray(Gif_Code, GIF_MAX_CODE + 1);\n  if (f) {\n    grr->byte_putter = file_byte_putter;\n    grr->block_putter = file_block_putter;\n  } else {\n    grr->byte_putter = memory_byte_putter;\n    grr->block_putter = memory_block_putter;\n  }\n  return grr->rle_next != 0;\n}",
+            2
+        ],
+        [
+            "src/gifwrite.c",
+            "gif_writer_init",
+            "static int /* <=== gif_writer_init */ \ngif_writer_init(Gif_Writer* grr, FILE* f, const Gif_CompressInfo* gcinfo)\n{\n  grr->f = f;\n  grr->v = NULL;\n  grr->pos = grr->cap = 0;\n  if (gcinfo)\n    grr->gcinfo = *gcinfo;\n  else\n    Gif_InitCompressInfo(&grr->gcinfo);\n  grr->errors = 0;\n  grr->cleared = 0;\n  grr->code_table.nodes = Gif_NewArray(Gif_Node, NODES_SIZE);\n  grr->code_table.links = Gif_NewArray(Gif_Node*, LINKS_SIZE);\n  if (f) {\n    grr->byte_putter = file_byte_putter;\n    grr->block_putter = file_block_putter;\n  } else {\n    grr->byte_putter = memory_byte_putter;\n    grr->block_putter = memory_block_putter;\n  }\n  return grr->code_table.nodes && grr->code_table.links;\n}",
+            2
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_InitCompressInfo",
+            "void /* <=== Gif_InitCompressInfo */ \nGif_InitCompressInfo(Gif_CompressInfo *gcinfo)\n{\n    gcinfo->flags = 0;\n    gcinfo->loss = 0;\n}",
+            3
+        ],
+        [
+            "src/ungifwrt.c",
+            "gif_line_endpos",
+            "static inline unsigned /* <=== gif_line_endpos */ \ngif_line_endpos(Gif_Image *gfi, unsigned pos)\n{\n  unsigned y = pos / gfi->width;\n  return (y + 1) * gfi->width;\n}",
+            3
+        ],
+        [
+            "src/gifwrite.c",
+            "gif_pixel_at_pos",
+            "static inline uint8_t /* <=== gif_pixel_at_pos */ \ngif_pixel_at_pos(Gif_Image *gfi, unsigned pos)\n{\n  unsigned y = pos / gfi->width, x = pos - y * gfi->width;\n  if (!gfi->interlace)\n    return gfi->img[y][x];\n  else\n    return gfi->img[Gif_InterlaceLine(y, gfi->height)][x];\n}",
+            3
+        ],
+        [
+            "src/giffunc.c",
+            "Gif_NewFullColormap",
+            "Gif_Colormap * /* <=== Gif_NewFullColormap */ \nGif_NewFullColormap(int count, int capacity)\n{\n  Gif_Colormap *gfcm = Gif_New(Gif_Colormap);\n  if (!gfcm || count < 0) {\n    Gif_Delete(gfcm);\n    return 0;\n  }\n  if (count > capacity)\n    capacity = count;\n  if (capacity < 256)\n    capacity = 256;\n  gfcm->ncol = count;\n  gfcm->capacity = capacity;\n  gfcm->col = Gif_NewArray(Gif_Color, capacity);\n  gfcm->refcount = 0;\n  gfcm->user_flags = 0;\n  if (!gfcm->col) {\n    Gif_Delete(gfcm);\n    return 0;\n  }\n  return gfcm;\n}",
+            1
+        ],
+        [
+            "src/ungifwrt.c",
+            "write_compressed_data",
+            "static int /* <=== write_compressed_data */ \nwrite_compressed_data(Gif_Image *gfi,\n\t\t      int min_code_bits, Gif_Writer *grr)\n{\n  uint8_t stack_buffer[512 - 24];\n  uint8_t *buf = stack_buffer;\n  unsigned bufpos = 0;\n  unsigned bufcap = sizeof(stack_buffer) * 8;\n\n  unsigned pos;\n  unsigned clear_bufpos, clear_pos;\n  unsigned line_endpos;\n  const uint8_t *imageline;\n\n  unsigned run;\n#ifndef GIF_NO_COMPRESSION\n#define RUN_EWMA_SHIFT 4\n#define RUN_EWMA_SCALE 19\n#define RUN_INV_THRESH ((unsigned) (1 << RUN_EWMA_SCALE) / 3000)\n  unsigned run_ewma;\n  Gif_Code* rle_next = grr->rle_next;\n#endif\n\n  Gif_Code next_code = 0;\n  Gif_Code output_code;\n  uint8_t suffix;\n\n  int cur_code_bits;\n\n  /* Here we go! */\n  gifputbyte(min_code_bits, grr);\n#define CLEAR_CODE      ((Gif_Code) (1 << min_code_bits))\n#define EOI_CODE        ((Gif_Code) (CLEAR_CODE + 1))\n#define CUR_BUMP_CODE   (1 << cur_code_bits)\n  grr->cleared = 0;\n\n  cur_code_bits = min_code_bits + 1;\n  /* next_code set by first runthrough of output clear_code */\n  GIF_DEBUG((\"clear(%d) eoi(%d) bits(%d) \", CLEAR_CODE, EOI_CODE, cur_code_bits));\n\n  output_code = CLEAR_CODE;\n  /* Because output_code is clear_code, we'll initialize next_code, et al.\n     below. */\n\n  pos = clear_pos = clear_bufpos = 0;\n  line_endpos = gfi->width;\n  imageline = gif_imageline(gfi, pos);\n\n  while (1) {\n\n    /*****\n     * Output 'output_code' to the memory buffer. */\n    if (bufpos + 32 >= bufcap) {\n      unsigned ncap = bufcap * 2 + (24 << 3);\n      uint8_t *nbuf = Gif_NewArray(uint8_t, ncap >> 3);\n      if (!nbuf)\n        goto error;\n      memcpy(nbuf, buf, bufcap >> 3);\n      if (buf != stack_buffer)\n        Gif_DeleteArray(buf);\n      buf = nbuf;\n      bufcap = ncap;\n    }\n\n    {\n      unsigned endpos = bufpos + cur_code_bits;\n      do {\n        if (bufpos & 7)\n          buf[bufpos >> 3] |= output_code << (bufpos & 7);\n        else if (bufpos & 0x7FF)\n          buf[bufpos >> 3] = output_code >> (bufpos - endpos + cur_code_bits);\n        else {\n          buf[bufpos >> 3] = 255;\n          endpos += 8;\n        }\n\n        bufpos += 8 - (bufpos & 7);\n      } while (bufpos < endpos);\n      bufpos = endpos;\n    }\n\n\n    /*****\n     * Handle special codes. */\n\n    if (output_code == CLEAR_CODE) {\n      /* Clear data and prepare gfc */\n      cur_code_bits = min_code_bits + 1;\n      next_code = EOI_CODE + 1;\n#ifndef GIF_NO_COMPRESSION\n      {\n        Gif_Code c;\n        for (c = 0; c < CLEAR_CODE; ++c)\n          rle_next[c] = CLEAR_CODE;\n      }\n      run_ewma = 1 << RUN_EWMA_SCALE;\n#endif\n      run = 0;\n      clear_pos = clear_bufpos = 0;\n\n      GIF_DEBUG((\"clear \"));\n\n    } else if (output_code == EOI_CODE)\n      break;\n\n    else {\n      if (next_code > CUR_BUMP_CODE && cur_code_bits < GIF_MAX_CODE_BITS)\n        /* bump up compression size */\n        ++cur_code_bits;\n\n#ifndef GIF_NO_COMPRESSION\n      /* Adjust current run length average. */\n      run = (run << RUN_EWMA_SCALE) + (1 << (RUN_EWMA_SHIFT - 1));\n      if (run < run_ewma)\n        run_ewma -= (run_ewma - run) >> RUN_EWMA_SHIFT;\n      else\n        run_ewma += (run - run_ewma) >> RUN_EWMA_SHIFT;\n#else\n      if (cur_code_bits != min_code_bits) {\n        /* never bump up compression size -- keep cur_code_bits small by\n           generating clear_codes */\n        output_code = CLEAR_CODE;\n        continue;\n      }\n#endif\n\n      /* Reset run length. */\n      run = 0;\n    }\n\n\n    /*****\n     * Find the next code to output. */\n\n    /* If height is 0 -- no more pixels to write -- we output work_node next\n       time around. */\n    if (imageline) {\n      output_code = suffix = *imageline;\n\n      while (1) {\n        imageline++;\n        pos++;\n        if (pos == line_endpos) {\n          imageline = gif_imageline(gfi, pos);\n          line_endpos += gfi->width;\n        }\n        run++;\n#ifndef GIF_NO_COMPRESSION\n        if (!imageline || *imageline != suffix || rle_next[output_code] == CLEAR_CODE)\n          break;\n        output_code = rle_next[output_code];\n#else\n        break;\n#endif\n      }\n\n      /* Output the current code. */\n      if (next_code < GIF_MAX_CODE) {\n#ifndef GIF_NO_COMPRESSION\n        if (imageline && *imageline == suffix) {\n          rle_next[output_code] = next_code;\n          rle_next[next_code] = CLEAR_CODE;\n        }\n#endif\n        next_code++;\n      } else\n        next_code = GIF_MAX_CODE + 1; /* to match \"> CUR_BUMP_CODE\" above */\n\n      /* Check whether to clear table. */\n      if (next_code > 4094) {\n        int do_clear = grr->gcinfo.flags & GIF_WRITE_EAGER_CLEAR;\n\n#ifndef GIF_NO_COMPRESSION\n        if (!do_clear) {\n          unsigned pixels_left = (unsigned) gfi->width * (unsigned) gfi->height - pos;\n          if (pixels_left) {\n            /* Always clear if run_ewma gets small relative to\n               min_code_bits. Otherwise, clear if #images/run is smaller\n               than an empirical threshold, meaning it will take more than\n               3000 or so average runs to complete the image. */\n            if (run_ewma < ((36U << RUN_EWMA_SCALE) / min_code_bits)\n                || pixels_left > UINT_MAX / RUN_INV_THRESH\n                || run_ewma < pixels_left * RUN_INV_THRESH)\n              do_clear = 1;\n          }\n        }\n#else\n        do_clear = 1;\n#endif\n\n        if ((do_clear || run < 7) && !clear_pos) {\n          clear_pos = pos - run;\n          clear_bufpos = bufpos;\n        } else if (!do_clear && run > 50)\n          clear_pos = clear_bufpos = 0;\n\n        if (do_clear) {\n          GIF_DEBUG((\"rewind %u pixels/%d bits \", pos - clear_pos, bufpos + cur_code_bits - clear_bufpos));\n          output_code = CLEAR_CODE;\n          pos = clear_pos;\n          imageline = gif_imageline(gfi, pos);\n          line_endpos = gif_line_endpos(gfi, pos);\n          bufpos = clear_bufpos;\n          buf[bufpos >> 3] &= (1 << (bufpos & 7)) - 1;\n          grr->cleared = 1;\n        }\n      }\n    } else\n      output_code = EOI_CODE;\n  }\n\n  /* Output memory buffer to stream. */\n  bufpos = (bufpos + 7) >> 3;\n  buf[(bufpos - 1) & 0xFFFFFF00] = (bufpos - 1) & 0xFF;\n  buf[bufpos] = 0;\n  gifputblock(buf, bufpos + 1, grr);\n\n  if (buf != stack_buffer)\n    Gif_DeleteArray(buf);\n  return 1;\n\n error:\n  if (buf != stack_buffer)\n    Gif_DeleteArray(buf);\n  return 0;\n}",
+            2
+        ]
+    ],
+    "globalVars": [
+        "static int nmerger",
+        "Gt_Frame** merger"
+    ],
+    "importContext": [
+        "#include <stdarg.h>",
+        "#include <assert.h>",
+        "#include \"gifsicle.h\"",
+        "#include <config.h>",
+        "#include <string.h>",
+        "#include <stdio.h>",
+        "#include <ctype.h>",
+        "#include <errno.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct Gt_Frame {\n\n  Gif_Stream *stream;\n  Gif_Image *image;\n  int use;\n\n  const char *name;\n  int no_name;\n  Gif_Comment *comment;\n  int no_comments;\n\n  Gif_Color transparent;        /* also background */\n  int interlacing;\n  int left;\n  int top;\n\n  Gt_Crop *crop;\n  int left_offset;\n  int top_offset;\n\n  int delay;\n  int disposal;\n\n  Gt_Frameset *nest;\n  int explode_by_name;\n\n  int no_extensions;\n  int no_app_extensions;\n  Gif_Extension *extensions;\n\n  unsigned flip_horizontal: 1;\n  unsigned flip_vertical: 1;\n  unsigned info_flags: 3;\n  unsigned position_is_offset: 1;\n  unsigned total_crop: 1;\n  unsigned rotation;\n\n  const char *input_filename;\n\n} Gt_Frame;",
+            "Gt_Frame"
+        ],
+        [
+            "struct Gif_Stream {\n    Gif_Image **images;\n    int nimages;\n    int imagescap;\n\n    Gif_Colormap *global;\n    uint16_t background;        /* 256 means no background */\n\n    uint16_t screen_width;\n    uint16_t screen_height;\n    long loopcount;             /* -1 means no loop count */\n\n    Gif_Comment* end_comment;\n    Gif_Extension* end_extension_list;\n\n    unsigned errors;\n    uint32_t user_flags;\n\n    const char* landmark;\n    int refcount;\n}",
+            "Gif_Stream"
+        ],
+        [
+            "struct Gif_Image {\n    uint8_t **img;              /* img[y][x] == image byte (x,y) */\n    uint8_t *image_data;\n\n    uint16_t width;\n    uint16_t height;\n    uint16_t left;\n    uint16_t top;\n    uint16_t delay;\n    uint8_t disposal;\n    uint8_t interlace;\n\n    short transparent;          /* -1 means no transparent index */\n    Gif_Colormap *local;\n\n    char* identifier;\n    Gif_Comment* comment;\n    Gif_Extension* extension_list;\n\n    void (*free_image_data)(void *);\n\n    uint32_t compressed_len;\n    uint32_t compressed_errors;\n    uint8_t* compressed;\n    void (*free_compressed)(void *);\n\n    uint32_t user_flags;\n    void* user_data;\n    void (*free_user_data)(void *);\n    int refcount;\n\n}",
+            "Gif_Image"
+        ],
+        [
+            "typedef struct {\n\n  const char *output_name;\n  const char *active_output_name;\n\n  int screen_width;\n  int screen_height;\n\n  Gif_Color background;\n  int loopcount;\n\n  int colormap_size;\n  Gif_Colormap *colormap_fixed;\n  int colormap_algorithm;\n  int colormap_needs_transparency;\n  int dither_type;\n  const uint8_t* dither_data;\n  const char* dither_name;\n  int colormap_gamma_type;\n  double colormap_gamma;\n\n  int optimizing;\n\n  int scaling;\n  int resize_width;\n  int resize_height;\n  int resize_flags;\n  double scale_x;\n  double scale_y;\n  int scale_method;\n  int scale_colors;\n\n  int conserve_memory;\n\n}",
+            "Gt_OutputData"
+        ],
+        [
+            "struct Gt_Crop {\n  int ready;\n  int transparent_edges;\n  int spec_x;\n  int spec_y;\n  int spec_w;\n  int spec_h;\n  int x;\n  int y;\n  int w;\n  int h;\n  int left_offset;\n  int top_offset;\n}",
+            "Gt_Crop"
+        ],
+        [
+            "struct Gif_Colormap {\n    int ncol;\n    int capacity;\n    uint32_t user_flags;\n    int refcount;\n    Gif_Color *col;\n}",
+            "Gif_Colormap"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/support.c": [
+            1470,
+            1472,
+            1473,
+            1475,
+            1476,
+            1479,
+            1480,
+            1481,
+            1482,
+            1488,
+            1490,
+            1498,
+            1499,
+            1500,
+            1501,
+            1502,
+            1504,
+            1509,
+            1510,
+            1511,
+            1512,
+            1513,
+            1516,
+            1519,
+            1520,
+            1528,
+            1529,
+            1530,
+            1531,
+            1532,
+            1534,
+            1537,
+            1538,
+            1539,
+            1540,
+            1541,
+            1542,
+            1545,
+            1546,
+            1547,
+            1548,
+            1549,
+            1550,
+            1554,
+            1555,
+            1556,
+            1559,
+            1560,
+            1566,
+            1567,
+            1569,
+            1570,
+            1576,
+            1577,
+            1579,
+            1582,
+            1586,
+            1587,
+            1590,
+            1596,
+            1597,
+            1598,
+            1599,
+            1601,
+            1603,
+            1606,
+            1607,
+            1609,
+            1612,
+            1613,
+            1614,
+            1616,
+            1617,
+            1618,
+            1620,
+            1621,
+            1622,
+            1623,
+            1626,
+            1627,
+            1630,
+            1631,
+            1632,
+            1633,
+            1634,
+            1635,
+            1636,
+            1637,
+            1638,
+            1639,
+            1640,
+            1641,
+            1642,
+            1643,
+            1644,
+            1646,
+            1649,
+            1650,
+            1651,
+            1652,
+            1653,
+            1655,
+            1656,
+            1657,
+            1658,
+            1659,
+            1660,
+            1661,
+            1662,
+            1663,
+            1668,
+            1669,
+            1670,
+            1671,
+            1672,
+            1673,
+            1675,
+            1678,
+            1679,
+            1682,
+            1683,
+            1684,
+            1686,
+            1687,
+            1689,
+            1694,
+            1695,
+            1700,
+            1703,
+            1704,
+            1705,
+            1706,
+            1707,
+            1708,
+            1710,
+            1711,
+            1716,
+            1717,
+            1718,
+            1719,
+            1720,
+            1723,
+            1728,
+            1729,
+            1730,
+            1731,
+            1732,
+            1733,
+            1738
+        ]
+    },
+    "visitedLines_before": {
+        "src/support.c": [
+            1470,
+            1472,
+            1473,
+            1475,
+            1476,
+            1479,
+            1480,
+            1481,
+            1482,
+            1488,
+            1490,
+            1498,
+            1499,
+            1500,
+            1501,
+            1502,
+            1504,
+            1509,
+            1510,
+            1511,
+            1512,
+            1513,
+            1516,
+            1519,
+            1520,
+            1528,
+            1529,
+            1530,
+            1531,
+            1532,
+            1534,
+            1537,
+            1538,
+            1539,
+            1540,
+            1541,
+            1542,
+            1545,
+            1546,
+            1547,
+            1548,
+            1549,
+            1550,
+            1554,
+            1555,
+            1556,
+            1559,
+            1560,
+            1566,
+            1567,
+            1569,
+            1570,
+            1576,
+            1577,
+            1579,
+            1582,
+            1586,
+            1587,
+            1590,
+            1596,
+            1597,
+            1598,
+            1599,
+            1601,
+            1603,
+            1606,
+            1607,
+            1609,
+            1612,
+            1613,
+            1614,
+            1616,
+            1617,
+            1618,
+            1620,
+            1621,
+            1622,
+            1625,
+            1626,
+            1629,
+            1630,
+            1631,
+            1632,
+            1633,
+            1634,
+            1636,
+            1637,
+            1638,
+            1639,
+            1642,
+            1643,
+            1644,
+            1645,
+            1646,
+            1647,
+            1648,
+            1649,
+            1650,
+            1655,
+            1656,
+            1657,
+            1658,
+            1659,
+            1660,
+            1662,
+            1665,
+            1666,
+            1669,
+            1670,
+            1671,
+            1673,
+            1674,
+            1676,
+            1681,
+            1682,
+            1687,
+            1690,
+            1691,
+            1692,
+            1693,
+            1694,
+            1695,
+            1697,
+            1698,
+            1703,
+            1704,
+            1705,
+            1706,
+            1707,
+            1710,
+            1715,
+            1716,
+            1717,
+            1718,
+            1719,
+            1720,
+            1725
+        ]
+    },
+    "visitedParams": {
+        "src/support.c": [
+            [
+                "Gt_OutputData *output_data",
+                "merge_frame_interval"
+            ],
+            [
+                "int *huge_stream",
+                "merge_frame_interval"
+            ],
+            [
+                "int compress_immediately",
+                "merge_frame_interval"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/support.c",
+            "merge_frame_interval",
+            "Gif_Stream * /* <=== merge_frame_interval */ \nmerge_frame_interval(Gt_Frameset *fset, int f1, int f2,\n                     Gt_OutputData *output_data, int compress_immediately,\n                     int *huge_stream)\n{\n  Gif_Stream *dest = Gif_NewStream();\n  Gif_Colormap *global = Gif_NewFullColormap(256, 256);\n  int i, same_compressed_ok, all_same_compressed_ok;\n\n  global->ncol = 0;\n  dest->global = global;\n  if (output_data->active_output_name)\n      dest->landmark = output_data->active_output_name;\n  /* 11/23/98 A new stream's screen size is 0x0; we'll use the max of the\n     merged-together streams' screen sizes by default (in merge_stream()) */\n\n  if (f2 < 0)\n      f2 = fset->count - 1;\n  nmerger = 0;\n  merger_flatten(fset, f1, f2);\n  if (nmerger == 0) {\n    error(1, \"empty output GIF not written\");\n    return 0;\n  }\n\n  /* decide whether stream is huge */\n  {\n    size_t s;\n    for (i = s = 0; i < nmerger; i++)\n        s += (((unsigned) merger[i]->image->width\n               * (unsigned) merger[i]->image->height) / 1024) + 1;\n    *huge_stream = (s > 200 * 1024); /* 200 MB */\n    if (*huge_stream && !compress_immediately) {\n      warning(1, \"huge GIF, conserving memory (processing may take a while)\");\n      compress_immediately = 1;\n    }\n  }\n\n  /* merge stream-specific info and clear colormaps */\n  for (i = 0; i < nmerger; i++)\n    merger[i]->stream->user_flags = 1;\n  for (i = 0; i < nmerger; i++) {\n    if (merger[i]->stream->user_flags) {\n      Gif_Stream *src = merger[i]->stream;\n      Gif_CalculateScreenSize(src, 0);\n      /* merge_stream() unmarks the global colormap */\n      merge_stream(dest, src, merger[i]->no_comments);\n      src->user_flags = 0;\n    }\n    if (merger[i]->image->local)\n      unmark_colors_2(merger[i]->image->local);\n  }\n\n  /* is it ok to save the same compressed image? This is true only if we\n     will recompress later from scratch. */\n  /* 13.Aug.2002 - Can't save the same compressed image if we crop, so turn\n     off all_same_compressed_ok below ('analyze crops'). Reported by Tom\n     Schumm <phong@phong.org>. */\n  if (output_data->colormap_size > 0\n      || output_data->colormap_fixed\n      || (output_data->optimizing & GT_OPT_MASK)\n      || output_data->scaling > 0)\n    all_same_compressed_ok = 1;\n  else\n    all_same_compressed_ok = 0;\n\n  /* analyze crops */\n  for (i = 0; i < nmerger; i++)\n    if (merger[i]->crop)\n      merger[i]->crop->ready = all_same_compressed_ok = 0;\n  for (i = 0; i < nmerger; i++)\n    if (merger[i]->crop && !merger[i]->crop->ready)\n      analyze_crop(nmerger, merger[i]->crop, compress_immediately);\n\n  /* mark used colors */\n  for (i = 0; i < nmerger; ++i) {\n      int old_transp = apply_frame_transparent(merger[i]->image, merger[i]);\n      mark_used_colors(merger[i]->stream, merger[i]->image, merger[i]->crop,\n                       compress_immediately);\n      merger[i]->image->transparent = old_transp;\n      mark_used_background_color(merger[i]);\n  }\n\n  /* copy stream-wide information from output_data */\n  if (output_data->loopcount > -2)\n    dest->loopcount = output_data->loopcount;\n  dest->screen_width = dest->screen_height = 0;\n\n  /** ACTUALLY MERGE FRAMES INTO THE NEW STREAM **/\n  for (i = 0; i < nmerger; i++) {\n    Gt_Frame *fr = merger[i];\n    Gif_Image *srci;\n    Gif_Image *desti;\n    int old_transp;\n\n    /* Make a copy of the image and crop it if we're cropping */\n    fr->left_offset = fr->top_offset = 0;\n    if (fr->crop) {\n      int preserve_total_crop;\n      srci = Gif_CopyImage(fr->image);\n      Gif_UncompressImage(fr->stream, srci);\n\n      /* Zero-delay frames are a special case.  You might think it was OK to\n         get rid of totally-cropped delay-0 frames, but many browsers treat\n         zero-delay frames as 100ms.  So don't completely crop a zero-delay\n         frame: leave it around.  Problem reported by Calle Kabo. */\n      preserve_total_crop = (dest->nimages == 0 || fr->delay == 0\n                             || (fr->delay < 0 && srci->delay == 0));\n\n      if (!crop_image(srci, fr, preserve_total_crop)) {\n        /* We cropped the image out of existence! Be careful not to make 0x0\n           frames. */\n        fix_total_crop(dest, srci, i);\n        goto merge_frame_done;\n      }\n    } else {\n      srci = fr->image;\n      Gif_UncompressImage(fr->stream, srci);\n    }\n\n    old_transp = apply_frame_transparent(srci, fr);\n\n    /* Is it ok to use the old image's compressed version? */\n    /* 11.Feb.2003 -- It is NOT ok to use the old image's compressed version\n       if you are going to flip or rotate the image. Crash reported by Dan\n       Lasley <Dan_Lasley@hilton.com>. */\n    same_compressed_ok = all_same_compressed_ok;\n    if ((fr->interlacing >= 0 && fr->interlacing != srci->interlace)\n        || fr->flip_horizontal || fr->flip_vertical || fr->rotation)\n      same_compressed_ok = 0;\n\n    desti = merge_image(dest, fr->stream, srci, fr, same_compressed_ok);\n\n    srci->transparent = old_transp; /* restore real transparent value */\n\n    /* Flipping and rotating, and also setting the screen size */\n    if (fr->flip_horizontal || fr->flip_vertical || fr->rotation)\n        handle_flip_and_screen(dest, desti, fr);\n    else\n        handle_screen(dest, fr->stream->screen_width, fr->stream->screen_height);\n\n    /* Names and comments */\n    if (fr->name || fr->no_name) {\n      Gif_DeleteArray(desti->identifier);\n      desti->identifier = Gif_CopyString(fr->name);\n    }\n    if (fr->no_comments && desti->comment) {\n      Gif_DeleteComment(desti->comment);\n      desti->comment = 0;\n    }\n    if (fr->comment) {\n      if (!desti->comment)\n        desti->comment = Gif_NewComment();\n      merge_comments(desti->comment, fr->comment);\n      /* delete the comment early to help with memory; set field to 0 so we\n         don't re-free it later */\n      Gif_DeleteComment(fr->comment);\n      fr->comment = 0;\n    }\n\n    if (fr->interlacing >= 0)\n      desti->interlace = fr->interlacing;\n    if (fr->left >= 0) {\n      int left = fr->left + (fr->position_is_offset ? desti->left : 0);\n      if (left + desti->width > 65535) {\n        error(1, \"left position %d out of range\", left);\n        return 0;\n      }\n      desti->left = left;\n    }\n    if (fr->top >= 0) {\n      int top = fr->top + (fr->position_is_offset ? desti->top : 0);\n      if (top + desti->height > 65535) {\n        error(1, \"top position %d out of range\", top);\n        return 0;\n      }\n      desti->top = top;\n    }\n\n    if (fr->delay >= 0)\n      desti->delay = fr->delay;\n    if (fr->disposal >= 0)\n      desti->disposal = fr->disposal;\n\n    /* compress immediately if possible to save on memory */\n    if (desti->img) {\n      if (compress_immediately > 0) {\n        Gif_FullCompressImage(dest, desti, &gif_write_info);\n        Gif_ReleaseUncompressedImage(desti);\n      } else if (desti->compressed)\n        Gif_ReleaseCompressedImage(desti);\n    } else if (compress_immediately <= 0) {\n      Gif_UncompressImage(dest, desti);\n      Gif_ReleaseCompressedImage(desti);\n    }\n\n   merge_frame_done:\n    /* 6/17/02 store information about image's background */\n    if (fr->stream->images[0]->transparent >= 0)\n        fr->transparent.haspixel = 2;\n    else if (fr->stream->global\n             && fr->stream->background < fr->stream->global->ncol) {\n        fr->transparent = fr->stream->global->col[fr->stream->background];\n        fr->transparent.haspixel = 1;\n    } else\n        fr->transparent.haspixel = 0;\n\n    /* Destroy the copied, cropped image if necessary */\n    if (fr->crop)\n      Gif_DeleteImage(srci);\n\n    /* if we can, delete the image's data right now to save memory */\n    srci = fr->image;\n    assert(srci->refcount > 1);\n    if (--srci->refcount == 1) {\n      /* only 1 reference ==> the reference is from the input stream itself */\n      Gif_ReleaseUncompressedImage(srci);\n      Gif_ReleaseCompressedImage(srci);\n    }\n    fr->image = 0;\n\n    /* 5/26/98 Destroy the stream now to help with memory. Assumes that\n       all frames are added with add_frame() which properly increments the\n       stream's refcount. Set field to 0 so we don't redelete */\n    Gif_DeleteStream(fr->stream);\n    fr->stream = 0;\n  }\n  /** END MERGE LOOP **/\n\n  /* Cropping the whole output? Reset logical screen */\n  if (merger[0]->crop && merger[0]->crop == merger[nmerger - 1]->crop) {\n    /* 13.May.2008: Set the logical screen to the cropped dimensions */\n    /* 18.May.2008: Unless --crop-transparency is on */\n    Gt_Crop* crop = merger[0]->crop;\n    if (crop->transparent_edges)\n        dest->screen_width = dest->screen_height = 0;\n    else if (merger[0]->rotation == 1 || merger[0]->rotation == 3) {\n        dest->screen_width = (crop->h > 0 ? crop->h : 0);\n        dest->screen_height = (crop->w > 0 ? crop->w : 0);\n    } else {\n        dest->screen_width = (crop->w > 0 ? crop->w : 0);\n        dest->screen_height = (crop->h > 0 ? crop->h : 0);\n    }\n  }\n\n  /* Set the logical screen from the user's preferences */\n  if (output_data->screen_width >= 0)\n    dest->screen_width = output_data->screen_width;\n  if (output_data->screen_height >= 0)\n    dest->screen_height = output_data->screen_height;\n  Gif_CalculateScreenSize(dest, 0);\n\n  /* Find the background color in the colormap, or add it if we can */\n  set_background(dest, output_data);\n\n  /* The global colormap might be empty even given images that use it, if\n     those images are entirely transparent. Since absent global colormaps\n     are surprising, assign a black-and-white colormap */\n  if (dest->global->ncol == 0) {\n      for (i = 0; i != dest->nimages; ++i)\n          if (!dest->images[i]->local) {\n              GIF_SETCOLOR(&dest->global->col[0], 0, 0, 0);\n              GIF_SETCOLOR(&dest->global->col[1], 255, 255, 255);\n              dest->global->ncol = 2;\n              break;\n          }\n  }\n\n  return dest;\n}",
+            1470
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/support.c",
+            "merge_frame_interval",
+            "Gif_Stream * /* <=== merge_frame_interval */ \nmerge_frame_interval(Gt_Frameset *fset, int f1, int f2,\n                     Gt_OutputData *output_data, int compress_immediately,\n                     int *huge_stream)\n{\n  Gif_Stream *dest = Gif_NewStream();\n  Gif_Colormap *global = Gif_NewFullColormap(256, 256);\n  int i, same_compressed_ok, all_same_compressed_ok;\n\n  global->ncol = 0;\n  dest->global = global;\n  if (output_data->active_output_name)\n      dest->landmark = output_data->active_output_name;\n  /* 11/23/98 A new stream's screen size is 0x0; we'll use the max of the\n     merged-together streams' screen sizes by default (in merge_stream()) */\n\n  if (f2 < 0)\n      f2 = fset->count - 1;\n  nmerger = 0;\n  merger_flatten(fset, f1, f2);\n  if (nmerger == 0) {\n    error(1, \"empty output GIF not written\");\n    return 0;\n  }\n\n  /* decide whether stream is huge */\n  {\n    size_t s;\n    for (i = s = 0; i < nmerger; i++)\n        s += (((unsigned) merger[i]->image->width\n               * (unsigned) merger[i]->image->height) / 1024) + 1;\n    *huge_stream = (s > 200 * 1024); /* 200 MB */\n    if (*huge_stream && !compress_immediately) {\n      warning(1, \"huge GIF, conserving memory (processing may take a while)\");\n      compress_immediately = 1;\n    }\n  }\n\n  /* merge stream-specific info and clear colormaps */\n  for (i = 0; i < nmerger; i++)\n    merger[i]->stream->user_flags = 1;\n  for (i = 0; i < nmerger; i++) {\n    if (merger[i]->stream->user_flags) {\n      Gif_Stream *src = merger[i]->stream;\n      Gif_CalculateScreenSize(src, 0);\n      /* merge_stream() unmarks the global colormap */\n      merge_stream(dest, src, merger[i]->no_comments);\n      src->user_flags = 0;\n    }\n    if (merger[i]->image->local)\n      unmark_colors_2(merger[i]->image->local);\n  }\n\n  /* is it ok to save the same compressed image? This is true only if we\n     will recompress later from scratch. */\n  /* 13.Aug.2002 - Can't save the same compressed image if we crop, so turn\n     off all_same_compressed_ok below ('analyze crops'). Reported by Tom\n     Schumm <phong@phong.org>. */\n  if (output_data->colormap_size > 0\n      || output_data->colormap_fixed\n      || (output_data->optimizing & GT_OPT_MASK)\n      || output_data->scaling > 0)\n    all_same_compressed_ok = 1;\n  else\n    all_same_compressed_ok = 0;\n\n  /* analyze crops */\n  for (i = 0; i < nmerger; i++)\n    if (merger[i]->crop)\n      merger[i]->crop->ready = all_same_compressed_ok = 0;\n  for (i = 0; i < nmerger; i++)\n    if (merger[i]->crop && !merger[i]->crop->ready)\n      analyze_crop(nmerger, merger[i]->crop, compress_immediately);\n\n  /* mark used colors */\n  for (i = 0; i < nmerger; ++i) {\n      int old_transp = apply_frame_transparent(merger[i]->image, merger[i]);\n      mark_used_colors(merger[i]->stream, merger[i]->image, merger[i]->crop,\n                       compress_immediately);\n      merger[i]->image->transparent = old_transp;\n      mark_used_background_color(merger[i]);\n  }\n\n  /* copy stream-wide information from output_data */\n  if (output_data->loopcount > -2)\n    dest->loopcount = output_data->loopcount;\n  dest->screen_width = dest->screen_height = 0;\n\n  /** ACTUALLY MERGE FRAMES INTO THE NEW STREAM **/\n  for (i = 0; i < nmerger; i++) {\n    Gt_Frame *fr = merger[i];\n    Gif_Image *srci;\n    Gif_Image *desti;\n    int old_transp;\n\n    /* Make a copy of the image and crop it if we're cropping */\n    fr->left_offset = fr->top_offset = 0;\n    if (fr->crop) {\n      int preserve_total_crop;\n      srci = Gif_CopyImage(fr->image);\n      Gif_UncompressImage(fr->stream, srci);\n\n      /* Zero-delay frames are a special case.  You might think it was OK to\n         get rid of totally-cropped delay-0 frames, but many browsers treat\n         zero-delay frames as 100ms.  So don't completely crop a zero-delay\n         frame: leave it around.  Problem reported by Calle Kabo. */\n      preserve_total_crop = (dest->nimages == 0 || fr->delay == 0\n                             || (fr->delay < 0 && srci->delay == 0));\n\n      if (!crop_image(srci, fr, preserve_total_crop)) {\n        /* We cropped the image out of existence! Be careful not to make 0x0\n           frames. */\n        fix_total_crop(dest, srci, i);\n        goto merge_frame_done;\n      }\n    } else {\n      srci = fr->image;\n      Gif_UncompressImage(fr->stream, srci);\n    }\n\n    old_transp = apply_frame_transparent(srci, fr);\n\n    /* Is it ok to use the old image's compressed version? */\n    /* 11.Feb.2003 -- It is NOT ok to use the old image's compressed version\n       if you are going to flip or rotate the image. Crash reported by Dan\n       Lasley <Dan_Lasley@hilton.com>. */\n    same_compressed_ok = all_same_compressed_ok;\n    if ((fr->interlacing >= 0 && fr->interlacing != srci->interlace)\n        || fr->flip_horizontal || fr->flip_vertical || fr->rotation)\n      same_compressed_ok = 0;\n\n    desti = merge_image(dest, fr->stream, srci, fr, same_compressed_ok);\n\n    srci->transparent = old_transp; /* restore real transparent value */\n\n    /* Flipping and rotating, and also setting the screen size */\n    if (fr->flip_horizontal || fr->flip_vertical || fr->rotation)\n        handle_flip_and_screen(dest, desti, fr);\n    else\n        handle_screen(dest, fr->stream->screen_width, fr->stream->screen_height);\n\n    /* Names and comments */\n    if (fr->name || fr->no_name) {\n      Gif_DeleteArray(desti->identifier);\n      desti->identifier = Gif_CopyString(fr->name);\n    }\n    if (fr->no_comments && desti->comment) {\n      Gif_DeleteComment(desti->comment);\n      desti->comment = 0;\n    }\n    if (fr->comment) {\n      if (!desti->comment) desti->comment = Gif_NewComment();\n      merge_comments(desti->comment, fr->comment);\n      /* delete the comment early to help with memory; set field to 0 so we\n         don't re-free it later */\n      Gif_DeleteComment(fr->comment);\n      fr->comment = 0;\n    }\n\n    if (fr->interlacing >= 0)\n      desti->interlace = fr->interlacing;\n    if (fr->left >= 0)\n      desti->left = fr->left + (fr->position_is_offset ? desti->left : 0);\n    if (fr->top >= 0)\n      desti->top = fr->top + (fr->position_is_offset ? desti->top : 0);\n\n    if (fr->delay >= 0)\n      desti->delay = fr->delay;\n    if (fr->disposal >= 0)\n      desti->disposal = fr->disposal;\n\n    /* compress immediately if possible to save on memory */\n    if (desti->img) {\n      if (compress_immediately > 0) {\n        Gif_FullCompressImage(dest, desti, &gif_write_info);\n        Gif_ReleaseUncompressedImage(desti);\n      } else if (desti->compressed)\n        Gif_ReleaseCompressedImage(desti);\n    } else if (compress_immediately <= 0) {\n      Gif_UncompressImage(dest, desti);\n      Gif_ReleaseCompressedImage(desti);\n    }\n\n   merge_frame_done:\n    /* 6/17/02 store information about image's background */\n    if (fr->stream->images[0]->transparent >= 0)\n        fr->transparent.haspixel = 2;\n    else if (fr->stream->global\n             && fr->stream->background < fr->stream->global->ncol) {\n        fr->transparent = fr->stream->global->col[fr->stream->background];\n        fr->transparent.haspixel = 1;\n    } else\n        fr->transparent.haspixel = 0;\n\n    /* Destroy the copied, cropped image if necessary */\n    if (fr->crop)\n      Gif_DeleteImage(srci);\n\n    /* if we can, delete the image's data right now to save memory */\n    srci = fr->image;\n    assert(srci->refcount > 1);\n    if (--srci->refcount == 1) {\n      /* only 1 reference ==> the reference is from the input stream itself */\n      Gif_ReleaseUncompressedImage(srci);\n      Gif_ReleaseCompressedImage(srci);\n    }\n    fr->image = 0;\n\n    /* 5/26/98 Destroy the stream now to help with memory. Assumes that\n       all frames are added with add_frame() which properly increments the\n       stream's refcount. Set field to 0 so we don't redelete */\n    Gif_DeleteStream(fr->stream);\n    fr->stream = 0;\n  }\n  /** END MERGE LOOP **/\n\n  /* Cropping the whole output? Reset logical screen */\n  if (merger[0]->crop && merger[0]->crop == merger[nmerger - 1]->crop) {\n    /* 13.May.2008: Set the logical screen to the cropped dimensions */\n    /* 18.May.2008: Unless --crop-transparency is on */\n    Gt_Crop* crop = merger[0]->crop;\n    if (crop->transparent_edges)\n        dest->screen_width = dest->screen_height = 0;\n    else if (merger[0]->rotation == 1 || merger[0]->rotation == 3) {\n        dest->screen_width = (crop->h > 0 ? crop->h : 0);\n        dest->screen_height = (crop->w > 0 ? crop->w : 0);\n    } else {\n        dest->screen_width = (crop->w > 0 ? crop->w : 0);\n        dest->screen_height = (crop->h > 0 ? crop->h : 0);\n    }\n  }\n\n  /* Set the logical screen from the user's preferences */\n  if (output_data->screen_width >= 0)\n    dest->screen_width = output_data->screen_width;\n  if (output_data->screen_height >= 0)\n    dest->screen_height = output_data->screen_height;\n  Gif_CalculateScreenSize(dest, 0);\n\n  /* Find the background color in the colormap, or add it if we can */\n  set_background(dest, output_data);\n\n  /* The global colormap might be empty even given images that use it, if\n     those images are entirely transparent. Since absent global colormaps\n     are surprising, assign a black-and-white colormap */\n  if (dest->global->ncol == 0) {\n      for (i = 0; i != dest->nimages; ++i)\n          if (!dest->images[i]->local) {\n              GIF_SETCOLOR(&dest->global->col[0], 0, 0, 0);\n              GIF_SETCOLOR(&dest->global->col[1], 255, 255, 255);\n              dest->global->ncol = 2;\n              break;\n          }\n  }\n\n  return dest;\n}",
+            1470
+        ]
+    ]
+}

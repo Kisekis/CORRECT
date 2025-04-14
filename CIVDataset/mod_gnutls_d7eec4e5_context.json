@@ -1,0 +1,208 @@
+{
+    "calleeMethods": [
+        [
+            "src/gnutls_io.c",
+            "char_buffer_read",
+            "static int char_buffer_read(mgs_char_buffer_t * buffer, char *in, int inl) { /* <=== char_buffer_read */ \n    if (!buffer->length) {\n        return 0;\n    }\n\n    if (buffer->length > inl) {\n        /* we have have enough to fill the caller's buffer */\n        memmove(in, buffer->value, inl);\n        buffer->value += inl;\n        buffer->length -= inl;\n    } else {\n        /* swallow remainder of the buffer */\n        memmove(in, buffer->value, buffer->length);\n        inl = buffer->length;\n        buffer->value = NULL;\n        buffer->length = 0;\n    }\n\n    return inl;\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"mod_gnutls.h\"",
+        "#include \"gnutls_proxy.h\"",
+        "#include <inttypes.h>",
+        "#include \"gnutls_io.h\""
+    ],
+    "typeDefs": [],
+    "visitedLines_after": {
+        "src/gnutls_io.c": [
+            172,
+            173,
+            175,
+            178,
+            181,
+            182,
+            183,
+            197,
+            200,
+            201,
+            207,
+            211,
+            217,
+            220,
+            221,
+            223,
+            231,
+            242,
+            244,
+            245,
+            246,
+            249,
+            254,
+            262,
+            270,
+            280,
+            281,
+            282,
+            283,
+            284,
+            287,
+            288,
+            289,
+            290,
+            291,
+            292,
+            293,
+            294,
+            295,
+            300,
+            301,
+            302,
+            303,
+            304,
+            309,
+            960,
+            961,
+            963,
+            964,
+            965,
+            967,
+            970,
+            975,
+            982,
+            984,
+            985,
+            986,
+            990,
+            991,
+            992,
+            1006,
+            1007,
+            1008,
+            1010,
+            1011
+        ]
+    },
+    "visitedLines_before": {
+        "src/gnutls_io.c": [
+            172,
+            173,
+            175,
+            178,
+            181,
+            182,
+            183,
+            197,
+            200,
+            201,
+            207,
+            211,
+            217,
+            220,
+            221,
+            223,
+            231,
+            242,
+            244,
+            245,
+            246,
+            249,
+            254,
+            262,
+            270,
+            282,
+            283,
+            284,
+            285,
+            286,
+            287,
+            288,
+            289,
+            290,
+            295,
+            296,
+            297,
+            298,
+            299,
+            304,
+            955,
+            956,
+            958,
+            959,
+            960,
+            962,
+            965,
+            970,
+            977,
+            979,
+            980,
+            981,
+            985,
+            986,
+            987,
+            1001,
+            1002,
+            1003,
+            1004,
+            1005,
+            1006
+        ]
+    },
+    "visitedParams": {
+        "src/gnutls_io.c": [
+            [
+                "apr_size_t * len",
+                "gnutls_io_input_read"
+            ],
+            [
+                "char *buf",
+                "gnutls_io_input_read"
+            ],
+            [
+                "gnutls_transport_ptr_t ptr",
+                "mgs_transport_read"
+            ],
+            [
+                "mgs_handle_t * ctxt",
+                "gnutls_io_input_read"
+            ],
+            [
+                "size_t len",
+                "mgs_transport_read"
+            ],
+            [
+                "void *buffer",
+                "mgs_transport_read"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/gnutls_io.c",
+            "gnutls_io_input_read",
+            "static apr_status_t gnutls_io_input_read(mgs_handle_t * ctxt, /* <=== gnutls_io_input_read */ \n        char *buf, apr_size_t * len)\n{\n    apr_size_t wanted = *len;\n    apr_size_t bytes = 0;\n\n    *len = 0;\n\n    /* If we have something leftover from last time, try that first. */\n    if ((bytes = char_buffer_read(&ctxt->input_cbuf, buf, wanted))) {\n        *len = bytes;\n        if (ctxt->input_mode == AP_MODE_SPECULATIVE) {\n            /* We want to rollback this read. */\n            if (ctxt->input_cbuf.length > 0) {\n                ctxt->input_cbuf.value -= bytes;\n                ctxt->input_cbuf.length += bytes;\n            } else {\n                char_buffer_write(&ctxt->input_cbuf, buf,\n                        (int) bytes);\n            }\n            return APR_SUCCESS;\n        }\n        /* This could probably be *len == wanted, but be safe from stray\n         * photons.\n         */\n        if (*len >= wanted) {\n            return APR_SUCCESS;\n        }\n        if (ctxt->input_mode == AP_MODE_GETLINE) {\n            if (memchr(buf, APR_ASCII_LF, *len)) {\n                return APR_SUCCESS;\n            }\n        } else {\n            /* Down to a nonblock pattern as we have some data already\n             */\n            ctxt->input_block = APR_NONBLOCK_READ;\n        }\n    }\n\n    if (ctxt->session == NULL) {\n        ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, ctxt->c,\n                      \"%s: GnuTLS session is NULL!\", __func__);\n        return APR_EGENERAL;\n    }\n\n    while (1)\n    {\n        /* Note: The pull function sets ctxt->input_rc */\n        int rc = gnutls_record_recv(ctxt->session,\n                                    buf + bytes, wanted - bytes);\n\n        if (rc > 0) {\n            *len += rc;\n            if (ctxt->input_mode == AP_MODE_SPECULATIVE) {\n                /* We want to rollback this read. */\n                char_buffer_write(&ctxt->input_cbuf, buf,\n                                  *len);\n            }\n            return ctxt->input_rc;\n        } else if (rc == 0) {\n            /* EOF, return code depends on whether we still have data\n             * to return. */\n            if (*len > 0) {\n                ctxt->input_rc = APR_SUCCESS;\n            } else {\n                ctxt->input_rc = APR_EOF;\n            }\n            break;\n        } else { /* (rc < 0) */\n\n            if (rc == GNUTLS_E_INTERRUPTED || rc == GNUTLS_E_AGAIN)\n            {\n                ap_log_cerror(APLOG_MARK, APLOG_TRACE2, ctxt->input_rc, ctxt->c,\n                              \"%s: looping recv after '%s' (%d)\",\n                              __func__, gnutls_strerror(rc), rc);\n                /* For a blocking read, loop and try again\n                 * immediately. Otherwise just notify the caller. */\n                if (ctxt->input_block != APR_NONBLOCK_READ)\n                    continue;\n                else\n                    ctxt->input_rc =\n                        (rc == GNUTLS_E_AGAIN ? APR_EAGAIN : APR_EINTR);\n            } else if (rc == GNUTLS_E_REHANDSHAKE) {\n                /* A client has asked for a new Hankshake. Currently, we don't do it */\n                ap_log_cerror(APLOG_MARK, APLOG_DEBUG,\n                        ctxt->input_rc,\n                        ctxt->c,\n                        \"GnuTLS: Error reading data. Client Requested a New Handshake.\"\n                        \" (%d) '%s'\", rc,\n                        gnutls_strerror(rc));\n            } else if (rc == GNUTLS_E_WARNING_ALERT_RECEIVED) {\n                rc = gnutls_alert_get(ctxt->session);\n                ap_log_cerror(APLOG_MARK, APLOG_DEBUG,\n                        ctxt->input_rc,\n                        ctxt->c,\n                        \"GnuTLS: Warning Alert From Client: \"\n                        \" (%d) '%s'\", rc,\n                        gnutls_alert_get_name(rc));\n            } else if (rc == GNUTLS_E_FATAL_ALERT_RECEIVED) {\n                rc = gnutls_alert_get(ctxt->session);\n                ap_log_cerror(APLOG_MARK, APLOG_DEBUG,\n                        ctxt->input_rc,\n                        ctxt->c,\n                        \"GnuTLS: Fatal Alert From Client: \"\n                        \"(%d) '%s'\", rc,\n                        gnutls_alert_get_name(rc));\n                ctxt->input_rc = APR_EGENERAL;\n                break;\n            } else if (rc == GNUTLS_E_PULL_ERROR\n                       && APR_STATUS_IS_TIMEUP(ctxt->input_rc)) {\n                ap_log_cerror(\n                    APLOG_MARK, APLOG_TRACE2, ctxt->input_rc, ctxt->c,\n                    \"%s: transport read timed out\", __func__);\n            } else {\n                /* Some Other Error. Report it. Die. */\n                if (gnutls_error_is_fatal(rc)) {\n                    ap_log_cerror(\n                        APLOG_MARK, APLOG_DEBUG,\n                        ctxt->input_rc,\n                        ctxt->c,\n                        \"GnuTLS: Error reading data. (%d) '%s'\",\n                        rc, gnutls_strerror(rc));\n                } else if (*len > 0) {\n                    ctxt->input_rc = APR_SUCCESS;\n                    break;\n                }\n            }\n\n            if (ctxt->input_rc == APR_SUCCESS) {\n                ap_log_cerror(APLOG_MARK, APLOG_INFO, ctxt->input_rc, ctxt->c,\n                              \"%s: GnuTLS error: %s (%d)\",\n                              __func__, gnutls_strerror(rc), rc);\n                ctxt->input_rc = APR_EGENERAL;\n            }\n            break;\n        }\n    }\n    return ctxt->input_rc;\n}",
+            172
+        ],
+        [
+            "src/gnutls_io.c",
+            "mgs_transport_read",
+            "ssize_t mgs_transport_read(gnutls_transport_ptr_t ptr, /* <=== mgs_transport_read */ \n                           void *buffer, size_t len)\n{\n    mgs_handle_t *ctxt = ptr;\n    apr_size_t in = len;\n    apr_read_type_e block = ctxt->input_block;\n\n    ctxt->input_rc = APR_SUCCESS;\n\n    /* If Len = 0, we don't do anything. */\n    if (!len || buffer == NULL)\n    {\n        return 0;\n    }\n    /* Input bucket brigade is missing, EOF */\n    if (!ctxt->input_bb)\n    {\n        ctxt->input_rc = APR_EOF;\n        gnutls_transport_set_errno(ctxt->session, ECONNABORTED);\n        return -1;\n    }\n\n    if (APR_BRIGADE_EMPTY(ctxt->input_bb))\n    {\n        apr_status_t rc = ap_get_brigade(ctxt->input_filter->next,\n                                         ctxt->input_bb, AP_MODE_READBYTES,\n                                         ctxt->input_block, in);\n\n        /* Not a problem, there was simply no data ready yet.\n         */\n        if (APR_STATUS_IS_EAGAIN(rc) || APR_STATUS_IS_EINTR(rc)\n            || (rc == APR_SUCCESS\n                && APR_BRIGADE_EMPTY(ctxt->input_bb)))\n        {\n            /* Turning APR_SUCCESS into APR_EINTR isn't ideal, but\n             * it's the best matching error code for \"didn't get data,\n             * but read didn't permanently fail either.\" */\n            ctxt->input_rc = (rc != APR_SUCCESS ? rc : APR_EINTR);\n            gnutls_transport_set_errno(ctxt->session,\n                                       EAI_APR_TO_RAW(ctxt->input_rc));\n            return -1;\n        }\n\n        /* Blocking ap_get_brigade() can return a timeout status,\n         * sometimes after a very short time. \"Don't give up, just\n         * return the timeout\" is what mod_ssl does. */\n        if (ctxt->input_block == APR_BLOCK_READ\n            && APR_STATUS_IS_TIMEUP(rc)\n            && APR_BRIGADE_EMPTY(ctxt->input_bb))\n        {\n            ctxt->input_rc = rc;\n            gnutls_transport_set_errno(ctxt->session, ETIMEDOUT);\n            return -1;\n        }\n\n        if (rc != APR_SUCCESS)\n        {\n            /* Unexpected errors discard the brigade */\n            ap_log_cerror(APLOG_MARK, APLOG_INFO, rc, ctxt->c,\n                          \"%s: Unexpected error!\", __func__);\n            apr_brigade_cleanup(ctxt->input_bb);\n            ctxt->input_bb = NULL;\n            gnutls_transport_set_errno(ctxt->session, EIO);\n            return -1;\n        }\n    }\n\n    ctxt->input_rc = brigade_consume(ctxt->input_bb, block, buffer, &len);\n\n    if (ctxt->input_rc == APR_SUCCESS)\n    {\n        return (ssize_t) len;\n    }\n\n    if (APR_STATUS_IS_EAGAIN(ctxt->input_rc)\n        || APR_STATUS_IS_EINTR(ctxt->input_rc))\n    {\n        if (len == 0)\n        {\n            gnutls_transport_set_errno(ctxt->session,\n                                       EAI_APR_TO_RAW(ctxt->input_rc));\n            return -1;\n        }\n\n        return (ssize_t) len;\n    }\n\n    /* Unexpected errors and APR_EOF clean out the brigade.\n     * Subsequent calls will return APR_EOF. */\n    apr_brigade_cleanup(ctxt->input_bb);\n    ctxt->input_bb = NULL;\n\n    if (APR_STATUS_IS_EOF(ctxt->input_rc) && len)\n    {\n        /* Some data has been received before EOF, return it. */\n        return (ssize_t) len;\n    }\n\n    gnutls_transport_set_errno(ctxt->session, EIO);\n    return -1;\n}",
+            960
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/gnutls_io.c",
+            "gnutls_io_input_read",
+            "static apr_status_t gnutls_io_input_read(mgs_handle_t * ctxt, /* <=== gnutls_io_input_read */ \n        char *buf, apr_size_t * len)\n{\n    apr_size_t wanted = *len;\n    apr_size_t bytes = 0;\n\n    *len = 0;\n\n    /* If we have something leftover from last time, try that first. */\n    if ((bytes = char_buffer_read(&ctxt->input_cbuf, buf, wanted))) {\n        *len = bytes;\n        if (ctxt->input_mode == AP_MODE_SPECULATIVE) {\n            /* We want to rollback this read. */\n            if (ctxt->input_cbuf.length > 0) {\n                ctxt->input_cbuf.value -= bytes;\n                ctxt->input_cbuf.length += bytes;\n            } else {\n                char_buffer_write(&ctxt->input_cbuf, buf,\n                        (int) bytes);\n            }\n            return APR_SUCCESS;\n        }\n        /* This could probably be *len == wanted, but be safe from stray\n         * photons.\n         */\n        if (*len >= wanted) {\n            return APR_SUCCESS;\n        }\n        if (ctxt->input_mode == AP_MODE_GETLINE) {\n            if (memchr(buf, APR_ASCII_LF, *len)) {\n                return APR_SUCCESS;\n            }\n        } else {\n            /* Down to a nonblock pattern as we have some data already\n             */\n            ctxt->input_block = APR_NONBLOCK_READ;\n        }\n    }\n\n    if (ctxt->session == NULL) {\n        ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, ctxt->c,\n                      \"%s: GnuTLS session is NULL!\", __func__);\n        return APR_EGENERAL;\n    }\n\n    while (1)\n    {\n        /* Note: The pull function sets ctxt->input_rc */\n        int rc = gnutls_record_recv(ctxt->session,\n                                    buf + bytes, wanted - bytes);\n\n        if (rc > 0) {\n            *len += rc;\n            if (ctxt->input_mode == AP_MODE_SPECULATIVE) {\n                /* We want to rollback this read. */\n                char_buffer_write(&ctxt->input_cbuf, buf,\n                                  *len);\n            }\n            return ctxt->input_rc;\n        } else if (rc == 0) {\n            /* EOF, return code depends on whether we still have data\n             * to return. */\n            if (*len > 0) {\n                ctxt->input_rc = APR_SUCCESS;\n            } else {\n                ctxt->input_rc = APR_EOF;\n            }\n            break;\n        } else { /* (rc < 0) */\n\n            if (rc == GNUTLS_E_INTERRUPTED || rc == GNUTLS_E_AGAIN)\n            {\n                ap_log_cerror(APLOG_MARK, APLOG_TRACE2, ctxt->input_rc, ctxt->c,\n                              \"%s: looping recv after '%s' (%d)\",\n                              __func__, gnutls_strerror(rc), rc);\n                /* For a blocking read, loop and try again\n                 * immediately. Otherwise just notify the caller. */\n                if (ctxt->input_block != APR_NONBLOCK_READ)\n                    continue;\n                else\n                    ctxt->input_rc =\n                        (rc == GNUTLS_E_AGAIN ? APR_EAGAIN : APR_EINTR);\n            } else if (rc == GNUTLS_E_REHANDSHAKE) {\n                /* A client has asked for a new Hankshake. Currently, we don't do it */\n                ap_log_cerror(APLOG_MARK, APLOG_DEBUG,\n                        ctxt->input_rc,\n                        ctxt->c,\n                        \"GnuTLS: Error reading data. Client Requested a New Handshake.\"\n                        \" (%d) '%s'\", rc,\n                        gnutls_strerror(rc));\n            } else if (rc == GNUTLS_E_WARNING_ALERT_RECEIVED) {\n                rc = gnutls_alert_get(ctxt->session);\n                ap_log_cerror(APLOG_MARK, APLOG_DEBUG,\n                        ctxt->input_rc,\n                        ctxt->c,\n                        \"GnuTLS: Warning Alert From Client: \"\n                        \" (%d) '%s'\", rc,\n                        gnutls_alert_get_name(rc));\n            } else if (rc == GNUTLS_E_FATAL_ALERT_RECEIVED) {\n                rc = gnutls_alert_get(ctxt->session);\n                ap_log_cerror(APLOG_MARK, APLOG_DEBUG,\n                        ctxt->input_rc,\n                        ctxt->c,\n                        \"GnuTLS: Fatal Alert From Client: \"\n                        \"(%d) '%s'\", rc,\n                        gnutls_alert_get_name(rc));\n                ctxt->input_rc = APR_EGENERAL;\n                break;\n            } else {\n                /* Some Other Error. Report it. Die. */\n                if (gnutls_error_is_fatal(rc)) {\n                    ap_log_cerror(\n                        APLOG_MARK, APLOG_DEBUG,\n                        ctxt->input_rc,\n                        ctxt->c,\n                        \"GnuTLS: Error reading data. (%d) '%s'\",\n                        rc, gnutls_strerror(rc));\n                } else if (*len > 0) {\n                    ctxt->input_rc = APR_SUCCESS;\n                    break;\n                }\n            }\n\n            if (ctxt->input_rc == APR_SUCCESS) {\n                ap_log_cerror(APLOG_MARK, APLOG_INFO, ctxt->input_rc, ctxt->c,\n                              \"%s: GnuTLS error: %s (%d)\",\n                              __func__, gnutls_strerror(rc), rc);\n                ctxt->input_rc = APR_EGENERAL;\n            }\n            break;\n        }\n    }\n    return ctxt->input_rc;\n}",
+            172
+        ],
+        [
+            "src/gnutls_io.c",
+            "mgs_transport_read",
+            "ssize_t mgs_transport_read(gnutls_transport_ptr_t ptr, /* <=== mgs_transport_read */ \n                           void *buffer, size_t len)\n{\n    mgs_handle_t *ctxt = ptr;\n    apr_size_t in = len;\n    apr_read_type_e block = ctxt->input_block;\n\n    ctxt->input_rc = APR_SUCCESS;\n\n    /* If Len = 0, we don't do anything. */\n    if (!len || buffer == NULL)\n    {\n        return 0;\n    }\n    /* Input bucket brigade is missing, EOF */\n    if (!ctxt->input_bb)\n    {\n        ctxt->input_rc = APR_EOF;\n        gnutls_transport_set_errno(ctxt->session, ECONNABORTED);\n        return -1;\n    }\n\n    if (APR_BRIGADE_EMPTY(ctxt->input_bb))\n    {\n        apr_status_t rc = ap_get_brigade(ctxt->input_filter->next,\n                                         ctxt->input_bb, AP_MODE_READBYTES,\n                                         ctxt->input_block, in);\n\n        /* Not a problem, there was simply no data ready yet.\n         */\n        if (APR_STATUS_IS_EAGAIN(rc) || APR_STATUS_IS_EINTR(rc)\n            || (rc == APR_SUCCESS\n                && APR_BRIGADE_EMPTY(ctxt->input_bb)))\n        {\n            /* Turning APR_SUCCESS into APR_EINTR isn't ideal, but\n             * it's the best matching error code for \"didn't get data,\n             * but read didn't permanently fail either.\" */\n            ctxt->input_rc = (rc != APR_SUCCESS ? rc : APR_EINTR);\n            gnutls_transport_set_errno(ctxt->session,\n                                       EAI_APR_TO_RAW(ctxt->input_rc));\n            return -1;\n        }\n\n        /* Blocking ap_get_brigade() can return a timeout status,\n         * sometimes after a very short time. \"Don't give up, just\n         * return the timeout\" is what mod_ssl does. */\n        if (ctxt->input_block == APR_BLOCK_READ\n            && APR_STATUS_IS_TIMEUP(rc)\n            && APR_BRIGADE_EMPTY(ctxt->input_bb))\n        {\n            ctxt->input_rc = rc;\n            gnutls_transport_set_errno(ctxt->session, EAGAIN);\n            return -1;\n        }\n\n        if (rc != APR_SUCCESS)\n        {\n            /* Unexpected errors discard the brigade */\n            ap_log_cerror(APLOG_MARK, APLOG_INFO, rc, ctxt->c,\n                          \"%s: Unexpected error!\", __func__);\n            apr_brigade_cleanup(ctxt->input_bb);\n            ctxt->input_bb = NULL;\n            gnutls_transport_set_errno(ctxt->session, EIO);\n            return -1;\n        }\n    }\n\n    ctxt->input_rc = brigade_consume(ctxt->input_bb, block, buffer, &len);\n\n    if (ctxt->input_rc == APR_SUCCESS)\n    {\n        return (ssize_t) len;\n    }\n\n    if (APR_STATUS_IS_EAGAIN(ctxt->input_rc)\n        || APR_STATUS_IS_EINTR(ctxt->input_rc))\n    {\n        if (len == 0)\n        {\n            gnutls_transport_set_errno(ctxt->session,\n                                       EAI_APR_TO_RAW(ctxt->input_rc));\n            return -1;\n        }\n\n        return (ssize_t) len;\n    }\n\n    /* Unexpected errors and APR_EOF clean out the brigade.\n     * Subsequent calls will return APR_EOF. */\n    apr_brigade_cleanup(ctxt->input_bb);\n    ctxt->input_bb = NULL;\n\n    if (APR_STATUS_IS_EOF(ctxt->input_rc) && len)\n    {\n        /* Some data has been received before EOF, return it. */\n        return (ssize_t) len;\n    }\n\n    gnutls_transport_set_errno(ctxt->session, EIO);\n    return -1;\n}",
+            955
+        ]
+    ]
+}

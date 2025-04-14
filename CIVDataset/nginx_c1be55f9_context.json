@@ -1,0 +1,244 @@
+{
+    "calleeMethods": [
+        [
+            "src/http/ngx_http_request_body.c",
+            "ngx_http_discard_request_body",
+            "ngx_int_t /* <=== ngx_http_discard_request_body */ \nngx_http_discard_request_body(ngx_http_request_t *r)\n{\n    ssize_t       size;\n    ngx_int_t     rc;\n    ngx_event_t  *rev;\n\n    if (r != r->main || r->discard_body || r->request_body) {\n        return NGX_OK;\n    }\n\n#if (NGX_HTTP_V2)\n    if (r->stream) {\n        r->stream->skip_data = 1;\n        return NGX_OK;\n    }\n#endif\n\n    if (ngx_http_test_expect(r) != NGX_OK) {\n        return NGX_HTTP_INTERNAL_SERVER_ERROR;\n    }\n\n    rev = r->connection->read;\n\n    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, rev->log, 0, \"http set discard body\");\n\n    if (rev->timer_set) {\n        ngx_del_timer(rev);\n    }\n\n    if (r->headers_in.content_length_n <= 0 && !r->headers_in.chunked) {\n        return NGX_OK;\n    }\n\n    size = r->header_in->last - r->header_in->pos;\n\n    if (size || r->headers_in.chunked) {\n        rc = ngx_http_discard_request_body_filter(r, r->header_in);\n\n        if (rc != NGX_OK) {\n            return rc;\n        }\n\n        if (r->headers_in.content_length_n == 0) {\n            return NGX_OK;\n        }\n    }\n\n    rc = ngx_http_read_discarded_request_body(r);\n\n    if (rc == NGX_OK) {\n        r->lingering_close = 0;\n        return NGX_OK;\n    }\n\n    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {\n        return rc;\n    }\n\n    /* rc == NGX_AGAIN */\n\n    r->read_event_handler = ngx_http_discarded_request_body_handler;\n\n    if (ngx_handle_read_event(rev, 0) != NGX_OK) {\n        return NGX_HTTP_INTERNAL_SERVER_ERROR;\n    }\n\n    r->count++;\n    r->discard_body = 1;\n\n    return NGX_OK;\n}",
+            1
+        ],
+        [
+            "src/http/ngx_http_request_body.c",
+            "ngx_http_read_discarded_request_body",
+            "static ngx_int_t /* <=== ngx_http_read_discarded_request_body */ \nngx_http_read_discarded_request_body(ngx_http_request_t *r)\n{\n    size_t     size;\n    ssize_t    n;\n    ngx_int_t  rc;\n    ngx_buf_t  b;\n    u_char     buffer[NGX_HTTP_DISCARD_BUFFER_SIZE];\n\n    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,\n                   \"http read discarded body\");\n\n    ngx_memzero(&b, sizeof(ngx_buf_t));\n\n    b.temporary = 1;\n\n    for ( ;; ) {\n        if (r->headers_in.content_length_n == 0) {\n            r->read_event_handler = ngx_http_block_reading;\n            return NGX_OK;\n        }\n\n        if (!r->connection->read->ready) {\n            return NGX_AGAIN;\n        }\n\n        size = (size_t) ngx_min(r->headers_in.content_length_n,\n                                NGX_HTTP_DISCARD_BUFFER_SIZE);\n\n        n = r->connection->recv(r->connection, buffer, size);\n\n        if (n == NGX_ERROR) {\n            r->connection->error = 1;\n            return NGX_OK;\n        }\n\n        if (n == NGX_AGAIN) {\n            return NGX_AGAIN;\n        }\n\n        if (n == 0) {\n            return NGX_OK;\n        }\n\n        b.pos = buffer;\n        b.last = buffer + n;\n\n        rc = ngx_http_discard_request_body_filter(r, &b);\n\n        if (rc != NGX_OK) {\n            return rc;\n        }\n    }\n}",
+            2
+        ],
+        [
+            "src/core/ngx_palloc.c",
+            "ngx_pcalloc",
+            "void * /* <=== ngx_pcalloc */ \nngx_pcalloc(ngx_pool_t *pool, size_t size)\n{\n    void *p;\n\n    p = ngx_palloc(pool, size);\n    if (p) {\n        ngx_memzero(p, size);\n    }\n\n    return p;\n}",
+            3
+        ],
+        [
+            "src/core/ngx_string.c",
+            "ngx_strncasecmp",
+            "ngx_int_t /* <=== ngx_strncasecmp */ \nngx_strncasecmp(u_char *s1, u_char *s2, size_t n)\n{\n    ngx_uint_t  c1, c2;\n\n    while (n) {\n        c1 = (ngx_uint_t) *s1++;\n        c2 = (ngx_uint_t) *s2++;\n\n        c1 = (c1 >= 'A' && c1 <= 'Z') ? (c1 | 0x20) : c1;\n        c2 = (c2 >= 'A' && c2 <= 'Z') ? (c2 | 0x20) : c2;\n\n        if (c1 == c2) {\n\n            if (c1) {\n                n--;\n                continue;\n            }\n\n            return 0;\n        }\n\n        return c1 - c2;\n    }\n\n    return 0;\n}",
+            3
+        ],
+        [
+            "src/http/ngx_http_request_body.c",
+            "ngx_http_discard_request_body_filter",
+            "static ngx_int_t /* <=== ngx_http_discard_request_body_filter */ \nngx_http_discard_request_body_filter(ngx_http_request_t *r, ngx_buf_t *b)\n{\n    size_t                    size;\n    ngx_int_t                 rc;\n    ngx_http_request_body_t  *rb;\n\n    if (r->headers_in.chunked) {\n\n        rb = r->request_body;\n\n        if (rb == NULL) {\n\n            rb = ngx_pcalloc(r->pool, sizeof(ngx_http_request_body_t));\n            if (rb == NULL) {\n                return NGX_HTTP_INTERNAL_SERVER_ERROR;\n            }\n\n            rb->chunked = ngx_pcalloc(r->pool, sizeof(ngx_http_chunked_t));\n            if (rb->chunked == NULL) {\n                return NGX_HTTP_INTERNAL_SERVER_ERROR;\n            }\n\n            r->request_body = rb;\n        }\n\n        for ( ;; ) {\n\n            rc = ngx_http_parse_chunked(r, b, rb->chunked);\n\n            if (rc == NGX_OK) {\n\n                /* a chunk has been parsed successfully */\n\n                size = b->last - b->pos;\n\n                if ((off_t) size > rb->chunked->size) {\n                    b->pos += (size_t) rb->chunked->size;\n                    rb->chunked->size = 0;\n\n                } else {\n                    rb->chunked->size -= size;\n                    b->pos = b->last;\n                }\n\n                continue;\n            }\n\n            if (rc == NGX_DONE) {\n\n                /* a whole response has been parsed successfully */\n\n                r->headers_in.content_length_n = 0;\n                break;\n            }\n\n            if (rc == NGX_AGAIN) {\n\n                /* set amount of data we want to see next time */\n\n                r->headers_in.content_length_n = rb->chunked->length;\n                break;\n            }\n\n            /* invalid */\n\n            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,\n                          \"client sent invalid chunked body\");\n\n            return NGX_HTTP_BAD_REQUEST;\n        }\n\n    } else {\n        size = b->last - b->pos;\n\n        if ((off_t) size > r->headers_in.content_length_n) {\n            b->pos += (size_t) r->headers_in.content_length_n;\n            r->headers_in.content_length_n = 0;\n\n        } else {\n            b->pos = b->last;\n            r->headers_in.content_length_n -= size;\n        }\n    }\n\n    return NGX_OK;\n}",
+            2
+        ],
+        [
+            "src/http/ngx_http_script.c",
+            "ngx_http_script_flush_complex_value",
+            "void /* <=== ngx_http_script_flush_complex_value */ \nngx_http_script_flush_complex_value(ngx_http_request_t *r,\n    ngx_http_complex_value_t *val)\n{\n    ngx_uint_t *index;\n\n    index = val->flushes;\n\n    if (index) {\n        while (*index != (ngx_uint_t) -1) {\n\n            if (r->variables[*index].no_cacheable) {\n                r->variables[*index].valid = 0;\n                r->variables[*index].not_found = 0;\n            }\n\n            index++;\n        }\n    }\n}",
+            2
+        ],
+        [
+            "src/http/ngx_http_special_response.c",
+            "ngx_http_send_special_response",
+            "static ngx_int_t /* <=== ngx_http_send_special_response */ \nngx_http_send_special_response(ngx_http_request_t *r,\n    ngx_http_core_loc_conf_t *clcf, ngx_uint_t err)\n{\n    u_char       *tail;\n    size_t        len;\n    ngx_int_t     rc;\n    ngx_buf_t    *b;\n    ngx_uint_t    msie_padding;\n    ngx_chain_t   out[3];\n\n    if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_ON) {\n        len = sizeof(ngx_http_error_full_tail) - 1;\n        tail = ngx_http_error_full_tail;\n\n    } else if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_BUILD) {\n        len = sizeof(ngx_http_error_build_tail) - 1;\n        tail = ngx_http_error_build_tail;\n\n    } else {\n        len = sizeof(ngx_http_error_tail) - 1;\n        tail = ngx_http_error_tail;\n    }\n\n    msie_padding = 0;\n\n    if (ngx_http_error_pages[err].len) {\n        r->headers_out.content_length_n = ngx_http_error_pages[err].len + len;\n        if (clcf->msie_padding\n            && (r->headers_in.msie || r->headers_in.chrome)\n            && r->http_version >= NGX_HTTP_VERSION_10\n            && err >= NGX_HTTP_OFF_4XX)\n        {\n            r->headers_out.content_length_n +=\n                                         sizeof(ngx_http_msie_padding) - 1;\n            msie_padding = 1;\n        }\n\n        r->headers_out.content_type_len = sizeof(\"text/html\") - 1;\n        ngx_str_set(&r->headers_out.content_type, \"text/html\");\n        r->headers_out.content_type_lowcase = NULL;\n\n    } else {\n        r->headers_out.content_length_n = 0;\n    }\n\n    if (r->headers_out.content_length) {\n        r->headers_out.content_length->hash = 0;\n        r->headers_out.content_length = NULL;\n    }\n\n    ngx_http_clear_accept_ranges(r);\n    ngx_http_clear_last_modified(r);\n    ngx_http_clear_etag(r);\n\n    rc = ngx_http_send_header(r);\n\n    if (rc == NGX_ERROR || r->header_only) {\n        return rc;\n    }\n\n    if (ngx_http_error_pages[err].len == 0) {\n        return ngx_http_send_special(r, NGX_HTTP_LAST);\n    }\n\n    b = ngx_calloc_buf(r->pool);\n    if (b == NULL) {\n        return NGX_ERROR;\n    }\n\n    b->memory = 1;\n    b->pos = ngx_http_error_pages[err].data;\n    b->last = ngx_http_error_pages[err].data + ngx_http_error_pages[err].len;\n\n    out[0].buf = b;\n    out[0].next = &out[1];\n\n    b = ngx_calloc_buf(r->pool);\n    if (b == NULL) {\n        return NGX_ERROR;\n    }\n\n    b->memory = 1;\n\n    b->pos = tail;\n    b->last = tail + len;\n\n    out[1].buf = b;\n    out[1].next = NULL;\n\n    if (msie_padding) {\n        b = ngx_calloc_buf(r->pool);\n        if (b == NULL) {\n            return NGX_ERROR;\n        }\n\n        b->memory = 1;\n        b->pos = ngx_http_msie_padding;\n        b->last = ngx_http_msie_padding + sizeof(ngx_http_msie_padding) - 1;\n\n        out[1].next = &out[2];\n        out[2].buf = b;\n        out[2].next = NULL;\n    }\n\n    if (r == r->main) {\n        b->last_buf = 1;\n    }\n\n    b->last_in_chain = 1;\n\n    return ngx_http_output_filter(r, &out[0]);\n}",
+            1
+        ],
+        [
+            "src/core/ngx_palloc.c",
+            "ngx_palloc",
+            "void * /* <=== ngx_palloc */ \nngx_palloc(ngx_pool_t *pool, size_t size)\n{\n#if !(NGX_DEBUG_PALLOC)\n    if (size <= pool->max) {\n        return ngx_palloc_small(pool, size, 1);\n    }\n#endif\n\n    return ngx_palloc_large(pool, size);\n}",
+            3
+        ],
+        [
+            "src/http/ngx_http_script.c",
+            "ngx_http_complex_value",
+            "ngx_int_t /* <=== ngx_http_complex_value */ \nngx_http_complex_value(ngx_http_request_t *r, ngx_http_complex_value_t *val,\n    ngx_str_t *value)\n{\n    size_t                        len;\n    ngx_http_script_code_pt       code;\n    ngx_http_script_len_code_pt   lcode;\n    ngx_http_script_engine_t      e;\n\n    if (val->lengths == NULL) {\n        *value = val->value;\n        return NGX_OK;\n    }\n\n    ngx_http_script_flush_complex_value(r, val);\n\n    ngx_memzero(&e, sizeof(ngx_http_script_engine_t));\n\n    e.ip = val->lengths;\n    e.request = r;\n    e.flushed = 1;\n\n    len = 0;\n\n    while (*(uintptr_t *) e.ip) {\n        lcode = *(ngx_http_script_len_code_pt *) e.ip;\n        len += lcode(&e);\n    }\n\n    value->len = len;\n    value->data = ngx_pnalloc(r->pool, len);\n    if (value->data == NULL) {\n        return NGX_ERROR;\n    }\n\n    e.ip = val->values;\n    e.pos = value->data;\n    e.buf = *value;\n\n    while (*(uintptr_t *) e.ip) {\n        code = *(ngx_http_script_code_pt *) e.ip;\n        code((ngx_http_script_engine_t *) &e);\n    }\n\n    *value = e.buf;\n\n    return NGX_OK;\n}",
+            1
+        ],
+        [
+            "src/core/ngx_palloc.c",
+            "ngx_palloc_large",
+            "static void * /* <=== ngx_palloc_large */ \nngx_palloc_large(ngx_pool_t *pool, size_t size)\n{\n    void              *p;\n    ngx_uint_t         n;\n    ngx_pool_large_t  *large;\n\n    p = ngx_alloc(size, pool->log);\n    if (p == NULL) {\n        return NULL;\n    }\n\n    n = 0;\n\n    for (large = pool->large; large; large = large->next) {\n        if (large->alloc == NULL) {\n            large->alloc = p;\n            return p;\n        }\n\n        if (n++ > 3) {\n            break;\n        }\n    }\n\n    large = ngx_palloc_small(pool, sizeof(ngx_pool_large_t), 1);\n    if (large == NULL) {\n        ngx_free(p);\n        return NULL;\n    }\n\n    large->alloc = p;\n    large->next = pool->large;\n    pool->large = large;\n\n    return p;\n}",
+            3
+        ],
+        [
+            "src/http/ngx_http_core_module.c",
+            "ngx_http_output_filter",
+            "ngx_int_t /* <=== ngx_http_output_filter */ \nngx_http_output_filter(ngx_http_request_t *r, ngx_chain_t *in)\n{\n    ngx_int_t          rc;\n    ngx_connection_t  *c;\n\n    c = r->connection;\n\n    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,\n                   \"http output filter \\\"%V?%V\\\"\", &r->uri, &r->args);\n\n    rc = ngx_http_top_body_filter(r, in);\n\n    if (rc == NGX_ERROR) {\n        /* NGX_ERROR may be returned by any filter */\n        c->error = 1;\n    }\n\n    return rc;\n}",
+            2
+        ],
+        [
+            "src/http/ngx_http_special_response.c",
+            "NGX_HTTP_OFF_3XX",
+            "#define NGX_HTTP_OFF_3XX   (NGX_HTTP_LAST_2XX - 201) /* <=== src/http/ngx_http_special_response.c:345:345:NGX_HTTP_OFF_3XX:0 */ ",
+            1
+        ],
+        [
+            "src/http/ngx_http_request_body.c",
+            "ngx_http_test_expect",
+            "static ngx_int_t /* <=== ngx_http_test_expect */ \nngx_http_test_expect(ngx_http_request_t *r)\n{\n    ngx_int_t   n;\n    ngx_str_t  *expect;\n\n    if (r->expect_tested\n        || r->headers_in.expect == NULL\n        || r->http_version < NGX_HTTP_VERSION_11\n#if (NGX_HTTP_V2)\n        || r->stream != NULL\n#endif\n       )\n    {\n        return NGX_OK;\n    }\n\n    r->expect_tested = 1;\n\n    expect = &r->headers_in.expect->value;\n\n    if (expect->len != sizeof(\"100-continue\") - 1\n        || ngx_strncasecmp(expect->data, (u_char *) \"100-continue\",\n                           sizeof(\"100-continue\") - 1)\n           != 0)\n    {\n        return NGX_OK;\n    }\n\n    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,\n                   \"send 100 Continue\");\n\n    n = r->connection->send(r->connection,\n                            (u_char *) \"HTTP/1.1 100 Continue\" CRLF CRLF,\n                            sizeof(\"HTTP/1.1 100 Continue\" CRLF CRLF) - 1);\n\n    if (n == sizeof(\"HTTP/1.1 100 Continue\" CRLF CRLF) - 1) {\n        return NGX_OK;\n    }\n\n    /* we assume that such small packet should be send successfully */\n\n    r->connection->error = 1;\n\n    return NGX_ERROR;\n}",
+            2
+        ],
+        [
+            "src/http/ngx_http_special_response.c",
+            "ngx_http_send_refresh",
+            "static ngx_int_t /* <=== ngx_http_send_refresh */ \nngx_http_send_refresh(ngx_http_request_t *r)\n{\n    u_char       *p, *location;\n    size_t        len, size;\n    uintptr_t     escape;\n    ngx_int_t     rc;\n    ngx_buf_t    *b;\n    ngx_chain_t   out;\n\n    len = r->headers_out.location->value.len;\n    location = r->headers_out.location->value.data;\n\n    escape = 2 * ngx_escape_uri(NULL, location, len, NGX_ESCAPE_REFRESH);\n\n    size = sizeof(ngx_http_msie_refresh_head) - 1\n           + escape + len\n           + sizeof(ngx_http_msie_refresh_tail) - 1;\n\n    r->err_status = NGX_HTTP_OK;\n\n    r->headers_out.content_type_len = sizeof(\"text/html\") - 1;\n    ngx_str_set(&r->headers_out.content_type, \"text/html\");\n    r->headers_out.content_type_lowcase = NULL;\n\n    r->headers_out.location->hash = 0;\n    r->headers_out.location = NULL;\n\n    r->headers_out.content_length_n = size;\n\n    if (r->headers_out.content_length) {\n        r->headers_out.content_length->hash = 0;\n        r->headers_out.content_length = NULL;\n    }\n\n    ngx_http_clear_accept_ranges(r);\n    ngx_http_clear_last_modified(r);\n    ngx_http_clear_etag(r);\n\n    rc = ngx_http_send_header(r);\n\n    if (rc == NGX_ERROR || r->header_only) {\n        return rc;\n    }\n\n    b = ngx_create_temp_buf(r->pool, size);\n    if (b == NULL) {\n        return NGX_ERROR;\n    }\n\n    p = ngx_cpymem(b->pos, ngx_http_msie_refresh_head,\n                   sizeof(ngx_http_msie_refresh_head) - 1);\n\n    if (escape == 0) {\n        p = ngx_cpymem(p, location, len);\n\n    } else {\n        p = (u_char *) ngx_escape_uri(p, location, len, NGX_ESCAPE_REFRESH);\n    }\n\n    b->last = ngx_cpymem(p, ngx_http_msie_refresh_tail,\n                         sizeof(ngx_http_msie_refresh_tail) - 1);\n\n    b->last_buf = (r == r->main) ? 1 : 0;\n    b->last_in_chain = 1;\n\n    out.buf = b;\n    out.next = NULL;\n\n    return ngx_http_output_filter(r, &out);\n}",
+            1
+        ],
+        [
+            "src/http/ngx_http_parse.c",
+            "ngx_http_parse_chunked",
+            "ngx_int_t /* <=== ngx_http_parse_chunked */ \nngx_http_parse_chunked(ngx_http_request_t *r, ngx_buf_t *b,\n    ngx_http_chunked_t *ctx)\n{\n    u_char     *pos, ch, c;\n    ngx_int_t   rc;\n    enum {\n        sw_chunk_start = 0,\n        sw_chunk_size,\n        sw_chunk_extension,\n        sw_chunk_extension_almost_done,\n        sw_chunk_data,\n        sw_after_data,\n        sw_after_data_almost_done,\n        sw_last_chunk_extension,\n        sw_last_chunk_extension_almost_done,\n        sw_trailer,\n        sw_trailer_almost_done,\n        sw_trailer_header,\n        sw_trailer_header_almost_done\n    } state;\n\n    state = ctx->state;\n\n    if (state == sw_chunk_data && ctx->size == 0) {\n        state = sw_after_data;\n    }\n\n    rc = NGX_AGAIN;\n\n    for (pos = b->pos; pos < b->last; pos++) {\n\n        ch = *pos;\n\n        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,\n                       \"http chunked byte: %02Xd s:%d\", ch, state);\n\n        switch (state) {\n\n        case sw_chunk_start:\n            if (ch >= '0' && ch <= '9') {\n                state = sw_chunk_size;\n                ctx->size = ch - '0';\n                break;\n            }\n\n            c = (u_char) (ch | 0x20);\n\n            if (c >= 'a' && c <= 'f') {\n                state = sw_chunk_size;\n                ctx->size = c - 'a' + 10;\n                break;\n            }\n\n            goto invalid;\n\n        case sw_chunk_size:\n            if (ctx->size > NGX_MAX_OFF_T_VALUE / 16) {\n                goto invalid;\n            }\n\n            if (ch >= '0' && ch <= '9') {\n                ctx->size = ctx->size * 16 + (ch - '0');\n                break;\n            }\n\n            c = (u_char) (ch | 0x20);\n\n            if (c >= 'a' && c <= 'f') {\n                ctx->size = ctx->size * 16 + (c - 'a' + 10);\n                break;\n            }\n\n            if (ctx->size == 0) {\n\n                switch (ch) {\n                case CR:\n                    state = sw_last_chunk_extension_almost_done;\n                    break;\n                case LF:\n                    state = sw_trailer;\n                    break;\n                case ';':\n                case ' ':\n                case '\\t':\n                    state = sw_last_chunk_extension;\n                    break;\n                default:\n                    goto invalid;\n                }\n\n                break;\n            }\n\n            switch (ch) {\n            case CR:\n                state = sw_chunk_extension_almost_done;\n                break;\n            case LF:\n                state = sw_chunk_data;\n                break;\n            case ';':\n            case ' ':\n            case '\\t':\n                state = sw_chunk_extension;\n                break;\n            default:\n                goto invalid;\n            }\n\n            break;\n\n        case sw_chunk_extension:\n            switch (ch) {\n            case CR:\n                state = sw_chunk_extension_almost_done;\n                break;\n            case LF:\n                state = sw_chunk_data;\n            }\n            break;\n\n        case sw_chunk_extension_almost_done:\n            if (ch == LF) {\n                state = sw_chunk_data;\n                break;\n            }\n            goto invalid;\n\n        case sw_chunk_data:\n            rc = NGX_OK;\n            goto data;\n\n        case sw_after_data:\n            switch (ch) {\n            case CR:\n                state = sw_after_data_almost_done;\n                break;\n            case LF:\n                state = sw_chunk_start;\n                break;\n            default:\n                goto invalid;\n            }\n            break;\n\n        case sw_after_data_almost_done:\n            if (ch == LF) {\n                state = sw_chunk_start;\n                break;\n            }\n            goto invalid;\n\n        case sw_last_chunk_extension:\n            switch (ch) {\n            case CR:\n                state = sw_last_chunk_extension_almost_done;\n                break;\n            case LF:\n                state = sw_trailer;\n            }\n            break;\n\n        case sw_last_chunk_extension_almost_done:\n            if (ch == LF) {\n                state = sw_trailer;\n                break;\n            }\n            goto invalid;\n\n        case sw_trailer:\n            switch (ch) {\n            case CR:\n                state = sw_trailer_almost_done;\n                break;\n            case LF:\n                goto done;\n            default:\n                state = sw_trailer_header;\n            }\n            break;\n\n        case sw_trailer_almost_done:\n            if (ch == LF) {\n                goto done;\n            }\n            goto invalid;\n\n        case sw_trailer_header:\n            switch (ch) {\n            case CR:\n                state = sw_trailer_header_almost_done;\n                break;\n            case LF:\n                state = sw_trailer;\n            }\n            break;\n\n        case sw_trailer_header_almost_done:\n            if (ch == LF) {\n                state = sw_trailer;\n                break;\n            }\n            goto invalid;\n\n        }\n    }\n\ndata:\n\n    ctx->state = state;\n    b->pos = pos;\n\n    if (ctx->size > NGX_MAX_OFF_T_VALUE - 5) {\n        goto invalid;\n    }\n\n    switch (state) {\n\n    case sw_chunk_start:\n        ctx->length = 3 /* \"0\" LF LF */;\n        break;\n    case sw_chunk_size:\n        ctx->length = 1 /* LF */\n                      + (ctx->size ? ctx->size + 4 /* LF \"0\" LF LF */\n                                   : 1 /* LF */);\n        break;\n    case sw_chunk_extension:\n    case sw_chunk_extension_almost_done:\n        ctx->length = 1 /* LF */ + ctx->size + 4 /* LF \"0\" LF LF */;\n        break;\n    case sw_chunk_data:\n        ctx->length = ctx->size + 4 /* LF \"0\" LF LF */;\n        break;\n    case sw_after_data:\n    case sw_after_data_almost_done:\n        ctx->length = 4 /* LF \"0\" LF LF */;\n        break;\n    case sw_last_chunk_extension:\n    case sw_last_chunk_extension_almost_done:\n        ctx->length = 2 /* LF LF */;\n        break;\n    case sw_trailer:\n    case sw_trailer_almost_done:\n        ctx->length = 1 /* LF */;\n        break;\n    case sw_trailer_header:\n    case sw_trailer_header_almost_done:\n        ctx->length = 2 /* LF LF */;\n        break;\n\n    }\n\n    return rc;\n\ndone:\n\n    ctx->state = 0;\n    b->pos = pos + 1;\n\n    return NGX_DONE;\n\ninvalid:\n\n    return NGX_ERROR;\n}",
+            3
+        ],
+        [
+            "src/http/ngx_http_request.c",
+            "ngx_http_send_special",
+            "ngx_int_t /* <=== ngx_http_send_special */ \nngx_http_send_special(ngx_http_request_t *r, ngx_uint_t flags)\n{\n    ngx_buf_t    *b;\n    ngx_chain_t   out;\n\n    b = ngx_calloc_buf(r->pool);\n    if (b == NULL) {\n        return NGX_ERROR;\n    }\n\n    if (flags & NGX_HTTP_LAST) {\n\n        if (r == r->main && !r->post_action) {\n            b->last_buf = 1;\n\n        } else {\n            b->sync = 1;\n            b->last_in_chain = 1;\n        }\n    }\n\n    if (flags & NGX_HTTP_FLUSH) {\n        b->flush = 1;\n    }\n\n    out.buf = b;\n    out.next = NULL;\n\n    return ngx_http_output_filter(r, &out);\n}",
+            2
+        ],
+        [
+            "src/http/ngx_http_core_module.c",
+            "ngx_http_send_header",
+            "ngx_int_t /* <=== ngx_http_send_header */ \nngx_http_send_header(ngx_http_request_t *r)\n{\n    if (r->post_action) {\n        return NGX_OK;\n    }\n\n    if (r->header_sent) {\n        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,\n                      \"header already sent\");\n        return NGX_ERROR;\n    }\n\n    if (r->err_status) {\n        r->headers_out.status = r->err_status;\n        r->headers_out.status_line.len = 0;\n    }\n\n    return ngx_http_top_header_filter(r);\n}",
+            2
+        ],
+        [
+            "src/core/ngx_buf.c",
+            "ngx_create_temp_buf",
+            "ngx_buf_t * /* <=== ngx_create_temp_buf */ \nngx_create_temp_buf(ngx_pool_t *pool, size_t size)\n{\n    ngx_buf_t *b;\n\n    b = ngx_calloc_buf(pool);\n    if (b == NULL) {\n        return NULL;\n    }\n\n    b->start = ngx_palloc(pool, size);\n    if (b->start == NULL) {\n        return NULL;\n    }\n\n    /*\n     * set by ngx_calloc_buf():\n     *\n     *     b->file_pos = 0;\n     *     b->file_last = 0;\n     *     b->file = NULL;\n     *     b->shadow = NULL;\n     *     b->tag = 0;\n     *     and flags\n     */\n\n    b->pos = b->start;\n    b->last = b->start;\n    b->end = b->last + size;\n    b->temporary = 1;\n\n    return b;\n}",
+            2
+        ],
+        [
+            "src/core/ngx_palloc.c",
+            "ngx_pnalloc",
+            "void * /* <=== ngx_pnalloc */ \nngx_pnalloc(ngx_pool_t *pool, size_t size)\n{\n#if !(NGX_DEBUG_PALLOC)\n    if (size <= pool->max) {\n        return ngx_palloc_small(pool, size, 0);\n    }\n#endif\n\n    return ngx_palloc_large(pool, size);\n}",
+            2
+        ],
+        [
+            "src/http/ngx_http_special_response.c",
+            "NGX_HTTP_OFF_4XX",
+            "#define NGX_HTTP_OFF_4XX   (NGX_HTTP_LAST_3XX - 301 + NGX_HTTP_OFF_3XX) /* <=== src/http/ngx_http_special_response.c:358:358:NGX_HTTP_OFF_4XX:0 */ ",
+            2
+        ],
+        [
+            "src/core/ngx_string.c",
+            "ngx_escape_uri",
+            "uintptr_t /* <=== ngx_escape_uri */ \nngx_escape_uri(u_char *dst, u_char *src, size_t size, ngx_uint_t type)\n{\n    ngx_uint_t      n;\n    uint32_t       *escape;\n    static u_char   hex[] = \"0123456789ABCDEF\";\n\n                    /* \" \", \"#\", \"%\", \"?\", %00-%1F, %7F-%FF */\n\n    static uint32_t   uri[] = {\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n\n                    /* ?>=< ;:98 7654 3210  /.-, +*)( '&%$ #\"!  */\n        0x80000029, /* 1000 0000 0000 0000  0000 0000 0010 1001 */\n\n                    /* _^]\\ [ZYX WVUT SRQP  ONML KJIH GFED CBA@ */\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n\n                    /*  ~}| {zyx wvut srqp  onml kjih gfed cba` */\n        0x80000000, /* 1000 0000 0000 0000  0000 0000 0000 0000 */\n\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff  /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n    };\n\n                    /* \" \", \"#\", \"%\", \"&\", \"+\", \"?\", %00-%1F, %7F-%FF */\n\n    static uint32_t   args[] = {\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n\n                    /* ?>=< ;:98 7654 3210  /.-, +*)( '&%$ #\"!  */\n        0x88000869, /* 1000 1000 0000 0000  0000 1000 0110 1001 */\n\n                    /* _^]\\ [ZYX WVUT SRQP  ONML KJIH GFED CBA@ */\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n\n                    /*  ~}| {zyx wvut srqp  onml kjih gfed cba` */\n        0x80000000, /* 1000 0000 0000 0000  0000 0000 0000 0000 */\n\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff  /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n    };\n\n                    /* not ALPHA, DIGIT, \"-\", \".\", \"_\", \"~\" */\n\n    static uint32_t   uri_component[] = {\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n\n                    /* ?>=< ;:98 7654 3210  /.-, +*)( '&%$ #\"!  */\n        0xfc009fff, /* 1111 1100 0000 0000  1001 1111 1111 1111 */\n\n                    /* _^]\\ [ZYX WVUT SRQP  ONML KJIH GFED CBA@ */\n        0x78000001, /* 0111 1000 0000 0000  0000 0000 0000 0001 */\n\n                    /*  ~}| {zyx wvut srqp  onml kjih gfed cba` */\n        0xb8000001, /* 1011 1000 0000 0000  0000 0000 0000 0001 */\n\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff  /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n    };\n\n                    /* \" \", \"#\", \"\"\", \"%\", \"'\", %00-%1F, %7F-%FF */\n\n    static uint32_t   html[] = {\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n\n                    /* ?>=< ;:98 7654 3210  /.-, +*)( '&%$ #\"!  */\n        0x000000ad, /* 0000 0000 0000 0000  0000 0000 1010 1101 */\n\n                    /* _^]\\ [ZYX WVUT SRQP  ONML KJIH GFED CBA@ */\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n\n                    /*  ~}| {zyx wvut srqp  onml kjih gfed cba` */\n        0x80000000, /* 1000 0000 0000 0000  0000 0000 0000 0000 */\n\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff  /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n    };\n\n                    /* \" \", \"\"\", \"%\", \"'\", %00-%1F, %7F-%FF */\n\n    static uint32_t   refresh[] = {\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n\n                    /* ?>=< ;:98 7654 3210  /.-, +*)( '&%$ #\"!  */\n        0x00000085, /* 0000 0000 0000 0000  0000 0000 1000 0101 */\n\n                    /* _^]\\ [ZYX WVUT SRQP  ONML KJIH GFED CBA@ */\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n\n                    /*  ~}| {zyx wvut srqp  onml kjih gfed cba` */\n        0x80000000, /* 1000 0000 0000 0000  0000 0000 0000 0000 */\n\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n        0xffffffff  /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n    };\n\n                    /* \" \", \"%\", %00-%1F */\n\n    static uint32_t   memcached[] = {\n        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */\n\n                    /* ?>=< ;:98 7654 3210  /.-, +*)( '&%$ #\"!  */\n        0x00000021, /* 0000 0000 0000 0000  0000 0000 0010 0001 */\n\n                    /* _^]\\ [ZYX WVUT SRQP  ONML KJIH GFED CBA@ */\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n\n                    /*  ~}| {zyx wvut srqp  onml kjih gfed cba` */\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */\n    };\n\n                    /* mail_auth is the same as memcached */\n\n    static uint32_t  *map[] =\n        { uri, args, uri_component, html, refresh, memcached, memcached };\n\n\n    escape = map[type];\n\n    if (dst == NULL) {\n\n        /* find the number of the characters to be escaped */\n\n        n = 0;\n\n        while (size) {\n            if (escape[*src >> 5] & (1U << (*src & 0x1f))) {\n                n++;\n            }\n            src++;\n            size--;\n        }\n\n        return (uintptr_t) n;\n    }\n\n    while (size) {\n        if (escape[*src >> 5] & (1U << (*src & 0x1f))) {\n            *dst++ = '%';\n            *dst++ = hex[*src >> 4];\n            *dst++ = hex[*src & 0xf];\n            src++;\n\n        } else {\n            *dst++ = *src++;\n        }\n        size--;\n    }\n\n    return (uintptr_t) dst;\n}",
+            2
+        ],
+        [
+            "src/core/ngx_log.c",
+            "ngx_log_error",
+            "ngx_log_error(ngx_uint_t level, ngx_log_t *log, ngx_err_t err, /* <=== ngx_log_error */ \n    const char *fmt, ...)\n{\n    va_list  args;\n\n    if (log->log_level >= level) {\n        va_start(args, fmt);\n        ngx_log_error_core(level, log, err, fmt, args);\n        va_end(args);\n    }\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <ngx_core.h>",
+        "#include <nginx.h>",
+        "#include <ngx_config.h>",
+        "#include <ngx_http.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct {\n    ngx_int_t                  status;\n    ngx_int_t                  overwrite;\n    ngx_http_complex_value_t   value;\n    ngx_str_t                  args;\n}",
+            "ngx_http_err_page_t"
+        ],
+        [
+            "typedef struct ngx_http_core_loc_conf_s  ngx_http_core_loc_conf_t;",
+            "ngx_http_core_loc_conf_t"
+        ],
+        [
+            "typedef intptr_t        ngx_int_t;",
+            "ngx_int_t"
+        ],
+        [
+            "typedef struct ngx_http_request_s     ngx_http_request_t;",
+            "ngx_http_request_t"
+        ],
+        [
+            "typedef struct {\n    size_t      len;\n    u_char     *data;\n}",
+            "ngx_str_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/http/ngx_http_special_response.c": [
+            583,
+            584,
+            591,
+            593,
+            594,
+            597,
+            598,
+            601,
+            605,
+            622,
+            626,
+            628,
+            629,
+            632,
+            644,
+            651,
+            653,
+            655,
+            657,
+            658,
+            661,
+            662,
+            663
+        ]
+    },
+    "visitedLines_before": {
+        "src/http/ngx_http_special_response.c": [
+            583,
+            584,
+            591,
+            593,
+            594,
+            597,
+            598,
+            601,
+            605,
+            622,
+            626,
+            638,
+            645,
+            647,
+            649,
+            651,
+            652,
+            655,
+            656,
+            657
+        ]
+    },
+    "visitedParams": {
+        "src/http/ngx_http_special_response.c": [
+            [
+                "ngx_http_err_page_t *err_page",
+                "ngx_http_send_error_page"
+            ],
+            [
+                "ngx_http_request_t *r",
+                "ngx_http_send_error_page"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/http/ngx_http_special_response.c",
+            "ngx_http_send_error_page",
+            "static ngx_int_t /* <=== ngx_http_send_error_page */ \nngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)\n{\n    ngx_int_t                  overwrite;\n    ngx_str_t                  uri, args;\n    ngx_table_elt_t           *location;\n    ngx_http_core_loc_conf_t  *clcf;\n\n    overwrite = err_page->overwrite;\n\n    if (overwrite && overwrite != NGX_HTTP_OK) {\n        r->expect_tested = 1;\n    }\n\n    if (overwrite >= 0) {\n        r->err_status = overwrite;\n    }\n\n    if (ngx_http_complex_value(r, &err_page->value, &uri) != NGX_OK) {\n        return NGX_ERROR;\n    }\n\n    if (uri.len && uri.data[0] == '/') {\n\n        if (err_page->value.lengths) {\n            ngx_http_split_args(r, &uri, &args);\n\n        } else {\n            args = err_page->args;\n        }\n\n        if (r->method != NGX_HTTP_HEAD) {\n            r->method = NGX_HTTP_GET;\n            r->method_name = ngx_http_core_get_method;\n        }\n\n        return ngx_http_internal_redirect(r, &uri, &args);\n    }\n\n    if (uri.len && uri.data[0] == '@') {\n        return ngx_http_named_location(r, &uri);\n    }\n\n    r->expect_tested = 1;\n\n    if (ngx_http_discard_request_body(r) != NGX_OK) {\n        r->keepalive = 0;\n    }\n\n    location = ngx_list_push(&r->headers_out.headers);\n\n    if (location == NULL) {\n        return NGX_ERROR;\n    }\n\n    if (overwrite != NGX_HTTP_MOVED_PERMANENTLY\n        && overwrite != NGX_HTTP_MOVED_TEMPORARILY\n        && overwrite != NGX_HTTP_SEE_OTHER\n        && overwrite != NGX_HTTP_TEMPORARY_REDIRECT\n        && overwrite != NGX_HTTP_PERMANENT_REDIRECT)\n    {\n        r->err_status = NGX_HTTP_MOVED_TEMPORARILY;\n    }\n\n    location->hash = 1;\n    ngx_str_set(&location->key, \"Location\");\n    location->value = uri;\n\n    ngx_http_clear_location(r);\n\n    r->headers_out.location = location;\n\n    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);\n\n    if (clcf->msie_refresh && r->headers_in.msie) {\n        return ngx_http_send_refresh(r);\n    }\n\n    return ngx_http_send_special_response(r, clcf, r->err_status\n                                                   - NGX_HTTP_MOVED_PERMANENTLY\n                                                   + NGX_HTTP_OFF_3XX);\n}",
+            583
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/http/ngx_http_special_response.c",
+            "ngx_http_send_error_page",
+            "static ngx_int_t /* <=== ngx_http_send_error_page */ \nngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)\n{\n    ngx_int_t                  overwrite;\n    ngx_str_t                  uri, args;\n    ngx_table_elt_t           *location;\n    ngx_http_core_loc_conf_t  *clcf;\n\n    overwrite = err_page->overwrite;\n\n    if (overwrite && overwrite != NGX_HTTP_OK) {\n        r->expect_tested = 1;\n    }\n\n    if (overwrite >= 0) {\n        r->err_status = overwrite;\n    }\n\n    if (ngx_http_complex_value(r, &err_page->value, &uri) != NGX_OK) {\n        return NGX_ERROR;\n    }\n\n    if (uri.len && uri.data[0] == '/') {\n\n        if (err_page->value.lengths) {\n            ngx_http_split_args(r, &uri, &args);\n\n        } else {\n            args = err_page->args;\n        }\n\n        if (r->method != NGX_HTTP_HEAD) {\n            r->method = NGX_HTTP_GET;\n            r->method_name = ngx_http_core_get_method;\n        }\n\n        return ngx_http_internal_redirect(r, &uri, &args);\n    }\n\n    if (uri.len && uri.data[0] == '@') {\n        return ngx_http_named_location(r, &uri);\n    }\n\n    location = ngx_list_push(&r->headers_out.headers);\n\n    if (location == NULL) {\n        return NGX_ERROR;\n    }\n\n    if (overwrite != NGX_HTTP_MOVED_PERMANENTLY\n        && overwrite != NGX_HTTP_MOVED_TEMPORARILY\n        && overwrite != NGX_HTTP_SEE_OTHER\n        && overwrite != NGX_HTTP_TEMPORARY_REDIRECT\n        && overwrite != NGX_HTTP_PERMANENT_REDIRECT)\n    {\n        r->err_status = NGX_HTTP_MOVED_TEMPORARILY;\n    }\n\n    location->hash = 1;\n    ngx_str_set(&location->key, \"Location\");\n    location->value = uri;\n\n    ngx_http_clear_location(r);\n\n    r->headers_out.location = location;\n\n    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);\n\n    if (clcf->msie_refresh && r->headers_in.msie) {\n        return ngx_http_send_refresh(r);\n    }\n\n    return ngx_http_send_special_response(r, clcf, r->err_status\n                                                   - NGX_HTTP_MOVED_PERMANENTLY\n                                                   + NGX_HTTP_OFF_3XX);\n}",
+            583
+        ]
+    ]
+}

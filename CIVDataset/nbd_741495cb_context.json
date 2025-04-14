@@ -1,0 +1,856 @@
+{
+    "calleeMethods": [
+        [
+            "nbd-server.c",
+            "negotiate",
+            "CLIENT* negotiate(int net, CLIENT *client, GArray* servers, int phase) { /* <=== negotiate */ \n\tchar zeros[128];\n\tuint64_t size_host;\n\tuint32_t flags = NBD_FLAG_HAS_FLAGS;\n\tuint16_t smallflags = 0;\n\tuint64_t magic;\n\n\tmemset(zeros, '\\0', sizeof(zeros));\n\tassert(((phase & NEG_INIT) && (phase & NEG_MODERN)) || client);\n\tif(phase & NEG_MODERN) {\n\t\tsmallflags |= NBD_FLAG_FIXED_NEWSTYLE;\n\t}\n\tif(phase & NEG_INIT) {\n\t\t/* common */\n\t\tif (write(net, INIT_PASSWD, 8) < 0) {\n\t\t\terr_nonfatal(\"Negotiation failed/1: %m\");\n\t\t\tif(client)\n\t\t\t\texit(EXIT_FAILURE);\n\t\t}\n\t\tif(phase & NEG_MODERN) {\n\t\t\t/* modern */\n\t\t\tmagic = htonll(opts_magic);\n\t\t} else {\n\t\t\t/* oldstyle */\n\t\t\tmagic = htonll(cliserv_magic);\n\t\t}\n\t\tif (write(net, &magic, sizeof(magic)) < 0) {\n\t\t\terr_nonfatal(\"Negotiation failed/2: %m\");\n\t\t\tif(phase & NEG_OLD)\n\t\t\t\texit(EXIT_FAILURE);\n\t\t}\n\t}\n\tif ((phase & NEG_MODERN) && (phase & NEG_INIT)) {\n\t\t/* modern */\n\t\tuint32_t cflags;\n\t\tuint32_t opt;\n\n\t\tif(!servers)\n\t\t\terr(\"programmer error\");\n\t\tsmallflags = htons(smallflags);\n\t\tif (write(net, &smallflags, sizeof(uint16_t)) < 0)\n\t\t\terr_nonfatal(\"Negotiation failed/3: %m\");\n\t\tif (read(net, &cflags, sizeof(cflags)) < 0)\n\t\t\terr_nonfatal(\"Negotiation failed/4: %m\");\n\t\tcflags = htonl(cflags);\n\t\tdo {\n\t\t\tif (read(net, &magic, sizeof(magic)) < 0)\n\t\t\t\terr_nonfatal(\"Negotiation failed/5: %m\");\n\t\t\tmagic = ntohll(magic);\n\t\t\tif(magic != opts_magic) {\n\t\t\t\terr_nonfatal(\"Negotiation failed/5a: magic mismatch\");\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t\tif (read(net, &opt, sizeof(opt)) < 0)\n\t\t\t\terr_nonfatal(\"Negotiation failed/6: %m\");\n\t\t\topt = ntohl(opt);\n\t\t\tswitch(opt) {\n\t\t\tcase NBD_OPT_EXPORT_NAME:\n\t\t\t\t// NBD_OPT_EXPORT_NAME must be the last\n\t\t\t\t// selected option, so return from here\n\t\t\t\t// if that is chosen.\n\t\t\t\treturn handle_export_name(opt, net, servers, cflags);\n\t\t\t\tbreak;\n\t\t\tcase NBD_OPT_LIST:\n\t\t\t\thandle_list(opt, net, servers, cflags);\n\t\t\t\tbreak;\n\t\t\tcase NBD_OPT_ABORT:\n\t\t\t\t// handled below\n\t\t\t\tbreak;\n\t\t\tdefault:\n\t\t\t\tsend_reply(opt, net, NBD_REP_ERR_UNSUP, 0, NULL);\n\t\t\t\tbreak;\n\t\t\t}\n\t\t} while((opt != NBD_OPT_EXPORT_NAME) && (opt != NBD_OPT_ABORT));\n\t\tif(opt == NBD_OPT_ABORT) {\n\t\t\terr_nonfatal(\"Session terminated by client\");\n\t\t\treturn NULL;\n\t\t}\n\t}\n\t/* common */\n\tsize_host = htonll((u64)(client->exportsize));\n\tif (write(net, &size_host, 8) < 0)\n\t\terr(\"Negotiation failed/9: %m\");\n\tif (client->server->flags & F_READONLY)\n\t\tflags |= NBD_FLAG_READ_ONLY;\n\tif (client->server->flags & F_FLUSH)\n\t\tflags |= NBD_FLAG_SEND_FLUSH;\n\tif (client->server->flags & F_FUA)\n\t\tflags |= NBD_FLAG_SEND_FUA;\n\tif (client->server->flags & F_ROTATIONAL)\n\t\tflags |= NBD_FLAG_ROTATIONAL;\n\tif (client->server->flags & F_TRIM)\n\t\tflags |= NBD_FLAG_SEND_TRIM;\n\tif (phase & NEG_OLD) {\n\t\t/* oldstyle */\n\t\tflags = htonl(flags);\n\t\tif (write(client->net, &flags, 4) < 0)\n\t\t\terr(\"Negotiation failed/10: %m\");\n\t} else {\n\t\t/* modern */\n\t\tsmallflags = (uint16_t)(flags & ~((uint16_t)0));\n\t\tsmallflags = htons(smallflags);\n\t\tif (write(client->net, &smallflags, sizeof(smallflags)) < 0) {\n\t\t\terr(\"Negotiation failed/11: %m\");\n\t\t}\n\t}\n\t/* common */\n\tif (write(client->net, zeros, 124) < 0)\n\t\terr(\"Negotiation failed/12: %m\");\n\treturn NULL;\n}",
+            1
+        ],
+        [
+            "nbd-server.c",
+            "NBDS_ERR",
+            "#define NBDS_ERR g_quark_from_static_string(\"server-error-quark\") /* <=== nbd-server.c:626:626:NBDS_ERR:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "expwrite",
+            "int expwrite(off_t a, char *buf, size_t len, CLIENT *client, int fua) { /* <=== expwrite */ \n\tchar pagebuf[DIFFPAGESIZE];\n\toff_t mapcnt,mapl,maph;\n\toff_t wrlen,rdlen; \n\toff_t pagestart;\n\toff_t offset;\n\n\tif (!(client->server->flags & F_COPYONWRITE))\n\t\treturn(rawexpwrite_fully(a, buf, len, client, fua)); \n\tDEBUG(\"Asked to write %u bytes at %llu.\\n\", (unsigned int)len, (unsigned long long)a);\n\n\tmapl=a/DIFFPAGESIZE ; maph=(a+len-1)/DIFFPAGESIZE ;\n\n\tfor (mapcnt=mapl;mapcnt<=maph;mapcnt++) {\n\t\tpagestart=mapcnt*DIFFPAGESIZE ;\n\t\toffset=a-pagestart ;\n\t\twrlen=(0<DIFFPAGESIZE-offset && len<(size_t)(DIFFPAGESIZE-offset)) ?\n\t\t\tlen : (size_t)DIFFPAGESIZE-offset;\n\n\t\tif (client->difmap[mapcnt]!=(u32)(-1)) { /* the block is already there */\n\t\t\tDEBUG(\"Page %llu is at %lu\\n\", (unsigned long long)mapcnt,\n\t\t\t       (unsigned long)(client->difmap[mapcnt])) ;\n\t\t\tmyseek(client->difffile,\n\t\t\t\t\tclient->difmap[mapcnt]*DIFFPAGESIZE+offset);\n\t\t\tif (write(client->difffile, buf, wrlen) != wrlen) return -1 ;\n\t\t} else { /* the block is not there */\n\t\t\tmyseek(client->difffile,client->difffilelen*DIFFPAGESIZE) ;\n\t\t\tclient->difmap[mapcnt]=(client->server->flags&F_SPARSE)?mapcnt:client->difffilelen++;\n\t\t\tDEBUG(\"Page %llu is not here, we put it at %lu\\n\",\n\t\t\t       (unsigned long long)mapcnt,\n\t\t\t       (unsigned long)(client->difmap[mapcnt]));\n\t\t\trdlen=DIFFPAGESIZE ;\n\t\t\tif (rawexpread_fully(pagestart, pagebuf, rdlen, client))\n\t\t\t\treturn -1;\n\t\t\tmemcpy(pagebuf+offset,buf,wrlen) ;\n\t\t\tif (write(client->difffile, pagebuf, DIFFPAGESIZE) !=\n\t\t\t\t\tDIFFPAGESIZE)\n\t\t\t\treturn -1;\n\t\t}\t\t\t\t\t\t    \n\t\tlen-=wrlen ; a+=wrlen ; buf+=wrlen ;\n\t}\n\tif (client->server->flags & F_SYNC) {\n\t\tfsync(client->difffile);\n\t} else if (fua) {\n\t\t/* open question: would it be cheaper to do multiple sync_file_ranges?\n\t\t   as we iterate through the above?\n\t\t */\n\t\tfdatasync(client->difffile);\n\t}\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "NEG_MODERN",
+            "#define NEG_MODERN\t(1 << 2) /* <=== nbd-server.c:178:178:NEG_MODERN:0 */ ",
+            1
+        ],
+        [
+            "nbd-server.c",
+            "parse_cfile",
+            "GArray* parse_cfile(gchar* f, struct generic_conf *const genconf, GError** e) { /* <=== parse_cfile */ \n\tconst char* DEFAULT_ERROR = \"Could not parse %s in group %s: %s\";\n\tconst char* MISSING_REQUIRED_ERROR = \"Could not find required value %s in group %s: %s\";\n\tgchar* cfdir = NULL;\n\tSERVER s;\n\tgchar *virtstyle=NULL;\n\tPARAM lp[] = {\n\t\t{ \"exportname\", TRUE,\tPARAM_STRING, \t&(s.exportname),\t0 },\n\t\t{ \"port\", \tTRUE,\tPARAM_INT, \t&(s.port),\t\t0 },\n\t\t{ \"authfile\",\tFALSE,\tPARAM_STRING,\t&(s.authname),\t\t0 },\n\t\t{ \"filesize\",\tFALSE,\tPARAM_OFFT,\t&(s.expected_size),\t0 },\n\t\t{ \"virtstyle\",\tFALSE,\tPARAM_STRING,\t&(virtstyle),\t\t0 },\n\t\t{ \"prerun\",\tFALSE,\tPARAM_STRING,\t&(s.prerun),\t\t0 },\n\t\t{ \"postrun\",\tFALSE,\tPARAM_STRING,\t&(s.postrun),\t\t0 },\n\t\t{ \"transactionlog\", FALSE, PARAM_STRING, &(s.transactionlog),\t0 },\n\t\t{ \"readonly\",\tFALSE,\tPARAM_BOOL,\t&(s.flags),\t\tF_READONLY },\n\t\t{ \"multifile\",\tFALSE,\tPARAM_BOOL,\t&(s.flags),\t\tF_MULTIFILE },\n\t\t{ \"copyonwrite\", FALSE,\tPARAM_BOOL,\t&(s.flags),\t\tF_COPYONWRITE },\n\t\t{ \"sparse_cow\",\tFALSE,\tPARAM_BOOL,\t&(s.flags),\t\tF_SPARSE },\n\t\t{ \"sdp\",\tFALSE,\tPARAM_BOOL,\t&(s.flags),\t\tF_SDP },\n\t\t{ \"sync\",\tFALSE,  PARAM_BOOL,\t&(s.flags),\t\tF_SYNC },\n\t\t{ \"flush\",\tFALSE,  PARAM_BOOL,\t&(s.flags),\t\tF_FLUSH },\n\t\t{ \"fua\",\tFALSE,  PARAM_BOOL,\t&(s.flags),\t\tF_FUA },\n\t\t{ \"rotational\",\tFALSE,  PARAM_BOOL,\t&(s.flags),\t\tF_ROTATIONAL },\n\t\t{ \"temporary\",\tFALSE,  PARAM_BOOL,\t&(s.flags),\t\tF_TEMPORARY },\n\t\t{ \"trim\",\tFALSE,  PARAM_BOOL,\t&(s.flags),\t\tF_TRIM },\n\t\t{ \"listenaddr\", FALSE,  PARAM_STRING,   &(s.listenaddr),\t0 },\n\t\t{ \"maxconnections\", FALSE, PARAM_INT,\t&(s.max_connections),\t0 },\n\t};\n\tconst int lp_size=sizeof(lp)/sizeof(PARAM);\n        struct generic_conf genconftmp;\n\tPARAM gp[] = {\n\t\t{ \"user\",\tFALSE, PARAM_STRING,\t&(genconftmp.user),       0 },\n\t\t{ \"group\",\tFALSE, PARAM_STRING,\t&(genconftmp.group),      0 },\n\t\t{ \"oldstyle\",\tFALSE, PARAM_BOOL,\t&(genconftmp.flags),      F_OLDSTYLE },\n\t\t{ \"listenaddr\", FALSE, PARAM_STRING,\t&(genconftmp.modernaddr), 0 },\n\t\t{ \"port\", \tFALSE, PARAM_STRING,\t&(genconftmp.modernport), 0 },\n\t\t{ \"includedir\", FALSE, PARAM_STRING,\t&cfdir,                   0 },\n\t\t{ \"allowlist\",  FALSE, PARAM_BOOL,\t&(genconftmp.flags),      F_LIST },\n\t};\n\tPARAM* p=gp;\n\tint p_size=sizeof(gp)/sizeof(PARAM);\n\tGKeyFile *cfile;\n\tGError *err = NULL;\n\tconst char *err_msg=NULL;\n\tGArray *retval=NULL;\n\tgchar **groups;\n\tgboolean bval;\n\tgint ival;\n\tgint64 i64val;\n\tgchar* sval;\n\tgchar* startgroup;\n\tgint i;\n\tgint j;\n\n        memset(&genconftmp, 0, sizeof(struct generic_conf));\n\n        if (genconf) {\n                /* Use the passed configuration values as defaults. The\n                 * parsing algorithm below updates all parameter targets\n                 * found from configuration files. */\n                memcpy(&genconftmp, genconf, sizeof(struct generic_conf));\n        }\n\n\tcfile = g_key_file_new();\n\tretval = g_array_new(FALSE, TRUE, sizeof(SERVER));\n\tif(!g_key_file_load_from_file(cfile, f, G_KEY_FILE_KEEP_COMMENTS |\n\t\t\tG_KEY_FILE_KEEP_TRANSLATIONS, &err)) {\n\t\tg_set_error(e, NBDS_ERR, NBDS_ERR_CFILE_NOTFOUND, \"Could not open config file %s: %s\",\n\t\t\t\tf, err->message);\n\t\tg_key_file_free(cfile);\n\t\treturn retval;\n\t}\n\tstartgroup = g_key_file_get_start_group(cfile);\n\tif((!startgroup || strcmp(startgroup, \"generic\")) && genconf) {\n\t\tg_set_error(e, NBDS_ERR, NBDS_ERR_CFILE_MISSING_GENERIC, \"Config file does not contain the [generic] group!\");\n\t\tg_key_file_free(cfile);\n\t\treturn NULL;\n\t}\n\tgroups = g_key_file_get_groups(cfile, NULL);\n\tfor(i=0;groups[i];i++) {\n\t\tmemset(&s, '\\0', sizeof(SERVER));\n\n\t\t/* After the [generic] group or when we're parsing an include\n\t\t * directory, start parsing exports */\n\t\tif(i==1 || !genconf) {\n\t\t\tp=lp;\n\t\t\tp_size=lp_size;\n\t\t\tif(!(glob_flags & F_OLDSTYLE)) {\n\t\t\t\tlp[1].required = FALSE;\n\t\t\t}\n\t\t} \n\t\tfor(j=0;j<p_size;j++) {\n\t\t\tassert(p[j].target != NULL);\n\t\t\tassert(p[j].ptype==PARAM_INT||p[j].ptype==PARAM_STRING||p[j].ptype==PARAM_BOOL||p[j].ptype==PARAM_INT64);\n\t\t\tswitch(p[j].ptype) {\n\t\t\t\tcase PARAM_INT:\n\t\t\t\t\tival = g_key_file_get_integer(cfile,\n\t\t\t\t\t\t\t\tgroups[i],\n\t\t\t\t\t\t\t\tp[j].paramname,\n\t\t\t\t\t\t\t\t&err);\n\t\t\t\t\tif(!err) {\n\t\t\t\t\t\t*((gint*)p[j].target) = ival;\n\t\t\t\t\t}\n\t\t\t\t\tbreak;\n\t\t\t\tcase PARAM_INT64:\n\t\t\t\t\ti64val = g_key_file_get_int64(cfile,\n\t\t\t\t\t\t\t\tgroups[i],\n\t\t\t\t\t\t\t\tp[j].paramname,\n\t\t\t\t\t\t\t\t&err);\n\t\t\t\t\tif(!err) {\n\t\t\t\t\t\t*((gint64*)p[j].target) = i64val;\n\t\t\t\t\t}\n\t\t\t\t\tbreak;\n\t\t\t\tcase PARAM_STRING:\n\t\t\t\t\tsval = g_key_file_get_string(cfile,\n\t\t\t\t\t\t\t\tgroups[i],\n\t\t\t\t\t\t\t\tp[j].paramname,\n\t\t\t\t\t\t\t\t&err);\n\t\t\t\t\tif(!err) {\n\t\t\t\t\t\t*((gchar**)p[j].target) = sval;\n\t\t\t\t\t}\n\t\t\t\t\tbreak;\n\t\t\t\tcase PARAM_BOOL:\n\t\t\t\t\tbval = g_key_file_get_boolean(cfile,\n\t\t\t\t\t\t\tgroups[i],\n\t\t\t\t\t\t\tp[j].paramname, &err);\n\t\t\t\t\tif(!err) {\n\t\t\t\t\t\tif(bval) {\n\t\t\t\t\t\t\t*((gint*)p[j].target) |= p[j].flagval;\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\t*((gint*)p[j].target) &= ~(p[j].flagval);\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif(err) {\n\t\t\t\tif(err->code == G_KEY_FILE_ERROR_KEY_NOT_FOUND) {\n\t\t\t\t\tif(!p[j].required) {\n\t\t\t\t\t\t/* Ignore not-found error for optional values */\n\t\t\t\t\t\tg_clear_error(&err);\n\t\t\t\t\t\tcontinue;\n\t\t\t\t\t} else {\n\t\t\t\t\t\terr_msg = MISSING_REQUIRED_ERROR;\n\t\t\t\t\t}\n\t\t\t\t} else {\n\t\t\t\t\terr_msg = DEFAULT_ERROR;\n\t\t\t\t}\n\t\t\t\tg_set_error(e, NBDS_ERR, NBDS_ERR_CFILE_VALUE_INVALID, err_msg, p[j].paramname, groups[i], err->message);\n\t\t\t\tg_array_free(retval, TRUE);\n\t\t\t\tg_error_free(err);\n\t\t\t\tg_key_file_free(cfile);\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t}\n\t\tif(virtstyle) {\n\t\t\tif(!strncmp(virtstyle, \"none\", 4)) {\n\t\t\t\ts.virtstyle=VIRT_NONE;\n\t\t\t} else if(!strncmp(virtstyle, \"ipliteral\", 9)) {\n\t\t\t\ts.virtstyle=VIRT_IPLIT;\n\t\t\t} else if(!strncmp(virtstyle, \"iphash\", 6)) {\n\t\t\t\ts.virtstyle=VIRT_IPHASH;\n\t\t\t} else if(!strncmp(virtstyle, \"cidrhash\", 8)) {\n\t\t\t\ts.virtstyle=VIRT_CIDR;\n\t\t\t\tif(strlen(virtstyle)<10) {\n\t\t\t\t\tg_set_error(e, NBDS_ERR, NBDS_ERR_CFILE_VALUE_INVALID, \"Invalid value %s for parameter virtstyle in group %s: missing length\", virtstyle, groups[i]);\n\t\t\t\t\tg_array_free(retval, TRUE);\n\t\t\t\t\tg_key_file_free(cfile);\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\t\t\t\ts.cidrlen=strtol(virtstyle+8, NULL, 0);\n\t\t\t} else {\n\t\t\t\tg_set_error(e, NBDS_ERR, NBDS_ERR_CFILE_VALUE_INVALID, \"Invalid value %s for parameter virtstyle in group %s\", virtstyle, groups[i]);\n\t\t\t\tg_array_free(retval, TRUE);\n\t\t\t\tg_key_file_free(cfile);\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t} else {\n\t\t\ts.virtstyle=VIRT_IPLIT;\n\t\t}\n\t\tif(s.port && !(glob_flags & F_OLDSTYLE)) {\n\t\t\tg_warning(\"A port was specified, but oldstyle exports were not requested. This may not do what you expect.\");\n\t\t\tg_warning(\"Please read 'man 5 nbd-server' and search for oldstyle for more info\");\n\t\t}\n\t\t/* Don't need to free this, it's not our string */\n\t\tvirtstyle=NULL;\n\t\t/* Don't append values for the [generic] group */\n\t\tif(i>0 || !genconf) {\n\t\t\ts.socket_family = AF_UNSPEC;\n\t\t\ts.servename = groups[i];\n\n\t\t\tappend_serve(&s, retval);\n\t\t}\n#ifndef WITH_SDP\n\t\tif(s.flags & F_SDP) {\n\t\t\tg_set_error(e, NBDS_ERR, NBDS_ERR_CFILE_VALUE_UNSUPPORTED, \"This nbd-server was built without support for SDP, yet group %s uses it\", groups[i]);\n\t\t\tg_array_free(retval, TRUE);\n\t\t\tg_key_file_free(cfile);\n\t\t\treturn NULL;\n\t\t}\n#endif\n\t}\n\tg_key_file_free(cfile);\n\tif(cfdir) {\n\t\tGArray* extra = do_cfile_dir(cfdir, e);\n\t\tif(extra) {\n\t\t\tretval = g_array_append_vals(retval, extra->data, extra->len);\n\t\t\ti+=extra->len;\n\t\t\tg_array_free(extra, TRUE);\n\t\t} else {\n\t\t\tif(*e) {\n\t\t\t\tg_array_free(retval, TRUE);\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t}\n\t}\n\tif(i==1 && genconf) {\n\t\tg_set_error(e, NBDS_ERR, NBDS_ERR_CFILE_NO_EXPORTS, \"The config file does not specify any exports\");\n\t}\n\n        if (genconf) {\n                /* Return the updated generic configuration through the\n                 * pointer parameter. */\n                memcpy(genconf, &genconftmp, sizeof(struct generic_conf));\n        }\n\n\treturn retval;\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "size_autodetect",
+            "off_t size_autodetect(int fhandle) { /* <=== size_autodetect */ \n\toff_t es;\n\tu64 bytes __attribute__((unused));\n\tstruct stat stat_buf;\n\tint error;\n\n#ifdef HAVE_SYS_MOUNT_H\n#ifdef HAVE_SYS_IOCTL_H\n#ifdef BLKGETSIZE64\n\tDEBUG(\"looking for export size with ioctl BLKGETSIZE64\\n\");\n\tif (!ioctl(fhandle, BLKGETSIZE64, &bytes) && bytes) {\n\t\treturn (off_t)bytes;\n\t}\n#endif /* BLKGETSIZE64 */\n#endif /* HAVE_SYS_IOCTL_H */\n#endif /* HAVE_SYS_MOUNT_H */\n\n\tDEBUG(\"looking for fhandle size with fstat\\n\");\n\tstat_buf.st_size = 0;\n\terror = fstat(fhandle, &stat_buf);\n\tif (!error) {\n\t\t/* always believe stat if a regular file as it might really\n\t\t * be zero length */\n\t\tif (S_ISREG(stat_buf.st_mode) || (stat_buf.st_size > 0))\n\t\t\treturn (off_t)stat_buf.st_size;\n        } else {\n                err(\"fstat failed: %m\");\n        }\n\n\tDEBUG(\"looking for fhandle size with lseek SEEK_END\\n\");\n\tes = lseek(fhandle, (off_t)0, SEEK_END);\n\tif (es > ((off_t)0)) {\n\t\treturn es;\n        } else {\n                DEBUG(\"lseek failed: %d\", errno==EBADF?1:(errno==ESPIPE?2:(errno==EINVAL?3:4)));\n        }\n\n\terr(\"Could not find size of exported block device: %m\");\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "ERROR",
+            "#define ERROR(client,reply,errcode) { reply.error = htonl(errcode); SEND(client->net,reply); reply.error = 0; } /* <=== nbd-server.c:1737:1737:ERROR:3 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "expread",
+            "int expread(off_t a, char *buf, size_t len, CLIENT *client) { /* <=== expread */ \n\toff_t rdlen, offset;\n\toff_t mapcnt, mapl, maph, pagestart;\n\n\tif (!(client->server->flags & F_COPYONWRITE))\n\t\treturn(rawexpread_fully(a, buf, len, client));\n\tDEBUG(\"Asked to read %u bytes at %llu.\\n\", (unsigned int)len, (unsigned long long)a);\n\n\tmapl=a/DIFFPAGESIZE; maph=(a+len-1)/DIFFPAGESIZE;\n\n\tfor (mapcnt=mapl;mapcnt<=maph;mapcnt++) {\n\t\tpagestart=mapcnt*DIFFPAGESIZE;\n\t\toffset=a-pagestart;\n\t\trdlen=(0<DIFFPAGESIZE-offset && len<(size_t)(DIFFPAGESIZE-offset)) ?\n\t\t\tlen : (size_t)DIFFPAGESIZE-offset;\n\t\tif (client->difmap[mapcnt]!=(u32)(-1)) { /* the block is already there */\n\t\t\tDEBUG(\"Page %llu is at %lu\\n\", (unsigned long long)mapcnt,\n\t\t\t       (unsigned long)(client->difmap[mapcnt]));\n\t\t\tmyseek(client->difffile, client->difmap[mapcnt]*DIFFPAGESIZE+offset);\n\t\t\tif (read(client->difffile, buf, rdlen) != rdlen) return -1;\n\t\t} else { /* the block is not there */\n\t\t\tDEBUG(\"Page %llu is not here, we read the original one\\n\",\n\t\t\t       (unsigned long long)mapcnt);\n\t\t\tif(rawexpread_fully(a, buf, rdlen, client)) return -1;\n\t\t}\n\t\tlen-=rdlen; a+=rdlen; buf+=rdlen;\n\t}\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "nbd.h",
+            "NBD_FLAG_SEND_TRIM",
+            "#define NBD_FLAG_SEND_TRIM\t(1 << 5)\t/* Send TRIM (discard) */ /* <=== nbd.h:49:49:NBD_FLAG_SEND_TRIM:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "serveconnection",
+            "void serveconnection(CLIENT *client) { /* <=== serveconnection */ \n\tif (client->server->transactionlog && (client->transactionlogfd == -1))\n\t{\n\t\tif (-1 == (client->transactionlogfd = open(client->server->transactionlog,\n\t\t\t\t\t\t\t   O_WRONLY | O_CREAT,\n\t\t\t\t\t\t\t   S_IRUSR | S_IWUSR)))\n\t\t\tg_warning(\"Could not open transaction log %s\",\n\t\t\t\t  client->server->transactionlog);\n\t}\n\n\tif(do_run(client->server->prerun, client->exportname)) {\n\t\texit(EXIT_FAILURE);\n\t}\n\tsetupexport(client);\n\n\tif (client->server->flags & F_COPYONWRITE) {\n\t\tcopyonwrite_prepare(client);\n\t}\n\n\tsetmysockopt(client->net);\n\n\tmainloop(client);\n\tdo_run(client->server->postrun, client->exportname);\n\n\tif (-1 != client->transactionlogfd)\n\t{\n\t\tclose(client->transactionlogfd);\n\t\tclient->transactionlogfd = -1;\n\t}\n}",
+            1
+        ],
+        [
+            "nbd-server.c",
+            "copyonwrite_prepare",
+            "int copyonwrite_prepare(CLIENT* client) { /* <=== copyonwrite_prepare */ \n\toff_t i;\n\tif ((client->difffilename = malloc(1024))==NULL)\n\t\terr(\"Failed to allocate string for diff file name\");\n\tsnprintf(client->difffilename, 1024, \"%s-%s-%d.diff\",client->exportname,client->clientname,\n\t\t(int)getpid()) ;\n\tclient->difffilename[1023]='\\0';\n\tmsg(LOG_INFO, \"About to create map and diff file %s\", client->difffilename) ;\n\tclient->difffile=open(client->difffilename,O_RDWR | O_CREAT | O_TRUNC,0600) ;\n\tif (client->difffile<0) err(\"Could not create diff file (%m)\") ;\n\tif ((client->difmap=calloc(client->exportsize/DIFFPAGESIZE,sizeof(u32)))==NULL)\n\t\terr(\"Could not allocate memory\") ;\n\tfor (i=0;i<client->exportsize/DIFFPAGESIZE;i++) client->difmap[i]=(u32)-1 ;\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "F_COPYONWRITE",
+            "#define F_COPYONWRITE 4\t  /**< flag to tell us a file is exported using /* <=== nbd-server.c:155:155:F_COPYONWRITE:0 */ ",
+            3
+        ],
+        [
+            "nbd.h",
+            "NBD_REPLY_MAGIC",
+            "#define NBD_REPLY_MAGIC 0x67446698 /* <=== nbd.h:58:58:NBD_REPLY_MAGIC:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "F_FLUSH",
+            "#define F_FLUSH 128\t  /**< Whether server wants FLUSH to be sent by the client */ /* <=== nbd-server.c:161:161:F_FLUSH:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "F_SYNC",
+            "#define F_SYNC 64\t  /**< Whether to fsync() after a write */ /* <=== nbd-server.c:160:160:F_SYNC:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "do_run",
+            "int do_run(gchar* command, gchar* file) { /* <=== do_run */ \n\tgchar* cmd;\n\tint retval=0;\n\n\tif(command && *command) {\n\t\tcmd = g_strdup_printf(command, file);\n\t\tretval=system(cmd);\n\t\tg_free(cmd);\n\t}\n\treturn retval;\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "send_reply",
+            "static void send_reply(uint32_t opt, int net, uint32_t reply_type, size_t datasize, void* data) { /* <=== send_reply */ \n\tuint64_t magic = htonll(0x3e889045565a9LL);\n\treply_type = htonl(reply_type);\n\tuint32_t datsize = htonl(datasize);\n\tstruct iovec v_data[] = {\n\t\t{ &magic, sizeof(magic) },\n\t\t{ &opt, sizeof(opt) },\n\t\t{ &reply_type, sizeof(reply_type) },\n\t\t{ &datsize, sizeof(datsize) },\n\t\t{ data, datasize },\n\t};\n\twritev(net, v_data, 5);\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "DIFFPAGESIZE",
+            "#define DIFFPAGESIZE 4096 /**< diff file uses those chunks */ /* <=== nbd-server.c:150:150:DIFFPAGESIZE:0 */ ",
+            3
+        ],
+        [
+            "nbd-client.c",
+            "ask_list",
+            "void ask_list(int sock) { /* <=== ask_list */ \n\tuint32_t opt;\n\tuint32_t opt_server;\n\tuint32_t len;\n\tuint32_t reptype;\n\tuint64_t magic;\n\tconst int BUF_SIZE = 1024;\n\tchar buf[BUF_SIZE];\n\n\tmagic = ntohll(opts_magic);\n\tif (write(sock, &magic, sizeof(magic)) < 0)\n\t\terr(\"Failed/2.2: %m\");\n\n\t/* Ask for the list */\n\topt = htonl(NBD_OPT_LIST);\n\tif(write(sock, &opt, sizeof(opt)) < 0) {\n\t\terr(\"writing list option failed: %m\");\n\t}\n\t/* Send the length (zero) */\n\tlen = htonl(0);\n\tif(write(sock, &len, sizeof(len)) < 0) {\n\t\terr(\"writing length failed: %m\");\n\t}\n\t/* newline, move away from the \"Negotiation:\" line */\n\tprintf(\"\\n\");\n\tdo {\n\t\tmemset(buf, 0, 1024);\n\t\tif(read(sock, &magic, sizeof(magic)) < 0) {\n\t\t\terr(\"Reading magic from server: %m\");\n\t\t}\n\t\tif(read(sock, &opt_server, sizeof(opt_server)) < 0) {\n\t\t\terr(\"Reading option: %m\");\n\t\t}\n\t\tif(read(sock, &reptype, sizeof(reptype)) <0) {\n\t\t\terr(\"Reading reply from server: %m\");\n\t\t}\n\t\tif(read(sock, &len, sizeof(len)) < 0) {\n\t\t\terr(\"Reading length from server: %m\");\n\t\t}\n\t\tmagic=ntohll(magic);\n\t\tlen=ntohl(len);\n\t\treptype=ntohl(reptype);\n\t\tif(magic != rep_magic) {\n\t\t\terr(\"Not enough magic from server\");\n\t\t}\n\t\tif(reptype & NBD_REP_FLAG_ERROR) {\n\t\t\tswitch(reptype) {\n\t\t\t\tcase NBD_REP_ERR_POLICY:\n\t\t\t\t\tfprintf(stderr, \"\\nE: listing not allowed by server.\\n\");\n\t\t\t\t\tbreak;\n\t\t\t\tdefault:\n\t\t\t\t\tfprintf(stderr, \"\\nE: unexpected error from server.\\n\");\n\t\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif(len) {\n\t\t\t\tif(read(sock, buf, len) < 0) {\n\t\t\t\t\tfprintf(stderr, \"\\nE: could not read error message from server\\n\");\n\t\t\t\t}\n\t\t\t\tfprintf(stderr, \"Server said: %s\\n\", buf);\n\t\t\t}\n\t\t\texit(EXIT_FAILURE);\n\t\t} else {\n\t\t\tif(len) {\n\t\t\t\tif(reptype != NBD_REP_SERVER) {\n\t\t\t\t\terr(\"Server sent us a reply we don't understand!\");\n\t\t\t\t}\n\t\t\t\tif(read(sock, &len, sizeof(len)) < 0) {\n\t\t\t\t\tfprintf(stderr, \"\\nE: could not read export name length from server\\n\");\n\t\t\t\t\texit(EXIT_FAILURE);\n\t\t\t\t}\n\t\t\t\tlen=ntohl(len);\n\t\t\t\tif (len >= BUF_SIZE) {\n\t\t\t\t\tfprintf(stderr, \"\\nE: export name on server too long\\n\");\n\t\t\t\t\texit(EXIT_FAILURE);\n\t\t\t\t}\n\t\t\t\tif(read(sock, buf, len) < 0) {\n\t\t\t\t\tfprintf(stderr, \"\\nE: could not read export name from server\\n\");\n\t\t\t\t\texit(EXIT_FAILURE);\n\t\t\t\t}\n\t\t\t\tbuf[len] = 0;\n\t\t\t\tprintf(\"%s\\n\", buf);\n\t\t\t}\n\t\t}\n\t} while(reptype != NBD_REP_ACK);\n\topt=htonl(NBD_OPT_ABORT);\n\tlen=htonl(0);\n\tmagic=htonll(opts_magic);\n\tif (write(sock, &magic, sizeof(magic)) < 0)\n\t\terr(\"Failed/2.2: %m\");\n\tif (write(sock, &opt, sizeof(opt)) < 0)\n\t\terr(\"Failed writing abort\");\n\tif (write(sock, &len, sizeof(len)) < 0)\n\t\terr(\"Failed writing length\");\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "authorized_client",
+            "int authorized_client(CLIENT *opts) { /* <=== authorized_client */ \n\tconst char *ERRMSG=\"Invalid entry '%s' in authfile '%s', so, refusing all connections.\";\n\tFILE *f ;\n\tchar line[LINELEN]; \n\tchar *tmp;\n\tstruct in_addr addr;\n\tstruct in_addr client;\n\tstruct in_addr cltemp;\n\tint len;\n\n\tif ((f=fopen(opts->server->authname,\"r\"))==NULL) {\n                msg(LOG_INFO, \"Can't open authorization file %s (%s).\",\n                    opts->server->authname, strerror(errno));\n\t\treturn 1 ; \n\t}\n  \n  \tinet_aton(opts->clientname, &client);\n\twhile (fgets(line,LINELEN,f)!=NULL) {\n\t\tif((tmp=strchr(line, '/'))) {\n\t\t\tif(strlen(line)<=tmp-line) {\n\t\t\t\tmsg(LOG_CRIT, ERRMSG, line, opts->server->authname);\n\t\t\t\treturn 0;\n\t\t\t}\n\t\t\t*(tmp++)=0;\n\t\t\tif(!inet_aton(line,&addr)) {\n\t\t\t\tmsg(LOG_CRIT, ERRMSG, line, opts->server->authname);\n\t\t\t\treturn 0;\n\t\t\t}\n\t\t\tlen=strtol(tmp, NULL, 0);\n\t\t\taddr.s_addr>>=32-len;\n\t\t\taddr.s_addr<<=32-len;\n\t\t\tmemcpy(&cltemp,&client,sizeof(client));\n\t\t\tcltemp.s_addr>>=32-len;\n\t\t\tcltemp.s_addr<<=32-len;\n\t\t\tif(addr.s_addr == cltemp.s_addr) {\n\t\t\t\treturn 1;\n\t\t\t}\n\t\t}\n\t\tif (strncmp(line,opts->clientname,strlen(opts->clientname))==0) {\n\t\t\tfclose(f);\n\t\t\treturn 1;\n\t\t}\n\t}\n\tfclose(f);\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "nbd-client.c",
+            "NBDC_DO_LIST",
+            "#define NBDC_DO_LIST 1 /* <=== nbd-client.c:51:51:NBDC_DO_LIST:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "F_ROTATIONAL",
+            "#define F_ROTATIONAL 512  /**< Whether server wants the client to implement the elevator algorithm */ /* <=== nbd-server.c:163:163:F_ROTATIONAL:0 */ ",
+            2
+        ],
+        [
+            "cliserv.h",
+            "NBD_FLAG_FIXED_NEWSTYLE",
+            "#define NBD_FLAG_FIXED_NEWSTYLE (1 << 0)\t/* new-style export that actually supports extending */ /* <=== cliserv.h:166:166:NBD_FLAG_FIXED_NEWSTYLE:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "handle_connection",
+            "static void /* <=== handle_connection */ \nhandle_connection(GArray *servers, int net, SERVER *serve, CLIENT *client)\n{\n\tint sock_flags_old;\n\tint sock_flags_new;\n\n\tif(serve->max_connections > 0 &&\n\t   g_hash_table_size(children) >= serve->max_connections) {\n\t\tmsg(LOG_INFO, \"Max connections reached\");\n\t\tgoto handle_connection_out;\n\t}\n\tif((sock_flags_old = fcntl(net, F_GETFL, 0)) == -1) {\n\t\terr(\"fcntl F_GETFL\");\n\t}\n\tsock_flags_new = sock_flags_old & ~O_NONBLOCK;\n\tif (sock_flags_new != sock_flags_old &&\n\t    fcntl(net, F_SETFL, sock_flags_new) == -1) {\n\t\terr(\"fcntl F_SETFL ~O_NONBLOCK\");\n\t}\n\tif(!client) {\n\t\tclient = g_new0(CLIENT, 1);\n\t\tclient->server=serve;\n\t\tclient->exportsize=OFFT_MAX;\n\t\tclient->net=net;\n\t\tclient->transactionlogfd = -1;\n\t}\n\tif (set_peername(net, client)) {\n\t\tgoto handle_connection_out;\n\t}\n\tif (!authorized_client(client)) {\n\t\tmsg(LOG_INFO, \"Unauthorized client\");\n\t\tgoto handle_connection_out;\n\t}\n\tmsg(LOG_INFO, \"Authorized client\");\n\n\tif (!dontfork) {\n\t\tpid_t pid;\n\t\tint i;\n\t\tsigset_t newset;\n\t\tsigset_t oldset;\n\n\t\tsigemptyset(&newset);\n\t\tsigaddset(&newset, SIGCHLD);\n\t\tsigaddset(&newset, SIGTERM);\n\t\tsigprocmask(SIG_BLOCK, &newset, &oldset);\n\t\tif ((pid = fork()) < 0) {\n\t\t\tmsg(LOG_INFO, \"Could not fork (%s)\", strerror(errno));\n\t\t\tsigprocmask(SIG_SETMASK, &oldset, NULL);\n\t\t\tgoto handle_connection_out;\n\t\t}\n\t\tif (pid > 0) { /* parent */\n\t\t\tpid_t *pidp;\n\n\t\t\tpidp = g_malloc(sizeof(pid_t));\n\t\t\t*pidp = pid;\n\t\t\tg_hash_table_insert(children, pidp, pidp);\n\t\t\tsigprocmask(SIG_SETMASK, &oldset, NULL);\n\t\t\tgoto handle_connection_out;\n\t\t}\n\t\t/* child */\n\t\tsignal(SIGCHLD, SIG_DFL);\n\t\tsignal(SIGTERM, SIG_DFL);\n\t\tsignal(SIGHUP, SIG_DFL);\n\t\tsigprocmask(SIG_SETMASK, &oldset, NULL);\n\n\t\tg_hash_table_destroy(children);\n\t\tchildren = NULL;\n\t\tfor(i=0;i<servers->len;i++) {\n\t\t\tserve=&g_array_index(servers, SERVER, i);\n\t\t\tclose(serve->socket);\n\t\t}\n\t\t/* FALSE does not free the\n\t\t   actual data. This is required,\n\t\t   because the client has a\n\t\t   direct reference into that\n\t\t   data, and otherwise we get a\n\t\t   segfault... */\n\t\tg_array_free(servers, FALSE);\n\t\tfor(i=0;i<modernsocks->len;i++) {\n\t\t\tclose(g_array_index(modernsocks, int, i));\n\t\t}\n\t\tg_array_free(modernsocks, TRUE);\n\t}\n\n\tmsg(LOG_INFO, \"Starting to serve\");\n\tserveconnection(client);\n\texit(EXIT_SUCCESS);\n\nhandle_connection_out:\n\tg_free(client);\n\tclose(net);\n}",
+            1
+        ],
+        [
+            "nbd-server.c",
+            "F_LIST",
+            "#define F_LIST 2\t  /**< Allow clients to list the exports on a server */ /* <=== nbd-server.c:170:170:F_LIST:0 */ ",
+            3
+        ],
+        [
+            "nbd.h",
+            "NBD_CMD_MASK_COMMAND",
+            "#define NBD_CMD_MASK_COMMAND 0x0000ffff /* <=== nbd.h:40:40:NBD_CMD_MASK_COMMAND:0 */ ",
+            3
+        ],
+        [
+            "nbd.h",
+            "NBD_CMD_FLAG_FUA",
+            "#define NBD_CMD_FLAG_FUA (1<<16) /* <=== nbd.h:41:41:NBD_CMD_FLAG_FUA:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "set_peername",
+            "int set_peername(int net, CLIENT *client) { /* <=== set_peername */ \n\tstruct sockaddr_storage addrin;\n\tstruct sockaddr_storage netaddr;\n\tstruct sockaddr_in  *netaddr4 = NULL;\n\tstruct sockaddr_in6 *netaddr6 = NULL;\n\tsocklen_t addrinlen = sizeof( addrin );\n\tstruct addrinfo hints;\n\tstruct addrinfo *ai = NULL;\n\tchar peername[NI_MAXHOST];\n\tchar netname[NI_MAXHOST];\n\tchar *tmp = NULL;\n\tint i;\n\tint e;\n\tint shift;\n\n\tif (getpeername(net, (struct sockaddr *) &addrin, &addrinlen) < 0) {\n\t\tmsg(LOG_INFO, \"getpeername failed: %m\");\n\t\treturn -1;\n\t}\n\n\tif((e = getnameinfo((struct sockaddr *)&addrin, addrinlen,\n\t\t\tpeername, sizeof (peername), NULL, 0, NI_NUMERICHOST))) {\n\t\tmsg(LOG_INFO, \"getnameinfo failed: %s\", gai_strerror(e));\n\t\treturn -1;\n\t}\n\n\tmemset(&hints, '\\0', sizeof (hints));\n\thints.ai_flags = AI_ADDRCONFIG;\n\te = getaddrinfo(peername, NULL, &hints, &ai);\n\n\tif(e != 0) {\n\t\tmsg(LOG_INFO, \"getaddrinfo failed: %s\", gai_strerror(e));\n\t\tfreeaddrinfo(ai);\n\t\treturn -1;\n\t}\n\n\tswitch(client->server->virtstyle) {\n\t\tcase VIRT_NONE:\n\t\t\tmsg(LOG_DEBUG, \"virtualization is off\");\n\t\t\tclient->exportname=g_strdup(client->server->exportname);\n\t\t\tbreak;\n\t\tcase VIRT_IPHASH:\n\t\t\tmsg(LOG_DEBUG, \"virtstyle iphash\");\n\t\t\tfor(i=0;i<strlen(peername);i++) {\n\t\t\t\tif(peername[i]=='.') {\n\t\t\t\t\tpeername[i]='/';\n\t\t\t\t}\n\t\t\t}\n\t\tcase VIRT_IPLIT:\n\t\t\tmsg(LOG_DEBUG, \"virststyle ipliteral\");\n\t\t\tclient->exportname=g_strdup_printf(client->server->exportname, peername);\n\t\t\tbreak;\n\t\tcase VIRT_CIDR:\n\t\t\tmsg(LOG_DEBUG, \"virtstyle cidr %d\", client->server->cidrlen);\n\t\t\tmemcpy(&netaddr, &addrin, addrinlen);\n\t\t\tif(ai->ai_family == AF_INET) {\n\t\t\t\tnetaddr4 = (struct sockaddr_in *)&netaddr;\n\t\t\t\t(netaddr4->sin_addr).s_addr>>=32-(client->server->cidrlen);\n\t\t\t\t(netaddr4->sin_addr).s_addr<<=32-(client->server->cidrlen);\n\n\t\t\t\tgetnameinfo((struct sockaddr *) netaddr4, addrinlen,\n\t\t\t\t\t\t\tnetname, sizeof (netname), NULL, 0, NI_NUMERICHOST);\n\t\t\t\ttmp=g_strdup_printf(\"%s/%s\", netname, peername);\n\t\t\t}else if(ai->ai_family == AF_INET6) {\n\t\t\t\tnetaddr6 = (struct sockaddr_in6 *)&netaddr;\n\n\t\t\t\tshift = 128-(client->server->cidrlen);\n\t\t\t\ti = 3;\n\t\t\t\twhile(shift >= 8) {\n\t\t\t\t\t((netaddr6->sin6_addr).s6_addr[i])=0;\n\t\t\t\t\tshift-=8;\n\t\t\t\t\ti--;\n\t\t\t\t}\n\t\t\t\t(netaddr6->sin6_addr).s6_addr[i]>>=shift;\n\t\t\t\t(netaddr6->sin6_addr).s6_addr[i]<<=shift;\n\n\t\t\t\tgetnameinfo((struct sockaddr *)netaddr6, addrinlen,\n\t\t\t\t\t    netname, sizeof(netname), NULL, 0, NI_NUMERICHOST);\n\t\t\t\ttmp=g_strdup_printf(\"%s/%s\", netname, peername);\n\t\t\t}\n\n\t\t\tif(tmp != NULL)\n\t\t\t  client->exportname=g_strdup_printf(client->server->exportname, tmp);\n\n\t\t\tbreak;\n\t}\n\n\tfreeaddrinfo(ai);\n        msg(LOG_INFO, \"connect from %s, assigned file is %s\",\n            peername, client->exportname);\n\tclient->clientname=g_strdup(peername);\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "nbd.h",
+            "NBD_FLAG_SEND_FLUSH",
+            "#define NBD_FLAG_SEND_FLUSH\t(1 << 2)\t/* Send FLUSH */ /* <=== nbd.h:46:46:NBD_FLAG_SEND_FLUSH:0 */ ",
+            2
+        ],
+        [
+            "cliserv.h",
+            "setmysockopt",
+            "void setmysockopt(int sock) { /* <=== setmysockopt */ \n\tint size = 1;\n#if 0\n\tif (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &size, sizeof(int)) < 0)\n\t\t INFO(\"(no sockopt/1: %m)\");\n#endif\n#ifdef\tIPPROTO_TCP\n\tsize = 1;\n\tif (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &size, sizeof(int)) < 0)\n\t\t INFO(\"(no sockopt/2: %m)\");\n#endif\n#if 0\n\tsize = 1024;\n\tif (setsockopt(sock, IPPROTO_TCP, TCP_MAXSEG, &size, sizeof(int)) < 0)\n\t\t INFO(\"(no sockopt/3: %m)\");\n#endif\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "setupexport",
+            "void setupexport(CLIENT* client) { /* <=== setupexport */ \n\tint i;\n\toff_t laststartoff = 0, lastsize = 0;\n\tint multifile = (client->server->flags & F_MULTIFILE);\n\tint temporary = (client->server->flags & F_TEMPORARY) && !multifile;\n\tint cancreate = (client->server->expected_size) && !multifile;\n\n\tclient->export = g_array_new(TRUE, TRUE, sizeof(FILE_INFO));\n\n\t/* If multi-file, open as many files as we can.\n\t * If not, open exactly one file.\n\t * Calculate file sizes as we go to get total size. */\n\tfor(i=0; ; i++) {\n\t\tFILE_INFO fi;\n\t\tgchar *tmpname;\n\t\tgchar* error_string;\n\n\t\tif (i)\n\t\t  cancreate = 0;\n\t\t/* if expected_size is specified, and this is the first file, we can create the file */\n\t\tmode_t mode = (client->server->flags & F_READONLY) ?\n\t\t  O_RDONLY : (O_RDWR | (cancreate?O_CREAT:0));\n\n\t\tif (temporary) {\n\t\t\ttmpname=g_strdup_printf(\"%s.%d-XXXXXX\", client->exportname, i);\n\t\t\tDEBUG( \"Opening %s\\n\", tmpname );\n\t\t\tfi.fhandle = mkstemp(tmpname);\n\t\t} else {\n\t\t\tif(multifile) {\n\t\t\t\ttmpname=g_strdup_printf(\"%s.%d\", client->exportname, i);\n\t\t\t} else {\n\t\t\t\ttmpname=g_strdup(client->exportname);\n\t\t\t}\n\t\t\tDEBUG( \"Opening %s\\n\", tmpname );\n\t\t\tfi.fhandle = open(tmpname, mode, 0x600);\n\t\t\tif(fi.fhandle == -1 && mode == O_RDWR) {\n\t\t\t\t/* Try again because maybe media was read-only */\n\t\t\t\tfi.fhandle = open(tmpname, O_RDONLY);\n\t\t\t\tif(fi.fhandle != -1) {\n\t\t\t\t\t/* Opening the base file in copyonwrite mode is\n\t\t\t\t\t * okay */\n\t\t\t\t\tif(!(client->server->flags & F_COPYONWRITE)) {\n\t\t\t\t\t\tclient->server->flags |= F_AUTOREADONLY;\n\t\t\t\t\t\tclient->server->flags |= F_READONLY;\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif(fi.fhandle == -1) {\n\t\t\tif(multifile && i>0)\n\t\t\t\tbreak;\n\t\t\terror_string=g_strdup_printf(\n\t\t\t\t\"Could not open exported file %s: %%m\",\n\t\t\t\ttmpname);\n\t\t\terr(error_string);\n\t\t}\n\n\t\tif (temporary)\n\t\t\tunlink(tmpname); /* File will stick around whilst FD open */\n\n\t\tfi.startoff = laststartoff + lastsize;\n\t\tg_array_append_val(client->export, fi);\n\t\tg_free(tmpname);\n\n\t\t/* Starting offset and size of this file will be used to\n\t\t * calculate starting offset of next file */\n\t\tlaststartoff = fi.startoff;\n\t\tlastsize = size_autodetect(fi.fhandle);\n\n\t\t/* If we created the file, it will be length zero */\n\t\tif (!lastsize && cancreate) {\n\t\t\tassert(!multifile);\n\t\t\tif(ftruncate (fi.fhandle, client->server->expected_size)<0) {\n\t\t\t\terr(\"Could not expand file: %m\");\n\t\t\t}\n\t\t\tlastsize = client->server->expected_size;\n\t\t\tbreak; /* don't look for any more files */\n\t\t}\n\n\t\tif(!multifile || temporary)\n\t\t\tbreak;\n\t}\n\n\t/* Set export size to total calculated size */\n\tclient->exportsize = laststartoff + lastsize;\n\n\t/* Export size may be overridden */\n\tif(client->server->expected_size) {\n\t\t/* desired size must be <= total calculated size */\n\t\tif(client->server->expected_size > client->exportsize) {\n\t\t\terr(\"Size of exported file is too big\\n\");\n\t\t}\n\n\t\tclient->exportsize = client->server->expected_size;\n\t}\n\n\tmsg(LOG_INFO, \"Size of exported file/device is %llu\", (unsigned long long)client->exportsize);\n\tif(multifile) {\n\t\tmsg(LOG_INFO, \"Total number of files: %d\", i);\n\t}\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "get_index_by_servename",
+            "static int get_index_by_servename(const gchar *const servename, /* <=== get_index_by_servename */ \n                                  const GArray *const servers) {\n        int i;\n\n        for (i = 0; i < servers->len; ++i) {\n                const SERVER server = g_array_index(servers, SERVER, i);\n\n                if (strcmp(servename, server.servename) == 0)\n                        return i;\n        }\n\n        return -1;\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "handle_export_name",
+            "static CLIENT* handle_export_name(uint32_t opt, int net, GArray* servers, uint32_t cflags) { /* <=== handle_export_name */ \n\tuint32_t namelen;\n\tchar* name;\n\tint i;\n\n\tif (read(net, &namelen, sizeof(namelen)) < 0) {\n\t\terr(\"Negotiation failed/7: %m\");\n\t\treturn NULL;\n\t}\n\tnamelen = ntohl(namelen);\n\tname = malloc(namelen+1);\n\tname[namelen]=0;\n\tif (read(net, name, namelen) < 0) {\n\t\terr(\"Negotiation failed/8: %m\");\n\t\tfree(name);\n\t\treturn NULL;\n\t}\n\tfor(i=0; i<servers->len; i++) {\n\t\tSERVER* serve = &(g_array_index(servers, SERVER, i));\n\t\tif(!strcmp(serve->servename, name)) {\n\t\t\tCLIENT* client = g_new0(CLIENT, 1);\n\t\t\tclient->server = serve;\n\t\t\tclient->exportsize = OFFT_MAX;\n\t\t\tclient->net = net;\n\t\t\tclient->modern = TRUE;\n\t\t\tclient->transactionlogfd = -1;\n\t\t\tclient->clientfeats = cflags;\n\t\t\tfree(name);\n\t\t\treturn client;\n\t\t}\n\t}\n\terr(\"Negotiation failed/8a: Requested export not found\");\n\tfree(name);\n\treturn NULL;\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "F_MULTIFILE",
+            "#define F_MULTIFILE 2\t  /**< flag to tell us a file is exported using -m */ /* <=== nbd-server.c:154:154:F_MULTIFILE:0 */ ",
+            3
+        ],
+        [
+            "nbd.h",
+            "NBD_FLAG_ROTATIONAL",
+            "#define NBD_FLAG_ROTATIONAL\t(1 << 4)\t/* Use elevator algorithm - rotational media */ /* <=== nbd.h:48:48:NBD_FLAG_ROTATIONAL:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "exptrim",
+            "int exptrim(struct nbd_request* req, CLIENT* client) { /* <=== exptrim */ \n#if HAVE_FALLOC_PH\n\tFILE_INFO prev = g_array_index(client->export, FILE_INFO, 0);\n\tFILE_INFO cur = prev;\n\tint i = 1;\n\t/* We're running on a system that supports the\n\t * FALLOC_FL_PUNCH_HOLE option to re-sparsify a file */\n\tdo {\n\t\tif(i<client->export->len) {\n\t\t\tcur = g_array_index(client->export, FILE_INFO, i);\n\t\t}\n\t\tif(prev.startoff <= req->from) {\n\t\t\toff_t curoff = req->from - prev.startoff;\n\t\t\toff_t curlen = cur.startoff - prev.startoff - curoff;\n\t\t\tfallocate(prev.fhandle, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, curoff, curlen);\n\t\t}\n\t\tprev = cur;\n\t} while(i < client->export->len && cur.startoff < (req->from + req->len));\n\tDEBUG(\"Performed TRIM request from %llu to %llu\", (unsigned long long) req->from, (unsigned long long) req->len);\n#else\n\tDEBUG(\"Ignoring TRIM request (not supported on current platform\");\n#endif\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "cliserv.h",
+            "err",
+            "void err(const char *s) { /* <=== err */ \n\terr_nonfatal(s);\n\texit(EXIT_FAILURE);\n}",
+            2
+        ],
+        [
+            "cliserv.h",
+            "INIT_PASSWD",
+            "#define INIT_PASSWD \"NBDMAGIC\" /* <=== cliserv.h:60:60:INIT_PASSWD:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "append_new_servers",
+            "static int append_new_servers(GArray *const servers, GError **const gerror) { /* <=== append_new_servers */ \n        int i;\n        GArray *new_servers;\n        const int old_len = servers->len;\n        int retval = -1;\n        struct generic_conf genconf;\n\n        new_servers = parse_cfile(config_file_pos, &genconf, gerror);\n        if (!new_servers)\n                goto out;\n\n        for (i = 0; i < new_servers->len; ++i) {\n                SERVER new_server = g_array_index(new_servers, SERVER, i);\n\n                if (new_server.servename\n                    && -1 == get_index_by_servename(new_server.servename,\n                                                    servers)) {\n                        if (setup_serve(&new_server, gerror) == -1)\n                                goto out;\n                        if (append_serve(&new_server, servers) == -1)\n                                goto out;\n                }\n        }\n\n        retval = servers->len - old_len;\nout:\n        g_array_free(new_servers, TRUE);\n\n        return retval;\n}",
+            1
+        ],
+        [
+            "cliserv.h",
+            "NBD_REP_ACK",
+            "#define NBD_REP_ACK\t\t(1)\t/** ACK a request. Data: option number to be acked */ /* <=== cliserv.h:157:157:NBD_REP_ACK:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "do_run",
+            "int do_run(gchar* command, gchar* file) { /* <=== do_run */ \n\tgchar* cmd;\n\tint retval=0;\n\n\tif(command && *command) {\n\t\tcmd = g_strdup_printf(command, file);\n\t\tretval=system(cmd);\n\t\tg_free(cmd);\n\t}\n\treturn retval;\n}",
+            2
+        ],
+        [
+            "cliserv.h",
+            "NBD_OPT_LIST",
+            "#define NBD_OPT_LIST\t\t(3)\t/** Client request list of supported exports (not followed by data) */ /* <=== cliserv.h:154:154:NBD_OPT_LIST:0 */ ",
+            3
+        ],
+        [
+            "cliserv.h",
+            "htonll",
+            "#define htonll ntohll /* <=== cliserv.h:146:146:htonll:0 */ ",
+            2
+        ],
+        [
+            "cliserv.h",
+            "NBD_OPT_ABORT",
+            "#define NBD_OPT_ABORT\t\t(2)\t/** Client wishes to abort negotiation */ /* <=== cliserv.h:153:153:NBD_OPT_ABORT:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "F_TEMPORARY",
+            "#define F_TEMPORARY 1024  /**< Whether the backing file is temporary and should be created then unlinked */ /* <=== nbd-server.c:164:164:F_TEMPORARY:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "mainloop",
+            "int mainloop(CLIENT *client) { /* <=== mainloop */ \n\tstruct nbd_request request;\n\tstruct nbd_reply reply;\n\tgboolean go_on=TRUE;\n#ifdef DODBG\n\tint i = 0;\n#endif\n\tnegotiate(client->net, client, NULL, client->modern ? NEG_MODERN : (NEG_OLD | NEG_INIT));\n\tDEBUG(\"Entering request loop!\\n\");\n\treply.magic = htonl(NBD_REPLY_MAGIC);\n\treply.error = 0;\n\twhile (go_on) {\n\t\tchar buf[BUFSIZE];\n\t\tchar* p;\n\t\tsize_t len;\n\t\tsize_t currlen;\n\t\tsize_t writelen;\n\t\tuint16_t command;\n#ifdef DODBG\n\t\ti++;\n\t\tprintf(\"%d: \", i);\n#endif\n\t\treadit(client->net, &request, sizeof(request));\n\t\tif (client->transactionlogfd != -1)\n\t\t\twriteit(client->transactionlogfd, &request, sizeof(request));\n\n\t\trequest.from = ntohll(request.from);\n\t\trequest.type = ntohl(request.type);\n\t\tcommand = request.type & NBD_CMD_MASK_COMMAND;\n\t\tlen = ntohl(request.len);\n\n\t\tDEBUG(\"%s from %llu (%llu) len %u, \", getcommandname(command),\n\t\t\t\t(unsigned long long)request.from,\n\t\t\t\t(unsigned long long)request.from / 512, len);\n\n\t\tif (request.magic != htonl(NBD_REQUEST_MAGIC))\n\t\t\terr(\"Not enough magic.\");\n\n\t\tmemcpy(reply.handle, request.handle, sizeof(reply.handle));\n\n\t\tif ((command==NBD_CMD_WRITE) || (command==NBD_CMD_READ)) {\n\t\t\tif (request.from + len < request.from) { // 64 bit overflow!!\n\t\t\t\tDEBUG(\"[Number too large!]\");\n\t\t\t\tERROR(client, reply, EINVAL);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tif (((off_t)request.from + len) > client->exportsize) {\n\t\t\t\tDEBUG(\"[RANGE!]\");\n\t\t\t\tERROR(client, reply, EINVAL);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tcurrlen = len;\n\t\t\tif (currlen > BUFSIZE - sizeof(struct nbd_reply)) {\n\t\t\t\tcurrlen = BUFSIZE - sizeof(struct nbd_reply);\n\t\t\t\tif(!logged_oversized) {\n\t\t\t\t\tmsg(LOG_DEBUG, \"oversized request (this is not a problem)\");\n\t\t\t\t\tlogged_oversized = true;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\tswitch (command) {\n\n\t\tcase NBD_CMD_DISC:\n\t\t\tmsg(LOG_INFO, \"Disconnect request received.\");\n                \tif (client->server->flags & F_COPYONWRITE) { \n\t\t\t\tif (client->difmap) g_free(client->difmap) ;\n                \t\tclose(client->difffile);\n\t\t\t\tunlink(client->difffilename);\n\t\t\t\tfree(client->difffilename);\n\t\t\t}\n\t\t\tgo_on=FALSE;\n\t\t\tcontinue;\n\n\t\tcase NBD_CMD_WRITE:\n\t\t\tDEBUG(\"wr: net->buf, \");\n\t\t\twhile(len > 0) {\n\t\t\t\treadit(client->net, buf, currlen);\n\t\t\t\tDEBUG(\"buf->exp, \");\n\t\t\t\tif ((client->server->flags & F_READONLY) ||\n\t\t\t\t    (client->server->flags & F_AUTOREADONLY)) {\n\t\t\t\t\tDEBUG(\"[WRITE to READONLY!]\");\n\t\t\t\t\tERROR(client, reply, EPERM);\n\t\t\t\t\tconsume(client->net, buf, len-currlen, BUFSIZE);\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\tif (expwrite(request.from, buf, currlen, client,\n\t\t\t\t\t     request.type & NBD_CMD_FLAG_FUA)) {\n\t\t\t\t\tDEBUG(\"Write failed: %m\" );\n\t\t\t\t\tERROR(client, reply, errno);\n\t\t\t\t\tconsume(client->net, buf, len-currlen, BUFSIZE);\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\tlen -= currlen;\n\t\t\t\trequest.from += currlen;\n\t\t\t\tcurrlen = (len < BUFSIZE) ? len : BUFSIZE;\n\t\t\t}\n\t\t\tSEND(client->net, reply);\n\t\t\tDEBUG(\"OK!\\n\");\n\t\t\tcontinue;\n\n\t\tcase NBD_CMD_FLUSH:\n\t\t\tDEBUG(\"fl: \");\n\t\t\tif (expflush(client)) {\n\t\t\t\tDEBUG(\"Flush failed: %m\");\n\t\t\t\tERROR(client, reply, errno);\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t\tSEND(client->net, reply);\n\t\t\tDEBUG(\"OK!\\n\");\n\t\t\tcontinue;\n\n\t\tcase NBD_CMD_READ:\n\t\t\tDEBUG(\"exp->buf, \");\n\t\t\tif (client->transactionlogfd != -1)\n\t\t\t\twriteit(client->transactionlogfd, &reply, sizeof(reply));\n\t\t\twriteit(client->net, &reply, sizeof(reply));\n\t\t\tp = buf;\n\t\t\twritelen = currlen;\n\t\t\twhile(len > 0) {\n\t\t\t\tif (expread(request.from, p, currlen, client)) {\n\t\t\t\t\tDEBUG(\"Read failed: %m\");\n\t\t\t\t\tERROR(client, reply, errno);\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\t\n\t\t\t\tDEBUG(\"buf->net, \");\n\t\t\t\twriteit(client->net, buf, writelen);\n\t\t\t\tlen -= currlen;\n\t\t\t\trequest.from += currlen;\n\t\t\t\tcurrlen = (len < BUFSIZE) ? len : BUFSIZE;\n\t\t\t\tp = buf;\n\t\t\t\twritelen = currlen;\n\t\t\t}\n\t\t\tDEBUG(\"OK!\\n\");\n\t\t\tcontinue;\n\n\t\tcase NBD_CMD_TRIM:\n\t\t\t/* The kernel module sets discard_zeroes_data == 0,\n\t\t\t * so it is okay to do nothing.  */\n\t\t\tif (exptrim(&request, client)) {\n\t\t\t\tDEBUG(\"Trim failed: %m\");\n\t\t\t\tERROR(client, reply, errno);\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t\tSEND(client->net, reply);\n\t\t\tcontinue;\n\n\t\tdefault:\n\t\t\tDEBUG (\"Ignoring unknown command\\n\");\n\t\t\tcontinue;\n\t\t}\n\t}\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "nbd.h",
+            "NBD_REQUEST_MAGIC",
+            "#define NBD_REQUEST_MAGIC 0x25609513 /* <=== nbd.h:57:57:NBD_REQUEST_MAGIC:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "LINELEN",
+            "#define LINELEN 256\t  /**< Size of static buffer used to read the /* <=== nbd-server.c:147:147:LINELEN:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "F_OLDSTYLE",
+            "#define F_OLDSTYLE 1\t  /**< Allow oldstyle (port-based) exports */ /* <=== nbd-server.c:169:169:F_OLDSTYLE:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "F_SDP",
+            "#define F_SDP 32\t  /**< flag to tell us the export should be done using the Socket Direct Protocol for RDMA */ /* <=== nbd-server.c:159:159:F_SDP:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "append_serve",
+            "int append_serve(const SERVER *const s, GArray *const a) { /* <=== append_serve */ \n\tSERVER *ns = NULL;\n\tstruct addrinfo hints;\n\tstruct addrinfo *ai = NULL;\n\tstruct addrinfo *rp = NULL;\n\tchar   host[NI_MAXHOST];\n\tgchar  *port = NULL;\n\tint e;\n\tint ret;\n\n\tassert(s != NULL);\n\n\tport = g_strdup_printf(\"%d\", s->port);\n\n\tmemset(&hints,'\\0',sizeof(hints));\n\thints.ai_family = AF_UNSPEC;\n\thints.ai_socktype = SOCK_STREAM;\n\thints.ai_flags = AI_ADDRCONFIG | AI_PASSIVE;\n\thints.ai_protocol = IPPROTO_TCP;\n\n\te = getaddrinfo(s->listenaddr, port, &hints, &ai);\n\n\tif (port)\n\t\tg_free(port);\n\n\tif(e == 0) {\n\t\tfor (rp = ai; rp != NULL; rp = rp->ai_next) {\n\t\t\te = getnameinfo(rp->ai_addr, rp->ai_addrlen, host, sizeof(host), NULL, 0, NI_NUMERICHOST);\n\n\t\t\tif (e != 0) { // error\n\t\t\t\tfprintf(stderr, \"getnameinfo: %s\\n\", gai_strerror(e));\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\t// duplicate server and set listenaddr to resolved IP address\n\t\t\tns = dup_serve (s);\n\t\t\tif (ns) {\n\t\t\t\tns->listenaddr = g_strdup(host);\n\t\t\t\tns->socket_family = rp->ai_family;\n\t\t\t\tg_array_append_val(a, *ns);\n\t\t\t\tfree(ns);\n\t\t\t\tns = NULL;\n\t\t\t}\n\t\t}\n\n\t\tret = 0;\n\t} else {\n\t\tfprintf(stderr, \"getaddrinfo failed on listen host/address: %s (%s)\\n\", s->listenaddr ? s->listenaddr : \"any\", gai_strerror(e));\n\t\tret = -1;\n\t}\n\n\tif (ai)\n\t\tfreeaddrinfo(ai);\n\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "do_cfile_dir",
+            "GArray* do_cfile_dir(gchar* dir, GError** e) { /* <=== do_cfile_dir */ \n\tDIR* dirh = opendir(dir);\n\tstruct dirent* de;\n\tgchar* fname;\n\tGArray* retval = NULL;\n\tGArray* tmp;\n\tstruct stat stbuf;\n\n\tif(!dir) {\n\t\tg_set_error(e, NBDS_ERR, NBDS_ERR_CFILE_DIR_UNKNOWN, \"Invalid directory specified: %s\", strerror(errno));\n\t\treturn NULL;\n\t}\n\terrno=0;\n\twhile((de = readdir(dirh))) {\n\t\tint saved_errno=errno;\n\t\tfname = g_build_filename(dir, de->d_name, NULL);\n\t\tswitch(de->d_type) {\n\t\t\tcase DT_UNKNOWN:\n\t\t\t\t/* Filesystem doesn't return type of\n\t\t\t\t * file through readdir. Run stat() on\n\t\t\t\t * the file instead */\n\t\t\t\tif(stat(fname, &stbuf)) {\n\t\t\t\t\tperror(\"stat\");\n\t\t\t\t\tgoto err_out;\n\t\t\t\t}\n\t\t\t\tif (!S_ISREG(stbuf.st_mode)) {\n\t\t\t\t\tgoto next;\n\t\t\t\t}\n\t\t\tcase DT_REG:\n\t\t\t\t/* Skip unless the name ends with '.conf' */\n\t\t\t\tif(strcmp((de->d_name + strlen(de->d_name) - 5), \".conf\")) {\n\t\t\t\t\tgoto next;\n\t\t\t\t}\n\t\t\t\ttmp = parse_cfile(fname, NULL, e);\n\t\t\t\terrno=saved_errno;\n\t\t\t\tif(*e) {\n\t\t\t\t\tgoto err_out;\n\t\t\t\t}\n\t\t\t\tif(!retval)\n\t\t\t\t\tretval = g_array_new(FALSE, TRUE, sizeof(SERVER));\n\t\t\t\tretval = g_array_append_vals(retval, tmp->data, tmp->len);\n\t\t\t\tg_array_free(tmp, TRUE);\n\t\t\tdefault:\n\t\t\t\tbreak;\n\t\t}\n\tnext:\n\t\tg_free(fname);\n\t}\n\tif(errno) {\n\t\tg_set_error(e, NBDS_ERR, NBDS_ERR_CFILE_READDIR_ERR, \"Error trying to read directory: %s\", strerror(errno));\n\terr_out:\n\t\tif(retval)\n\t\t\tg_array_free(retval, TRUE);\n\t\treturn NULL;\n\t}\n\treturn retval;\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "F_READONLY",
+            "#define F_READONLY 1      /**< flag to tell us a file is readonly */ /* <=== nbd-server.c:153:153:F_READONLY:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "msg",
+            "#define msg(prio, ...) g_log(G_LOG_DOMAIN, G_LOG_LEVEL_MESSAGE, __VA_ARGS__) /* <=== nbd-server.c:129:129:msg:2 */ ",
+            1
+        ],
+        [
+            "nbd-server.c",
+            "NEG_OLD",
+            "#define NEG_OLD\t\t(1 << 1) /* <=== nbd-server.c:177:177:NEG_OLD:0 */ ",
+            2
+        ],
+        [
+            "nbd.h",
+            "NBD_FLAG_READ_ONLY",
+            "#define NBD_FLAG_READ_ONLY\t(1 << 1)\t/* Device is read-only */ /* <=== nbd.h:45:45:NBD_FLAG_READ_ONLY:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "F_FUA",
+            "#define F_FUA 256\t  /**< Whether server wants FUA to be sent by the client */ /* <=== nbd-server.c:162:162:F_FUA:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "F_TRIM",
+            "#define F_TRIM 2048       /**< Whether server wants TRIM (discard) to be sent by the client */ /* <=== nbd-server.c:165:165:F_TRIM:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "SEND",
+            "#define SEND(net,reply) { writeit( net, &reply, sizeof( reply )); \\ /* <=== nbd-server.c:1733:1735:SEND:2 */ \n\tif (client->transactionlogfd != -1) \\\n\t\twriteit(client->transactionlogfd, &reply, sizeof(reply)); }",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "dup_serve",
+            "SERVER* dup_serve(const SERVER *const s) { /* <=== dup_serve */ \n\tSERVER *serve = NULL;\n\n\tserve=g_new0(SERVER, 1);\n\tif(serve == NULL)\n\t\treturn NULL;\n\n\tif(s->exportname)\n\t\tserve->exportname = g_strdup(s->exportname);\n\n\tserve->expected_size = s->expected_size;\n\n\tif(s->listenaddr)\n\t\tserve->listenaddr = g_strdup(s->listenaddr);\n\n\tserve->port = s->port;\n\n\tif(s->authname)\n\t\tserve->authname = strdup(s->authname);\n\n\tserve->flags = s->flags;\n\tserve->socket = s->socket;\n\tserve->socket_family = s->socket_family;\n\tserve->virtstyle = s->virtstyle;\n\tserve->cidrlen = s->cidrlen;\n\n\tif(s->prerun)\n\t\tserve->prerun = g_strdup(s->prerun);\n\n\tif(s->postrun)\n\t\tserve->postrun = g_strdup(s->postrun);\n\n\tif(s->transactionlog)\n\t\tserve->transactionlog = g_strdup(s->transactionlog);\n\t\n\tif(s->servename)\n\t\tserve->servename = g_strdup(s->servename);\n\n\tserve->max_connections = s->max_connections;\n\n\treturn serve;\n}",
+            3
+        ],
+        [
+            "cliserv.h",
+            "ntohll",
+            "u64 ntohll(u64 a) { /* <=== ntohll */ \n\tu32 lo = a & 0xffffffff;\n\tu32 hi = a >> 32U;\n\tlo = ntohl(lo);\n\thi = ntohl(hi);\n\treturn ((u64) lo) << 32U | hi;\n}",
+            2
+        ],
+        [
+            "cliserv.h",
+            "err_nonfatal",
+            "void err_nonfatal(const char *s) { /* <=== err_nonfatal */ \n\tchar s1[150], *s2;\n\n\tstrncpy(s1, s, sizeof(s1));\n\tif ((s2 = strstr(s, \"%m\"))) {\n\t\tstrcpy(s1 + (s2 - s), strerror(errno));\n\t\ts2 += 2;\n\t\tstrcpy(s1 + strlen(s1), s2);\n\t}\n#ifndef\tsun\n\t/* Solaris doesn't have %h in syslog */\n\telse if ((s2 = strstr(s, \"%h\"))) {\n\t\tstrcpy(s1 + (s2 - s), hstrerror(h_errno));\n\t\ts2 += 2;\n\t\tstrcpy(s1 + strlen(s1), s2);\n\t}\n#endif\n\n\ts1[sizeof(s1)-1] = '\\0';\n#ifdef ISSERVER\n\tsyslog(LOG_ERR, \"%s\", s1);\n\tsyslog(LOG_ERR, \"Exiting.\");\n#endif\n\tfprintf(stderr, \"Error: %s\\nExiting.\\n\", s1);\n}",
+            1
+        ],
+        [
+            "nbd-server.c",
+            "writeit",
+            "static inline void writeit(int f, void *buf, size_t len) { /* <=== writeit */ \n\tssize_t res;\n\twhile (len > 0) {\n\t\tDEBUG(\"+\");\n\t\tif ((res = write(f, buf, len)) <= 0)\n\t\t\terr(\"Send failed: %m\");\n\t\tlen -= res;\n\t\tbuf += res;\n\t}\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "F_COPYONWRITE",
+            "#define F_COPYONWRITE 4\t  /**< flag to tell us a file is exported using /* <=== nbd-server.c:155:155:F_COPYONWRITE:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "consume",
+            "static inline void consume(int f, void * buf, size_t len, size_t bufsiz) { /* <=== consume */ \n\tsize_t curlen;\n\twhile (len>0) {\n\t\tcurlen = (len>bufsiz)?bufsiz:len;\n\t\treadit(f, buf, curlen);\n\t\tlen -= curlen;\n\t}\n}",
+            3
+        ],
+        [
+            "cliserv.h",
+            "NBD_REP_ERR_UNSUP",
+            "#define NBD_REP_ERR_UNSUP\t(1 | NBD_REP_FLAG_ERROR)\t/** Client requested an option not understood by this version of the server */ /* <=== cliserv.h:160:160:NBD_REP_ERR_UNSUP:0 */ ",
+            2
+        ],
+        [
+            "nbd.h",
+            "NBD_FLAG_HAS_FLAGS",
+            "#define NBD_FLAG_HAS_FLAGS\t(1 << 0)\t/* Flags are there */ /* <=== nbd.h:44:44:NBD_FLAG_HAS_FLAGS:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "F_AUTOREADONLY",
+            "#define F_AUTOREADONLY 8  /**< flag to tell us a file is set to autoreadonly */ /* <=== nbd-server.c:157:157:F_AUTOREADONLY:0 */ ",
+            3
+        ],
+        [
+            "lfs.h",
+            "PARAM_OFFT",
+            "# define PARAM_OFFT PARAM_INT /* <=== lfs.h:12:12:PARAM_OFFT:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "expflush",
+            "int expflush(CLIENT *client) { /* <=== expflush */ \n\tgint i;\n\n        if (client->server->flags & F_COPYONWRITE) {\n\t\treturn fsync(client->difffile);\n\t}\n\t\n\tfor (i = 0; i < client->export->len; i++) {\n\t\tFILE_INFO fi = g_array_index(client->export, FILE_INFO, i);\n\t\tif (fsync(fi.fhandle) < 0)\n\t\t\treturn -1;\n\t}\n\t\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "serveconnection",
+            "void serveconnection(CLIENT *client) { /* <=== serveconnection */ \n\tif (client->server->transactionlog && (client->transactionlogfd == -1))\n\t{\n\t\tif (-1 == (client->transactionlogfd = open(client->server->transactionlog,\n\t\t\t\t\t\t\t   O_WRONLY | O_CREAT,\n\t\t\t\t\t\t\t   S_IRUSR | S_IWUSR)))\n\t\t\tg_warning(\"Could not open transaction log %s\",\n\t\t\t\t  client->server->transactionlog);\n\t}\n\n\tif(do_run(client->server->prerun, client->exportname)) {\n\t\texit(EXIT_FAILURE);\n\t}\n\tsetupexport(client);\n\n\tif (client->server->flags & F_COPYONWRITE) {\n\t\tcopyonwrite_prepare(client);\n\t}\n\n\tsetmysockopt(client->net);\n\n\tmainloop(client);\n\tdo_run(client->server->postrun, client->exportname);\n\n\tif (-1 != client->transactionlogfd)\n\t{\n\t\tclose(client->transactionlogfd);\n\t\tclient->transactionlogfd = -1;\n\t}\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "copyonwrite_prepare",
+            "int copyonwrite_prepare(CLIENT* client) { /* <=== copyonwrite_prepare */ \n\toff_t i;\n\tif ((client->difffilename = malloc(1024))==NULL)\n\t\terr(\"Failed to allocate string for diff file name\");\n\tsnprintf(client->difffilename, 1024, \"%s-%s-%d.diff\",client->exportname,client->clientname,\n\t\t(int)getpid()) ;\n\tclient->difffilename[1023]='\\0';\n\tmsg(LOG_INFO, \"About to create map and diff file %s\", client->difffilename) ;\n\tclient->difffile=open(client->difffilename,O_RDWR | O_CREAT | O_TRUNC,0600) ;\n\tif (client->difffile<0) err(\"Could not create diff file (%m)\") ;\n\tif ((client->difmap=calloc(client->exportsize/DIFFPAGESIZE,sizeof(u32)))==NULL)\n\t\terr(\"Could not allocate memory\") ;\n\tfor (i=0;i<client->exportsize/DIFFPAGESIZE;i++) client->difmap[i]=(u32)-1 ;\n\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "handle_list",
+            "static void handle_list(uint32_t opt, int net, GArray* servers, uint32_t cflags) { /* <=== handle_list */ \n\tuint32_t len;\n\tint i;\n\tchar buf[1024];\n\tchar *ptr = buf + sizeof(len);\n\n\tif (read(net, &len, sizeof(len)) < 0)\n\t\terr(\"Negotiation failed/8: %m\");\n\tlen = ntohl(len);\n\tif(len) {\n\t\tsend_reply(opt, net, NBD_REP_ERR_INVALID, 0, NULL);\n\t}\n\tif(!(glob_flags & F_LIST)) {\n\t\tsend_reply(opt, net, NBD_REP_ERR_POLICY, 0, NULL);\n\t\terr_nonfatal(\"Client tried disallowed list option\");\n\t\treturn;\n\t}\n\tfor(i=0; i<servers->len; i++) {\n\t\tSERVER* serve = &(g_array_index(servers, SERVER, i));\n\t\tlen = htonl(strlen(serve->servename));\n\t\tmemcpy(buf, &len, sizeof(len));\n\t\tstrcpy(ptr, serve->servename);\n\t\tsend_reply(opt, net, NBD_REP_SERVER, strlen(serve->servename)+sizeof(len), buf);\n\t}\n\tsend_reply(opt, net, NBD_REP_ACK, 0, NULL);\n}",
+            2
+        ],
+        [
+            "nbd.h",
+            "NBD_FLAG_SEND_FUA",
+            "#define NBD_FLAG_SEND_FUA\t(1 << 3)\t/* Send FUA (Force Unit Access) */ /* <=== nbd.h:47:47:NBD_FLAG_SEND_FUA:0 */ ",
+            2
+        ],
+        [
+            "cliserv.h",
+            "NBD_OPT_EXPORT_NAME",
+            "#define NBD_OPT_EXPORT_NAME\t(1)\t/** Client wants to select a named export (is followed by name of export) */ /* <=== cliserv.h:152:152:NBD_OPT_EXPORT_NAME:0 */ ",
+            2
+        ],
+        [
+            "cliserv.h",
+            "NBD_REP_ERR_POLICY",
+            "#define NBD_REP_ERR_POLICY\t(2 | NBD_REP_FLAG_ERROR)\t/** Client requested an option not allowed by server configuration. (e.g., the option was disabled) */ /* <=== cliserv.h:161:161:NBD_REP_ERR_POLICY:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "dosockopts",
+            "int dosockopts(const int socket, GError **const gerror) { /* <=== dosockopts */ \n#ifndef sun\n\tint yes=1;\n#else\n\tchar yes='1';\n#endif /* sun */\n\tstruct linger l;\n\n\t/* lose the pesky \"Address already in use\" error message */\n\tif (setsockopt(socket,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(int)) == -1) {\n                g_set_error(gerror, NBDS_ERR, NBDS_ERR_SO_REUSEADDR,\n                            \"failed to set socket option SO_REUSEADDR: %s\",\n                            strerror(errno));\n                return -1;\n\t}\n\tl.l_onoff = 1;\n\tl.l_linger = 10;\n\tif (setsockopt(socket,SOL_SOCKET,SO_LINGER,&l,sizeof(l)) == -1) {\n                g_set_error(gerror, NBDS_ERR, NBDS_ERR_SO_LINGER,\n                            \"failed to set socket option SO_LINGER: %s\",\n                            strerror(errno));\n                return -1;\n\t}\n\tif (setsockopt(socket,SOL_SOCKET,SO_KEEPALIVE,&yes,sizeof(int)) == -1) {\n                g_set_error(gerror, NBDS_ERR, NBDS_ERR_SO_KEEPALIVE,\n                            \"failed to set socket option SO_KEEPALIVE: %s\",\n                            strerror(errno));\n                return -1;\n\t}\n\n        return 0;\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "NEG_INIT",
+            "#define NEG_INIT\t(1 << 0) /* <=== nbd-server.c:176:176:NEG_INIT:0 */ ",
+            1
+        ],
+        [
+            "nbd-server.c",
+            "authorized_client",
+            "int authorized_client(CLIENT *opts) { /* <=== authorized_client */ \n\tconst char *ERRMSG=\"Invalid entry '%s' in authfile '%s', so, refusing all connections.\";\n\tFILE *f ;\n\tchar line[LINELEN]; \n\tchar *tmp;\n\tstruct in_addr addr;\n\tstruct in_addr client;\n\tstruct in_addr cltemp;\n\tint len;\n\n\tif ((f=fopen(opts->server->authname,\"r\"))==NULL) {\n                msg(LOG_INFO, \"Can't open authorization file %s (%s).\",\n                    opts->server->authname, strerror(errno));\n\t\treturn 1 ; \n\t}\n  \n  \tinet_aton(opts->clientname, &client);\n\twhile (fgets(line,LINELEN,f)!=NULL) {\n\t\tif((tmp=strchr(line, '/'))) {\n\t\t\tif(strlen(line)<=tmp-line) {\n\t\t\t\tmsg(LOG_CRIT, ERRMSG, line, opts->server->authname);\n\t\t\t\treturn 0;\n\t\t\t}\n\t\t\t*(tmp++)=0;\n\t\t\tif(!inet_aton(line,&addr)) {\n\t\t\t\tmsg(LOG_CRIT, ERRMSG, line, opts->server->authname);\n\t\t\t\treturn 0;\n\t\t\t}\n\t\t\tlen=strtol(tmp, NULL, 0);\n\t\t\taddr.s_addr>>=32-len;\n\t\t\taddr.s_addr<<=32-len;\n\t\t\tmemcpy(&cltemp,&client,sizeof(client));\n\t\t\tcltemp.s_addr>>=32-len;\n\t\t\tcltemp.s_addr<<=32-len;\n\t\t\tif(addr.s_addr == cltemp.s_addr) {\n\t\t\t\treturn 1;\n\t\t\t}\n\t\t}\n\t\tif (strncmp(line,opts->clientname,strlen(opts->clientname))==0) {\n\t\t\tfclose(f);\n\t\t\treturn 1;\n\t\t}\n\t}\n\tfclose(f);\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "set_peername",
+            "int set_peername(int net, CLIENT *client) { /* <=== set_peername */ \n\tstruct sockaddr_storage addrin;\n\tstruct sockaddr_storage netaddr;\n\tstruct sockaddr_in  *netaddr4 = NULL;\n\tstruct sockaddr_in6 *netaddr6 = NULL;\n\tsocklen_t addrinlen = sizeof( addrin );\n\tstruct addrinfo hints;\n\tstruct addrinfo *ai = NULL;\n\tchar peername[NI_MAXHOST];\n\tchar netname[NI_MAXHOST];\n\tchar *tmp = NULL;\n\tint i;\n\tint e;\n\tint shift;\n\n\tif (getpeername(net, (struct sockaddr *) &addrin, &addrinlen) < 0) {\n\t\tmsg(LOG_INFO, \"getpeername failed: %m\");\n\t\treturn -1;\n\t}\n\n\tif((e = getnameinfo((struct sockaddr *)&addrin, addrinlen,\n\t\t\tpeername, sizeof (peername), NULL, 0, NI_NUMERICHOST))) {\n\t\tmsg(LOG_INFO, \"getnameinfo failed: %s\", gai_strerror(e));\n\t\treturn -1;\n\t}\n\n\tmemset(&hints, '\\0', sizeof (hints));\n\thints.ai_flags = AI_ADDRCONFIG;\n\te = getaddrinfo(peername, NULL, &hints, &ai);\n\n\tif(e != 0) {\n\t\tmsg(LOG_INFO, \"getaddrinfo failed: %s\", gai_strerror(e));\n\t\tfreeaddrinfo(ai);\n\t\treturn -1;\n\t}\n\n\tswitch(client->server->virtstyle) {\n\t\tcase VIRT_NONE:\n\t\t\tmsg(LOG_DEBUG, \"virtualization is off\");\n\t\t\tclient->exportname=g_strdup(client->server->exportname);\n\t\t\tbreak;\n\t\tcase VIRT_IPHASH:\n\t\t\tmsg(LOG_DEBUG, \"virtstyle iphash\");\n\t\t\tfor(i=0;i<strlen(peername);i++) {\n\t\t\t\tif(peername[i]=='.') {\n\t\t\t\t\tpeername[i]='/';\n\t\t\t\t}\n\t\t\t}\n\t\tcase VIRT_IPLIT:\n\t\t\tmsg(LOG_DEBUG, \"virststyle ipliteral\");\n\t\t\tclient->exportname=g_strdup_printf(client->server->exportname, peername);\n\t\t\tbreak;\n\t\tcase VIRT_CIDR:\n\t\t\tmsg(LOG_DEBUG, \"virtstyle cidr %d\", client->server->cidrlen);\n\t\t\tmemcpy(&netaddr, &addrin, addrinlen);\n\t\t\tif(ai->ai_family == AF_INET) {\n\t\t\t\tnetaddr4 = (struct sockaddr_in *)&netaddr;\n\t\t\t\t(netaddr4->sin_addr).s_addr>>=32-(client->server->cidrlen);\n\t\t\t\t(netaddr4->sin_addr).s_addr<<=32-(client->server->cidrlen);\n\n\t\t\t\tgetnameinfo((struct sockaddr *) netaddr4, addrinlen,\n\t\t\t\t\t\t\tnetname, sizeof (netname), NULL, 0, NI_NUMERICHOST);\n\t\t\t\ttmp=g_strdup_printf(\"%s/%s\", netname, peername);\n\t\t\t}else if(ai->ai_family == AF_INET6) {\n\t\t\t\tnetaddr6 = (struct sockaddr_in6 *)&netaddr;\n\n\t\t\t\tshift = 128-(client->server->cidrlen);\n\t\t\t\ti = 3;\n\t\t\t\twhile(shift >= 8) {\n\t\t\t\t\t((netaddr6->sin6_addr).s6_addr[i])=0;\n\t\t\t\t\tshift-=8;\n\t\t\t\t\ti--;\n\t\t\t\t}\n\t\t\t\t(netaddr6->sin6_addr).s6_addr[i]>>=shift;\n\t\t\t\t(netaddr6->sin6_addr).s6_addr[i]<<=shift;\n\n\t\t\t\tgetnameinfo((struct sockaddr *)netaddr6, addrinlen,\n\t\t\t\t\t    netname, sizeof(netname), NULL, 0, NI_NUMERICHOST);\n\t\t\t\ttmp=g_strdup_printf(\"%s/%s\", netname, peername);\n\t\t\t}\n\n\t\t\tif(tmp != NULL)\n\t\t\t  client->exportname=g_strdup_printf(client->server->exportname, tmp);\n\n\t\t\tbreak;\n\t}\n\n\tfreeaddrinfo(ai);\n        msg(LOG_INFO, \"connect from %s, assigned file is %s\",\n            peername, client->exportname);\n\tclient->clientname=g_strdup(peername);\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "nbd-server.c",
+            "mainloop",
+            "int mainloop(CLIENT *client) { /* <=== mainloop */ \n\tstruct nbd_request request;\n\tstruct nbd_reply reply;\n\tgboolean go_on=TRUE;\n#ifdef DODBG\n\tint i = 0;\n#endif\n\tnegotiate(client->net, client, NULL, client->modern ? NEG_MODERN : (NEG_OLD | NEG_INIT));\n\tDEBUG(\"Entering request loop!\\n\");\n\treply.magic = htonl(NBD_REPLY_MAGIC);\n\treply.error = 0;\n\twhile (go_on) {\n\t\tchar buf[BUFSIZE];\n\t\tchar* p;\n\t\tsize_t len;\n\t\tsize_t currlen;\n\t\tsize_t writelen;\n\t\tuint16_t command;\n#ifdef DODBG\n\t\ti++;\n\t\tprintf(\"%d: \", i);\n#endif\n\t\treadit(client->net, &request, sizeof(request));\n\t\tif (client->transactionlogfd != -1)\n\t\t\twriteit(client->transactionlogfd, &request, sizeof(request));\n\n\t\trequest.from = ntohll(request.from);\n\t\trequest.type = ntohl(request.type);\n\t\tcommand = request.type & NBD_CMD_MASK_COMMAND;\n\t\tlen = ntohl(request.len);\n\n\t\tDEBUG(\"%s from %llu (%llu) len %u, \", getcommandname(command),\n\t\t\t\t(unsigned long long)request.from,\n\t\t\t\t(unsigned long long)request.from / 512, len);\n\n\t\tif (request.magic != htonl(NBD_REQUEST_MAGIC))\n\t\t\terr(\"Not enough magic.\");\n\n\t\tmemcpy(reply.handle, request.handle, sizeof(reply.handle));\n\n\t\tif ((command==NBD_CMD_WRITE) || (command==NBD_CMD_READ)) {\n\t\t\tif (request.from + len < request.from) { // 64 bit overflow!!\n\t\t\t\tDEBUG(\"[Number too large!]\");\n\t\t\t\tERROR(client, reply, EINVAL);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tif (((off_t)request.from + len) > client->exportsize) {\n\t\t\t\tDEBUG(\"[RANGE!]\");\n\t\t\t\tERROR(client, reply, EINVAL);\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tcurrlen = len;\n\t\t\tif (currlen > BUFSIZE - sizeof(struct nbd_reply)) {\n\t\t\t\tcurrlen = BUFSIZE - sizeof(struct nbd_reply);\n\t\t\t\tif(!logged_oversized) {\n\t\t\t\t\tmsg(LOG_DEBUG, \"oversized request (this is not a problem)\");\n\t\t\t\t\tlogged_oversized = true;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\tswitch (command) {\n\n\t\tcase NBD_CMD_DISC:\n\t\t\tmsg(LOG_INFO, \"Disconnect request received.\");\n                \tif (client->server->flags & F_COPYONWRITE) { \n\t\t\t\tif (client->difmap) g_free(client->difmap) ;\n                \t\tclose(client->difffile);\n\t\t\t\tunlink(client->difffilename);\n\t\t\t\tfree(client->difffilename);\n\t\t\t}\n\t\t\tgo_on=FALSE;\n\t\t\tcontinue;\n\n\t\tcase NBD_CMD_WRITE:\n\t\t\tDEBUG(\"wr: net->buf, \");\n\t\t\twhile(len > 0) {\n\t\t\t\treadit(client->net, buf, currlen);\n\t\t\t\tDEBUG(\"buf->exp, \");\n\t\t\t\tif ((client->server->flags & F_READONLY) ||\n\t\t\t\t    (client->server->flags & F_AUTOREADONLY)) {\n\t\t\t\t\tDEBUG(\"[WRITE to READONLY!]\");\n\t\t\t\t\tERROR(client, reply, EPERM);\n\t\t\t\t\tconsume(client->net, buf, len-currlen, BUFSIZE);\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\tif (expwrite(request.from, buf, currlen, client,\n\t\t\t\t\t     request.type & NBD_CMD_FLAG_FUA)) {\n\t\t\t\t\tDEBUG(\"Write failed: %m\" );\n\t\t\t\t\tERROR(client, reply, errno);\n\t\t\t\t\tconsume(client->net, buf, len-currlen, BUFSIZE);\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\tlen -= currlen;\n\t\t\t\trequest.from += currlen;\n\t\t\t\tcurrlen = (len < BUFSIZE) ? len : BUFSIZE;\n\t\t\t}\n\t\t\tSEND(client->net, reply);\n\t\t\tDEBUG(\"OK!\\n\");\n\t\t\tcontinue;\n\n\t\tcase NBD_CMD_FLUSH:\n\t\t\tDEBUG(\"fl: \");\n\t\t\tif (expflush(client)) {\n\t\t\t\tDEBUG(\"Flush failed: %m\");\n\t\t\t\tERROR(client, reply, errno);\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t\tSEND(client->net, reply);\n\t\t\tDEBUG(\"OK!\\n\");\n\t\t\tcontinue;\n\n\t\tcase NBD_CMD_READ:\n\t\t\tDEBUG(\"exp->buf, \");\n\t\t\tif (client->transactionlogfd != -1)\n\t\t\t\twriteit(client->transactionlogfd, &reply, sizeof(reply));\n\t\t\twriteit(client->net, &reply, sizeof(reply));\n\t\t\tp = buf;\n\t\t\twritelen = currlen;\n\t\t\twhile(len > 0) {\n\t\t\t\tif (expread(request.from, p, currlen, client)) {\n\t\t\t\t\tDEBUG(\"Read failed: %m\");\n\t\t\t\t\tERROR(client, reply, errno);\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\t\n\t\t\t\tDEBUG(\"buf->net, \");\n\t\t\t\twriteit(client->net, buf, writelen);\n\t\t\t\tlen -= currlen;\n\t\t\t\trequest.from += currlen;\n\t\t\t\tcurrlen = (len < BUFSIZE) ? len : BUFSIZE;\n\t\t\t\tp = buf;\n\t\t\t\twritelen = currlen;\n\t\t\t}\n\t\t\tDEBUG(\"OK!\\n\");\n\t\t\tcontinue;\n\n\t\tcase NBD_CMD_TRIM:\n\t\t\t/* The kernel module sets discard_zeroes_data == 0,\n\t\t\t * so it is okay to do nothing.  */\n\t\t\tif (exptrim(&request, client)) {\n\t\t\t\tDEBUG(\"Trim failed: %m\");\n\t\t\t\tERROR(client, reply, errno);\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t\tSEND(client->net, reply);\n\t\t\tcontinue;\n\n\t\tdefault:\n\t\t\tDEBUG (\"Ignoring unknown command\\n\");\n\t\t\tcontinue;\n\t\t}\n\t}\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "setup_serve",
+            "int setup_serve(SERVER *const serve, GError **const gerror) { /* <=== setup_serve */ \n\tstruct addrinfo hints;\n\tstruct addrinfo *ai = NULL;\n\tgchar *port = NULL;\n\tint e;\n        int retval = -1;\n\n        /* Without this, it's possible that socket == 0, even if it's\n         * not initialized at all. And that would be wrong because 0 is\n         * totally legal value for properly initialized descriptor. This\n         * line is required to ensure that unused/uninitialized\n         * descriptors are marked as such (new style configuration\n         * case). Currently, servers are being initialized in multiple\n         * places, and some of the them do the socket initialization\n         * incorrectly. This is the only point common to all code paths,\n         * and therefore setting -1 is put here. However, the whole\n         * server initialization procedure should be extracted to its\n         * own function and all code paths wanting to mess with servers\n         * should initialize servers with that function.\n         * \n         * TODO: fix server initialization */\n        serve->socket = -1;\n\n\tif(!(glob_flags & F_OLDSTYLE)) {\n\t\treturn serve->servename ? 1 : 0;\n\t}\n\tmemset(&hints,'\\0',sizeof(hints));\n\thints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG | AI_NUMERICSERV;\n\thints.ai_socktype = SOCK_STREAM;\n\thints.ai_family = serve->socket_family;\n\n\tport = g_strdup_printf(\"%d\", serve->port);\n\tif (!port) {\n                g_set_error(gerror, NBDS_ERR, NBDS_ERR_SYS,\n                            \"failed to open an export socket: \"\n                            \"failed to convert a port number to a string: %s\",\n                            strerror(errno));\n                goto out;\n        }\n\n\te = getaddrinfo(serve->listenaddr,port,&hints,&ai);\n\n\tg_free(port);\n\n\tif(e != 0) {\n                g_set_error(gerror, NBDS_ERR, NBDS_ERR_GAI,\n                            \"failed to open an export socket: \"\n                            \"failed to get address info: %s\",\n                            gai_strerror(e));\n                goto out;\n\t}\n\n\tif(serve->socket_family == AF_UNSPEC)\n\t\tserve->socket_family = ai->ai_family;\n\n#ifdef WITH_SDP\n\tif ((serve->flags) && F_SDP) {\n\t\tif (ai->ai_family == AF_INET)\n\t\t\tai->ai_family = AF_INET_SDP;\n\t\telse (ai->ai_family == AF_INET6)\n\t\t\tai->ai_family = AF_INET6_SDP;\n\t}\n#endif\n\tif ((serve->socket = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol)) < 0) {\n                g_set_error(gerror, NBDS_ERR, NBDS_ERR_SOCKET,\n                            \"failed to open an export socket: \"\n                            \"failed to create a socket: %s\",\n                            strerror(errno));\n                goto out;\n        }\n\n\tif (dosockopts(serve->socket, gerror) == -1) {\n                g_prefix_error(gerror, \"failed to open an export socket: \");\n                goto out;\n        }\n\n\tDEBUG(\"Waiting for connections... bind, \");\n\te = bind(serve->socket, ai->ai_addr, ai->ai_addrlen);\n\tif (e != 0 && errno != EADDRINUSE) {\n                g_set_error(gerror, NBDS_ERR, NBDS_ERR_BIND,\n                            \"failed to open an export socket: \"\n                            \"failed to bind an address to a socket: %s\",\n                            strerror(errno));\n                goto out;\n        }\n\tDEBUG(\"listen, \");\n\tif (listen(serve->socket, 1) < 0) {\n                g_set_error(gerror, NBDS_ERR, NBDS_ERR_BIND,\n                            \"failed to open an export socket: \"\n                            \"failed to start listening on a socket: %s\",\n                            strerror(errno));\n                goto out;\n        }\n\n        retval = serve->servename ? 1 : 0;\nout:\n\n        if (retval == -1 && serve->socket >= 0) {\n                close(serve->socket);\n                serve->socket = -1;\n        }\n\tfreeaddrinfo (ai);\n\n        return retval;\n}",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "OFFT_MAX",
+            "#define OFFT_MAX ~((off_t)1<<(sizeof(off_t)*8-1)) /* <=== nbd-server.c:146:146:OFFT_MAX:0 */ ",
+            2
+        ],
+        [
+            "nbd-server.c",
+            "readit",
+            "static inline void readit(int f, void *buf, size_t len) { /* <=== readit */ \n\tssize_t res;\n\twhile (len > 0) {\n\t\tDEBUG(\"*\");\n\t\tif ((res = read(f, buf, len)) <= 0) {\n\t\t\tif(errno != EAGAIN) {\n\t\t\t\terr(\"Read failed: %m\");\n\t\t\t}\n\t\t} else {\n\t\t\tlen -= res;\n\t\t\tbuf += res;\n\t\t}\n\t}\n}",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "LINELEN",
+            "#define LINELEN 256\t  /**< Size of static buffer used to read the /* <=== nbd-server.c:147:147:LINELEN:0 */ ",
+            2
+        ],
+        [
+            "nbd-client.c",
+            "negotiate",
+            "void negotiate(int sock, u64 *rsize64, u32 *flags, char* name, uint32_t needed_flags, uint32_t client_flags, uint32_t do_opts) { /* <=== negotiate */ \n\tu64 magic, size64;\n\tuint16_t tmp;\n\tchar buf[256] = \"\\0\\0\\0\\0\\0\\0\\0\\0\\0\";\n\n\tprintf(\"Negotiation: \");\n\tif (read(sock, buf, 8) < 0)\n\t\terr(\"Failed/1: %m\");\n\tif (strlen(buf)==0)\n\t\terr(\"Server closed connection\");\n\tif (strcmp(buf, INIT_PASSWD))\n\t\terr(\"INIT_PASSWD bad\");\n\tprintf(\".\");\n\tif (read(sock, &magic, sizeof(magic)) < 0)\n\t\terr(\"Failed/2: %m\");\n\tmagic = ntohll(magic);\n\tif(name) {\n\t\tuint32_t opt;\n\t\tuint32_t namesize;\n\n\t\tif (magic != opts_magic) {\n\t\t\tif(magic == cliserv_magic) {\n\t\t\t\terr(\"It looks like you're trying to connect to an oldstyle server with a named export. This won't work.\");\n\t\t\t}\n\t\t}\n\t\tprintf(\".\");\n\t\tif(read(sock, &tmp, sizeof(uint16_t)) < 0) {\n\t\t\terr(\"Failed reading flags: %m\");\n\t\t}\n\t\t*flags = ((u32)ntohs(tmp));\n\t\tif((needed_flags & *flags) != needed_flags) {\n\t\t\t/* There's currently really only one reason why this\n\t\t\t * check could possibly fail, but we may need to change\n\t\t\t * this error message in the future... */\n\t\t\tfprintf(stderr, \"\\nE: Server does not support listing exports\\n\");\n\t\t\texit(EXIT_FAILURE);\n\t\t}\n\n\t\tclient_flags = htonl(client_flags);\n\t\tif (write(sock, &client_flags, sizeof(client_flags)) < 0)\n\t\t\terr(\"Failed/2.1: %m\");\n\n\t\tif(do_opts & NBDC_DO_LIST) {\n\t\t\task_list(sock);\n\t\t\texit(EXIT_SUCCESS);\n\t\t}\n\n\t\t/* Write the export name that we're after */\n\t\tmagic = htonll(opts_magic);\n\t\tif (write(sock, &magic, sizeof(magic)) < 0)\n\t\t\terr(\"Failed/2.2: %m\");\n\n\t\topt = ntohl(NBD_OPT_EXPORT_NAME);\n\t\tif (write(sock, &opt, sizeof(opt)) < 0)\n\t\t\terr(\"Failed/2.3: %m\");\n\t\tnamesize = (u32)strlen(name);\n\t\tnamesize = ntohl(namesize);\n\t\tif (write(sock, &namesize, sizeof(namesize)) < 0)\n\t\t\terr(\"Failed/2.4: %m\");\n\t\tif (write(sock, name, strlen(name)) < 0)\n\t\t\terr(\"Failed/2.4: %m\");\n\t} else {\n\t\tif (magic != cliserv_magic) {\n\t\t\tif(magic != opts_magic)\n\t\t\t\terr(\"Not enough cliserv_magic\");\n\t\t\telse\n\t\t\t\terr(\"It looks like you're trying to connect to a newstyle server with the oldstyle protocol. Try the -N option.\");\n\t\t}\n\t\tprintf(\".\");\n\t}\n\n\tif (read(sock, &size64, sizeof(size64)) <= 0) {\n\t\tif (!errno)\n\t\t\terr(\"Server closed connection\");\n\t\terr(\"Failed/3: %m\\n\");\n\t}\n\tsize64 = ntohll(size64);\n\n\tif ((size64>>12) > (uint64_t)~0UL) {\n\t\tprintf(\"size = %luMB\", (unsigned long)(size64>>20));\n\t\terr(\"Exported device is too big for me. Get 64-bit machine :-(\\n\");\n\t} else\n\t\tprintf(\"size = %luMB\", (unsigned long)(size64>>20));\n\n\tif(!name) {\n\t\tif (read(sock, flags, sizeof(*flags)) < 0)\n\t\t\terr(\"Failed/4: %m\\n\");\n\t\t*flags = ntohl(*flags);\n\t} else {\n\t\tif(read(sock, &tmp, sizeof(tmp)) < 0)\n\t\t\terr(\"Failed/4: %m\\n\");\n\t\t*flags |= (uint32_t)ntohs(tmp);\n\t}\n\n\tif (read(sock, &buf, 124) < 0)\n\t\terr(\"Failed/5: %m\\n\");\n\tprintf(\"\\n\");\n\n\t*rsize64 = size64;\n}",
+            1
+        ],
+        [
+            "nbd-server.c",
+            "BUFSIZE",
+            "#define BUFSIZE ((1024*1024)+sizeof(struct nbd_reply)) /**< Size of buffer that can hold requests */ /* <=== nbd-server.c:149:149:BUFSIZE:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "setupexport",
+            "void setupexport(CLIENT* client) { /* <=== setupexport */ \n\tint i;\n\toff_t laststartoff = 0, lastsize = 0;\n\tint multifile = (client->server->flags & F_MULTIFILE);\n\tint temporary = (client->server->flags & F_TEMPORARY) && !multifile;\n\tint cancreate = (client->server->expected_size) && !multifile;\n\n\tclient->export = g_array_new(TRUE, TRUE, sizeof(FILE_INFO));\n\n\t/* If multi-file, open as many files as we can.\n\t * If not, open exactly one file.\n\t * Calculate file sizes as we go to get total size. */\n\tfor(i=0; ; i++) {\n\t\tFILE_INFO fi;\n\t\tgchar *tmpname;\n\t\tgchar* error_string;\n\n\t\tif (i)\n\t\t  cancreate = 0;\n\t\t/* if expected_size is specified, and this is the first file, we can create the file */\n\t\tmode_t mode = (client->server->flags & F_READONLY) ?\n\t\t  O_RDONLY : (O_RDWR | (cancreate?O_CREAT:0));\n\n\t\tif (temporary) {\n\t\t\ttmpname=g_strdup_printf(\"%s.%d-XXXXXX\", client->exportname, i);\n\t\t\tDEBUG( \"Opening %s\\n\", tmpname );\n\t\t\tfi.fhandle = mkstemp(tmpname);\n\t\t} else {\n\t\t\tif(multifile) {\n\t\t\t\ttmpname=g_strdup_printf(\"%s.%d\", client->exportname, i);\n\t\t\t} else {\n\t\t\t\ttmpname=g_strdup(client->exportname);\n\t\t\t}\n\t\t\tDEBUG( \"Opening %s\\n\", tmpname );\n\t\t\tfi.fhandle = open(tmpname, mode, 0x600);\n\t\t\tif(fi.fhandle == -1 && mode == O_RDWR) {\n\t\t\t\t/* Try again because maybe media was read-only */\n\t\t\t\tfi.fhandle = open(tmpname, O_RDONLY);\n\t\t\t\tif(fi.fhandle != -1) {\n\t\t\t\t\t/* Opening the base file in copyonwrite mode is\n\t\t\t\t\t * okay */\n\t\t\t\t\tif(!(client->server->flags & F_COPYONWRITE)) {\n\t\t\t\t\t\tclient->server->flags |= F_AUTOREADONLY;\n\t\t\t\t\t\tclient->server->flags |= F_READONLY;\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif(fi.fhandle == -1) {\n\t\t\tif(multifile && i>0)\n\t\t\t\tbreak;\n\t\t\terror_string=g_strdup_printf(\n\t\t\t\t\"Could not open exported file %s: %%m\",\n\t\t\t\ttmpname);\n\t\t\terr(error_string);\n\t\t}\n\n\t\tif (temporary)\n\t\t\tunlink(tmpname); /* File will stick around whilst FD open */\n\n\t\tfi.startoff = laststartoff + lastsize;\n\t\tg_array_append_val(client->export, fi);\n\t\tg_free(tmpname);\n\n\t\t/* Starting offset and size of this file will be used to\n\t\t * calculate starting offset of next file */\n\t\tlaststartoff = fi.startoff;\n\t\tlastsize = size_autodetect(fi.fhandle);\n\n\t\t/* If we created the file, it will be length zero */\n\t\tif (!lastsize && cancreate) {\n\t\t\tassert(!multifile);\n\t\t\tif(ftruncate (fi.fhandle, client->server->expected_size)<0) {\n\t\t\t\terr(\"Could not expand file: %m\");\n\t\t\t}\n\t\t\tlastsize = client->server->expected_size;\n\t\t\tbreak; /* don't look for any more files */\n\t\t}\n\n\t\tif(!multifile || temporary)\n\t\t\tbreak;\n\t}\n\n\t/* Set export size to total calculated size */\n\tclient->exportsize = laststartoff + lastsize;\n\n\t/* Export size may be overridden */\n\tif(client->server->expected_size) {\n\t\t/* desired size must be <= total calculated size */\n\t\tif(client->server->expected_size > client->exportsize) {\n\t\t\terr(\"Size of exported file is too big\\n\");\n\t\t}\n\n\t\tclient->exportsize = client->server->expected_size;\n\t}\n\n\tmsg(LOG_INFO, \"Size of exported file/device is %llu\", (unsigned long long)client->exportsize);\n\tif(multifile) {\n\t\tmsg(LOG_INFO, \"Total number of files: %d\", i);\n\t}\n}",
+            2
+        ],
+        [
+            "cliserv.h",
+            "NBD_REP_SERVER",
+            "#define NBD_REP_SERVER\t\t(2)\t/** Reply to NBD_OPT_LIST (one of these per server; must be followed by NBD_REP_ACK to signal the end of the list */ /* <=== cliserv.h:158:158:NBD_REP_SERVER:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "F_SPARSE",
+            "#define F_SPARSE 16\t  /**< flag to tell us copyronwrite should use a sparse file */ /* <=== nbd-server.c:158:158:F_SPARSE:0 */ ",
+            3
+        ],
+        [
+            "cliserv.h",
+            "NBD_REP_ERR_INVALID",
+            "#define NBD_REP_ERR_INVALID\t(3 | NBD_REP_FLAG_ERROR)\t/** Client issued an invalid request */ /* <=== cliserv.h:162:162:NBD_REP_ERR_INVALID:0 */ ",
+            3
+        ],
+        [
+            "cliserv.h",
+            "setmysockopt",
+            "void setmysockopt(int sock) { /* <=== setmysockopt */ \n\tint size = 1;\n#if 0\n\tif (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &size, sizeof(int)) < 0)\n\t\t INFO(\"(no sockopt/1: %m)\");\n#endif\n#ifdef\tIPPROTO_TCP\n\tsize = 1;\n\tif (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &size, sizeof(int)) < 0)\n\t\t INFO(\"(no sockopt/2: %m)\");\n#endif\n#if 0\n\tsize = 1024;\n\tif (setsockopt(sock, IPPROTO_TCP, TCP_MAXSEG, &size, sizeof(int)) < 0)\n\t\t INFO(\"(no sockopt/3: %m)\");\n#endif\n}",
+            3
+        ],
+        [
+            "netdb-compat.h",
+            "AI_NUMERICSERV",
+            "#define AI_NUMERICSERV 0 /* <=== netdb-compat.h:21:21:AI_NUMERICSERV:0 */ ",
+            3
+        ],
+        [
+            "nbd-server.c",
+            "msg",
+            "#define msg(prio, ...) g_log(G_LOG_DOMAIN, G_LOG_LEVEL_MESSAGE, __VA_ARGS__) /* <=== nbd-server.c:129:129:msg:2 */ ",
+            2
+        ]
+    ],
+    "globalVars": [
+        "struct SERVER",
+        "GArray* modernsocks",
+        "int dontfork",
+        "GHashTable* children"
+    ],
+    "importContext": [
+        "#include <linux/falloc.h>",
+        "#include <sys/param.h>",
+        "#include <pwd.h>",
+        "#include <netinet/in.h>",
+        "#include <errno.h>",
+        "#include \"lfs.h\"",
+        "#include <sys/ioctl.h>",
+        "#include <strings.h>",
+        "#include <stdio.h>",
+        "#include <sys/socket.h>",
+        "#include <grp.h>",
+        "#include <unistd.h>",
+        "#include <sys/wait.h>",
+        "#include \"netdb-compat.h\"",
+        "#include <syslog.h>",
+        "#include <fcntl.h>",
+        "#include <stdlib.h>",
+        "#include <sys/select.h>",
+        "#include <arpa/inet.h>",
+        "#include <sys/types.h>",
+        "#include \"cliserv.h\"",
+        "#include <stdbool.h>",
+        "#include <sys/stat.h>",
+        "#include <sys/mount.h>",
+        "#include <string.h>",
+        "#include <netdb.h>",
+        "#include <assert.h>",
+        "#include <signal.h>",
+        "#include <netinet/tcp.h>",
+        "#include <sdp_inet.h>",
+        "#include <glib.h>",
+        "#include <getopt.h>",
+        "#include <dirent.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct {\n\toff_t exportsize;    /**< size of the file we're exporting */\n\tchar *clientname;    /**< peer */\n\tchar *exportname;    /**< (processed) filename of the file we're exporting */\n\tGArray *export;    /**< array of FILE_INFO of exported files;\n\t\t\t       array size is always 1 unless we're\n\t\t\t       doing the multiple file option */\n\tint net;\t     /**< The actual client socket */\n\tSERVER *server;\t     /**< The server this client is getting data from */\n\tchar* difffilename;  /**< filename of the copy-on-write file, if any */\n\tint difffile;\t     /**< filedescriptor of copyonwrite file. @todo\n\t\t\t       shouldn't this be an array too? (cfr export) Or\n\t\t\t       make -m and -c mutually exclusive */\n\tu32 difffilelen;     /**< number of pages in difffile */\n\tu32 *difmap;\t     /**< see comment on the global difmap for this one */\n\tgboolean modern;     /**< client was negotiated using modern negotiation protocol */\n\tint transactionlogfd;/**< fd for transaction log */\n\tint clientfeats;     /**< Features supported by this client */\n}",
+            "CLIENT"
+        ],
+        [
+            "typedef struct {\n\tgchar* exportname;    /**< (unprocessed) filename of the file we're exporting */\n\toff_t expected_size; /**< size of the exported file as it was told to\n\t\t\t       us through configuration */\n\tgchar* listenaddr;   /**< The IP address we're listening on */\n\tunsigned int port;   /**< port we're exporting this file at */\n\tchar* authname;      /**< filename of the authorization file */\n\tint flags;           /**< flags associated with this exported file */\n\tint socket;\t     /**< The socket of this server. */\n\tint socket_family;   /**< family of the socket */\n\tVIRT_STYLE virtstyle;/**< The style of virtualization, if any */\n\tuint8_t cidrlen;     /**< The length of the mask when we use\n\t\t\t\t  CIDR-style virtualization */\n\tgchar* prerun;\t     /**< command to be ran after connecting a client,\n\t\t\t\t  but before starting to serve */\n\tgchar* postrun;\t     /**< command that will be ran after the client\n\t\t\t\t  disconnects */\n\tgchar* servename;    /**< name of the export as selected by nbd-client */\n\tint max_connections; /**< maximum number of opened connections */\n\tgchar* transactionlog;/**< filename for transaction log */\n}",
+            "SERVER"
+        ]
+    ],
+    "visitedLines_after": {
+        "nbd-server.c": [
+            2201,
+            2204,
+            2205,
+            2206,
+            2208,
+            2209,
+            2210,
+            2211,
+            2212,
+            2213,
+            2214,
+            2217,
+            2218,
+            2220,
+            2221,
+            2222,
+            2226,
+            2227,
+            2228,
+            2230,
+            2231,
+            2234,
+            2235,
+            2237,
+            2238,
+            2239,
+            2241,
+            2242,
+            2243,
+            2246,
+            2249,
+            2250,
+            2252,
+            2253,
+            2254,
+            2255,
+            2256,
+            2258,
+            2259,
+            2262,
+            2263,
+            2264,
+            2265,
+            2266,
+            2267,
+            2268,
+            2269,
+            2275,
+            2276,
+            2277,
+            2281,
+            2282,
+            2283,
+            2288,
+            2289,
+            2290,
+            2294,
+            2295,
+            2296,
+            2297,
+            2301,
+            2302,
+            2306,
+            2307,
+            2312,
+            2313,
+            2318,
+            2319,
+            2320,
+            2321,
+            2323,
+            2329,
+            2330,
+            2331,
+            2340,
+            2343,
+            2344,
+            2345,
+            2348,
+            2349,
+            2351,
+            2352,
+            2518,
+            2520,
+            2533,
+            2534,
+            2535,
+            2537,
+            2538,
+            2539,
+            2544,
+            2545,
+            2556,
+            2558,
+            2562,
+            2563,
+            2564,
+            2567,
+            2568,
+            2569,
+            2571,
+            2572,
+            2573,
+            2576,
+            2581,
+            2582,
+            2587,
+            2591,
+            2592,
+            2593,
+            2594,
+            2595,
+            2596,
+            2597,
+            2598,
+            2599,
+            2600,
+            2601,
+            2602,
+            2604,
+            2606
+        ]
+    },
+    "visitedLines_before": {
+        "nbd-server.c": [
+            2363,
+            2365,
+            2375,
+            2377,
+            2378,
+            2379,
+            2380,
+            2382,
+            2383,
+            2384,
+            2389,
+            2390,
+            2391,
+            2392,
+            2394,
+            2395,
+            2396,
+            2401,
+            2402,
+            2403,
+            2407,
+            2408,
+            2409,
+            2412,
+            2413,
+            2414,
+            2415,
+            2416,
+            2417,
+            2418,
+            2419,
+            2420,
+            2421,
+            2424,
+            2425,
+            2426,
+            2427,
+            2428,
+            2429,
+            2430,
+            2433,
+            2436,
+            2438,
+            2439,
+            2442,
+            2443,
+            2444,
+            2447,
+            2449,
+            2452,
+            2453,
+            2456,
+            2457,
+            2461
+        ]
+    },
+    "visitedParams": {
+        "nbd-server.c": [
+            [
+                "GArray *const servers",
+                "handle_modern_connection"
+            ],
+            [
+                "GArray* servers",
+                "serveloop"
+            ],
+            [
+                "const int sock",
+                "handle_modern_connection"
+            ],
+            [
+                "const int sock",
+                "socket_accept"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "nbd-server.c",
+            "spawn_child",
+            "static pid_t /* <=== spawn_child */ \nspawn_child()\n{\n        pid_t pid;\n        sigset_t newset;\n        sigset_t oldset;\n\n        sigemptyset(&newset);\n        sigaddset(&newset, SIGCHLD);\n        sigaddset(&newset, SIGTERM);\n        sigprocmask(SIG_BLOCK, &newset, &oldset);\n        pid = fork();\n        if (pid < 0) {\n                msg(LOG_ERR, \"Could not fork (%s)\", strerror(errno));\n                goto out;\n        }\n        if (pid > 0) { /* Parent */\n                pid_t *pidp;\n\n                pidp = g_malloc(sizeof(pid_t));\n                *pidp = pid;\n                g_hash_table_insert(children, pidp, pidp);\n                goto out;\n        }\n        /* Child */\n        signal(SIGCHLD, SIG_DFL);\n        signal(SIGTERM, SIG_DFL);\n        signal(SIGHUP, SIG_DFL);\nout:\n        sigprocmask(SIG_SETMASK, &oldset, NULL);\n        return pid;\n}",
+            2201
+        ],
+        [
+            "nbd-server.c",
+            "socket_accept",
+            "static int /* <=== socket_accept */ \nsocket_accept(const int sock)\n{\n        struct sockaddr_storage addrin;\n        socklen_t addrinlen = sizeof(addrin);\n        int net;\n\n        net = accept(sock, (struct sockaddr *) &addrin, &addrinlen);\n        if (net < 0) {\n                err_nonfatal(\"Failed to accept socket connection: %m\");\n        }\n\n        return net;\n}",
+            2234
+        ],
+        [
+            "nbd-server.c",
+            "handle_modern_connection",
+            "static void /* <=== handle_modern_connection */ \nhandle_modern_connection(GArray *const servers, const int sock)\n{\n        int net;\n        pid_t pid;\n        CLIENT *client = NULL;\n        int sock_flags_old;\n        int sock_flags_new;\n\n        net = socket_accept(sock);\n        if (net < 0)\n                return;\n\n        if (!dontfork) {\n                pid = spawn_child();\n                if (pid) {\n                        if (pid > 0)\n                                msg(LOG_INFO, \"Spawned a child process\");\n                        if (pid < 0)\n                                msg(LOG_ERR, \"Failed to spawn a child process\");\n                        close(net);\n                        return;\n                }\n                /* Child just continues. */\n        }\n\n        client = negotiate(net, NULL, servers, NEG_INIT | NEG_MODERN);\n        if (!client) {\n                msg(LOG_ERR, \"Modern initial negotiation failed\");\n                goto handler_err;\n        }\n\n        if (client->server->max_connections > 0 &&\n           g_hash_table_size(children) >= client->server->max_connections) {\n                msg(LOG_ERR, \"Max connections (%d) reached\",\n                    client->server->max_connections);\n                goto handler_err;\n        }\n\n        sock_flags_old = fcntl(net, F_GETFL, 0);\n        if (sock_flags_old == -1) {\n                msg(LOG_ERR, \"Failed to get socket flags\");\n                goto handler_err;\n        }\n\n        sock_flags_new = sock_flags_old & ~O_NONBLOCK;\n        if (sock_flags_new != sock_flags_old &&\n            fcntl(net, F_SETFL, sock_flags_new) == -1) {\n                msg(LOG_ERR, \"Failed to set socket to blocking mode\");\n                goto handler_err;\n        }\n\n        if (set_peername(net, client)) {\n                msg(LOG_ERR, \"Failed to set peername\");\n                goto handler_err;\n        }\n\n        if (!authorized_client(client)) {\n                msg(LOG_INFO, \"Client '%s' is not authorized to access\",\n                    client->clientname);\n                goto handler_err;\n        }\n\n        if (!dontfork) {\n                int i;\n\n                /* Free all root server resources here, because we are\n                 * currently in the child process serving one specific\n                 * connection. These are not simply needed anymore. */\n                g_hash_table_destroy(children);\n                children = NULL;\n                for (i = 0; i < modernsocks->len; i++) {\n                        close(g_array_index(modernsocks, int, i));\n                }\n                g_array_free(modernsocks, TRUE);\n\n                /* Now that we are in the child process after a\n                 * succesful negotiation, we do not need the list of\n                 * servers anymore, get rid of it.*/\n\n                for (i = 0; i < servers->len; i++) {\n                        const SERVER *const server = &g_array_index(servers, SERVER, i);\n                        close(server->socket);\n                }\n\n                /* FALSE does not free the\n                   actual data. This is required,\n                   because the client has a\n                   direct reference into that\n                   data, and otherwise we get a\n                   segfault... */\n                g_array_free(servers, FALSE);\n        }\n\n        msg(LOG_INFO, \"Starting to serve\");\n        serveconnection(client);\n        exit(EXIT_SUCCESS);\n\nhandler_err:\n        g_free(client);\n        close(net);\n\n        if (!dontfork) {\n                exit(EXIT_FAILURE);\n        }\n}",
+            2249
+        ],
+        [
+            "nbd-server.c",
+            "serveloop",
+            "void serveloop(GArray* servers) { /* <=== serveloop */ \n\tstruct sockaddr_storage addrin;\n\tsocklen_t addrinlen=sizeof(addrin);\n\tint i;\n\tint max;\n\tfd_set mset;\n\tfd_set rset;\n\n\t/* \n\t * Set up the master fd_set. The set of descriptors we need\n\t * to select() for never changes anyway and it buys us a *lot*\n\t * of time to only build this once. However, if we ever choose\n\t * to not fork() for clients anymore, we may have to revisit\n\t * this.\n\t */\n\tmax=0;\n\tFD_ZERO(&mset);\n\tfor(i=0;i<servers->len;i++) {\n\t\tint sock;\n\t\tif((sock=(g_array_index(servers, SERVER, i)).socket) >= 0) {\n\t\t\tFD_SET(sock, &mset);\n\t\t\tmax=sock>max?sock:max;\n\t\t}\n\t}\n\tfor(i=0;i<modernsocks->len;i++) {\n\t\tint sock = g_array_index(modernsocks, int, i);\n\t\tFD_SET(sock, &mset);\n\t\tmax=sock>max?sock:max;\n\t}\n\tfor(;;) {\n                /* SIGHUP causes the root server process to reconfigure\n                 * itself and add new export servers for each newly\n                 * found export configuration group, i.e. spawn new\n                 * server processes for each previously non-existent\n                 * export. This does not alter old runtime configuration\n                 * but just appends new exports. */\n                if (is_sighup_caught) {\n                        int n;\n                        GError *gerror = NULL;\n\n                        msg(LOG_INFO, \"reconfiguration request received\");\n                        is_sighup_caught = 0; /* Reset to allow catching\n                                               * it again. */\n\n                        n = append_new_servers(servers, &gerror);\n                        if (n == -1)\n                                msg(LOG_ERR, \"failed to append new servers: %s\",\n                                    gerror->message);\n\n                        for (i = servers->len - n; i < servers->len; ++i) {\n                                const SERVER server = g_array_index(servers,\n                                                                    SERVER, i);\n\n                                if (server.socket >= 0) {\n                                        FD_SET(server.socket, &mset);\n                                        max = server.socket > max ? server.socket : max;\n                                }\n\n                                msg(LOG_INFO, \"reconfigured new server: %s\",\n                                    server.servename);\n                        }\n                }\n\n\t\tmemcpy(&rset, &mset, sizeof(fd_set));\n\t\tif(select(max+1, &rset, NULL, NULL, NULL)>0) {\n\n\t\t\tDEBUG(\"accept, \");\n\t\t\tfor(i=0; i < modernsocks->len; i++) {\n\t\t\t\tint sock = g_array_index(modernsocks, int, i);\n\t\t\t\tif(!FD_ISSET(sock, &rset)) {\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\n\t\t\t\thandle_modern_connection(servers, sock);\n\t\t\t}\n\t\t\tfor(i=0; i < servers->len; i++) {\n\t\t\t\tint net;\n\t\t\t\tSERVER *serve;\n\n\t\t\t\tserve=&(g_array_index(servers, SERVER, i));\n\t\t\t\tif(serve->socket < 0) {\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\tif(FD_ISSET(serve->socket, &rset)) {\n\t\t\t\t\tif ((net=accept(serve->socket, (struct sockaddr *) &addrin, &addrinlen)) < 0) {\n\t\t\t\t\t\terr_nonfatal(\"accept: %m\");\n\t\t\t\t\t\tcontinue;\n\t\t\t\t\t}\n\t\t\t\t\thandle_connection(servers, net, serve, NULL);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}",
+            2518
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "nbd-server.c",
+            "serveloop",
+            "void serveloop(GArray* servers) { /* <=== serveloop */ \n\tstruct sockaddr_storage addrin;\n\tsocklen_t addrinlen=sizeof(addrin);\n\tint i;\n\tint max;\n\tfd_set mset;\n\tfd_set rset;\n\n\t/* \n\t * Set up the master fd_set. The set of descriptors we need\n\t * to select() for never changes anyway and it buys us a *lot*\n\t * of time to only build this once. However, if we ever choose\n\t * to not fork() for clients anymore, we may have to revisit\n\t * this.\n\t */\n\tmax=0;\n\tFD_ZERO(&mset);\n\tfor(i=0;i<servers->len;i++) {\n\t\tint sock;\n\t\tif((sock=(g_array_index(servers, SERVER, i)).socket) >= 0) {\n\t\t\tFD_SET(sock, &mset);\n\t\t\tmax=sock>max?sock:max;\n\t\t}\n\t}\n\tfor(i=0;i<modernsocks->len;i++) {\n\t\tint sock = g_array_index(modernsocks, int, i);\n\t\tFD_SET(sock, &mset);\n\t\tmax=sock>max?sock:max;\n\t}\n\tfor(;;) {\n                /* SIGHUP causes the root server process to reconfigure\n                 * itself and add new export servers for each newly\n                 * found export configuration group, i.e. spawn new\n                 * server processes for each previously non-existent\n                 * export. This does not alter old runtime configuration\n                 * but just appends new exports. */\n                if (is_sighup_caught) {\n                        int n;\n                        GError *gerror = NULL;\n\n                        msg(LOG_INFO, \"reconfiguration request received\");\n                        is_sighup_caught = 0; /* Reset to allow catching\n                                               * it again. */\n\n                        n = append_new_servers(servers, &gerror);\n                        if (n == -1)\n                                msg(LOG_ERR, \"failed to append new servers: %s\",\n                                    gerror->message);\n\n                        for (i = servers->len - n; i < servers->len; ++i) {\n                                const SERVER server = g_array_index(servers,\n                                                                    SERVER, i);\n\n                                if (server.socket >= 0) {\n                                        FD_SET(server.socket, &mset);\n                                        max = server.socket > max ? server.socket : max;\n                                }\n\n                                msg(LOG_INFO, \"reconfigured new server: %s\",\n                                    server.servename);\n                        }\n                }\n\n\t\tmemcpy(&rset, &mset, sizeof(fd_set));\n\t\tif(select(max+1, &rset, NULL, NULL, NULL)>0) {\n\t\t\tint net;\n\n\t\t\tDEBUG(\"accept, \");\n\t\t\tfor(i=0; i < modernsocks->len; i++) {\n\t\t\t\tint sock = g_array_index(modernsocks, int, i);\n\t\t\t\tif(!FD_ISSET(sock, &rset)) {\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\tCLIENT *client;\n\n\t\t\t\tif((net=accept(sock, (struct sockaddr *) &addrin, &addrinlen)) < 0) {\n\t\t\t\t\terr_nonfatal(\"accept: %m\");\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\tclient = negotiate(net, NULL, servers, NEG_INIT | NEG_MODERN);\n\t\t\t\tif(!client) {\n\t\t\t\t\tclose(net);\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\thandle_connection(servers, net, client->server, client);\n\t\t\t}\n\t\t\tfor(i=0; i < servers->len; i++) {\n\t\t\t\tSERVER *serve;\n\n\t\t\t\tserve=&(g_array_index(servers, SERVER, i));\n\t\t\t\tif(serve->socket < 0) {\n\t\t\t\t\tcontinue;\n\t\t\t\t}\n\t\t\t\tif(FD_ISSET(serve->socket, &rset)) {\n\t\t\t\t\tif ((net=accept(serve->socket, (struct sockaddr *) &addrin, &addrinlen)) < 0) {\n\t\t\t\t\t\terr_nonfatal(\"accept: %m\");\n\t\t\t\t\t\tcontinue;\n\t\t\t\t\t}\n\t\t\t\t\thandle_connection(servers, net, serve, NULL);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}",
+            2363
+        ]
+    ]
+}

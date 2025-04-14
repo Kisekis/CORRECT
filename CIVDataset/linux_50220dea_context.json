@@ -1,0 +1,529 @@
+{
+    "calleeMethods": [
+        [
+            "arch/nios2/lib/memcpy.c",
+            "memcpy",
+            "void *memcpy(void *dstpp, const void *srcpp, size_t len) /* <=== memcpy */ \n{\n\tunsigned long int dstp = (long int) dstpp;\n\tunsigned long int srcp = (long int) srcpp;\n\n\t/* Copy from the beginning to the end.  */\n\n\t/* If there not too few bytes to copy, use word copy.  */\n\tif (len >= OP_T_THRES) {\n\t\t/* Copy just a few bytes to make DSTP aligned.  */\n\t\tlen -= (-dstp) % OPSIZ;\n\t\tBYTE_COPY_FWD(dstp, srcp, (-dstp) % OPSIZ);\n\n\t\t/* Copy whole pages from SRCP to DSTP by virtual address\n\t\t   manipulation, as much as possible.  */\n\n\t\t/* PAGE_COPY_FWD_MAYBE (dstp, srcp, len, len); */\n\n\t\t/* Copy from SRCP to DSTP taking advantage of the known\n\t\t   alignment of DSTP. Number of bytes remaining is put in the\n\t\t   third argument, i.e. in LEN.  This number may vary from\n\t\t   machine to machine. */\n\n\t\tWORD_COPY_FWD(dstp, srcp, len, len);\n\n\t\t/* Fall out and copy the tail. */\n\t}\n\n\t/* There are just a few bytes to copy.  Use byte memory operations. */\n\tBYTE_COPY_FWD(dstp, srcp, len);\n\n\treturn dstpp;\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kfree",
+            "static inline void kfree(void *p) /* <=== kfree */ \n{\n\tif (p >= __kfree_ignore_start && p < __kfree_ignore_end)\n\t\treturn;\n\tfree(p);\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "cpu_cache_get",
+            "static inline struct array_cache *cpu_cache_get(struct kmem_cache *cachep) /* <=== cpu_cache_get */ \n{\n\treturn this_cpu_ptr(cachep->cpu_cache);\n}",
+            3
+        ],
+        [
+            "include/linux/gfp.h",
+            "__free_kmem_pages",
+            "extern void __free_kmem_pages(struct page *page, unsigned int order); /* <=== __free_kmem_pages */ ",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_BREAK1",
+            "#define SLOB_BREAK1 256 /* <=== mm/slob.c:98:98:SLOB_BREAK1:0 */ ",
+            3
+        ],
+        [
+            "tools/include/linux/list.h",
+            "list_empty",
+            "static inline int list_empty(const struct list_head *head) /* <=== list_empty */ \n{\n\treturn head->next == head;\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_free",
+            "static void slob_free(void *block, int size) /* <=== slob_free */ \n{\n\tstruct page *sp;\n\tslob_t *prev, *next, *b = (slob_t *)block;\n\tslobidx_t units;\n\tunsigned long flags;\n\tstruct list_head *slob_list;\n\n\tif (unlikely(ZERO_OR_NULL_PTR(block)))\n\t\treturn;\n\tBUG_ON(!size);\n\n\tsp = virt_to_page(block);\n\tunits = SLOB_UNITS(size);\n\n\tspin_lock_irqsave(&slob_lock, flags);\n\n\tif (sp->units + units == SLOB_UNITS(PAGE_SIZE)) {\n\t\t/* Go directly to page allocator. Do not pass slob allocator */\n\t\tif (slob_page_free(sp))\n\t\t\tclear_slob_page_free(sp);\n\t\tspin_unlock_irqrestore(&slob_lock, flags);\n\t\t__ClearPageSlab(sp);\n\t\tpage_mapcount_reset(sp);\n\t\tslob_free_pages(b, 0);\n\t\treturn;\n\t}\n\n\tif (!slob_page_free(sp)) {\n\t\t/* This slob page is about to become partially free. Easy! */\n\t\tsp->units = units;\n\t\tsp->freelist = b;\n\t\tset_slob(b, units,\n\t\t\t(void *)((unsigned long)(b +\n\t\t\t\t\tSLOB_UNITS(PAGE_SIZE)) & PAGE_MASK));\n\t\tif (size < SLOB_BREAK1)\n\t\t\tslob_list = &free_slob_small;\n\t\telse if (size < SLOB_BREAK2)\n\t\t\tslob_list = &free_slob_medium;\n\t\telse\n\t\t\tslob_list = &free_slob_large;\n\t\tset_slob_page_free(sp, slob_list);\n\t\tgoto out;\n\t}\n\n\t/*\n\t * Otherwise the page is already partially free, so find reinsertion\n\t * point.\n\t */\n\tsp->units += units;\n\n\tif (b < (slob_t *)sp->freelist) {\n\t\tif (b + units == sp->freelist) {\n\t\t\tunits += slob_units(sp->freelist);\n\t\t\tsp->freelist = slob_next(sp->freelist);\n\t\t}\n\t\tset_slob(b, units, sp->freelist);\n\t\tsp->freelist = b;\n\t} else {\n\t\tprev = sp->freelist;\n\t\tnext = slob_next(prev);\n\t\twhile (b > next) {\n\t\t\tprev = next;\n\t\t\tnext = slob_next(prev);\n\t\t}\n\n\t\tif (!slob_last(prev) && b + units == next) {\n\t\t\tunits += slob_units(next);\n\t\t\tset_slob(b, units, slob_next(next));\n\t\t} else\n\t\t\tset_slob(b, units, next);\n\n\t\tif (prev + slob_units(prev) == b) {\n\t\t\tunits = slob_units(b) + slob_units(prev);\n\t\t\tset_slob(prev, units, slob_next(b));\n\t\t} else\n\t\t\tset_slob(prev, slob_units(prev), b);\n\t}\nout:\n\tspin_unlock_irqrestore(&slob_lock, flags);\n}",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "check_irq_off",
+            "#define check_irq_off()\tdo { } while(0) /* <=== mm/slab.c:2313:2313:check_irq_off:0 */ ",
+            3
+        ],
+        [
+            "drivers/hid/hid-debug.c",
+            "hid_dump_input",
+            "void hid_dump_input(struct hid_device *hdev, struct hid_usage *usage, __s32 value) /* <=== hid_dump_input */ \n{\n\tchar *buf;\n\tint len;\n\n\tbuf = hid_resolv_usage(usage->hid, NULL);\n\tif (!buf)\n\t\treturn;\n\tlen = strlen(buf);\n\tsnprintf(buf + len, HID_DEBUG_BUFSIZE - len - 1, \" = %d\\n\", value);\n\n\thid_debug_event(hdev, buf);\n\n\tkfree(buf);\n        wake_up_interruptible(&hdev->debug_wait);\n\n}",
+            2
+        ],
+        [
+            "include/linux/list.h",
+            "list_empty",
+            "static inline int list_empty(const struct list_head *head) /* <=== list_empty */ \n{\n\treturn READ_ONCE(head->next) == head;\n}",
+            2
+        ],
+        [
+            "drivers/hid/hid-input.c",
+            "hidinput_hid_event",
+            "void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct hid_usage *usage, __s32 value) /* <=== hidinput_hid_event */ \n{\n\tstruct input_dev *input;\n\tunsigned *quirks = &hid->quirks;\n\n\tif (!field->hidinput)\n\t\treturn;\n\n\tinput = field->hidinput->input;\n\n\tif (!usage->type)\n\t\treturn;\n\n\tif (usage->hat_min < usage->hat_max || usage->hat_dir) {\n\t\tint hat_dir = usage->hat_dir;\n\t\tif (!hat_dir)\n\t\t\that_dir = (value - usage->hat_min) * 8 / (usage->hat_max - usage->hat_min + 1) + 1;\n\t\tif (hat_dir < 0 || hat_dir > 8) hat_dir = 0;\n\t\tinput_event(input, usage->type, usage->code    , hid_hat_to_axis[hat_dir].x);\n\t\tinput_event(input, usage->type, usage->code + 1, hid_hat_to_axis[hat_dir].y);\n\t\treturn;\n\t}\n\n\tif (usage->hid == (HID_UP_DIGITIZER | 0x003c)) { /* Invert */\n\t\t*quirks = value ? (*quirks | HID_QUIRK_INVERT) : (*quirks & ~HID_QUIRK_INVERT);\n\t\treturn;\n\t}\n\n\tif (usage->hid == (HID_UP_DIGITIZER | 0x0032)) { /* InRange */\n\t\tif (value) {\n\t\t\tinput_event(input, usage->type, (*quirks & HID_QUIRK_INVERT) ? BTN_TOOL_RUBBER : usage->code, 1);\n\t\t\treturn;\n\t\t}\n\t\tinput_event(input, usage->type, usage->code, 0);\n\t\tinput_event(input, usage->type, BTN_TOOL_RUBBER, 0);\n\t\treturn;\n\t}\n\n\tif (usage->hid == (HID_UP_DIGITIZER | 0x0030) && (*quirks & HID_QUIRK_NOTOUCH)) { /* Pressure */\n\t\tint a = field->logical_minimum;\n\t\tint b = field->logical_maximum;\n\t\tinput_event(input, EV_KEY, BTN_TOUCH, value > a + ((b - a) >> 3));\n\t}\n\n\tif (usage->hid == (HID_UP_PID | 0x83UL)) { /* Simultaneous Effects Max */\n\t\tdbg_hid(\"Maximum Effects - %d\\n\",value);\n\t\treturn;\n\t}\n\n\tif (usage->hid == (HID_UP_PID | 0x7fUL)) {\n\t\tdbg_hid(\"PID Pool Report\\n\");\n\t\treturn;\n\t}\n\n\tif ((usage->type == EV_KEY) && (usage->code == 0)) /* Key 0 is \"unassigned\", not KEY_UNKNOWN */\n\t\treturn;\n\n\tif ((usage->type == EV_ABS) && (field->flags & HID_MAIN_ITEM_RELATIVE) &&\n\t\t\t(usage->code == ABS_VOLUME)) {\n\t\tint count = abs(value);\n\t\tint direction = value > 0 ? KEY_VOLUMEUP : KEY_VOLUMEDOWN;\n\t\tint i;\n\n\t\tfor (i = 0; i < count; i++) {\n\t\t\tinput_event(input, EV_KEY, direction, 1);\n\t\t\tinput_sync(input);\n\t\t\tinput_event(input, EV_KEY, direction, 0);\n\t\t\tinput_sync(input);\n\t\t}\n\t\treturn;\n\t}\n\n\t/*\n\t * Ignore out-of-range values as per HID specification,\n\t * section 5.10 and 6.2.25.\n\t *\n\t * The logical_minimum < logical_maximum check is done so that we\n\t * don't unintentionally discard values sent by devices which\n\t * don't specify logical min and max.\n\t */\n\tif ((field->flags & HID_MAIN_ITEM_VARIABLE) &&\n\t    (field->logical_minimum < field->logical_maximum) &&\n\t    (value < field->logical_minimum ||\n\t     value > field->logical_maximum)) {\n\t\tdbg_hid(\"Ignoring out-of-range value %x\\n\", value);\n\t\treturn;\n\t}\n\n\t/*\n\t * Ignore reports for absolute data if the data didn't change. This is\n\t * not only an optimization but also fixes 'dead' key reports. Some\n\t * RollOver implementations for localized keys (like BACKSLASH/PIPE; HID\n\t * 0x31 and 0x32) report multiple keys, even though a localized keyboard\n\t * can only have one of them physically available. The 'dead' keys\n\t * report constant 0. As all map to the same keycode, they'd confuse\n\t * the input layer. If we filter the 'dead' keys on the HID level, we\n\t * skip the keycode translation and only forward real events.\n\t */\n\tif (!(field->flags & (HID_MAIN_ITEM_RELATIVE |\n\t                      HID_MAIN_ITEM_BUFFERED_BYTE)) &&\n\t\t\t      (field->flags & HID_MAIN_ITEM_VARIABLE) &&\n\t    usage->usage_index < field->maxusage &&\n\t    value == field->value[usage->usage_index])\n\t\treturn;\n\n\t/* report the usage code as scancode if the key status has changed */\n\tif (usage->type == EV_KEY &&\n\t    (!test_bit(usage->code, input->key)) == value)\n\t\tinput_event(input, EV_MSC, MSC_SCAN, usage->hid);\n\n\tinput_event(input, usage->type, usage->code, value);\n\n\tif ((field->flags & HID_MAIN_ITEM_RELATIVE) &&\n\t    usage->type == EV_KEY && value) {\n\t\tinput_sync(input);\n\t\tinput_event(input, usage->type, usage->code, 0);\n\t}\n}",
+            2
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "_wordcopy_fwd_aligned",
+            "static void _wordcopy_fwd_aligned(long int dstp, long int srcp, size_t len) /* <=== _wordcopy_fwd_aligned */ \n{\n\twhile (len > 7) {\n\t\tregister op_t a0, a1, a2, a3, a4, a5, a6, a7;\n\n\t\ta0 = ((op_t *) srcp)[0];\n\t\ta1 = ((op_t *) srcp)[1];\n\t\ta2 = ((op_t *) srcp)[2];\n\t\ta3 = ((op_t *) srcp)[3];\n\t\ta4 = ((op_t *) srcp)[4];\n\t\ta5 = ((op_t *) srcp)[5];\n\t\ta6 = ((op_t *) srcp)[6];\n\t\ta7 = ((op_t *) srcp)[7];\n\t\t((op_t *) dstp)[0] = a0;\n\t\t((op_t *) dstp)[1] = a1;\n\t\t((op_t *) dstp)[2] = a2;\n\t\t((op_t *) dstp)[3] = a3;\n\t\t((op_t *) dstp)[4] = a4;\n\t\t((op_t *) dstp)[5] = a5;\n\t\t((op_t *) dstp)[6] = a6;\n\t\t((op_t *) dstp)[7] = a7;\n\n\t\tsrcp += 8 * OPSIZ;\n\t\tdstp += 8 * OPSIZ;\n\t\tlen -= 8;\n\t}\n\twhile (len > 0) {\n\t\t*(op_t *)dstp = *(op_t *)srcp;\n\n\t\tsrcp += OPSIZ;\n\t\tdstp += OPSIZ;\n\t\tlen -= 1;\n\t}\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_UNITS",
+            "#define SLOB_UNITS(size) DIV_ROUND_UP(size, SLOB_UNIT) /* <=== mm/slob.c:125:125:SLOB_UNITS:1 */ ",
+            3
+        ],
+        [
+            "arch/s390/lib/string.c",
+            "strlen",
+            "size_t strlen(const char *s) /* <=== strlen */ \n{\n\treturn __strend(s) - s;\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_BREAK2",
+            "#define SLOB_BREAK2 1024 /* <=== mm/slob.c:99:99:SLOB_BREAK2:0 */ ",
+            3
+        ],
+        [
+            "include/linux/page-flags.h",
+            "PageTail",
+            "static inline int PageTail(struct page *page) /* <=== PageTail */ \n{\n\treturn READ_ONCE(page->compound_head) & 1;\n}",
+            3
+        ],
+        [
+            "include/linux/kasan.h",
+            "kasan_kfree_large",
+            "static inline void kasan_kfree_large(const void *ptr) {} /* <=== kasan_kfree_large */ ",
+            3
+        ],
+        [
+            "drivers/hid/hid-core.c",
+            "search",
+            "static int search(__s32 *array, __s32 value, unsigned n) /* <=== search */ \n{\n\twhile (n--) {\n\t\tif (*array++ == value)\n\t\t\treturn 0;\n\t}\n\treturn -1;\n}",
+            1
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "OP_T_THRES",
+            "#define\tOP_T_THRES\t16 /* <=== arch/nios2/lib/memcpy.c:66:66:OP_T_THRES:0 */ ",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "STATS_INC_FREEMISS",
+            "#define STATS_INC_FREEMISS(x)\tdo { } while (0) /* <=== mm/slab.c:337:337:STATS_INC_FREEMISS:1 */ ",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "kfree",
+            "void kfree(const void *block) /* <=== kfree */ \n{\n\tstruct page *sp;\n\n\ttrace_kfree(_RET_IP_, block);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(block)))\n\t\treturn;\n\tkmemleak_free(block);\n\n\tsp = virt_to_page(block);\n\tif (PageSlab(sp)) {\n\t\tint align = max_t(size_t, ARCH_KMALLOC_MINALIGN, ARCH_SLAB_MINALIGN);\n\t\tunsigned int *m = (unsigned int *)(block - align);\n\t\tslob_free(m, *m + align);\n\t} else\n\t\t__free_pages(sp, compound_order(sp));\n}",
+            1
+        ],
+        [
+            "mm/slub.c",
+            "kfree",
+            "void kfree(const void *x) /* <=== kfree */ \n{\n\tstruct page *page;\n\tvoid *object = (void *)x;\n\n\ttrace_kfree(_RET_IP_, x);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(x)))\n\t\treturn;\n\n\tpage = virt_to_head_page(x);\n\tif (unlikely(!PageSlab(page))) {\n\t\tBUG_ON(!PageCompound(page));\n\t\tkfree_hook(x);\n\t\t__free_kmem_pages(page, compound_order(page));\n\t\treturn;\n\t}\n\tslab_free(page->slab_cache, page, object, NULL, 1, _RET_IP_);\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "clear_slob_page_free",
+            "static inline void clear_slob_page_free(struct page *sp) /* <=== clear_slob_page_free */ \n{\n\tlist_del(&sp->lru);\n\t__ClearPageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "ac_put_obj",
+            "static inline void ac_put_obj(struct kmem_cache *cachep, struct array_cache *ac, /* <=== ac_put_obj */ \n\t\t\t\t\t\t\t\tvoid *objp)\n{\n\tif (unlikely(sk_memalloc_socks()))\n\t\tobjp = __ac_put_obj(cachep, ac, objp);\n\n\tac->entry[ac->avail++] = objp;\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "cache_free_debugcheck",
+            "#define cache_free_debugcheck(x,objp,z) (objp) /* <=== mm/slab.c:2756:2756:cache_free_debugcheck:3 */ ",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "slob_page_free",
+            "static inline int slob_page_free(struct page *sp) /* <=== slob_page_free */ \n{\n\treturn PageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "__cache_free",
+            "static inline void __cache_free(struct kmem_cache *cachep, void *objp, /* <=== __cache_free */ \n\t\t\t\tunsigned long caller)\n{\n\tstruct array_cache *ac = cpu_cache_get(cachep);\n\n\tcheck_irq_off();\n\tkmemleak_free_recursive(objp, cachep->flags);\n\tobjp = cache_free_debugcheck(cachep, objp, caller);\n\n\tkmemcheck_slab_free(cachep, objp, cachep->object_size);\n\n\t/*\n\t * Skip calling cache_free_alien() when the platform is not numa.\n\t * This will avoid cache misses that happen while accessing slabp (which\n\t * is per page memory  reference) to get nodeid. Instead use a global\n\t * variable to skip the call, which is mostly likely to be present in\n\t * the cache.\n\t */\n\tif (nr_online_nodes > 1 && cache_free_alien(cachep, objp))\n\t\treturn;\n\n\tif (ac->avail < ac->limit) {\n\t\tSTATS_INC_FREEHIT(cachep);\n\t} else {\n\t\tSTATS_INC_FREEMISS(cachep);\n\t\tcache_flusharray(cachep, ac);\n\t}\n\n\tac_put_obj(cachep, ac, objp);\n}",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "virt_to_cache",
+            "static inline struct kmem_cache *virt_to_cache(const void *obj) /* <=== virt_to_cache */ \n{\n\tstruct page *page = virt_to_head_page(obj);\n\treturn page->slab_cache;\n}",
+            2
+        ],
+        [
+            "include/linux/debug_locks.h",
+            "debug_check_no_locks_freed",
+            "static inline void /* <=== debug_check_no_locks_freed */ \ndebug_check_no_locks_freed(const void *from, unsigned long len)\n{\n}",
+            2
+        ],
+        [
+            "include/linux/page-flags.h",
+            "PageHead",
+            "__PAGEFLAG(Head, head) CLEARPAGEFLAG(Head, head) /* <=== PageHead */ ",
+            3
+        ],
+        [
+            "drivers/hid/hid-debug.c",
+            "hid_debug_event",
+            "void hid_debug_event(struct hid_device *hdev, char *buf) /* <=== hid_debug_event */ \n{\n\tunsigned i;\n\tstruct hid_debug_list *list;\n\tunsigned long flags;\n\n\tspin_lock_irqsave(&hdev->debug_list_lock, flags);\n\tlist_for_each_entry(list, &hdev->debug_list, node) {\n\t\tfor (i = 0; buf[i]; i++)\n\t\t\tlist->hid_debug_buf[(list->tail + i) % HID_DEBUG_BUFSIZE] =\n\t\t\t\tbuf[i];\n\t\tlist->tail = (list->tail + i) % HID_DEBUG_BUFSIZE;\n        }\n\tspin_unlock_irqrestore(&hdev->debug_list_lock, flags);\n\n\twake_up_interruptible(&hdev->debug_wait);\n}",
+            3
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "OPSIZ",
+            "#define OPSIZ\t(sizeof(op_t)) /* <=== arch/nios2/lib/memcpy.c:26:26:OPSIZ:0 */ ",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "set_slob_page_free",
+            "static void set_slob_page_free(struct page *sp, struct list_head *list) /* <=== set_slob_page_free */ \n{\n\tlist_add(&sp->lru, list);\n\t__SetPageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "lib/vsprintf.c",
+            "snprintf",
+            "int snprintf(char *buf, size_t size, const char *fmt, ...) /* <=== snprintf */ \n{\n\tva_list args;\n\tint i;\n\n\tva_start(args, fmt);\n\ti = vsnprintf(buf, size, fmt, args);\n\tva_end(args);\n\n\treturn i;\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "slob_units",
+            "static slobidx_t slob_units(slob_t *s) /* <=== slob_units */ \n{\n\tif (s->units > 0)\n\t\treturn s->units;\n\treturn 1;\n}",
+            3
+        ],
+        [
+            "include/linux/gfp.h",
+            "__free_pages",
+            "extern void __free_pages(struct page *page, unsigned int order); /* <=== __free_pages */ ",
+            2
+        ],
+        [
+            "include/linux/kmemleak.h",
+            "kmemleak_free",
+            "static inline void kmemleak_free(const void *ptr) /* <=== kmemleak_free */ \n{\n}",
+            2
+        ],
+        [
+            "include/linux/page-flags.h",
+            "__ClearPageSlab",
+            "__PAGEFLAG(Slab, slab) /* <=== __ClearPageSlab */ ",
+            3
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "WORD_COPY_FWD",
+            "#define WORD_COPY_FWD(dst_bp, src_bp, nbytes_left, nbytes)\t\t\\ /* <=== arch/nios2/lib/memcpy.c:53:62:WORD_COPY_FWD:4 */ \ndo {\t\t\t\t\t\t\t\t\t\\\n\tif (src_bp % OPSIZ == 0)\t\t\t\t\t\\\n\t\t_wordcopy_fwd_aligned(dst_bp, src_bp, (nbytes) / OPSIZ);\\\n\telse\t\t\t\t\t\t\t\t\\\n\t\t_wordcopy_fwd_dest_aligned(dst_bp, src_bp, (nbytes) / OPSIZ);\\\n\tsrc_bp += (nbytes) & -OPSIZ;\t\t\t\t\t\\\n\tdst_bp += (nbytes) & -OPSIZ;\t\t\t\t\t\\\n\t(nbytes_left) = (nbytes) % OPSIZ;\t\t\t\t\\\n} while (0)",
+            2
+        ],
+        [
+            "include/linux/page-flags.h",
+            "PageSlab",
+            "__PAGEFLAG(Slab, slab) /* <=== PageSlab */ ",
+            2
+        ],
+        [
+            "drivers/hid/hid-debug.c",
+            "hid_resolv_usage",
+            "char *hid_resolv_usage(unsigned usage, struct seq_file *f) { /* <=== hid_resolv_usage */ \n\tconst struct hid_usage_entry *p;\n\tchar *buf = NULL;\n\tint len = 0;\n\n\tbuf = resolv_usage_page(usage >> 16, f);\n\tif (IS_ERR(buf)) {\n\t\tpr_err(\"error allocating HID debug buffer\\n\");\n\t\treturn NULL;\n\t}\n\n\n\tif (!f) {\n\t\tlen = strlen(buf);\n\t\tsnprintf(buf+len, max(0, HID_DEBUG_BUFSIZE - len), \".\");\n\t\tlen++;\n\t}\n\telse {\n\t\tseq_printf(f, \".\");\n\t}\n\tfor (p = hid_usage_table; p->description; p++)\n\t\tif (p->page == (usage >> 16)) {\n\t\t\tfor(++p; p->description && p->usage != 0; p++)\n\t\t\t\tif (p->usage == (usage & 0xffff)) {\n\t\t\t\t\tif (!f)\n\t\t\t\t\t\tsnprintf(buf + len,\n\t\t\t\t\t\t\tmax(0,HID_DEBUG_BUFSIZE - len - 1),\n\t\t\t\t\t\t\t\"%s\", p->description);\n\t\t\t\t\telse\n\t\t\t\t\t\tseq_printf(f,\n\t\t\t\t\t\t\t\"%s\",\n\t\t\t\t\t\t\tp->description);\n\t\t\t\t\treturn buf;\n\t\t\t\t}\n\t\t\tbreak;\n\t\t}\n\tif (!f)\n\t\tsnprintf(buf + len, max(0, HID_DEBUG_BUFSIZE - len - 1),\n\t\t\t\t\"%04x\", usage & 0xffff);\n\telse\n\t\tseq_printf(f, \"%04x\", usage & 0xffff);\n\treturn buf;\n}",
+            3
+        ],
+        [
+            "include/linux/input.h",
+            "input_sync",
+            "static inline void input_sync(struct input_dev *dev) /* <=== input_sync */ \n{\n\tinput_event(dev, EV_SYN, SYN_REPORT, 0);\n}",
+            3
+        ],
+        [
+            "drivers/hid/hid-core.c",
+            "hid_process_event",
+            "static void hid_process_event(struct hid_device *hid, struct hid_field *field, /* <=== hid_process_event */ \n\t\tstruct hid_usage *usage, __s32 value, int interrupt)\n{\n\tstruct hid_driver *hdrv = hid->driver;\n\tint ret;\n\n\tif (!list_empty(&hid->debug_list))\n\t\thid_dump_input(hid, usage, value);\n\n\tif (hdrv && hdrv->event && hid_match_usage(hid, usage)) {\n\t\tret = hdrv->event(hid, field, usage, value);\n\t\tif (ret != 0) {\n\t\t\tif (ret < 0)\n\t\t\t\thid_err(hid, \"%s's event failed with %d\\n\",\n\t\t\t\t\t\thdrv->name, ret);\n\t\t\treturn;\n\t\t}\n\t}\n\n\tif (hid->claimed & HID_CLAIMED_INPUT)\n\t\thidinput_hid_event(hid, field, usage, value);\n\tif (hid->claimed & HID_CLAIMED_HIDDEV && interrupt && hid->hiddev_hid_event)\n\t\thid->hiddev_hid_event(hid, field, usage, value);\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "slob_last",
+            "static int slob_last(slob_t *s) /* <=== slob_last */ \n{\n\treturn !((unsigned long)slob_next(s) & ~PAGE_MASK);\n}",
+            3
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "MERGE",
+            "#define MERGE(w0, sh_1, w1, sh_2) (((w0) >> (sh_1)) | ((w1) << (sh_2))) /* <=== arch/nios2/lib/memcpy.c:31:31:MERGE:4 */ ",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "kfree_debugcheck",
+            "#define kfree_debugcheck(x) do { } while(0) /* <=== mm/slab.c:2755:2755:kfree_debugcheck:1 */ ",
+            2
+        ],
+        [
+            "drivers/hid/hid-core.c",
+            "__extract",
+            "static u32 __extract(u8 *report, unsigned offset, int n) /* <=== __extract */ \n{\n\tunsigned int idx = offset / 8;\n\tunsigned int bit_nr = 0;\n\tunsigned int bit_shift = offset % 8;\n\tint bits_to_copy = 8 - bit_shift;\n\tu32 value = 0;\n\tu32 mask = n < 32 ? (1U << n) - 1 : ~0U;\n\n\twhile (n > 0) {\n\t\tvalue |= ((u32)report[idx] >> bit_shift) << bit_nr;\n\t\tn -= bits_to_copy;\n\t\tbit_nr += bits_to_copy;\n\t\tbits_to_copy = 8;\n\t\tbit_shift = 0;\n\t\tidx++;\n\t}\n\n\treturn value & mask;\n}",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "cache_free_alien",
+            "static inline int cache_free_alien(struct kmem_cache *cachep, void *objp) /* <=== cache_free_alien */ \n{\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "kfree",
+            "void kfree(const void *objp) /* <=== kfree */ \n{\n\tstruct kmem_cache *c;\n\tunsigned long flags;\n\n\ttrace_kfree(_RET_IP_, objp);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(objp)))\n\t\treturn;\n\tlocal_irq_save(flags);\n\tkfree_debugcheck(objp);\n\tc = virt_to_cache(objp);\n\tdebug_check_no_locks_freed(objp, c->object_size);\n\n\tdebug_check_no_obj_freed(objp, c->object_size);\n\t__cache_free(c, (void *)objp, _RET_IP_);\n\tlocal_irq_restore(flags);\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "set_slob",
+            "static void set_slob(slob_t *s, slobidx_t size, slob_t *next) /* <=== set_slob */ \n{\n\tslob_t *base = (slob_t *)((unsigned long)s & PAGE_MASK);\n\tslobidx_t offset = next - base;\n\n\tif (size > 1) {\n\t\ts[0].units = size;\n\t\ts[1].units = offset;\n\t} else\n\t\ts[0].units = -offset;\n}",
+            3
+        ],
+        [
+            "arch/s390/include/asm/string.h",
+            "strlen",
+            "static inline size_t strlen(const char *s) /* <=== strlen */ \n{\n\tregister unsigned long r0 asm(\"0\") = 0;\n\tconst char *tmp = s;\n\n\tasm volatile(\n\t\t\"0:\tsrst\t%0,%1\\n\"\n\t\t\"\tjo\t0b\"\n\t\t: \"+d\" (r0), \"+a\" (tmp) :  : \"cc\");\n\treturn r0 - (unsigned long) s;\n}",
+            3
+        ],
+        [
+            "include/linux/kmemleak.h",
+            "kmemleak_free_recursive",
+            "static inline void kmemleak_free_recursive(const void *ptr, unsigned long flags) /* <=== kmemleak_free_recursive */ \n{\n}",
+            3
+        ],
+        [
+            "mm/slub.c",
+            "kfree_hook",
+            "static inline void kfree_hook(const void *x) /* <=== kfree_hook */ \n{\n\tkmemleak_free(x);\n\tkasan_kfree_large(x);\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_next",
+            "static slob_t *slob_next(slob_t *s) /* <=== slob_next */ \n{\n\tslob_t *base = (slob_t *)((unsigned long)s & PAGE_MASK);\n\tslobidx_t next;\n\n\tif (s[0].units < 0)\n\t\tnext = -s[0].units;\n\telse\n\t\tnext = s[1].units;\n\treturn base+next;\n}",
+            3
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kmalloc",
+            "static inline void *kmalloc(size_t s, gfp_t gfp) /* <=== kmalloc */ \n{\n\tif (__kmalloc_fake)\n\t\treturn __kmalloc_fake;\n\treturn malloc(s);\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "STATS_INC_FREEHIT",
+            "#define STATS_INC_FREEHIT(x)\tdo { } while (0) /* <=== mm/slab.c:336:336:STATS_INC_FREEHIT:1 */ ",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "cache_flusharray",
+            "static void cache_flusharray(struct kmem_cache *cachep, struct array_cache *ac) /* <=== cache_flusharray */ \n{\n\tint batchcount;\n\tstruct kmem_cache_node *n;\n\tint node = numa_mem_id();\n\tLIST_HEAD(list);\n\n\tbatchcount = ac->batchcount;\n#if DEBUG\n\tBUG_ON(!batchcount || batchcount > ac->avail);\n#endif\n\tcheck_irq_off();\n\tn = get_node(cachep, node);\n\tspin_lock(&n->list_lock);\n\tif (n->shared) {\n\t\tstruct array_cache *shared_array = n->shared;\n\t\tint max = shared_array->limit - shared_array->avail;\n\t\tif (max) {\n\t\t\tif (batchcount > max)\n\t\t\t\tbatchcount = max;\n\t\t\tmemcpy(&(shared_array->entry[shared_array->avail]),\n\t\t\t       ac->entry, sizeof(void *) * batchcount);\n\t\t\tshared_array->avail += batchcount;\n\t\t\tgoto free_done;\n\t\t}\n\t}\n\n\tfree_block(cachep, ac->entry, batchcount, node, &list);\nfree_done:\n#if STATS\n\t{\n\t\tint i = 0;\n\t\tstruct list_head *p;\n\n\t\tp = n->slabs_free.next;\n\t\twhile (p != &(n->slabs_free)) {\n\t\t\tstruct page *page;\n\n\t\t\tpage = list_entry(p, struct page, lru);\n\t\t\tBUG_ON(page->active);\n\n\t\t\ti++;\n\t\t\tp = p->next;\n\t\t}\n\t\tSTATS_SET_FREEABLE(cachep, i);\n\t}\n#endif\n\tspin_unlock(&n->list_lock);\n\tslabs_destroy(cachep, &list);\n\tac->avail -= batchcount;\n\tmemmove(ac->entry, &(ac->entry[batchcount]), sizeof(void *)*ac->avail);\n}",
+            3
+        ],
+        [
+            "drivers/hid/hid-core.c",
+            "snto32",
+            "static s32 snto32(__u32 value, unsigned n) /* <=== snto32 */ \n{\n\tswitch (n) {\n\tcase 8:  return ((__s8)value);\n\tcase 16: return ((__s16)value);\n\tcase 32: return ((__s32)value);\n\t}\n\treturn value & (1 << (n - 1)) ? value | (-1 << n) : value;\n}",
+            1
+        ],
+        [
+            "drivers/hid/hid-core.c",
+            "hid_field_extract",
+            "u32 hid_field_extract(const struct hid_device *hid, u8 *report, /* <=== hid_field_extract */ \n\t\t\tunsigned offset, unsigned n)\n{\n\tif (n > 32) {\n\t\thid_warn(hid, \"hid_field_extract() called with n (%d) > 32! (%s)\\n\",\n\t\t\t n, current->comm);\n\t\tn = 32;\n\t}\n\n\treturn __extract(report, offset, n);\n}",
+            1
+        ],
+        [
+            "include/linux/input.h",
+            "input_event",
+            "void input_event(struct input_dev *dev, unsigned int type, unsigned int code, int value); /* <=== input_event */ ",
+            3
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "BYTE_COPY_FWD",
+            "#define BYTE_COPY_FWD(dst_bp, src_bp, nbytes)\t\t\t\t\\ /* <=== arch/nios2/lib/memcpy.c:35:45:BYTE_COPY_FWD:3 */ \ndo {\t\t\t\t\t\t\t\t\t\\\n\tsize_t __nbytes = (nbytes);\t\t\t\t\t\\\n\twhile (__nbytes > 0) {\t\t\t\t\t\t\\\n\t\tunsigned char __x = ((unsigned char *) src_bp)[0];\t\\\n\t\tsrc_bp += 1;\t\t\t\t\t\t\\\n\t\t__nbytes -= 1;\t\t\t\t\t\t\\\n\t\t((unsigned char *) dst_bp)[0] = __x;\t\t\t\\\n\t\tdst_bp += 1;\t\t\t\t\t\t\\\n\t}\t\t\t\t\t\t\t\t\\\n} while (0)",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_free_pages",
+            "static void slob_free_pages(void *b, int order) /* <=== slob_free_pages */ \n{\n\tif (current->reclaim_state)\n\t\tcurrent->reclaim_state->reclaimed_slab += 1 << order;\n\tfree_pages((unsigned long)b, order);\n}",
+            3
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "_wordcopy_fwd_dest_aligned",
+            "static void _wordcopy_fwd_dest_aligned(long int dstp, long int srcp, /* <=== _wordcopy_fwd_dest_aligned */ \n\t\t\t\t\tsize_t len)\n{\n\top_t ap;\n\tint sh_1, sh_2;\n\n\t/* Calculate how to shift a word read at the memory operation\n\taligned srcp to make it aligned for copy. */\n\n\tsh_1 = 8 * (srcp % OPSIZ);\n\tsh_2 = 8 * OPSIZ - sh_1;\n\n\t/* Make SRCP aligned by rounding it down to the beginning of the `op_t'\n\tit points in the middle of. */\n\tsrcp &= -OPSIZ;\n\tap = ((op_t *) srcp)[0];\n\tsrcp += OPSIZ;\n\n\twhile (len > 3) {\n\t\top_t a0, a1, a2, a3;\n\n\t\ta0 = ((op_t *) srcp)[0];\n\t\ta1 = ((op_t *) srcp)[1];\n\t\ta2 = ((op_t *) srcp)[2];\n\t\ta3 = ((op_t *) srcp)[3];\n\t\t((op_t *) dstp)[0] = MERGE(ap, sh_1, a0, sh_2);\n\t\t((op_t *) dstp)[1] = MERGE(a0, sh_1, a1, sh_2);\n\t\t((op_t *) dstp)[2] = MERGE(a1, sh_1, a2, sh_2);\n\t\t((op_t *) dstp)[3] = MERGE(a2, sh_1, a3, sh_2);\n\n\t\tap = a3;\n\t\tsrcp += 4 * OPSIZ;\n\t\tdstp += 4 * OPSIZ;\n\t\tlen -= 4;\n\t}\n\twhile (len > 0) {\n\t\tregister op_t a0;\n\n\t\ta0 = ((op_t *) srcp)[0];\n\t\t((op_t *) dstp)[0] = MERGE(ap, sh_1, a0, sh_2);\n\n\t\tap = a0;\n\t\tsrcp += OPSIZ;\n\t\tdstp += OPSIZ;\n\t\tlen -= 1;\n\t}\n}",
+            2
+        ],
+        [
+            "drivers/hid/hid-core.c",
+            "hid_match_usage",
+            "static int hid_match_usage(struct hid_device *hid, struct hid_usage *usage) /* <=== hid_match_usage */ \n{\n\tconst struct hid_usage_id *id = hid->driver->usage_table;\n\n\tif (!id) /* NULL means all */\n\t\treturn 1;\n\n\tfor (; id->usage_type != HID_ANY_ID - 1; id++)\n\t\tif ((id->usage_hid == HID_ANY_ID ||\n\t\t\t\tid->usage_hid == usage->hid) &&\n\t\t\t\t(id->usage_type == HID_ANY_ID ||\n\t\t\t\tid->usage_type == usage->type) &&\n\t\t\t\t(id->usage_code == HID_ANY_ID ||\n\t\t\t\t id->usage_code == usage->code))\n\t\t\treturn 1;\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "include/linux/page-flags.h",
+            "PageCompound",
+            "static inline int PageCompound(struct page *page) /* <=== PageCompound */ \n{\n\treturn PageHead(page) || PageTail(page);\n\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/module.h>",
+        "#include <linux/spinlock.h>",
+        "#include <linux/sched.h>",
+        "#include <linux/kernel.h>",
+        "#include <linux/list.h>",
+        "#include <linux/vmalloc.h>",
+        "#include <linux/mm.h>",
+        "#include <asm/unaligned.h>",
+        "#include <linux/hid-debug.h>",
+        "#include <linux/hid.h>",
+        "#include \"hid-ids.h\"",
+        "#include <linux/hiddev.h>",
+        "#include <linux/input.h>",
+        "#include <asm/byteorder.h>",
+        "#include <linux/hidraw.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/semaphore.h>",
+        "#include <linux/wait.h>",
+        "#include <linux/init.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct hid_device {\t\t\t\t\t\t\t/* device report descriptor */\n\t__u8 *dev_rdesc;\n\tunsigned dev_rsize;\n\t__u8 *rdesc;\n\tunsigned rsize;\n\tstruct hid_collection *collection;\t\t\t\t/* List of HID collections */\n\tunsigned collection_size;\t\t\t\t\t/* Number of allocated hid_collections */\n\tunsigned maxcollection;\t\t\t\t\t\t/* Number of parsed collections */\n\tunsigned maxapplication;\t\t\t\t\t/* Number of applications */\n\t__u16 bus;\t\t\t\t\t\t\t/* BUS ID */\n\t__u16 group;\t\t\t\t\t\t\t/* Report group */\n\t__u32 vendor;\t\t\t\t\t\t\t/* Vendor ID */\n\t__u32 product;\t\t\t\t\t\t\t/* Product ID */\n\t__u32 version;\t\t\t\t\t\t\t/* HID version */\n\tenum hid_type type;\t\t\t\t\t\t/* device type (mouse, kbd, ...) */\n\tunsigned country;\t\t\t\t\t\t/* HID country */\n\tstruct hid_report_enum report_enum[HID_REPORT_TYPES];\n\tstruct work_struct led_work;\t\t\t\t\t/* delayed LED worker */\n\n\tstruct semaphore driver_lock;\t\t\t\t\t/* protects the current driver, except during input */\n\tstruct semaphore driver_input_lock;\t\t\t\t/* protects the current driver */\n\tstruct device dev;\t\t\t\t\t\t/* device */\n\tstruct hid_driver *driver;\n\tstruct hid_ll_driver *ll_driver;\n\n#ifdef CONFIG_HID_BATTERY_STRENGTH\n\t/*\n\t * Power supply information for HID devices which report\n\t * battery strength. power_supply was successfully registered if\n\t * battery is non-NULL.\n\t */\n\tstruct power_supply *battery;\n\t__s32 battery_min;\n\t__s32 battery_max;\n\t__s32 battery_report_type;\n\t__s32 battery_report_id;\n#endif\n\n\tunsigned int status;\t\t\t\t\t\t/* see STAT flags above */\n\tunsigned claimed;\t\t\t\t\t\t/* Claimed by hidinput, hiddev? */\n\tunsigned quirks;\t\t\t\t\t\t/* Various quirks the device can pull on us */\n\tbool io_started;\t\t\t\t\t\t/* Protected by driver_lock. If IO has started */\n\n\tstruct list_head inputs;\t\t\t\t\t/* The list of inputs */\n\tvoid *hiddev;\t\t\t\t\t\t\t/* The hiddev structure */\n\tvoid *hidraw;\n\tint minor;\t\t\t\t\t\t\t/* Hiddev minor number */\n\n\tint open;\t\t\t\t\t\t\t/* is the device open by anyone? */\n\tchar name[128];\t\t\t\t\t\t\t/* Device name */\n\tchar phys[64];\t\t\t\t\t\t\t/* Device physical location */\n\tchar uniq[64];\t\t\t\t\t\t\t/* Device unique identifier (serial #) */\n\n\tvoid *driver_data;\n\n\t/* temporary hid_ff handling (until moved to the drivers) */\n\tint (*ff_init)(struct hid_device *);\n\n\t/* hiddev event handler */\n\tint (*hiddev_connect)(struct hid_device *, unsigned int);\n\tvoid (*hiddev_disconnect)(struct hid_device *);\n\tvoid (*hiddev_hid_event) (struct hid_device *, struct hid_field *field,\n\t\t\t\t  struct hid_usage *, __s32);\n\tvoid (*hiddev_report_event) (struct hid_device *, struct hid_report *);\n\n\t/* debugging support via debugfs */\n\tunsigned short debug;\n\tstruct dentry *debug_dir;\n\tstruct dentry *debug_rdesc;\n\tstruct dentry *debug_events;\n\tstruct list_head debug_list;\n\tspinlock_t  debug_list_lock;\n\twait_queue_head_t debug_wait;\n}",
+            "hid_device"
+        ],
+        [
+            "struct hid_field {\n\tunsigned  physical;\t\t/* physical usage for this field */\n\tunsigned  logical;\t\t/* logical usage for this field */\n\tunsigned  application;\t\t/* application usage for this field */\n\tstruct hid_usage *usage;\t/* usage table for this function */\n\tunsigned  maxusage;\t\t/* maximum usage index */\n\tunsigned  flags;\t\t/* main-item flags (i.e. volatile,array,constant) */\n\tunsigned  report_offset;\t/* bit offset in the report */\n\tunsigned  report_size;\t\t/* size of this field in the report */\n\tunsigned  report_count;\t\t/* number of this field in the report */\n\tunsigned  report_type;\t\t/* (input,output,feature) */\n\t__s32    *value;\t\t/* last known value(s) */\n\t__s32     logical_minimum;\n\t__s32     logical_maximum;\n\t__s32     physical_minimum;\n\t__s32     physical_maximum;\n\t__s32     unit_exponent;\n\tunsigned  unit;\n\tstruct hid_report *report;\t/* associated report */\n\tunsigned index;\t\t\t/* index into report->field[] */\n\t/* hidinput data */\n\tstruct hid_input *hidinput;\t/* associated input structure */\n\t__u16 dpad;\t\t\t/* dpad input code */\n}",
+            "hid_field"
+        ]
+    ],
+    "visitedLines_after": {
+        "drivers/hid/hid-core.c": [
+            1271,
+            1272,
+            1275,
+            1276,
+            1277,
+            1278,
+            1279,
+            1282,
+            1283,
+            1286,
+            1288,
+            1289,
+            1290,
+            1291,
+            1294,
+            1295,
+            1296,
+            1297,
+            1301,
+            1303,
+            1304,
+            1308,
+            1309,
+            1310,
+            1311,
+            1312,
+            1314,
+            1315,
+            1316,
+            1317,
+            1318,
+            1321,
+            1323
+        ]
+    },
+    "visitedLines_before": {
+        "drivers/hid/hid-core.c": [
+            1271,
+            1272,
+            1275,
+            1276,
+            1277,
+            1278,
+            1279,
+            1282,
+            1283,
+            1286,
+            1288,
+            1289,
+            1290,
+            1291,
+            1294,
+            1295,
+            1296,
+            1300,
+            1302,
+            1303,
+            1307,
+            1308,
+            1309,
+            1310,
+            1312,
+            1313,
+            1314,
+            1315,
+            1318,
+            1320
+        ]
+    },
+    "visitedParams": {
+        "drivers/hid/hid-core.c": [
+            [
+                "__u8 *data",
+                "hid_input_field"
+            ],
+            [
+                "struct hid_device *hid",
+                "hid_input_field"
+            ],
+            [
+                "struct hid_field *field",
+                "hid_input_field"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "drivers/hid/hid-core.c",
+            "hid_input_field",
+            "static void hid_input_field(struct hid_device *hid, struct hid_field *field, /* <=== hid_input_field */ \n\t\t\t    __u8 *data, int interrupt)\n{\n\tunsigned n;\n\tunsigned count = field->report_count;\n\tunsigned offset = field->report_offset;\n\tunsigned size = field->report_size;\n\t__s32 min = field->logical_minimum;\n\t__s32 max = field->logical_maximum;\n\t__s32 *value;\n\n\tvalue = kmalloc(sizeof(__s32) * count, GFP_ATOMIC);\n\tif (!value)\n\t\treturn;\n\n\tfor (n = 0; n < count; n++) {\n\n\t\tvalue[n] = min < 0 ?\n\t\t\tsnto32(hid_field_extract(hid, data, offset + n * size,\n\t\t\t       size), size) :\n\t\t\thid_field_extract(hid, data, offset + n * size, size);\n\n\t\t/* Ignore report if ErrorRollOver */\n\t\tif (!(field->flags & HID_MAIN_ITEM_VARIABLE) &&\n\t\t    value[n] >= min && value[n] <= max &&\n\t\t    value[n] - min < field->maxusage &&\n\t\t    field->usage[value[n] - min].hid == HID_UP_KEYBOARD + 1)\n\t\t\tgoto exit;\n\t}\n\n\tfor (n = 0; n < count; n++) {\n\n\t\tif (HID_MAIN_ITEM_VARIABLE & field->flags) {\n\t\t\thid_process_event(hid, field, &field->usage[n], value[n], interrupt);\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (field->value[n] >= min && field->value[n] <= max\n\t\t\t&& field->value[n] - min < field->maxusage\n\t\t\t&& field->usage[field->value[n] - min].hid\n\t\t\t&& search(value, field->value[n], count))\n\t\t\t\thid_process_event(hid, field, &field->usage[field->value[n] - min], 0, interrupt);\n\n\t\tif (value[n] >= min && value[n] <= max\n\t\t\t&& value[n] - min < field->maxusage\n\t\t\t&& field->usage[value[n] - min].hid\n\t\t\t&& search(field->value, value[n], count))\n\t\t\t\thid_process_event(hid, field, &field->usage[value[n] - min], 1, interrupt);\n\t}\n\n\tmemcpy(field->value, value, count * sizeof(__s32));\nexit:\n\tkfree(value);\n}",
+            1271
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "drivers/hid/hid-core.c",
+            "hid_input_field",
+            "static void hid_input_field(struct hid_device *hid, struct hid_field *field, /* <=== hid_input_field */ \n\t\t\t    __u8 *data, int interrupt)\n{\n\tunsigned n;\n\tunsigned count = field->report_count;\n\tunsigned offset = field->report_offset;\n\tunsigned size = field->report_size;\n\t__s32 min = field->logical_minimum;\n\t__s32 max = field->logical_maximum;\n\t__s32 *value;\n\n\tvalue = kmalloc(sizeof(__s32) * count, GFP_ATOMIC);\n\tif (!value)\n\t\treturn;\n\n\tfor (n = 0; n < count; n++) {\n\n\t\tvalue[n] = min < 0 ?\n\t\t\tsnto32(hid_field_extract(hid, data, offset + n * size,\n\t\t\t       size), size) :\n\t\t\thid_field_extract(hid, data, offset + n * size, size);\n\n\t\t/* Ignore report if ErrorRollOver */\n\t\tif (!(field->flags & HID_MAIN_ITEM_VARIABLE) &&\n\t\t    value[n] >= min && value[n] <= max &&\n\t\t    field->usage[value[n] - min].hid == HID_UP_KEYBOARD + 1)\n\t\t\tgoto exit;\n\t}\n\n\tfor (n = 0; n < count; n++) {\n\n\t\tif (HID_MAIN_ITEM_VARIABLE & field->flags) {\n\t\t\thid_process_event(hid, field, &field->usage[n], value[n], interrupt);\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (field->value[n] >= min && field->value[n] <= max\n\t\t\t&& field->usage[field->value[n] - min].hid\n\t\t\t&& search(value, field->value[n], count))\n\t\t\t\thid_process_event(hid, field, &field->usage[field->value[n] - min], 0, interrupt);\n\n\t\tif (value[n] >= min && value[n] <= max\n\t\t\t&& field->usage[value[n] - min].hid\n\t\t\t&& search(field->value, value[n], count))\n\t\t\t\thid_process_event(hid, field, &field->usage[value[n] - min], 1, interrupt);\n\t}\n\n\tmemcpy(field->value, value, count * sizeof(__s32));\nexit:\n\tkfree(value);\n}",
+            1271
+        ]
+    ]
+}

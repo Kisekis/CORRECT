@@ -1,0 +1,237 @@
+from common.data_classes import VulnPairWithContext
+from analyze.code_analyzer import CodeAnalyzer
+from common.dataloader import DataLoader
+import os
+from datetime import datetime
+import json
+from common.logger import logger
+import difflib
+from common.dataloader import GroundTruthInfo
+
+
+def check_eval_result(answer, is_vuln):
+    if is_vuln:
+        return answer.rfind("MISMATCH") + 3 != answer.rfind("MATCH")
+    else:
+        return answer.rfind("FALSE_ALARM") > answer.rfind("CORRECT")
+
+
+def diff_merge(before_code, after_code):
+    differ = difflib.Differ()
+    diff_list = list(differ.compare(before_code, after_code))
+
+    diff_lines = []
+    for line in diff_list:
+        if line.startswith("  "):
+            diff_lines.append(line[2:])
+        elif line.startswith("- "):
+            diff_lines.append("-" + line[2:])
+        elif line.startswith("+ "):
+            diff_lines.append("+" + line[2:])
+
+    return diff_lines
+
+
+def construct_eval_prompt(
+    pair: VulnPairWithContext,
+    commit_msg: str,
+    cve_desc: str,
+    cwe_id: str,
+    rationale: str,
+    is_vuln: bool,
+):
+    # Merge and diff the vulnerable methods
+    diff_methods = []
+
+    # Create dictionaries for easier lookup
+    before_dict = {(m.filename, m.method_name): m.raw_code for m in pair.vuln}
+    after_dict = {(m.filename, m.method_name): m.raw_code for m in pair.patched}
+
+    # Get all unique file+method combinations
+    all_methods = set(before_dict.keys()) | set(after_dict.keys())
+
+    for file_path, method_name in all_methods:
+        diff_lines = []
+        diff_lines.append(f"File: {file_path}, Method: {method_name}")
+
+        # Handle cases where method only exists in one version
+        if (file_path, method_name) not in before_dict:
+            # Method only exists in after (new method)
+            after_code = after_dict[(file_path, method_name)].split("\n")
+            for line in after_code:
+                diff_lines.append(f"+ {line}")
+            diff_methods.append("\n".join(diff_lines))
+            continue
+
+        if (file_path, method_name) not in after_dict:
+            # Method only exists in before (deleted method)
+            before_code = before_dict[(file_path, method_name)].split("\n")
+            for line in before_code:
+                diff_lines.append(f"- {line}")
+            diff_methods.append("\n".join(diff_lines))
+            continue
+
+        # Normal case - method exists in both versions
+        before_code = before_dict[(file_path, method_name)].split("\n")
+        after_code = after_dict[(file_path, method_name)].split("\n")
+
+        # 完成diff merge算法  : 修改diff_lines
+        diff_lines = diff_merge(before_code, after_code)
+        diff_methods.append("\n".join(diff_lines))
+
+    # Rest of the prompt construction remains the same
+    commit = "\n".join(diff_methods)
+
+    instruction = ""
+    if is_vuln:
+        instruction = f"""
+The rationale is generated based on the vulnerable version of the code, rather than the patched code. This does not necessarily mean the vulnerability detection tool has produced a correct result. We are specifically interested in whether the rationale correctly identifies the ground truth vulnerability.
+If the causes described in the rationale include the ground truth vulnerability, even if it also mentions unrelated issues, it indicates a MATCH.
+If the rationale does not include the ground truth vulnerability and only identifies unrelated issues, return MISMATCH.
+Let's think step by step, first analyze the ground truth and rationale, in the end return "MATCH" or "MISMATCH".
+"""
+    else:
+        instruction = f"""
+The rationale is generated based on the patched version of the code, not the original vulnerable code, which means the tool reports some issues on the non-vulnerable code. However, this does not necessarily mean the vulnerability detection tool has produced a false alarm. We are specifically interested in whether the rationale includes a false alarm related to the ground truth vulnerability.
+If the causes described in the rationale include the ground truth vulnerability (already fixed in the patched code), meaning either the rationale considers a newly added line in the patch problematic (indicated by + in the diff), or the cause identified by the rationale matches the ground truth vulnerability, it indicates a FALSE ALARM.
+Otherwise, if the rationale does not include the ground truth vulnerability or refers to different issues, return CORRECT.
+Let's think step by step, first analyze the ground truth and rationale, in the end return "FALSE_ALARM" or "CORRECT".
+"""
+
+    prompt = f"""
+You are a security expert tasked with evaluating a vulnerability detection tool. You are provided with the following:
+* Ground Truth: This includes a CVE description, a CWE ID, a commit, and a commit message, which collectively describe the cause of the vulnerability.
+* Rationale: This is a vulnerability detection rationale generated by a tool, explaining the detected causes of the vulnerability.
+```cve_desc
+{cve_desc}
+```
+```cwe_id
+{cwe_id}
+```
+```commit_msg
+{commit_msg}
+```
+```commit
+{commit}
+```
+```rationale
+{rationale}
+```
+{instruction}
+"""
+    return prompt
+
+
+def process_single(
+    pair: VulnPairWithContext,
+    detector: CodeAnalyzer,
+    evaluator: CodeAnalyzer,
+    ground_truth_info: GroundTruthInfo,
+):
+    ret_vuln, response_vuln = detector.zeroShotCoTAnalyze(
+        pair, is_vuln=True, depth=2, context_on=True
+    )
+    ret_patched, response_patched = detector.zeroShotCoTAnalyze(
+        pair, is_vuln=False, depth=2, context_on=True
+    )
+
+    if ret_vuln == 0:
+        prompt_vuln = ""
+        rationale_vuln = ""
+        ret_vuln_eval = -1
+    else:
+        prompt_vuln = construct_eval_prompt(
+            pair,
+            ground_truth_info.commit_msg,
+            ground_truth_info.cve_desc,
+            ground_truth_info.cwe_id,
+            response_vuln,
+            is_vuln=True,
+        )
+        rationale_vuln = evaluator.generate(prompt_vuln)
+        ret_vuln_eval = check_eval_result(rationale_vuln, is_vuln=True)
+
+    if ret_patched == 0:
+        prompt_patched = ""
+        rationale_patched = ""
+        ret_patched_eval = -1
+    else:
+        prompt_patched = construct_eval_prompt(
+            pair,
+            ground_truth_info.commit_msg,
+            ground_truth_info.cve_desc,
+            ground_truth_info.cwe_id,
+            response_patched,
+            is_vuln=False,
+        )
+        rationale_patched = evaluator.generate(prompt_patched)
+        ret_patched_eval = check_eval_result(rationale_patched, is_vuln=False)
+
+    return (
+        ret_vuln,
+        ret_patched,
+        response_vuln,
+        response_patched,
+        rationale_vuln,
+        rationale_patched,
+        ret_vuln_eval,
+        ret_patched_eval,
+    )
+
+
+def process_batch(
+    loader: DataLoader,
+    detector: CodeAnalyzer,
+    evaluator: CodeAnalyzer,
+    res_folder: str = "../results/normal",
+    times: int = 1,
+):
+    if not os.path.exists(res_folder):
+        os.makedirs(res_folder)
+
+    data = loader.get_data()
+    res_dict = {}
+
+    for key, pair in data.items():
+        res_dict[key] = []
+        for i in range(times):
+            try:
+                ground_truth_info = loader.get_ground_truth_info(pair.name)
+                (
+                    ret_vuln,
+                    ret_patched,
+                    response_vuln,
+                    response_patched,
+                    rationale_vuln,
+                    rationale_patched,
+                    ret_vuln_eval,
+                    ret_patched_eval,
+                ) = process_single(pair, detector, evaluator, ground_truth_info)
+                res_dict[key].append(
+                    {
+                        "vuln": {
+                            "cot": {"ret": ret_vuln, "output": response_vuln},
+                            "eval": {"ret": ret_vuln_eval, "rationale": rationale_vuln},
+                        },
+                        "patched": {
+                            "cot": {"ret": ret_patched, "output": response_patched},
+                            "eval": {
+                                "ret": ret_patched_eval,
+                                "rationale": rationale_patched,
+                            },
+                        },
+                    }
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error processing pair {key} (attempt {i+1}/{times}): {e}"
+                )
+                continue
+
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    result_file = os.path.join(res_folder, f"result_{timestamp}.json")
+
+    with open(result_file, "w", encoding="utf-8") as f:
+        json.dump(res_dict, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"Results saved to {result_file}")

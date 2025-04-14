@@ -1,0 +1,383 @@
+{
+    "calleeMethods": [
+        [
+            "src/src/mytypes.h",
+            "Ustrcpy",
+            "# define Ustrcpy(s,t)       __Ustrcpy(s, CUS(t), __FUNCTION__, __LINE__) /* <=== src/src/mytypes.h:135:135:Ustrcpy:2 */ ",
+            3
+        ],
+        [
+            "src/src/macros.h",
+            "DEBUG",
+            "#define DEBUG(x)      if (debug_selector & (x)) /* <=== src/src/macros.h:111:111:DEBUG:1 */ ",
+            1
+        ],
+        [
+            "src/src/debug.c",
+            "debug_vprintf",
+            "void /* <=== debug_vprintf */ \ndebug_vprintf(int indent, const char *format, va_list ap)\n{\nint save_errno = errno;\n\nif (!debug_file) return;\n\n/* Various things can be inserted at the start of a line. Don't use the\ntod_stamp() function for the timestamp, because that will overwrite the\ntimestamp buffer, which may contain something useful. (This was a bug fix: the\n+memory debugging with +timestamp did cause a problem.) */\n\nif (debug_ptr == debug_buffer)\n  {\n  DEBUG(D_timestamp)\n    {\n    struct timeval now;\n    time_t tmp;\n    struct tm * t;\n\n    gettimeofday(&now, NULL);\n    tmp = now.tv_sec;\n    t = f.timestamps_utc ? gmtime(&tmp) : localtime(&tmp);\n    debug_ptr += sprintf(CS debug_ptr,\n      LOGGING(millisec) ? \"%02d:%02d:%02d.%03d \" : \"%02d:%02d:%02d \",\n      t->tm_hour, t->tm_min, t->tm_sec, (int)(now.tv_usec/1000));\n    }\n\n  DEBUG(D_pid)\n    debug_ptr += sprintf(CS debug_ptr, \"%5d \", (int)getpid());\n\n  /* Set up prefix if outputting for host checking and not debugging */\n\n  if (host_checking && debug_selector == 0)\n    {\n    Ustrcpy(debug_ptr, US\">>> \");\n    debug_ptr += 4;\n    }\n\n  debug_prefix_length = debug_ptr - debug_buffer;\n  }\n\nif (indent > 0)\n  {\n  for (int i = indent >> 2; i > 0; i--)\n    DEBUG(D_noutf8)\n      {\n      Ustrcpy(debug_ptr, US\"   !\");\n      debug_ptr += 4;\t/* 3 spaces + shriek */\n      debug_prefix_length += 4;\n      }\n    else\n      {\n      Ustrcpy(debug_ptr, US\"   \" UTF8_VERT_2DASH);\n      debug_ptr += 6;\t/* 3 spaces + 3 UTF-8 octets */\n      debug_prefix_length += 6;\n      }\n\n  Ustrncpy(debug_ptr, US\"   \", indent &= 3);\n  debug_ptr += indent;\n  debug_prefix_length += indent;\n  }\n\n/* Use the lengthchecked formatting routine to ensure that the buffer\ndoes not overflow. Ensure there's space for a newline at the end.\nHowever, use taint-unchecked routines for writing into the buffer\nso that we can write tainted info into the static debug_buffer -\nwe trust that we will never expand the results. */\n\n  {\n  gstring gs = { .size = (int)sizeof(debug_buffer) - 1,\n\t\t.ptr = debug_ptr - debug_buffer,\n\t\t.s = debug_buffer };\n  if (!string_vformat(&gs, SVFMT_TAINT_NOCHK, format, ap))\n    {\n    uschar * s = US\"**** debug string too long - truncated ****\\n\";\n    uschar * p = gs.s + gs.ptr;\n    int maxlen = gs.size - Ustrlen(s) - 2;\n    if (p > gs.s + maxlen) p = gs.s + maxlen;\n    if (p > gs.s && p[-1] != '\\n') *p++ = '\\n';\n    Ustrcpy(p, s);\n    while(*debug_ptr) debug_ptr++;\n    }\n  else\n    {\n    string_from_gstring(&gs);\n    debug_ptr = gs.s + gs.ptr;\n    }\n  }\n\n/* Output the line if it is complete. If we added any prefix data and there\nare internal newlines, make sure the prefix is on the continuation lines,\nas long as there is room in the buffer. We want to do just a single fprintf()\nso as to avoid interleaving. */\n\nif (debug_ptr[-1] == '\\n')\n  {\n  if (debug_prefix_length > 0)\n    {\n    uschar *p = debug_buffer;\n    int left = sizeof(debug_buffer) - (debug_ptr - debug_buffer) - 1;\n    while ((p = Ustrchr(p, '\\n') + 1) != debug_ptr &&\n           left >= debug_prefix_length)\n      {\n      int len = debug_ptr - p;\n      memmove(p + debug_prefix_length, p, len + 1);\n      memmove(p, debug_buffer, debug_prefix_length);\n      debug_ptr += debug_prefix_length;\n      left -= debug_prefix_length;\n      }\n    }\n\n  fprintf(debug_file, \"%s\", CS debug_buffer);\n  fflush(debug_file);\n  debug_ptr = debug_buffer;\n  debug_prefix_length = 0;\n  }\nerrno = save_errno;\n}",
+            2
+        ],
+        [
+            "src/src/auths/auth-spa.c",
+            "spa_base64_to_bits",
+            "int /* <=== spa_base64_to_bits */ \nspa_base64_to_bits (char *out, int outlength, const char *in)\n/* base 64 to raw bytes in quasi-big-endian order, returning count of bytes */\n{\nint len = 0;\nuschar digit1, digit2, digit3, digit4;\n\nif (in[0] == '+' && in[1] == ' ')\n  in += 2;\nif (*in == '\\r')\n  return (0);\n\ndo\n  {\n  if (len >= outlength)                   /* Added by PH */\n    return -1;                          /* Added by PH */\n  digit1 = in[0];\n  if (DECODE64 (digit1) == BAD)\n    return -1;\n  digit2 = in[1];\n  if (DECODE64 (digit2) == BAD)\n    return -1;\n  digit3 = in[2];\n  if (digit3 != '=' && DECODE64 (digit3) == BAD)\n    return -1;\n  digit4 = in[3];\n  if (digit4 != '=' && DECODE64 (digit4) == BAD)\n    return -1;\n  in += 4;\n  *out++ = (DECODE64 (digit1) << 2) | (DECODE64 (digit2) >> 4);\n  ++len;\n  if (digit3 != '=')\n    {\n    if (len >= outlength)                   /* Added by PH */\n      return -1;                          /* Added by PH */\n    *out++ =\n      ((DECODE64 (digit2) << 4) & 0xf0) | (DECODE64 (digit3) >> 2);\n    ++len;\n    if (digit4 != '=')\n      {\n      if (len >= outlength)                   /* Added by PH */\n\treturn -1;                          /* Added by PH */\n      *out++ = ((DECODE64 (digit3) << 6) & 0xc0) | DECODE64 (digit4);\n      ++len;\n      }\n    }\n  }\nwhile (*in && *in != '\\r' && digit4 != '=');\n\nreturn len;\n}",
+            1
+        ],
+        [
+            "src/src/mytypes.h",
+            "FALSE",
+            "# define FALSE         0 /* <=== src/src/mytypes.h:20:20:FALSE:0 */ ",
+            2
+        ],
+        [
+            "src/src/local_scan.h",
+            "expand_string",
+            "extern uschar *expand_string(uschar *); /* <=== expand_string */ ",
+            1
+        ],
+        [
+            "src/src/mytypes.h",
+            "Ustrchr",
+            "#define Ustrchr(s,n)       US strchr(CCS(s),n) /* <=== src/src/mytypes.h:107:107:Ustrchr:2 */ ",
+            3
+        ],
+        [
+            "src/src/functions.h",
+            "strcmpic",
+            "extern int     strcmpic(const uschar *, const uschar *); /* <=== strcmpic */ ",
+            3
+        ],
+        [
+            "src/src/dummies.c",
+            "string_vformat",
+            "extern gstring * string_vformat(gstring *, unsigned, const char *, va_list); /* <=== string_vformat */ ",
+            2
+        ],
+        [
+            "src/src/auths/get_no64_data.c",
+            "auth_get_no64_data",
+            "int /* <=== auth_get_no64_data */ \nauth_get_no64_data(uschar **aptr, uschar *challenge)\n{\nint c;\nint p = 0;\nsmtp_printf(\"334 %s\\r\\n\", FALSE, challenge);\nwhile ((c = receive_getc(GETC_BUFFER_UNLIMITED)) != '\\n' && c != EOF)\n  {\n  if (p >= big_buffer_size - 1) return BAD64;\n  big_buffer[p++] = c;\n  }\nif (p > 0 && big_buffer[p-1] == '\\r') p--;\nbig_buffer[p] = 0;\nif (Ustrcmp(big_buffer, \"*\") == 0) return CANCELLED;\n*aptr = big_buffer;\nreturn OK;\n}",
+            1
+        ],
+        [
+            "src/src/auths/spa.c",
+            "SVAL",
+            "#define SVAL(buf,pos) (PVAL(buf,pos)|PVAL(buf,(pos)+1)<<8) /* <=== src/src/auths/spa.c:129:129:SVAL:2 */ ",
+            1
+        ],
+        [
+            "src/src/auths/auth-spa.c",
+            "BAD",
+            "#define BAD    (char) -1 /* <=== src/src/auths/auth-spa.c:357:357:BAD:0 */ ",
+            2
+        ],
+        [
+            "src/src/macros.h",
+            "HDEBUG",
+            "#define HDEBUG(x)     if (host_checking || (debug_selector & (x))) /* <=== src/src/macros.h:112:112:HDEBUG:1 */ ",
+            3
+        ],
+        [
+            "src/src/functions.h",
+            "__Ustrcpy",
+            "static inline uschar * __Ustrcpy(uschar * dst, const uschar * src, const char * func, int line) /* <=== __Ustrcpy */ \n{\n#if !defined(COMPILE_UTILITY) && !defined(MACRO_PREDEF)\nif (!is_tainted(dst) && is_tainted(src)) die_tainted(US\"Ustrcpy\", CUS func, line);\n#endif\nreturn US strcpy(CS dst, CCS src);\n}",
+            3
+        ],
+        [
+            "src/src/debug.c",
+            "debug_printf",
+            "void /* <=== debug_printf */ \ndebug_printf(const char *format, ...)\n{\nva_list ap;\nva_start(ap, format);\ndebug_vprintf(0, format, ap);\nva_end(ap);\n}",
+            1
+        ],
+        [
+            "src/src/macros.h",
+            "FAIL",
+            "#define  FAIL          2    /* Matching failed */ /* <=== src/src/macros.h:288:288:FAIL:0 */ ",
+            1
+        ],
+        [
+            "src/src/mytypes.h",
+            "US",
+            "#define US   (unsigned char *) /* <=== src/src/mytypes.h:77:77:US:0 */ ",
+            1
+        ],
+        [
+            "src/src/functions.h",
+            "string_vformat",
+            "#define string_vformat(g, flgs, fmt, ap) \\ /* <=== src/src/functions.h:547:549:string_vformat:4 */ \n\tstring_vformat_trc(g, US __FUNCTION__, __LINE__, \\\n\t\t\t STRING_SPRINTF_BUFFER_SIZE, flgs, fmt, ap)",
+            3
+        ],
+        [
+            "src/src/auths/check_serv_cond.c",
+            "auth_check_serv_cond",
+            "int /* <=== auth_check_serv_cond */ \nauth_check_serv_cond(auth_instance *ablock)\n{\n  return auth_check_some_cond(ablock,\n      US\"server_condition\", ablock->server_condition, OK);\n}",
+            1
+        ],
+        [
+            "src/src/macros.h",
+            "DEFER",
+            "#define  DEFER         1    /* Defer - some problem */ /* <=== src/src/macros.h:287:287:DEFER:0 */ ",
+            3
+        ],
+        [
+            "src/src/mytypes.h",
+            "CCS",
+            "#define CCS  (const char *) /* <=== src/src/mytypes.h:75:75:CCS:0 */ ",
+            1
+        ],
+        [
+            "src/src/mytypes.h",
+            "Ustrcmp",
+            "#define Ustrcmp(s,t)       strcmp(CCS(s),CCS(t)) /* <=== src/src/mytypes.h:110:110:Ustrcmp:2 */ ",
+            2
+        ],
+        [
+            "src/src/debug.c",
+            "debug_print_string",
+            "void /* <=== debug_print_string */ \ndebug_print_string(uschar *debug_string)\n{\nif (!debug_string) return;\nHDEBUG(D_any|D_v)\n  {\n  uschar *s = expand_string(debug_string);\n  if (!s)\n    debug_printf(\"failed to expand debug_output \\\"%s\\\": %s\\n\", debug_string,\n      expand_string_message);\n  else if (s[0] != 0)\n    debug_printf(\"%s%s\", s, (s[Ustrlen(s)-1] == '\\n')? \"\" : \"\\n\");\n  }\n}",
+            3
+        ],
+        [
+            "src/src/macros.h",
+            "OK",
+            "#define  OK            0    /* Successful match */ /* <=== src/src/macros.h:286:286:OK:0 */ ",
+            1
+        ],
+        [
+            "src/src/macros.h",
+            "LOGGING",
+            "#define LOGGING(opt) BIT_TEST(log_selector, log_selector_size, Li_##opt) /* <=== src/src/macros.h:507:507:LOGGING:1 */ ",
+            3
+        ],
+        [
+            "src/src/auths/check_serv_cond.c",
+            "auth_check_some_cond",
+            "int /* <=== auth_check_some_cond */ \nauth_check_some_cond(auth_instance *ablock,\n    uschar *label, uschar *condition, int unset)\n{\nuschar *cond;\n\nHDEBUG(D_auth)\n  {\n  debug_printf(\"%s authenticator %s:\\n\", ablock->name, label);\n  for (int i = 0; i < AUTH_VARS; i++) if (auth_vars[i])\n    debug_printf(\"  $auth%d = %s\\n\", i + 1, auth_vars[i]);\n  for (int i = 1; i <= expand_nmax; i++)\n    debug_printf(\"  $%d = %.*s\\n\", i, expand_nlength[i], expand_nstring[i]);\n  debug_print_string(ablock->server_debug_string);    /* customized debug */\n  }\n\n/* For the plaintext authenticator, server_condition is never NULL. For the\nrest, an unset condition lets everything through. */\n\n/* For server_condition, an unset condition lets everything through.\nFor plaintext/gsasl authenticators, it will have been pre-checked to prevent\nthis.  We return the unset scenario value given to us, which for\nserver_condition will be OK and otherwise will typically be FAIL. */\n\nif (!condition) return unset;\ncond = expand_string(condition);\n\nHDEBUG(D_auth)\n  if (!cond)\n    debug_printf(\"expansion failed: %s\\n\", expand_string_message);\n  else\n    debug_printf(\"expanded string: %s\\n\", cond);\n\n/* A forced expansion failure causes authentication to fail. Other expansion\nfailures yield DEFER, which will cause a temporary error code to be returned to\nthe AUTH command. The problem is at the server end, so the client should try\nagain later. */\n\nif (!cond)\n  {\n  if (f.expand_string_forcedfail) return FAIL;\n  auth_defer_msg = expand_string_message;\n  return DEFER;\n  }\n\n/* Return FAIL for empty string, \"0\", \"no\", and \"false\"; return OK for\n\"1\", \"yes\", and \"true\"; return DEFER for anything else, with the string\navailable as an error text for the user. */\n\nif (*cond == 0 ||\n    Ustrcmp(cond, \"0\") == 0 ||\n    strcmpic(cond, US\"no\") == 0 ||\n    strcmpic(cond, US\"false\") == 0)\n  return FAIL;\n\nif (Ustrcmp(cond, \"1\") == 0 ||\n    strcmpic(cond, US\"yes\") == 0 ||\n    strcmpic(cond, US\"true\") == 0)\n  return OK;\n\nauth_defer_msg = cond;\nauth_defer_user_msg = string_sprintf(\": %s\", cond);\nreturn DEFER;\n}",
+            2
+        ],
+        [
+            "src/src/functions.h",
+            "string_from_gstring",
+            "static inline uschar * /* <=== string_from_gstring */ \nstring_from_gstring(gstring * g)\n{\nif (!g) return NULL;\ng->s[g->ptr] = '\\0';\nreturn g->s;\n}",
+            2
+        ],
+        [
+            "src/src/mytypes.h",
+            "CS",
+            "#define CS   (char *) /* <=== src/src/mytypes.h:74:74:CS:0 */ ",
+            1
+        ],
+        [
+            "src/src/macros.h",
+            "BAD64",
+            "#define BAD64         11    /* Bad base64 data (auth) */ /* <=== src/src/macros.h:300:300:BAD64:0 */ ",
+            2
+        ],
+        [
+            "src/src/local_scan.h",
+            "smtp_printf",
+            "extern void    smtp_printf(const char *, BOOL, ...) PRINTF_FUNCTION(1,3); /* <=== smtp_printf */ ",
+            2
+        ],
+        [
+            "src/src/dummies.c",
+            "debug_printf",
+            "void /* <=== debug_printf */ \ndebug_printf(char *format, ...)\n{\nva_list ap;\nrmark reset_point = store_mark();\ngstring * g = string_get_tainted(1024, TRUE);\n\nva_start(ap, format);\n\nif (!string_vformat(g, 0, format, ap))\n  {\n  char * s = \"**** debug string overflowed buffer ****\\n\";\n  char * p = CS g->s + g->ptr;\n  int maxlen = g->size - (int)strlen(s) - 3;\n  if (p > g->s + maxlen) p = g->s + maxlen;\n  if (p > g->s && p[-1] != '\\n') *p++ = '\\n';\n  strcpy(p, s);\n  }\n\nfprintf(stderr, \"%s\", string_from_gstring(g));\nfflush(stderr);\nstore_reset(reset_point);\nva_end(ap);\n}",
+            1
+        ],
+        [
+            "src/src/auths/spa.c",
+            "IVAL",
+            "#define IVAL(buf,pos) (SVAL(buf,pos)|SVAL(buf,(pos)+2)<<16) /* <=== src/src/auths/spa.c:130:130:IVAL:2 */ ",
+            1
+        ],
+        [
+            "src/src/mytypes.h",
+            "Ustrncpy",
+            "# define Ustrncpy(s,t,n)    __Ustrncpy(s, CUS(t), n, __FUNCTION__, __LINE__) /* <=== src/src/mytypes.h:137:137:Ustrncpy:3 */ ",
+            3
+        ],
+        [
+            "src/src/functions.h",
+            "string_vformat_trc",
+            "extern gstring *string_vformat_trc(gstring *, const uschar *, unsigned, /* <=== string_vformat_trc */ \n\t\t\tunsigned, unsigned, const char *, va_list);",
+            3
+        ],
+        [
+            "src/src/auths/auth-spa.c",
+            "DECODE64",
+            "#define DECODE64(c)  (isascii(c) ? base64val[c] : BAD) /* <=== src/src/auths/auth-spa.c:371:371:DECODE64:1 */ ",
+            2
+        ],
+        [
+            "src/src/macros.h",
+            "GETC_BUFFER_UNLIMITED",
+            "#define GETC_BUFFER_UNLIMITED\tUINT_MAX /* <=== src/src/macros.h:1034:1034:GETC_BUFFER_UNLIMITED:0 */ ",
+            2
+        ],
+        [
+            "src/src/macros.h",
+            "CANCELLED",
+            "#define CANCELLED     13    /* Authentication cancelled */ /* <=== src/src/macros.h:302:302:CANCELLED:0 */ ",
+            2
+        ],
+        [
+            "src/src/functions.h",
+            "__Ustrncpy",
+            "static inline uschar * __Ustrncpy(uschar * dst, const uschar * src, size_t n, const char * func, int line) /* <=== __Ustrncpy */ \n{\n#if !defined(COMPILE_UTILITY) && !defined(MACRO_PREDEF)\nif (!is_tainted(dst) && is_tainted(src)) die_tainted(US\"Ustrncpy\", CUS func, line);\n#endif\nreturn US strncpy(CS dst, CCS src, n);\n}",
+            3
+        ],
+        [
+            "src/src/local_scan.h",
+            "string_sprintf",
+            "#define string_sprintf(fmt, ...) \\ /* <=== src/src/local_scan.h:206:207:string_sprintf:2 */ \n\tstring_sprintf_trc(fmt, US __FUNCTION__, __LINE__, __VA_ARGS__)",
+            3
+        ],
+        [
+            "src/src/mytypes.h",
+            "Ustrlen",
+            "#define Ustrlen(s)         (int)strlen(CCS(s)) /* <=== src/src/mytypes.h:114:114:Ustrlen:1 */ ",
+            3
+        ],
+        [
+            "src/src/local_scan.h",
+            "string_sprintf_trc",
+            "extern uschar *string_sprintf_trc(const char *, const uschar *, unsigned, ...) ALMOST_PRINTF(1,4); /* <=== string_sprintf_trc */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"../exim.h\"",
+        "#include \"spa.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct\n{\n       char         ident[8];\n       uint32x         msgType;\n       uint32x         flags;\n       SPAStrHeader    user;\n       SPAStrHeader    domain;\n       uint8x         buffer[1024];\n       uint32x         bufIndex;\n}",
+            "SPAAuthRequest"
+        ],
+        [
+            "typedef struct {\n  uschar *spa_username;\n  uschar *spa_password;\n  uschar *spa_domain;\n  uschar *spa_serverpassword;\n}",
+            "auth_spa_options_block"
+        ],
+        [
+            "typedef struct auth_instance {\n  struct auth_instance *next;\n  uschar *name;                   /* Exim instance name */\n  struct auth_info *info;         /* Pointer to driver info block */\n  void   *options_block;          /* Pointer to private options */\n  uschar *driver_name;            /* Must be first */\n  uschar *advertise_condition;    /* Are we going to advertise this?*/\n  uschar *client_condition;       /* Should the client try this? */\n  uschar *public_name;            /* Advertised name */\n  uschar *set_id;                 /* String to set when server as authenticated id */\n  uschar *set_client_id;          /* String to set when client as client_authenticated id */\n  uschar *mail_auth_condition;    /* Condition for AUTH on MAIL command */\n  uschar *server_debug_string;    /* Debugging output */\n  uschar *server_condition;       /* Authorization condition */\n  BOOL    client;                 /* TRUE if client option(s) set */\n  BOOL    server;                 /* TRUE if server options(s) set */\n  BOOL    advertised;             /* Set TRUE when advertised */\n}",
+            "auth_instance"
+        ],
+        [
+            "typedef struct\n{\n       char         ident[8];\n       uint32x         msgType;\n       SPAStrHeader    lmResponse;\n       SPAStrHeader    ntResponse;\n       SPAStrHeader    uDomain;\n       SPAStrHeader    uUser;\n       SPAStrHeader    uWks;\n       SPAStrHeader    sessionKey;\n       uint32x         flags;\n       uint8x         buffer[1024];\n       uint32x         bufIndex;\n}",
+            "SPAAuthResponse"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/src/auths/spa.c": [
+            132,
+            133,
+            135,
+            141,
+            142,
+            148,
+            149,
+            151,
+            152,
+            161,
+            162,
+            163,
+            164,
+            167,
+            168,
+            190,
+            191,
+            192,
+            193,
+            194,
+            195,
+            196,
+            200,
+            204,
+            224,
+            228,
+            246,
+            247,
+            249,
+            250,
+            252,
+            253,
+            254,
+            256,
+            258,
+            259,
+            263
+        ]
+    },
+    "visitedLines_before": {
+        "src/src/auths/spa.c": [
+            132,
+            133,
+            135,
+            141,
+            142,
+            148,
+            149,
+            151,
+            152,
+            161,
+            162,
+            163,
+            164,
+            167,
+            168,
+            190,
+            191,
+            192,
+            193,
+            194,
+            195,
+            196,
+            200,
+            204,
+            224,
+            228,
+            245,
+            246,
+            248,
+            249,
+            250,
+            252,
+            253,
+            254,
+            257,
+            258,
+            262
+        ]
+    },
+    "visitedParams": {
+        "src/src/auths/spa.c": [
+            [
+                "auth_instance *ablock",
+                "auth_spa_server"
+            ],
+            [
+                "uschar *data",
+                "auth_spa_server"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/src/auths/spa.c",
+            "auth_spa_server",
+            "int /* <=== auth_spa_server */ \nauth_spa_server(auth_instance *ablock, uschar *data)\n{\nauth_spa_options_block *ob = (auth_spa_options_block *)(ablock->options_block);\nuint8x lmRespData[24];\nuint8x ntRespData[24];\nSPAAuthRequest request;\nSPAAuthChallenge challenge;\nSPAAuthResponse  response;\nSPAAuthResponse  *responseptr = &response;\nuschar msgbuf[2048];\nuschar *clearpass, *s;\nunsigned off;\n\n/* send a 334, MS Exchange style, and grab the client's request,\nunless we already have it via an initial response. */\n\nif (!*data && auth_get_no64_data(&data, US\"NTLM supported\") != OK)\n  return FAIL;\n\nif (spa_base64_to_bits(CS &request, sizeof(request), CCS data) < 0)\n  {\n  DEBUG(D_auth) debug_printf(\"auth_spa_server(): bad base64 data in \"\n    \"request: %s\\n\", data);\n  return FAIL;\n  }\n\n/* create a challenge and send it back */\n\nspa_build_auth_challenge(&request, &challenge);\nspa_bits_to_base64(msgbuf, US &challenge, spa_request_length(&challenge));\n\nif (auth_get_no64_data(&data, msgbuf) != OK)\n  return FAIL;\n\n/* dump client response */\nif (spa_base64_to_bits(CS &response, sizeof(response), CCS data) < 0)\n  {\n  DEBUG(D_auth) debug_printf(\"auth_spa_server(): bad base64 data in \"\n    \"response: %s\\n\", data);\n  return FAIL;\n  }\n\n/***************************************************************\nPH 07-Aug-2003: The original code here was this:\n\nUstrcpy(msgbuf, unicodeToString(((char*)responseptr) +\n  IVAL(&responseptr->uUser.offset,0),\n  SVAL(&responseptr->uUser.len,0)/2) );\n\nHowever, if the response data is too long, unicodeToString bombs out on\nan assertion failure. It uses a 1024 fixed buffer. Bombing out is not a good\nidea. It's too messy to try to rework that function to return an error because\nit is called from a number of other places in the auth-spa.c module. Instead,\nsince it is a very small function, I reproduce its code here, with a size check\nthat causes failure if the size of msgbuf is exceeded. ****/\n\n  {\n  int i;\n  char * p;\n  int len = SVAL(&responseptr->uUser.len,0)/2;\n\n  if (  (off = IVAL(&responseptr->uUser.offset,0)) >= sizeof(SPAAuthResponse)\n     || len >= sizeof(responseptr->buffer)/2\n     || (p = (CS responseptr) + off) + len*2 >= CS (responseptr+1)\n     )\n    {\n    DEBUG(D_auth)\n      debug_printf(\"auth_spa_server(): bad uUser spec in response\\n\");\n    return FAIL;\n    }\n\n  if (len + 1 >= sizeof(msgbuf)) return FAIL;\n  for (i = 0; i < len; ++i)\n    {\n    msgbuf[i] = *p & 0x7f;\n    p += 2;\n    }\n  msgbuf[i] = 0;\n  }\n\n/***************************************************************/\n\n/* Put the username in $auth1 and $1. The former is now the preferred variable;\nthe latter is the original variable. These have to be out of stack memory, and\nneed to be available once known even if not authenticated, for error messages\n(server_set_id, which only makes it to authenticated_id if we return OK) */\n\nauth_vars[0] = expand_nstring[1] = string_copy(msgbuf);\nexpand_nlength[1] = Ustrlen(msgbuf);\nexpand_nmax = 1;\n\ndebug_print_string(ablock->server_debug_string);    /* customized debug */\n\n/* look up password */\n\nif (!(clearpass = expand_string(ob->spa_serverpassword)))\n  if (f.expand_string_forcedfail)\n    {\n    DEBUG(D_auth) debug_printf(\"auth_spa_server(): forced failure while \"\n      \"expanding spa_serverpassword\\n\");\n    return FAIL;\n    }\n  else\n    {\n    DEBUG(D_auth) debug_printf(\"auth_spa_server(): error while expanding \"\n      \"spa_serverpassword: %s\\n\", expand_string_message);\n    return DEFER;\n    }\n\n/* create local hash copy */\n\nspa_smb_encrypt(clearpass, challenge.challengeData, lmRespData);\nspa_smb_nt_encrypt(clearpass, challenge.challengeData, ntRespData);\n\n/* compare NT hash (LM may not be available) */\n\noff = IVAL(&responseptr->ntResponse.offset,0);\nif (off >= sizeof(SPAAuthResponse) - 24)\n  {\n  DEBUG(D_auth)\n    debug_printf(\"auth_spa_server(): bad ntRespData spec in response\\n\");\n  return FAIL;\n  }\ns = (US responseptr) + off;\n\nif (memcmp(ntRespData, s, 24) == 0)\n  return auth_check_serv_cond(ablock);\t/* success. we have a winner. */\n\n  /* Expand server_condition as an authorization check (PH) */\n\nreturn FAIL;\n}",
+            132
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/src/auths/spa.c",
+            "auth_spa_server",
+            "int /* <=== auth_spa_server */ \nauth_spa_server(auth_instance *ablock, uschar *data)\n{\nauth_spa_options_block *ob = (auth_spa_options_block *)(ablock->options_block);\nuint8x lmRespData[24];\nuint8x ntRespData[24];\nSPAAuthRequest request;\nSPAAuthChallenge challenge;\nSPAAuthResponse  response;\nSPAAuthResponse  *responseptr = &response;\nuschar msgbuf[2048];\nuschar *clearpass, *s;\n\n/* send a 334, MS Exchange style, and grab the client's request,\nunless we already have it via an initial response. */\n\nif (!*data && auth_get_no64_data(&data, US\"NTLM supported\") != OK)\n  return FAIL;\n\nif (spa_base64_to_bits(CS &request, sizeof(request), CCS data) < 0)\n  {\n  DEBUG(D_auth) debug_printf(\"auth_spa_server(): bad base64 data in \"\n    \"request: %s\\n\", data);\n  return FAIL;\n  }\n\n/* create a challenge and send it back */\n\nspa_build_auth_challenge(&request, &challenge);\nspa_bits_to_base64(msgbuf, US &challenge, spa_request_length(&challenge));\n\nif (auth_get_no64_data(&data, msgbuf) != OK)\n  return FAIL;\n\n/* dump client response */\nif (spa_base64_to_bits(CS &response, sizeof(response), CCS data) < 0)\n  {\n  DEBUG(D_auth) debug_printf(\"auth_spa_server(): bad base64 data in \"\n    \"response: %s\\n\", data);\n  return FAIL;\n  }\n\n/***************************************************************\nPH 07-Aug-2003: The original code here was this:\n\nUstrcpy(msgbuf, unicodeToString(((char*)responseptr) +\n  IVAL(&responseptr->uUser.offset,0),\n  SVAL(&responseptr->uUser.len,0)/2) );\n\nHowever, if the response data is too long, unicodeToString bombs out on\nan assertion failure. It uses a 1024 fixed buffer. Bombing out is not a good\nidea. It's too messy to try to rework that function to return an error because\nit is called from a number of other places in the auth-spa.c module. Instead,\nsince it is a very small function, I reproduce its code here, with a size check\nthat causes failure if the size of msgbuf is exceeded. ****/\n\n  {\n  int i;\n  char * p = (CS responseptr) + IVAL(&responseptr->uUser.offset,0);\n  int len = SVAL(&responseptr->uUser.len,0)/2;\n\n  if (p + len*2 >= CS (responseptr+1))\n    {\n    DEBUG(D_auth)\n      debug_printf(\"auth_spa_server(): bad uUser spec in response\\n\");\n    return FAIL;\n    }\n\n  if (len + 1 >= sizeof(msgbuf)) return FAIL;\n  for (i = 0; i < len; ++i)\n    {\n    msgbuf[i] = *p & 0x7f;\n    p += 2;\n    }\n  msgbuf[i] = 0;\n  }\n\n/***************************************************************/\n\n/* Put the username in $auth1 and $1. The former is now the preferred variable;\nthe latter is the original variable. These have to be out of stack memory, and\nneed to be available once known even if not authenticated, for error messages\n(server_set_id, which only makes it to authenticated_id if we return OK) */\n\nauth_vars[0] = expand_nstring[1] = string_copy(msgbuf);\nexpand_nlength[1] = Ustrlen(msgbuf);\nexpand_nmax = 1;\n\ndebug_print_string(ablock->server_debug_string);    /* customized debug */\n\n/* look up password */\n\nif (!(clearpass = expand_string(ob->spa_serverpassword)))\n  if (f.expand_string_forcedfail)\n    {\n    DEBUG(D_auth) debug_printf(\"auth_spa_server(): forced failure while \"\n      \"expanding spa_serverpassword\\n\");\n    return FAIL;\n    }\n  else\n    {\n    DEBUG(D_auth) debug_printf(\"auth_spa_server(): error while expanding \"\n      \"spa_serverpassword: %s\\n\", expand_string_message);\n    return DEFER;\n    }\n\n/* create local hash copy */\n\nspa_smb_encrypt(clearpass, challenge.challengeData, lmRespData);\nspa_smb_nt_encrypt(clearpass, challenge.challengeData, ntRespData);\n\n/* compare NT hash (LM may not be available) */\n\ns = (US responseptr) + IVAL(&responseptr->ntResponse.offset,0);\nif (s + 24 >= US (responseptr+1))\n  {\n  DEBUG(D_auth)\n    debug_printf(\"auth_spa_server(): bad ntRespData spec in response\\n\");\n  return FAIL;\n  }\n\nif (memcmp(ntRespData, s, 24) == 0)\n  return auth_check_serv_cond(ablock);\t/* success. we have a winner. */\n\n  /* Expand server_condition as an authorization check (PH) */\n\nreturn FAIL;\n}",
+            132
+        ]
+    ]
+}

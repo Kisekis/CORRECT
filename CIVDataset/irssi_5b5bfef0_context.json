@@ -1,0 +1,244 @@
+{
+    "calleeMethods": [
+        [
+            "src/fe-common/core/fe-windows.c",
+            "window_set_active",
+            "void window_set_active(WINDOW_REC *window) /* <=== window_set_active */ \n{\n\tWINDOW_REC *old_window;\n\n\tif (window == active_win)\n\t\treturn;\n\n\told_window = active_win;\n\tactive_win = window;\n\tif (active_win != NULL) {\n\t\twindows = g_slist_remove(windows, active_win);\n\t\twindows = g_slist_prepend(windows, active_win);\n\t}\n\n        if (active_win != NULL)\n\t\tsignal_emit(\"window changed\", 2, active_win, old_window);\n}",
+            1
+        ],
+        [
+            "src/core/signals.c",
+            "signal_emit_real",
+            "static int signal_emit_real(Signal *rec, int params, va_list va, /* <=== signal_emit_real */ \n\t\t\t    SignalHook *first_hook)\n{\n\tconst void *arglist[SIGNAL_MAX_ARGUMENTS];\n\tSignal *prev_emitted_signal;\n        SignalHook *hook, *prev_emitted_hook;\n\tint i, stopped, stop_emit_count, continue_emit_count;\n\n\tfor (i = 0; i < SIGNAL_MAX_ARGUMENTS; i++)\n\t\targlist[i] = i >= params ? NULL : va_arg(va, const void *);\n\n\t/* signal_stop_by_name(\"signal\"); signal_emit(\"signal\", ...);\n\t   fails if we compare rec->stop_emit against 0. */\n\tstop_emit_count = rec->stop_emit;\n\tcontinue_emit_count = rec->continue_emit;\n\n        signal_ref(rec);\n\n\tstopped = FALSE;\n\trec->emitting++;\n\n\tprev_emitted_signal = current_emitted_signal;\n\tprev_emitted_hook = current_emitted_hook;\n\tcurrent_emitted_signal = rec;\n\n\tfor (hook = first_hook; hook != NULL; hook = hook->next) {\n\t\tif (hook->func == NULL)\n\t\t\tcontinue; /* removed */\n\n\t\tcurrent_emitted_hook = hook;\n#if SIGNAL_MAX_ARGUMENTS != 6\n#  error SIGNAL_MAX_ARGUMENTS changed - update code\n#endif\n                signal_user_data = hook->user_data;\n\t\thook->func(arglist[0], arglist[1], arglist[2], arglist[3],\n\t\t\t   arglist[4], arglist[5]);\n\n\t\tif (rec->continue_emit != continue_emit_count)\n\t\t\trec->continue_emit--;\n\n\t\tif (rec->stop_emit != stop_emit_count) {\n\t\t\tstopped = TRUE;\n\t\t\trec->stop_emit--;\n\t\t\tbreak;\n\t\t}\n\t}\n\n\tcurrent_emitted_signal = prev_emitted_signal;\n\tcurrent_emitted_hook = prev_emitted_hook;\n\n\trec->emitting--;\n\tsignal_user_data = NULL;\n\n\tif (!rec->emitting) {\n\t\tg_assert(rec->stop_emit == 0);\n\t\tg_assert(rec->continue_emit == 0);\n\n                if (rec->remove_count > 0)\n\t\t\tsignal_hooks_clean(rec);\n\t}\n\n        signal_unref(rec);\n\treturn stopped;\n}",
+            3
+        ],
+        [
+            "src/core/settings.c",
+            "settings_get",
+            "static SETTINGS_REC *settings_get(const char *key, SettingType type) /* <=== settings_get */ \n{\n\tSETTINGS_REC *rec;\n\n\tg_return_val_if_fail(key != NULL, NULL);\n\n\trec = g_hash_table_lookup(settings, key);\n\tif (rec == NULL) {\n\t\tg_warning(\"settings_get(%s) : not found\", key);\n\t\treturn NULL;\n\t}\n\tif (type != SETTING_TYPE_ANY && rec->type != type) {\n\t\tg_warning(\"settings_get(%s) : invalid type\", key);\n\t\treturn NULL;\n\t}\n\n\treturn rec;\n}",
+            2
+        ],
+        [
+            "src/fe-text/textbuffer-view.c",
+            "textbuffer_view_resize",
+            "void textbuffer_view_resize(TEXT_BUFFER_VIEW_REC *view, int width, int height) /* <=== textbuffer_view_resize */ \n{\n\tint linecount;\n\n        g_return_if_fail(view != NULL);\n        g_return_if_fail(width > 0);\n\n\tif (view->width != width) {\n                /* line cache needs to be recreated */\n\t\ttextbuffer_cache_unref(view->cache);\n\t\tview->cache = textbuffer_cache_get(view->siblings, width);\n\t}\n\n\tview->width = width > 10 ? width : 10;\n\tview->height = height > 1 ? height : 1;\n\n\tif (view->buffer->first_line == NULL) {\n                view->empty_linecount = height;\n\t\treturn;\n\t}\n\n\ttextbuffer_view_init_bottom(view);\n\n\t/* check that we didn't scroll lower than bottom startline.. */\n\tif (textbuffer_line_exists_after(view->bottom_startline->next,\n\t\t\t\t\t view->startline)) {\n\t\tview->startline = view->bottom_startline;\n                view->subline = view->bottom_subline;\n\t} else if (view->startline == view->bottom_startline &&\n\t\t   view->subline > view->bottom_subline) {\n                view->subline = view->bottom_subline;\n\t} else {\n\t\t/* make sure the subline is still in allowed range */\n\t\tlinecount = view_get_linecount(view, view->startline);\n\t\tif (view->subline > linecount)\n                        view->subline = linecount;\n\t}\n\n\ttextbuffer_view_init_ypos(view);\n\tif (view->bottom && !view_is_bottom(view)) {\n\t\t/* we scrolled to far up, need to get down. go right over\n\t\t   the empty lines if there's any */\n\t\tview->startline = view->bottom_startline;\n\t\tview->subline = view->bottom_subline;\n\t\tif (view->empty_linecount > 0) {\n\t\t\tview_scroll(view, &view->startline, &view->subline,\n\t\t\t\t    -view->empty_linecount, FALSE);\n\t\t}\n\t\ttextbuffer_view_init_ypos(view);\n\t}\n\n\tview->bottom = view_is_bottom(view);\n\tif (view->bottom) {\n\t\t/* check if we left empty space at the bottom.. */\n\t\tlinecount = view_get_linecount_all(view, view->startline) -\n\t\t\tview->subline;\n                if (view->empty_linecount < view->height-linecount)\n\t\t\tview->empty_linecount = view->height-linecount;\n                view->more_text = FALSE;\n\t}\n\n\tview->dirty = TRUE;\n}",
+            3
+        ],
+        [
+            "src/core/modules.c",
+            "module_get_uniq_id_str",
+            "int module_get_uniq_id_str(const char *module, const char *id) /* <=== module_get_uniq_id_str */ \n{\n        GHashTable *ids;\n\tgpointer origkey, uniqid;\n\tint ret;\n\n\tg_return_val_if_fail(module != NULL, -1);\n\n\tids = g_hash_table_lookup(stridlookup, module);\n\tif (ids == NULL) {\n\t\t/* new module */\n\t\tids = g_hash_table_new((GHashFunc) g_str_hash,\n\t\t\t\t       (GCompareFunc) g_str_equal);\n\t\tg_hash_table_insert(stridlookup, g_strdup(module), ids);\n\t}\n\n\tif (!g_hash_table_lookup_extended(ids, id, &origkey, &uniqid)) {\n\t\t/* not found */\n\t\tchar *saveid;\n\n\t\tsaveid = g_strdup(id);\n\t\tret = next_uniq_id++;\n                g_hash_table_insert(ids, saveid, GINT_TO_POINTER(ret));\n                g_hash_table_insert(uniqstrids, GINT_TO_POINTER(ret), saveid);\n\t} else {\n                ret = GPOINTER_TO_INT(uniqid);\n\t}\n\n\treturn ret;\n}",
+            3
+        ],
+        [
+            "src/fe-common/core/printtext.c",
+            "printformat_module_dest_args",
+            "void printformat_module_dest_args(const char *module, TEXT_DEST_REC *dest, /* <=== printformat_module_dest_args */ \n\t\t\t\t  int formatnum, va_list va)\n{\n\tchar *arglist[MAX_FORMAT_PARAMS];\n\tchar buffer[DEFAULT_FORMAT_ARGLIST_SIZE];\n\tFORMAT_REC *formats;\n\n\tformats = g_hash_table_lookup(default_formats, module);\n\tformat_read_arglist(va, &formats[formatnum],\n\t\t\t    arglist, sizeof(arglist)/sizeof(char *),\n\t\t\t    buffer, sizeof(buffer));\n\n\tprintformat_module_dest_charargs(module, dest, formatnum, arglist);\n}",
+            3
+        ],
+        [
+            "src/fe-text/mainwindows.h",
+            "MAIN_WINDOW_TEXT_HEIGHT",
+            "#define MAIN_WINDOW_TEXT_HEIGHT(window) \\ /* <=== src/fe-text/mainwindows.h:10:11:MAIN_WINDOW_TEXT_HEIGHT:1 */ \n        ((window)->height-(window)->statusbar_lines)",
+            2
+        ],
+        [
+            "src/core/settings.c",
+            "settings_get_bool",
+            "int settings_get_bool(const char *key) /* <=== settings_get_bool */ \n{\n\tSETTINGS_REC *rec;\n\tCONFIG_NODE *node;\n\n\trec = settings_get(key, SETTING_TYPE_BOOLEAN);\n\tif (rec == NULL) return FALSE;\n\n\tnode = iconfig_node_traverse(\"settings\", FALSE);\n\tnode = node == NULL ? NULL : iconfig_node_section(node, rec->module, -1);\n\n\treturn node == NULL ? rec->default_value.v_bool :\n\t\tconfig_node_get_bool(node, key, rec->default_value.v_bool);\n}",
+            1
+        ],
+        [
+            "src/fe-text/gui-windows.c",
+            "gui_window_set_unsticky",
+            "void gui_window_set_unsticky(WINDOW_REC *window) /* <=== gui_window_set_unsticky */ \n{\n\tGUI_WINDOW_REC *gui = WINDOW_GUI(window);\n\n\tif (gui->sticky) {\n\t\tgui->sticky = FALSE;\n\t\tgui->parent->sticky_windows--;\n\t}\n}",
+            2
+        ],
+        [
+            "src/fe-text/module.h",
+            "irssi_set_dirty",
+            "void irssi_set_dirty(void); /* <=== irssi_set_dirty */ ",
+            3
+        ],
+        [
+            "src/fe-text/gui-windows.c",
+            "gui_window_resize",
+            "void gui_window_resize(WINDOW_REC *window, int width, int height) /* <=== gui_window_resize */ \n{\n\tGUI_WINDOW_REC *gui;\n\n\tif (window->width == width && window->height == height)\n                return;\n\n\tgui = WINDOW_GUI(window);\n\n\tirssi_set_dirty();\n        WINDOW_MAIN(window)->dirty = TRUE;\n\n        window->width = width;\n\twindow->height = height;\n        textbuffer_view_resize(gui->view, width, height);\n}",
+            2
+        ],
+        [
+            "src/fe-text/gui-windows.h",
+            "is_window_visible",
+            "#define is_window_visible(win) \\ /* <=== src/fe-text/gui-windows.h:10:11:is_window_visible:1 */ \n    (WINDOW_GUI(win)->parent->active == (win))",
+            1
+        ],
+        [
+            "src/lib-config/iconfig.h",
+            "config_node_section",
+            "CONFIG_NODE *config_node_section(CONFIG_REC *rec, CONFIG_NODE *parent, const char *key, int new_type); /* <=== config_node_section */ ",
+            2
+        ],
+        [
+            "src/lib-config/iconfig.h",
+            "config_node_traverse",
+            "CONFIG_NODE *config_node_traverse(CONFIG_REC *rec, const char *section, int create); /* <=== config_node_traverse */ ",
+            2
+        ],
+        [
+            "src/core/signals.h",
+            "signal_get_uniq_id",
+            "#define signal_get_uniq_id(signal) \\ /* <=== src/core/signals.h:67:68:signal_get_uniq_id:1 */ \n        module_get_uniq_id_str(\"signals\", signal)",
+            3
+        ],
+        [
+            "src/fe-text/gui-windows.c",
+            "gui_window_reparent",
+            "void gui_window_reparent(WINDOW_REC *window, MAIN_WINDOW_REC *parent) /* <=== gui_window_reparent */ \n{\n\tMAIN_WINDOW_REC *oldparent;\n\n\toldparent = WINDOW_MAIN(window);\n\tif (oldparent == parent)\n\t\treturn;\n\n        gui_window_set_unsticky(window);\n\ttextbuffer_view_set_window(WINDOW_GUI(window)->view, NULL);\n\n\tWINDOW_MAIN(window) = parent;\n        if (parent->sticky_windows)\n\t\tgui_window_set_sticky(window);\n\n\tif (MAIN_WINDOW_TEXT_HEIGHT(parent) !=\n\t    MAIN_WINDOW_TEXT_HEIGHT(oldparent) ||\n\t    parent->width != oldparent->width) {\n\t\tgui_window_resize(window, parent->width,\n\t\t\t\t  MAIN_WINDOW_TEXT_HEIGHT(parent));\n\t}\n}",
+            1
+        ],
+        [
+            "src/fe-common/core/formats.c",
+            "format_create_dest",
+            "void format_create_dest(TEXT_DEST_REC *dest, /* <=== format_create_dest */ \n\t\t\tvoid *server, const char *target,\n\t\t\tint level, WINDOW_REC *window)\n{\n\tformat_create_dest_tag(dest, server, NULL, target, level, window);\n}",
+            3
+        ],
+        [
+            "src/fe-text/gui-windows.h",
+            "WINDOW_MAIN",
+            "#define WINDOW_MAIN(a) (WINDOW_GUI(a)->parent) /* <=== src/fe-text/gui-windows.h:8:8:WINDOW_MAIN:1 */ ",
+            2
+        ],
+        [
+            "src/core/settings.h",
+            "iconfig_node_section",
+            "#define iconfig_node_section(a, b, c) config_node_section(mainconfig, a, b, c) /* <=== src/core/settings.h:49:49:iconfig_node_section:3 */ ",
+            2
+        ],
+        [
+            "src/fe-common/core/printtext.h",
+            "printformat_window",
+            "static /* <=== printformat_window */ \n#endif\nvoid printformat_window(WINDOW_REC *window, int level, int formatnum, ...)\n{\n\tva_list va;\n\n\tva_start(va, formatnum);\n\tprintformat_module_window_args(MODULE_NAME, window, level, formatnum, va);\n\tva_end(va);\n}",
+            1
+        ],
+        [
+            "src/fe-text/gui-windows.h",
+            "WINDOW_GUI",
+            "#define WINDOW_GUI(a) ((GUI_WINDOW_REC *) ((a)->gui_data)) /* <=== src/fe-text/gui-windows.h:7:7:WINDOW_GUI:1 */ ",
+            1
+        ],
+        [
+            "src/core/settings.h",
+            "iconfig_node_traverse",
+            "#define iconfig_node_traverse(a, b) config_node_traverse(mainconfig, a, b) /* <=== src/core/settings.h:51:51:iconfig_node_traverse:2 */ ",
+            2
+        ],
+        [
+            "src/fe-text/textbuffer-view.c",
+            "textbuffer_view_set_window",
+            "void textbuffer_view_set_window(TEXT_BUFFER_VIEW_REC *view, /* <=== textbuffer_view_set_window */ \n\t\t\t\tTERM_WINDOW *window)\n{\n\tg_return_if_fail(view != NULL);\n\n\tif (view->window != window) {\n\t\tview->window = window;\n                if (window != NULL)\n\t\t\tview->dirty = TRUE;\n\t}\n}",
+            2
+        ],
+        [
+            "src/core/signals.c",
+            "signal_emit",
+            "int signal_emit(const char *signal, int params, ...) /* <=== signal_emit */ \n{\n\tSignal *rec;\n\tva_list va;\n\tint signal_id;\n\n\tg_return_val_if_fail(params >= 0 && params <= SIGNAL_MAX_ARGUMENTS, FALSE);\n\n\tsignal_id = signal_get_uniq_id(signal);\n\n\trec = g_hash_table_lookup(signals, GINT_TO_POINTER(signal_id));\n\tif (rec != NULL) {\n\t\tva_start(va, params);\n\t\tsignal_emit_real(rec, params, va, rec->hooks);\n\t\tva_end(va);\n\t}\n\n\treturn rec != NULL;\n}",
+            2
+        ],
+        [
+            "src/core/signals.h",
+            "SIGNAL_MAX_ARGUMENTS",
+            "#define SIGNAL_MAX_ARGUMENTS 6 /* <=== src/core/signals.h:8:8:SIGNAL_MAX_ARGUMENTS:0 */ ",
+            3
+        ],
+        [
+            "src/lib-config/iconfig.h",
+            "config_node_get_bool",
+            "int config_node_get_bool(CONFIG_NODE *parent, const char *key, int def); /* <=== config_node_get_bool */ ",
+            2
+        ],
+        [
+            "src/fe-common/core/printtext.c",
+            "printformat_module_window_args",
+            "void printformat_module_window_args(const char *module, WINDOW_REC *window, /* <=== printformat_module_window_args */ \n\t\t\t\t    int level, int formatnum, va_list va)\n{\n\tTEXT_DEST_REC dest;\n\n\tformat_create_dest(&dest, NULL, NULL, level, window);\n\tprintformat_module_dest_args(module, &dest, formatnum, va);\n}",
+            2
+        ],
+        [
+            "src/fe-text/gui-windows.c",
+            "gui_window_set_sticky",
+            "void gui_window_set_sticky(WINDOW_REC *window) /* <=== gui_window_set_sticky */ \n{\n\tGUI_WINDOW_REC *gui = WINDOW_GUI(window);\n\n\tif (!gui->sticky) {\n\t\tgui->sticky = TRUE;\n\t\tgui->parent->sticky_windows++;\n\t}\n}",
+            1
+        ]
+    ],
+    "globalVars": [
+        "MAIN_WINDOW_REC* active_mainwin"
+    ],
+    "importContext": [
+        "#include \"module.h\"",
+        "#include \"term.h\"",
+        "#include \"module-formats.h\"",
+        "#include \"misc.h\"",
+        "#include \"signals.h\"",
+        "#include \"printtext.h\"",
+        "#include \"settings.h\"",
+        "#include \"gui-windows.h\"",
+        "#include \"commands.h\"",
+        "#include \"levels.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct _WINDOW_REC WINDOW_REC;",
+            "WINDOW_REC"
+        ],
+        [
+            "typedef struct {\n\tWINDOW_REC *active;\n\n\tTERM_WINDOW *screen_win;\n\tint sticky_windows; /* number of sticky windows */\n\n\tint first_line, last_line; /* first/last line used by this window (0..x) (includes statusbars) */\n\tint first_column, last_column; /* first/last column used by this window (0..x) (includes statusbars) */\n\tint width, height; /* width/height of the window (includes statusbars) */\n\n\tGSList *statusbars;\n\tint statusbar_lines_top, statusbar_lines_bottom;\n\tint statusbar_lines; /* top+bottom */\n\tint statusbar_columns_left, statusbar_columns_right;\n\tint statusbar_columns; /* left+right */\n\n\tunsigned int dirty:1; /* This window needs a redraw */\n\tunsigned int size_dirty:1; /* We'll need to resize the window, but haven't got around doing it just yet. */\n}",
+            "MAIN_WINDOW_REC"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/fe-text/mainwindows.c": [
+            1367,
+            1384,
+            1387,
+            1388,
+            1396,
+            1397,
+            1401,
+            1402,
+            1404,
+            1405,
+            1407,
+            1408
+        ]
+    },
+    "visitedLines_before": {
+        "src/fe-text/mainwindows.c": [
+            1367,
+            1384,
+            1387,
+            1388,
+            1396,
+            1397,
+            1399,
+            1400,
+            1402,
+            1403
+        ]
+    },
+    "visitedParams": {},
+    "vulnerableMethods_after": [
+        [
+            "src/fe-text/mainwindows.c",
+            "_cmd_window_show_opt",
+            "static void _cmd_window_show_opt(const char *data, int right) /* <=== _cmd_window_show_opt */ \n{\n\tMAIN_WINDOW_REC *parent;\n\tWINDOW_REC *window;\n\n\tif (*data == '\\0') cmd_return_error(CMDERR_NOT_ENOUGH_PARAMS);\n\n\tif (is_numeric(data, '\\0')) {\n\t\twindow = window_find_refnum(atoi(data));\n\t\tif (window == NULL) {\n\t\t\tprintformat_window(active_win, MSGLEVEL_CLIENTERROR,\n\t\t\t\t\t   TXT_REFNUM_NOT_FOUND, data);\n\t\t}\n\t} else {\n\t\twindow = window_find_item(active_win->active_server, data);\n\t}\n\n\tif (window == NULL || is_window_visible(window))\n\t\treturn;\n\n\tif (WINDOW_GUI(window)->sticky) {\n\t\tif (!settings_get_bool(\"autounstick_windows\")) {\n\t\t\tprintformat_window(active_win, MSGLEVEL_CLIENTERROR,\n\t\t\t\t\t   TXT_CANT_SHOW_STICKY_WINDOWS);\n\t\t\treturn;\n\t\t}\n\t}\n\n\tparent = mainwindow_create(right);\n\tif (parent == NULL) {\n\t\tprintformat_window(active_win, MSGLEVEL_CLIENTERROR, TXT_WINDOW_TOO_SMALL);\n\t\treturn;\n\t}\n\n\tparent->active = window;\n\tgui_window_reparent(window, parent);\n\n\tif (settings_get_bool(\"autostick_split_windows\"))\n\t\tgui_window_set_sticky(window);\n\n\tactive_mainwin = NULL;\n\twindow_set_active(window);\n}",
+            1367
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/fe-text/mainwindows.c",
+            "_cmd_window_show_opt",
+            "static void _cmd_window_show_opt(const char *data, int right) /* <=== _cmd_window_show_opt */ \n{\n\tMAIN_WINDOW_REC *parent;\n\tWINDOW_REC *window;\n\n\tif (*data == '\\0') cmd_return_error(CMDERR_NOT_ENOUGH_PARAMS);\n\n\tif (is_numeric(data, '\\0')) {\n\t\twindow = window_find_refnum(atoi(data));\n\t\tif (window == NULL) {\n\t\t\tprintformat_window(active_win, MSGLEVEL_CLIENTERROR,\n\t\t\t\t\t   TXT_REFNUM_NOT_FOUND, data);\n\t\t}\n\t} else {\n\t\twindow = window_find_item(active_win->active_server, data);\n\t}\n\n\tif (window == NULL || is_window_visible(window))\n\t\treturn;\n\n\tif (WINDOW_GUI(window)->sticky) {\n\t\tif (!settings_get_bool(\"autounstick_windows\")) {\n\t\t\tprintformat_window(active_win, MSGLEVEL_CLIENTERROR,\n\t\t\t\t\t   TXT_CANT_SHOW_STICKY_WINDOWS);\n\t\t\treturn;\n\t\t}\n\t}\n\n\tparent = mainwindow_create(right);\n\tparent->active = window;\n\tgui_window_reparent(window, parent);\n\n\tif (settings_get_bool(\"autostick_split_windows\"))\n\t\tgui_window_set_sticky(window);\n\n\tactive_mainwin = NULL;\n\twindow_set_active(window);\n}",
+            1367
+        ]
+    ]
+}

@@ -1,0 +1,724 @@
+{
+    "calleeMethods": [
+        [
+            "libavutil/pixfmt.h",
+            "AV_PIX_FMT_GBRAP10",
+            "#define AV_PIX_FMT_GBRAP10   AV_PIX_FMT_NE(GBRAP10BE,   GBRAP10LE) /* <=== libavutil/pixfmt.h:361:361:AV_PIX_FMT_GBRAP10:0 */ ",
+            1
+        ],
+        [
+            "libavutil/pixfmt.h",
+            "AV_PIX_FMT_YUV422P10",
+            "#define AV_PIX_FMT_YUV422P10 AV_PIX_FMT_NE(YUV422P10BE, YUV422P10LE) /* <=== libavutil/pixfmt.h:342:342:AV_PIX_FMT_YUV422P10:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "OPEN_READER",
+            "#define OPEN_READER(name, gb) OPEN_READER_NOSIZE(name, gb) /* <=== libavcodec/get_bits.h:120:120:OPEN_READER:2 */ ",
+            3
+        ],
+        [
+            "libavcodec/utvideodec.c",
+            "build_huff",
+            "static int build_huff(const uint8_t *src, VLC *vlc, int *fsym) /* <=== build_huff */ \n{\n    int i;\n    HuffEntry he[256];\n    int last;\n    uint32_t codes[256];\n    uint8_t bits[256];\n    uint8_t syms[256];\n    uint32_t code;\n\n    *fsym = -1;\n    for (i = 0; i < 256; i++) {\n        he[i].sym = i;\n        he[i].len = *src++;\n    }\n    qsort(he, 256, sizeof(*he), ff_ut_huff_cmp_len);\n\n    if (!he[0].len) {\n        *fsym = he[0].sym;\n        return 0;\n    }\n\n    last = 255;\n    while (he[last].len == 255 && last)\n        last--;\n\n    if (he[last].len > 32)\n        return -1;\n\n    code = 1;\n    for (i = last; i >= 0; i--) {\n        codes[i] = code >> (32 - he[i].len);\n        bits[i]  = he[i].len;\n        syms[i]  = he[i].sym;\n        code += 0x80000000u >> (he[i].len - 1);\n    }\n\n    return ff_init_vlc_sparse(vlc, FFMIN(he[last].len, 11), last + 1,\n                              bits,  sizeof(*bits),  sizeof(*bits),\n                              codes, sizeof(*codes), sizeof(*codes),\n                              syms,  sizeof(*syms),  sizeof(*syms), 0);\n}",
+            2
+        ],
+        [
+            "libavcodec/utvideodec.c",
+            "decode_plane",
+            "static int decode_plane(UtvideoContext *c, int plane_no, /* <=== decode_plane */ \n                        uint8_t *dst, int step, int stride,\n                        int width, int height,\n                        const uint8_t *src, int use_pred)\n{\n    int i, j, slice, pix;\n    int sstart, send;\n    VLC vlc;\n    GetBitContext gb;\n    int prev, fsym;\n    const int cmask = ~(!plane_no && c->avctx->pix_fmt == AV_PIX_FMT_YUV420P);\n\n    if (build_huff(src, &vlc, &fsym)) {\n        av_log(c->avctx, AV_LOG_ERROR, \"Cannot build Huffman codes\\n\");\n        return AVERROR_INVALIDDATA;\n    }\n    if (fsym >= 0) { // build_huff reported a symbol to fill slices with\n        send = 0;\n        for (slice = 0; slice < c->slices; slice++) {\n            uint8_t *dest;\n\n            sstart = send;\n            send   = (height * (slice + 1) / c->slices) & cmask;\n            dest   = dst + sstart * stride;\n\n            prev = 0x80;\n            for (j = sstart; j < send; j++) {\n                for (i = 0; i < width * step; i += step) {\n                    pix = fsym;\n                    if (use_pred) {\n                        prev += pix;\n                        pix   = prev;\n                    }\n                    dest[i] = pix;\n                }\n                dest += stride;\n            }\n        }\n        return 0;\n    }\n\n    src      += 256;\n\n    send = 0;\n    for (slice = 0; slice < c->slices; slice++) {\n        uint8_t *dest;\n        int slice_data_start, slice_data_end, slice_size;\n\n        sstart = send;\n        send   = (height * (slice + 1) / c->slices) & cmask;\n        dest   = dst + sstart * stride;\n\n        // slice offset and size validation was done earlier\n        slice_data_start = slice ? AV_RL32(src + slice * 4 - 4) : 0;\n        slice_data_end   = AV_RL32(src + slice * 4);\n        slice_size       = slice_data_end - slice_data_start;\n\n        if (!slice_size) {\n            av_log(c->avctx, AV_LOG_ERROR, \"Plane has more than one symbol \"\n                   \"yet a slice has a length of zero.\\n\");\n            goto fail;\n        }\n\n        memcpy(c->slice_bits, src + slice_data_start + c->slices * 4,\n               slice_size);\n        memset(c->slice_bits + slice_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);\n        c->bdsp.bswap_buf((uint32_t *) c->slice_bits,\n                          (uint32_t *) c->slice_bits,\n                          (slice_data_end - slice_data_start + 3) >> 2);\n        init_get_bits(&gb, c->slice_bits, slice_size * 8);\n\n        prev = 0x80;\n        for (j = sstart; j < send; j++) {\n            for (i = 0; i < width * step; i += step) {\n                if (get_bits_left(&gb) <= 0) {\n                    av_log(c->avctx, AV_LOG_ERROR,\n                           \"Slice decoding ran out of bits\\n\");\n                    goto fail;\n                }\n                pix = get_vlc2(&gb, vlc.table, vlc.bits, 3);\n                if (pix < 0) {\n                    av_log(c->avctx, AV_LOG_ERROR, \"Decoding error\\n\");\n                    goto fail;\n                }\n                if (use_pred) {\n                    prev += pix;\n                    pix   = prev;\n                }\n                dest[i] = pix;\n            }\n            dest += stride;\n        }\n        if (get_bits_left(&gb) > 32)\n            av_log(c->avctx, AV_LOG_WARNING,\n                   \"%d bits left after decoding slice\\n\", get_bits_left(&gb));\n    }\n\n    ff_free_vlc(&vlc);\n\n    return 0;\nfail:\n    ff_free_vlc(&vlc);\n    return AVERROR_INVALIDDATA;\n}",
+            1
+        ],
+        [
+            "libavutil/buffer.h",
+            "av_buffer_unref",
+            "void av_buffer_unref(AVBufferRef **buf); /* <=== av_buffer_unref */ ",
+            3
+        ],
+        [
+            "libavcodec/utvideodec.c",
+            "restore_rgb_planes",
+            "static void restore_rgb_planes(uint8_t *src, int step, int stride, int width, /* <=== restore_rgb_planes */ \n                               int height)\n{\n    int i, j;\n    uint8_t r, g, b;\n\n    for (j = 0; j < height; j++) {\n        for (i = 0; i < width * step; i += step) {\n            r = src[i];\n            g = src[i + 1];\n            b = src[i + 2];\n            src[i]     = r + g - 0x80;\n            src[i + 2] = b + g - 0x80;\n        }\n        src += stride;\n    }\n}",
+            1
+        ],
+        [
+            "libavcodec/ffv1dec.c",
+            "decode_plane",
+            "static void decode_plane(FFV1Context *s, uint8_t *src, /* <=== decode_plane */ \n                         int w, int h, int stride, int plane_index,\n                         int pixel_stride)\n{\n    int x, y;\n    int16_t *sample[2];\n    sample[0] = s->sample_buffer + 3;\n    sample[1] = s->sample_buffer + w + 6 + 3;\n\n    s->run_index = 0;\n\n    memset(s->sample_buffer, 0, 2 * (w + 6) * sizeof(*s->sample_buffer));\n\n    for (y = 0; y < h; y++) {\n        int16_t *temp = sample[0]; // FIXME: try a normal buffer\n\n        sample[0] = sample[1];\n        sample[1] = temp;\n\n        sample[1][-1] = sample[0][0];\n        sample[0][w]  = sample[0][w - 1];\n\n// { START_TIMER\n        if (s->avctx->bits_per_raw_sample <= 8) {\n            decode_line(s, w, sample, plane_index, 8);\n            for (x = 0; x < w; x++)\n                src[x*pixel_stride + stride * y] = sample[1][x];\n        } else {\n            decode_line(s, w, sample, plane_index, s->avctx->bits_per_raw_sample);\n            if (s->packed_at_lsb) {\n                for (x = 0; x < w; x++) {\n                    ((uint16_t*)(src + stride*y))[x*pixel_stride] = sample[1][x];\n                }\n            } else {\n                for (x = 0; x < w; x++) {\n                    ((uint16_t*)(src + stride*y))[x*pixel_stride] = sample[1][x] << (16 - s->avctx->bits_per_raw_sample);\n                }\n            }\n        }\n// STOP_TIMER(\"decode-line\") }\n    }\n}",
+            1
+        ],
+        [
+            "libavutil/log.c",
+            "avpriv_request_sample",
+            "void avpriv_request_sample(void *avc, const char *msg, ...) /* <=== avpriv_request_sample */ \n{\n    va_list argument_list;\n\n    va_start(argument_list, msg);\n    missing_feature_sample(1, avc, msg, argument_list);\n    va_end(argument_list);\n}",
+            1
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "FF_THREAD_FRAME",
+            "#define FF_THREAD_FRAME   1 ///< Decode more than one frame at once /* <=== libavcodec/avcodec.h:3129:3129:FF_THREAD_FRAME:0 */ ",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_fast_malloc",
+            "void av_fast_malloc(void *ptr, unsigned int *size, size_t min_size) /* <=== av_fast_malloc */ \n{\n    ff_fast_malloc(ptr, size, min_size, 0);\n}",
+            1
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_bytes_left",
+            "static av_always_inline unsigned int bytestream2_get_bytes_left(GetByteContext *g) /* <=== bytestream2_get_bytes_left */ \n{\n    return g->buffer_end - g->buffer;\n}",
+            1
+        ],
+        [
+            "libavcodec/vlc.h",
+            "ff_init_vlc_sparse",
+            "int ff_init_vlc_sparse(VLC *vlc, int nb_bits, int nb_codes, /* <=== ff_init_vlc_sparse */ \n                       const void *bits, int bits_wrap, int bits_size,\n                       const void *codes, int codes_wrap, int codes_size,\n                       const void *symbols, int symbols_wrap, int symbols_size,\n                       int flags);",
+            3
+        ],
+        [
+            "libavcodec/utvideodec.c",
+            "decode_plane10",
+            "static int decode_plane10(UtvideoContext *c, int plane_no, /* <=== decode_plane10 */ \n                          uint16_t *dst, int step, int stride,\n                          int width, int height,\n                          const uint8_t *src, const uint8_t *huff,\n                          int use_pred)\n{\n    int i, j, slice, pix, ret;\n    int sstart, send;\n    VLC vlc;\n    GetBitContext gb;\n    int prev, fsym;\n\n    if ((ret = build_huff10(huff, &vlc, &fsym)) < 0) {\n        av_log(c->avctx, AV_LOG_ERROR, \"Cannot build Huffman codes\\n\");\n        return ret;\n    }\n    if (fsym >= 0) { // build_huff reported a symbol to fill slices with\n        send = 0;\n        for (slice = 0; slice < c->slices; slice++) {\n            uint16_t *dest;\n\n            sstart = send;\n            send   = (height * (slice + 1) / c->slices);\n            dest   = dst + sstart * stride;\n\n            prev = 0x200;\n            for (j = sstart; j < send; j++) {\n                for (i = 0; i < width * step; i += step) {\n                    pix = fsym;\n                    if (use_pred) {\n                        prev += pix;\n                        prev &= 0x3FF;\n                        pix   = prev;\n                    }\n                    dest[i] = pix;\n                }\n                dest += stride;\n            }\n        }\n        return 0;\n    }\n\n    send = 0;\n    for (slice = 0; slice < c->slices; slice++) {\n        uint16_t *dest;\n        int slice_data_start, slice_data_end, slice_size;\n\n        sstart = send;\n        send   = (height * (slice + 1) / c->slices);\n        dest   = dst + sstart * stride;\n\n        // slice offset and size validation was done earlier\n        slice_data_start = slice ? AV_RL32(src + slice * 4 - 4) : 0;\n        slice_data_end   = AV_RL32(src + slice * 4);\n        slice_size       = slice_data_end - slice_data_start;\n\n        if (!slice_size) {\n            av_log(c->avctx, AV_LOG_ERROR, \"Plane has more than one symbol \"\n                   \"yet a slice has a length of zero.\\n\");\n            goto fail;\n        }\n\n        memcpy(c->slice_bits, src + slice_data_start + c->slices * 4,\n               slice_size);\n        memset(c->slice_bits + slice_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);\n        c->bdsp.bswap_buf((uint32_t *) c->slice_bits,\n                          (uint32_t *) c->slice_bits,\n                          (slice_data_end - slice_data_start + 3) >> 2);\n        init_get_bits(&gb, c->slice_bits, slice_size * 8);\n\n        prev = 0x200;\n        for (j = sstart; j < send; j++) {\n            for (i = 0; i < width * step; i += step) {\n                if (get_bits_left(&gb) <= 0) {\n                    av_log(c->avctx, AV_LOG_ERROR,\n                           \"Slice decoding ran out of bits\\n\");\n                    goto fail;\n                }\n                pix = get_vlc2(&gb, vlc.table, vlc.bits, 3);\n                if (pix < 0) {\n                    av_log(c->avctx, AV_LOG_ERROR, \"Decoding error\\n\");\n                    goto fail;\n                }\n                if (use_pred) {\n                    prev += pix;\n                    prev &= 0x3FF;\n                    pix   = prev;\n                }\n                dest[i] = pix;\n            }\n            dest += stride;\n        }\n        if (get_bits_left(&gb) > 32)\n            av_log(c->avctx, AV_LOG_WARNING,\n                   \"%d bits left after decoding slice\\n\", get_bits_left(&gb));\n    }\n\n    ff_free_vlc(&vlc);\n\n    return 0;\nfail:\n    ff_free_vlc(&vlc);\n    return AVERROR_INVALIDDATA;\n}",
+            1
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_finish_setup",
+            "void ff_thread_finish_setup(AVCodecContext *avctx) { /* <=== ff_thread_finish_setup */ \n    PerThreadContext *p = avctx->internal->thread_ctx;\n\n    if (!(avctx->active_thread_type&FF_THREAD_FRAME)) return;\n\n    if(p->state == STATE_SETUP_FINISHED){\n        av_log(avctx, AV_LOG_WARNING, \"Multiple ff_thread_finish_setup() calls\\n\");\n    }\n\n    pthread_mutex_lock(&p->progress_mutex);\n    p->state = STATE_SETUP_FINISHED;\n    pthread_cond_broadcast(&p->progress_cond);\n    pthread_mutex_unlock(&p->progress_mutex);\n}",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR",
+            "#define AVERROR(e) (e) /* <=== libavutil/error.h:43:43:AVERROR:1 */ ",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits_count",
+            "static inline int get_bits_count(const GetBitContext *s) /* <=== get_bits_count */ \n{\n    return s->index;\n}",
+            3
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_skipu",
+            "static av_always_inline void bytestream2_skipu(GetByteContext *g, /* <=== bytestream2_skipu */ \n                                               unsigned int size)\n{\n    g->buffer += size;\n}",
+            1
+        ],
+        [
+            "libavutil/pixfmt.h",
+            "AV_PIX_FMT_GBRP10",
+            "#define AV_PIX_FMT_GBRP10    AV_PIX_FMT_NE(GBRP10BE,    GBRP10LE) /* <=== libavutil/pixfmt.h:357:357:AV_PIX_FMT_GBRP10:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "AV_INPUT_BUFFER_PADDING_SIZE",
+            "#define AV_INPUT_BUFFER_PADDING_SIZE 32 /* <=== libavcodec/avcodec.h:734:734:AV_INPUT_BUFFER_PADDING_SIZE:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "CLOSE_READER",
+            "#define CLOSE_READER(name, gb) (gb)->index = name ## _index /* <=== libavcodec/get_bits.h:131:131:CLOSE_READER:2 */ ",
+            3
+        ],
+        [
+            "libavcodec/indeo3.c",
+            "RESYNC_BITSTREAM",
+            "#define RESYNC_BITSTREAM \\ /* <=== libavcodec/indeo3.c:738:743:RESYNC_BITSTREAM:0 */ \n    if (ctx->need_resync && !(get_bits_count(&ctx->gb) & 7)) { \\\n        skip_bits_long(&ctx->gb, ctx->skip_bits);              \\\n        ctx->skip_bits   = 0;                                  \\\n        ctx->need_resync = 0;                                  \\\n    }",
+            3
+        ],
+        [
+            "libavcodec/vlc.h",
+            "ff_free_vlc",
+            "void ff_free_vlc(VLC *vlc); /* <=== ff_free_vlc */ ",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "GET_VLC",
+            "#define GET_VLC(code, name, gb, table, bits, max_depth)         \\ /* <=== libavcodec/get_bits.h:462:492:GET_VLC:6 */ \n    do {                                                        \\\n        int n, nb_bits;                                         \\\n        unsigned int index;                                     \\\n                                                                \\\n        index = SHOW_UBITS(name, gb, bits);                     \\\n        code  = table[index][0];                                \\\n        n     = table[index][1];                                \\\n                                                                \\\n        if (max_depth > 1 && n < 0) {                           \\\n            LAST_SKIP_BITS(name, gb, bits);                     \\\n            UPDATE_CACHE(name, gb);                             \\\n                                                                \\\n            nb_bits = -n;                                       \\\n                                                                \\\n            index = SHOW_UBITS(name, gb, nb_bits) + code;       \\\n            code  = table[index][0];                            \\\n            n     = table[index][1];                            \\\n            if (max_depth > 2 && n < 0) {                       \\\n                LAST_SKIP_BITS(name, gb, nb_bits);              \\\n                UPDATE_CACHE(name, gb);                         \\\n                                                                \\\n                nb_bits = -n;                                   \\\n                                                                \\\n                index = SHOW_UBITS(name, gb, nb_bits) + code;   \\\n                code  = table[index][0];                        \\\n                n     = table[index][1];                        \\\n            }                                                   \\\n        }                                                       \\\n        SKIP_BITS(name, gb, n);                                 \\\n    } while (0)",
+            3
+        ],
+        [
+            "libavcodec/indeo3.c",
+            "SPLIT_CELL",
+            "#define SPLIT_CELL(size, new_size) (new_size) = ((size) > 2) ? ((((size) + 2) >> 2) << 1) : 1 /* <=== libavcodec/indeo3.c:732:732:SPLIT_CELL:2 */ ",
+            3
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "thread_get_buffer_internal",
+            "static int thread_get_buffer_internal(AVCodecContext *avctx, ThreadFrame *f, int flags) /* <=== thread_get_buffer_internal */ \n{\n    PerThreadContext *p = avctx->internal->thread_ctx;\n    int err;\n\n    f->owner = avctx;\n\n    ff_init_buffer_info(avctx, f->f);\n\n    if (!(avctx->active_thread_type & FF_THREAD_FRAME))\n        return ff_get_buffer(avctx, f->f, flags);\n\n    if (p->state != STATE_SETTING_UP &&\n        (avctx->codec->update_thread_context || !THREAD_SAFE_CALLBACKS(avctx))) {\n        av_log(avctx, AV_LOG_ERROR, \"get_buffer() cannot be called after ff_thread_finish_setup()\\n\");\n        return -1;\n    }\n\n    if (avctx->internal->allocate_progress) {\n        int *progress;\n        f->progress = av_buffer_alloc(2 * sizeof(int));\n        if (!f->progress) {\n            return AVERROR(ENOMEM);\n        }\n        progress = (int*)f->progress->data;\n\n        progress[0] = progress[1] = -1;\n    }\n\n    pthread_mutex_lock(&p->parent->buffer_mutex);\n    if (avctx->thread_safe_callbacks ||\n        avctx->get_buffer2 == avcodec_default_get_buffer2) {\n        err = ff_get_buffer(avctx, f->f, flags);\n    } else {\n        pthread_mutex_lock(&p->progress_mutex);\n        p->requested_frame = f->f;\n        p->requested_flags = flags;\n        p->state = STATE_GET_BUFFER;\n        pthread_cond_broadcast(&p->progress_cond);\n\n        while (p->state != STATE_SETTING_UP)\n            pthread_cond_wait(&p->progress_cond, &p->progress_mutex);\n\n        err = p->result;\n\n        pthread_mutex_unlock(&p->progress_mutex);\n\n    }\n    if (!THREAD_SAFE_CALLBACKS(avctx) && !avctx->codec->update_thread_context)\n        ff_thread_finish_setup(avctx);\n    if (err)\n        av_buffer_unref(&f->progress);\n\n    pthread_mutex_unlock(&p->parent->buffer_mutex);\n\n    return err;\n}",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "THREAD_SAFE_CALLBACKS",
+            "#define THREAD_SAFE_CALLBACKS(avctx) \\ /* <=== libavcodec/pthread_frame.c:118:119:THREAD_SAFE_CALLBACKS:1 */ \n((avctx)->thread_safe_callbacks || (avctx)->get_buffer2 == avcodec_default_get_buffer2)",
+            3
+        ],
+        [
+            "libavutil/log.c",
+            "missing_feature_sample",
+            "static void missing_feature_sample(int sample, void *avc, const char *msg, /* <=== missing_feature_sample */ \n                                   va_list argument_list)\n{\n    av_vlog(avc, AV_LOG_WARNING, msg, argument_list);\n    av_log(avc, AV_LOG_WARNING, \" is not implemented. Update your FFmpeg \"\n           \"version to the newest one from Git. If the problem still \"\n           \"occurs, it means that your file has a feature which has not \"\n           \"been implemented.\\n\");\n    if (sample)\n        av_log(avc, AV_LOG_WARNING, \"If you want to help, upload a sample \"\n               \"of this file to ftp://upload.ffmpeg.org/incoming/ \"\n               \"and contact the ffmpeg-devel mailing list. (ffmpeg-devel@ffmpeg.org)\\n\");\n}",
+            2
+        ],
+        [
+            "libavcodec/indeo3.c",
+            "UPDATE_BITPOS",
+            "#define UPDATE_BITPOS(n) \\ /* <=== libavcodec/indeo3.c:734:736:UPDATE_BITPOS:1 */ \n    ctx->skip_bits  += (n); \\\n    ctx->need_resync = 1",
+            3
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_get_buffer",
+            "int ff_thread_get_buffer(AVCodecContext *avctx, ThreadFrame *f, int flags) /* <=== ff_thread_get_buffer */ \n{\n    f->owner = avctx;\n    return ff_get_buffer(avctx, f->f, flags);\n}",
+            1
+        ],
+        [
+            "libavcodec/mathops.h",
+            "mid_pred",
+            "#define mid_pred mid_pred /* <=== libavcodec/mathops.h:96:96:mid_pred:0 */ ",
+            2
+        ],
+        [
+            "libavutil/log.c",
+            "av_vlog",
+            "void av_vlog(void* avcl, int level, const char *fmt, va_list vl) /* <=== av_vlog */ \n{\n    void (*log_callback)(void*, int, const char*, va_list) = av_log_callback;\n    if (log_callback)\n        log_callback(avcl, level, fmt, vl);\n}",
+            2
+        ],
+        [
+            "libavcodec/indeo3.c",
+            "CHECK_CELL",
+            "#define CHECK_CELL \\ /* <=== libavcodec/indeo3.c:745:751:CHECK_CELL:0 */ \n    if (curr_cell.xpos + curr_cell.width > (plane->width >> 2) ||               \\\n        curr_cell.ypos + curr_cell.height > (plane->height >> 2)) {             \\\n        av_log(avctx, AV_LOG_ERROR, \"Invalid cell: x=%d, y=%d, w=%d, h=%d\\n\",   \\\n               curr_cell.xpos, curr_cell.ypos, curr_cell.width, curr_cell.height); \\\n        return AVERROR_INVALIDDATA;                                                              \\\n    }",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "init_get_bits",
+            "static inline int init_get_bits(GetBitContext *s, const uint8_t *buffer, /* <=== init_get_bits */ \n                                int bit_size)\n{\n    int buffer_size;\n    int ret = 0;\n\n    if (bit_size >= INT_MAX - 7 || bit_size < 0 || !buffer) {\n        bit_size    = 0;\n        buffer      = NULL;\n        ret         = AVERROR_INVALIDDATA;\n    }\n\n    buffer_size = (bit_size + 7) >> 3;\n\n    s->buffer             = buffer;\n    s->size_in_bits       = bit_size;\n    s->size_in_bits_plus8 = bit_size + 8;\n    s->buffer_end         = buffer + buffer_size;\n    s->index              = 0;\n\n    return ret;\n}",
+            2
+        ],
+        [
+            "libavcodec/indeo3.c",
+            "copy_cell",
+            "static int copy_cell(Indeo3DecodeContext *ctx, Plane *plane, Cell *cell) /* <=== copy_cell */ \n{\n    int     h, w, mv_x, mv_y, offset, offset_dst;\n    uint8_t *src, *dst;\n\n    /* setup output and reference pointers */\n    offset_dst  = (cell->ypos << 2) * plane->pitch + (cell->xpos << 2);\n    dst         = plane->pixels[ctx->buf_sel] + offset_dst;\n    if(cell->mv_ptr){\n    mv_y        = cell->mv_ptr[0];\n    mv_x        = cell->mv_ptr[1];\n    }else\n        mv_x= mv_y= 0;\n\n    /* -1 because there is an extra line on top for prediction */\n    if ((cell->ypos << 2) + mv_y < -1 || (cell->xpos << 2) + mv_x < 0 ||\n        ((cell->ypos + cell->height) << 2) + mv_y > plane->height     ||\n        ((cell->xpos + cell->width)  << 2) + mv_x > plane->width) {\n        av_log(ctx->avctx, AV_LOG_ERROR,\n               \"Motion vectors point out of the frame.\\n\");\n        return AVERROR_INVALIDDATA;\n    }\n\n    offset      = offset_dst + mv_y * plane->pitch + mv_x;\n    src         = plane->pixels[ctx->buf_sel ^ 1] + offset;\n\n    h = cell->height << 2;\n\n    for (w = cell->width; w > 0;) {\n        /* copy using 16xH blocks */\n        if (!((cell->xpos << 2) & 15) && w >= 4) {\n            for (; w >= 4; src += 16, dst += 16, w -= 4)\n                ctx->hdsp.put_pixels_tab[0][0](dst, src, plane->pitch, h);\n        }\n\n        /* copy using 8xH blocks */\n        if (!((cell->xpos << 2) & 7) && w >= 2) {\n            ctx->hdsp.put_pixels_tab[1][0](dst, src, plane->pitch, h);\n            w -= 2;\n            src += 8;\n            dst += 8;\n        } else if (w >= 1) {\n            ctx->hdsp.put_pixels_tab[2][0](dst, src, plane->pitch, h);\n            w--;\n            src += 4;\n            dst += 4;\n        }\n    }\n\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavutil/log.c",
+            "av_log",
+            "void av_log(void* avcl, int level, const char *fmt, ...) /* <=== av_log */ \n{\n    AVClass* avc = avcl ? *(AVClass **) avcl : NULL;\n    va_list vl;\n    va_start(vl, fmt);\n    if (avc && avc->version >= (50 << 16 | 15 << 8 | 2) &&\n        avc->log_level_offset_offset && level >= AV_LOG_FATAL)\n        level += *(int *) (((uint8_t *) avcl) + avc->log_level_offset_offset);\n    av_vlog(avcl, level, fmt, vl);\n    va_end(vl);\n}",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "UPDATE_CACHE",
+            "# define UPDATE_CACHE(name, gb) UPDATE_CACHE_BE(name, gb) /* <=== libavcodec/get_bits.h:160:160:UPDATE_CACHE:2 */ ",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "skip_bits_long",
+            "static inline void skip_bits_long(GetBitContext *s, int n) /* <=== skip_bits_long */ \n{\n#if UNCHECKED_BITSTREAM_READER\n    s->index += n;\n#else\n    s->index += av_clip(n, -s->index, s->size_in_bits_plus8 - s->index);\n#endif\n}",
+            3
+        ],
+        [
+            "libavutil/buffer.h",
+            "av_buffer_alloc",
+            "AVBufferRef *av_buffer_alloc(int size); /* <=== av_buffer_alloc */ ",
+            3
+        ],
+        [
+            "libavcodec/indeo3.c",
+            "decode_plane",
+            "static int decode_plane(Indeo3DecodeContext *ctx, AVCodecContext *avctx, /* <=== decode_plane */ \n                        Plane *plane, const uint8_t *data, int32_t data_size,\n                        int32_t strip_width)\n{\n    Cell            curr_cell;\n    unsigned        num_vectors;\n\n    /* each plane data starts with mc_vector_count field, */\n    /* an optional array of motion vectors followed by the vq data */\n    num_vectors = bytestream_get_le32(&data); data_size -= 4;\n    if (num_vectors > 256) {\n        av_log(ctx->avctx, AV_LOG_ERROR,\n               \"Read invalid number of motion vectors %d\\n\", num_vectors);\n        return AVERROR_INVALIDDATA;\n    }\n    if (num_vectors * 2 > data_size)\n        return AVERROR_INVALIDDATA;\n\n    ctx->num_vectors = num_vectors;\n    ctx->mc_vectors  = num_vectors ? data : 0;\n\n    /* init the bitreader */\n    init_get_bits(&ctx->gb, &data[num_vectors * 2], (data_size - num_vectors * 2) << 3);\n    ctx->skip_bits   = 0;\n    ctx->need_resync = 0;\n\n    ctx->last_byte = data + data_size;\n\n    /* initialize the 1st cell and set its dimensions to whole plane */\n    curr_cell.xpos   = curr_cell.ypos = 0;\n    curr_cell.width  = plane->width  >> 2;\n    curr_cell.height = plane->height >> 2;\n    curr_cell.tree   = 0; // we are in the MC tree now\n    curr_cell.mv_ptr = 0; // no motion vector = INTRA cell\n\n    return parse_bintree(ctx, avctx, plane, INTRA_NULL, &curr_cell, CELL_STACK_MAX, strip_width);\n}",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits",
+            "static inline unsigned int get_bits(GetBitContext *s, int n) /* <=== get_bits */ \n{\n    register int tmp;\n    OPEN_READER(re, s);\n    av_assert2(n>0 && n<=25);\n    UPDATE_CACHE(re, s);\n    tmp = SHOW_UBITS(re, s, n);\n    LAST_SKIP_BITS(re, s, n);\n    CLOSE_READER(re, s);\n    return tmp;\n}",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_vlc2",
+            "static av_always_inline int get_vlc2(GetBitContext *s, VLC_TYPE (*table)[2], /* <=== get_vlc2 */ \n                                     int bits, int max_depth)\n{\n    int code;\n\n    OPEN_READER(re, s);\n    UPDATE_CACHE(re, s);\n\n    GET_VLC(code, re, s, table, bits, max_depth);\n\n    CLOSE_READER(re, s);\n\n    return code;\n}",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits_left",
+            "static inline int get_bits_left(GetBitContext *gb) /* <=== get_bits_left */ \n{\n    return gb->size_in_bits - get_bits_count(gb);\n}",
+            2
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_INVALIDDATA",
+            "#define AVERROR_INVALIDDATA        FFERRTAG( 'I','N','D','A') ///< Invalid data found when processing input /* <=== libavutil/error.h:59:59:AVERROR_INVALIDDATA:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_get_buffer",
+            "int ff_get_buffer(AVCodecContext *avctx, AVFrame *frame, int flags) /* <=== ff_get_buffer */ \n{\n    int ret = get_buffer_internal(avctx, frame, flags);\n    if (ret < 0) {\n        av_log(avctx, AV_LOG_ERROR, \"get_buffer() failed\\n\");\n        frame->width = frame->height = 0;\n    }\n    return ret;\n}",
+            2
+        ],
+        [
+            "libavcodec/indeo3.c",
+            "decode_cell",
+            "static int decode_cell(Indeo3DecodeContext *ctx, AVCodecContext *avctx, /* <=== decode_cell */ \n                       Plane *plane, Cell *cell, const uint8_t *data_ptr,\n                       const uint8_t *last_ptr)\n{\n    int           x, mv_x, mv_y, mode, vq_index, prim_indx, second_indx;\n    int           zoom_fac;\n    int           offset, error = 0, swap_quads[2];\n    uint8_t       code, *block, *ref_block = 0;\n    const vqEntry *delta[2];\n    const uint8_t *data_start = data_ptr;\n\n    /* get coding mode and VQ table index from the VQ descriptor byte */\n    code     = *data_ptr++;\n    mode     = code >> 4;\n    vq_index = code & 0xF;\n\n    /* setup output and reference pointers */\n    offset = (cell->ypos << 2) * plane->pitch + (cell->xpos << 2);\n    block  =  plane->pixels[ctx->buf_sel] + offset;\n\n    if (!cell->mv_ptr) {\n        /* use previous line as reference for INTRA cells */\n        ref_block = block - plane->pitch;\n    } else if (mode >= 10) {\n        /* for mode 10 and 11 INTER first copy the predicted cell into the current one */\n        /* so we don't need to do data copying for each RLE code later */\n        int ret = copy_cell(ctx, plane, cell);\n        if (ret < 0)\n            return ret;\n    } else {\n        /* set the pointer to the reference pixels for modes 0-4 INTER */\n        mv_y      = cell->mv_ptr[0];\n        mv_x      = cell->mv_ptr[1];\n\n        /* -1 because there is an extra line on top for prediction */\n        if ((cell->ypos << 2) + mv_y < -1 || (cell->xpos << 2) + mv_x < 0 ||\n            ((cell->ypos + cell->height) << 2) + mv_y > plane->height     ||\n            ((cell->xpos + cell->width)  << 2) + mv_x > plane->width) {\n            av_log(ctx->avctx, AV_LOG_ERROR,\n                   \"Motion vectors point out of the frame.\\n\");\n            return AVERROR_INVALIDDATA;\n        }\n\n        offset   += mv_y * plane->pitch + mv_x;\n        ref_block = plane->pixels[ctx->buf_sel ^ 1] + offset;\n    }\n\n    /* select VQ tables as follows: */\n    /* modes 0 and 3 use only the primary table for all lines in a block */\n    /* while modes 1 and 4 switch between primary and secondary tables on alternate lines */\n    if (mode == 1 || mode == 4) {\n        code        = ctx->alt_quant[vq_index];\n        prim_indx   = (code >> 4)  + ctx->cb_offset;\n        second_indx = (code & 0xF) + ctx->cb_offset;\n    } else {\n        vq_index += ctx->cb_offset;\n        prim_indx = second_indx = vq_index;\n    }\n\n    if (prim_indx >= 24 || second_indx >= 24) {\n        av_log(avctx, AV_LOG_ERROR, \"Invalid VQ table indexes! Primary: %d, secondary: %d!\\n\",\n               prim_indx, second_indx);\n        return AVERROR_INVALIDDATA;\n    }\n\n    delta[0] = &vq_tab[second_indx];\n    delta[1] = &vq_tab[prim_indx];\n    swap_quads[0] = second_indx >= 16;\n    swap_quads[1] = prim_indx   >= 16;\n\n    /* requantize the prediction if VQ index of this cell differs from VQ index */\n    /* of the predicted cell in order to avoid overflows. */\n    if (vq_index >= 8 && ref_block) {\n        for (x = 0; x < cell->width << 2; x++)\n            ref_block[x] = requant_tab[vq_index & 7][ref_block[x] & 127];\n    }\n\n    error = IV3_NOERR;\n\n    switch (mode) {\n    case 0: /*------------------ MODES 0 & 1 (4x4 block processing) --------------------*/\n    case 1:\n    case 3: /*------------------ MODES 3 & 4 (4x8 block processing) --------------------*/\n    case 4:\n        if (mode >= 3 && cell->mv_ptr) {\n            av_log(avctx, AV_LOG_ERROR, \"Attempt to apply Mode 3/4 to an INTER cell!\\n\");\n            return AVERROR_INVALIDDATA;\n        }\n\n        zoom_fac = mode >= 3;\n        error = decode_cell_data(ctx, cell, block, ref_block, plane->pitch,\n                                 0, zoom_fac, mode, delta, swap_quads,\n                                 &data_ptr, last_ptr);\n        break;\n    case 10: /*-------------------- MODE 10 (8x8 block processing) ---------------------*/\n    case 11: /*----------------- MODE 11 (4x8 INTER block processing) ------------------*/\n        if (mode == 10 && !cell->mv_ptr) { /* MODE 10 INTRA processing */\n            error = decode_cell_data(ctx, cell, block, ref_block, plane->pitch,\n                                     1, 1, mode, delta, swap_quads,\n                                     &data_ptr, last_ptr);\n        } else { /* mode 10 and 11 INTER processing */\n            if (mode == 11 && !cell->mv_ptr) {\n               av_log(avctx, AV_LOG_ERROR, \"Attempt to use Mode 11 for an INTRA cell!\\n\");\n               return AVERROR_INVALIDDATA;\n            }\n\n            zoom_fac = mode == 10;\n            error = decode_cell_data(ctx, cell, block, ref_block, plane->pitch,\n                                     zoom_fac, 1, mode, delta, swap_quads,\n                                     &data_ptr, last_ptr);\n        }\n        break;\n    default:\n        av_log(avctx, AV_LOG_ERROR, \"Unsupported coding mode: %d\\n\", mode);\n        return AVERROR_INVALIDDATA;\n    }//switch mode\n\n    switch (error) {\n    case IV3_BAD_RLE:\n        av_log(avctx, AV_LOG_ERROR, \"Mode %d: RLE code %X is not allowed at the current line\\n\",\n               mode, data_ptr[-1]);\n        return AVERROR_INVALIDDATA;\n    case IV3_BAD_DATA:\n        av_log(avctx, AV_LOG_ERROR, \"Mode %d: invalid VQ data\\n\", mode);\n        return AVERROR_INVALIDDATA;\n    case IV3_BAD_COUNTER:\n        av_log(avctx, AV_LOG_ERROR, \"Mode %d: RLE-FB invalid counter: %d\\n\", mode, code);\n        return AVERROR_INVALIDDATA;\n    case IV3_UNSUPPORTED:\n        av_log(avctx, AV_LOG_ERROR, \"Mode %d: unsupported RLE code: %X\\n\", mode, data_ptr[-1]);\n        return AVERROR_INVALIDDATA;\n    case IV3_OUT_OF_DATA:\n        av_log(avctx, AV_LOG_ERROR, \"Mode %d: attempt to read past end of buffer\\n\", mode);\n        return AVERROR_INVALIDDATA;\n    }\n\n    return data_ptr - data_start; /* report number of bytes consumed from the input buffer */\n}",
+            3
+        ],
+        [
+            "libavcodec/utvideodec.c",
+            "restore_rgb_planes10",
+            "static void restore_rgb_planes10(AVFrame *frame, int width, int height) /* <=== restore_rgb_planes10 */ \n{\n    uint16_t *src_r = (uint16_t *)frame->data[2];\n    uint16_t *src_g = (uint16_t *)frame->data[0];\n    uint16_t *src_b = (uint16_t *)frame->data[1];\n    int r, g, b;\n    int i, j;\n\n    for (j = 0; j < height; j++) {\n        for (i = 0; i < width; i++) {\n            r = src_r[i];\n            g = src_g[i];\n            b = src_b[i];\n            src_r[i] = (r + g - 0x200) & 0x3FF;\n            src_b[i] = (b + g - 0x200) & 0x3FF;\n        }\n        src_r += frame->linesize[2] / 2;\n        src_g += frame->linesize[0] / 2;\n        src_b += frame->linesize[1] / 2;\n    }\n}",
+            1
+        ],
+        [
+            "libavcodec/indeo3.c",
+            "CELL_STACK_MAX",
+            "#define CELL_STACK_MAX  20 /* <=== libavcodec/indeo3.c:72:72:CELL_STACK_MAX:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/utvideodec.c",
+            "restore_median",
+            "static void restore_median(uint8_t *src, int step, int stride, /* <=== restore_median */ \n                           int width, int height, int slices, int rmode)\n{\n    int i, j, slice;\n    int A, B, C;\n    uint8_t *bsrc;\n    int slice_start, slice_height;\n    const int cmask = ~rmode;\n\n    for (slice = 0; slice < slices; slice++) {\n        slice_start  = ((slice * height) / slices) & cmask;\n        slice_height = ((((slice + 1) * height) / slices) & cmask) -\n                       slice_start;\n\n        if (!slice_height)\n            continue;\n        bsrc = src + slice_start * stride;\n\n        // first line - left neighbour prediction\n        bsrc[0] += 0x80;\n        A = bsrc[0];\n        for (i = step; i < width * step; i += step) {\n            bsrc[i] += A;\n            A        = bsrc[i];\n        }\n        bsrc += stride;\n        if (slice_height <= 1)\n            continue;\n        // second line - first element has top prediction, the rest uses median\n        C        = bsrc[-stride];\n        bsrc[0] += C;\n        A        = bsrc[0];\n        for (i = step; i < width * step; i += step) {\n            B        = bsrc[i - stride];\n            bsrc[i] += mid_pred(A, B, (uint8_t)(A + B - C));\n            C        = B;\n            A        = bsrc[i];\n        }\n        bsrc += stride;\n        // the rest of lines use continuous median prediction\n        for (j = 2; j < slice_height; j++) {\n            for (i = 0; i < width * step; i += step) {\n                B        = bsrc[i - stride];\n                bsrc[i] += mid_pred(A, B, (uint8_t)(A + B - C));\n                C        = B;\n                A        = bsrc[i];\n            }\n            bsrc += stride;\n        }\n    }\n}",
+            1
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_PATCHWELCOME",
+            "#define AVERROR_PATCHWELCOME       FFERRTAG( 'P','A','W','E') ///< Not yet implemented in FFmpeg, patches welcome /* <=== libavutil/error.h:62:62:AVERROR_PATCHWELCOME:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/utils.c",
+            "get_buffer_internal",
+            "static int get_buffer_internal(AVCodecContext *avctx, AVFrame *frame, int flags) /* <=== get_buffer_internal */ \n{\n    const AVHWAccel *hwaccel = avctx->hwaccel;\n    int override_dimensions = 1;\n    int ret;\n\n    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {\n        if ((ret = av_image_check_size(avctx->width, avctx->height, 0, avctx)) < 0 || avctx->pix_fmt<0) {\n            av_log(avctx, AV_LOG_ERROR, \"video_get_buffer: image parameters invalid\\n\");\n            return AVERROR(EINVAL);\n        }\n\n        if (frame->width <= 0 || frame->height <= 0) {\n            frame->width  = FFMAX(avctx->width,  AV_CEIL_RSHIFT(avctx->coded_width,  avctx->lowres));\n            frame->height = FFMAX(avctx->height, AV_CEIL_RSHIFT(avctx->coded_height, avctx->lowres));\n            override_dimensions = 0;\n        }\n\n        if (frame->data[0] || frame->data[1] || frame->data[2] || frame->data[3]) {\n            av_log(avctx, AV_LOG_ERROR, \"pic->data[*]!=NULL in get_buffer_internal\\n\");\n            return AVERROR(EINVAL);\n        }\n    }\n    ret = ff_decode_frame_props(avctx, frame);\n    if (ret < 0)\n        return ret;\n\n    if (hwaccel) {\n        if (hwaccel->alloc_frame) {\n            ret = hwaccel->alloc_frame(avctx, frame);\n            goto end;\n        }\n    } else\n        avctx->sw_pix_fmt = avctx->pix_fmt;\n\n    ret = avctx->get_buffer2(avctx, frame, flags);\n    if (ret >= 0)\n        validate_avframe_allocation(avctx, frame);\n\nend:\n    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO && !override_dimensions) {\n        frame->width  = avctx->width;\n        frame->height = avctx->height;\n    }\n\n    return ret;\n}",
+            3
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_WARNING",
+            "#define AV_LOG_WARNING  24 /* <=== libavutil/log.h:182:182:AV_LOG_WARNING:0 */ ",
+            2
+        ],
+        [
+            "libavutil/common.h",
+            "FFMIN",
+            "#define FFMIN(a,b) ((a) > (b) ? (b) : (a)) /* <=== libavutil/common.h:96:96:FFMIN:2 */ ",
+            3
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_le32u",
+            "DEF(unsigned int, le32, 4, AV_RL32, AV_WL32) /* <=== bytestream2_get_le32u */ ",
+            1
+        ],
+        [
+            "libavutil/intreadwrite.h",
+            "AV_RL32",
+            "#   define AV_RL32(x)                                \\ /* <=== libavutil/intreadwrite.h:283:287:AV_RL32:1 */ \n    (((uint32_t)((const uint8_t*)(x))[3] << 24) |    \\\n               (((const uint8_t*)(x))[2] << 16) |    \\\n               (((const uint8_t*)(x))[1] <<  8) |    \\\n                ((const uint8_t*)(x))[0])",
+            2
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_FATAL",
+            "#define AV_LOG_FATAL     8 /* <=== libavutil/log.h:170:170:AV_LOG_FATAL:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/utvideodec.c",
+            "restore_median_il",
+            "static void restore_median_il(uint8_t *src, int step, int stride, /* <=== restore_median_il */ \n                              int width, int height, int slices, int rmode)\n{\n    int i, j, slice;\n    int A, B, C;\n    uint8_t *bsrc;\n    int slice_start, slice_height;\n    const int cmask   = ~(rmode ? 3 : 1);\n    const int stride2 = stride << 1;\n\n    for (slice = 0; slice < slices; slice++) {\n        slice_start    = ((slice * height) / slices) & cmask;\n        slice_height   = ((((slice + 1) * height) / slices) & cmask) -\n                         slice_start;\n        slice_height >>= 1;\n        if (!slice_height)\n            continue;\n\n        bsrc = src + slice_start * stride;\n\n        // first line - left neighbour prediction\n        bsrc[0] += 0x80;\n        A        = bsrc[0];\n        for (i = step; i < width * step; i += step) {\n            bsrc[i] += A;\n            A        = bsrc[i];\n        }\n        for (i = 0; i < width * step; i += step) {\n            bsrc[stride + i] += A;\n            A                 = bsrc[stride + i];\n        }\n        bsrc += stride2;\n        if (slice_height <= 1)\n            continue;\n        // second line - first element has top prediction, the rest uses median\n        C        = bsrc[-stride2];\n        bsrc[0] += C;\n        A        = bsrc[0];\n        for (i = step; i < width * step; i += step) {\n            B        = bsrc[i - stride2];\n            bsrc[i] += mid_pred(A, B, (uint8_t)(A + B - C));\n            C        = B;\n            A        = bsrc[i];\n        }\n        for (i = 0; i < width * step; i += step) {\n            B                 = bsrc[i - stride];\n            bsrc[stride + i] += mid_pred(A, B, (uint8_t)(A + B - C));\n            C                 = B;\n            A                 = bsrc[stride + i];\n        }\n        bsrc += stride2;\n        // the rest of lines use continuous median prediction\n        for (j = 2; j < slice_height; j++) {\n            for (i = 0; i < width * step; i += step) {\n                B        = bsrc[i - stride2];\n                bsrc[i] += mid_pred(A, B, (uint8_t)(A + B - C));\n                C        = B;\n                A        = bsrc[i];\n            }\n            for (i = 0; i < width * step; i += step) {\n                B                 = bsrc[i - stride];\n                bsrc[i + stride] += mid_pred(A, B, (uint8_t)(A + B - C));\n                C                 = B;\n                A                 = bsrc[i + stride];\n            }\n            bsrc += stride2;\n        }\n    }\n}",
+            1
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_init_buffer_info",
+            "int ff_init_buffer_info(AVCodecContext *avctx, AVFrame *frame) /* <=== ff_init_buffer_info */ \n{\n    AVPacket *pkt = avctx->internal->pkt;\n    int i;\n    static const struct {\n        enum AVPacketSideDataType packet;\n        enum AVFrameSideDataType frame;\n    } sd[] = {\n        { AV_PKT_DATA_REPLAYGAIN ,                AV_FRAME_DATA_REPLAYGAIN },\n        { AV_PKT_DATA_DISPLAYMATRIX,              AV_FRAME_DATA_DISPLAYMATRIX },\n        { AV_PKT_DATA_STEREO3D,                   AV_FRAME_DATA_STEREO3D },\n        { AV_PKT_DATA_AUDIO_SERVICE_TYPE,         AV_FRAME_DATA_AUDIO_SERVICE_TYPE },\n        { AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA },\n    };\n\n    if (pkt) {\n        frame->pts = pkt->pts;\n#if FF_API_PKT_PTS\nFF_DISABLE_DEPRECATION_WARNINGS\n        frame->pkt_pts = pkt->pts;\nFF_ENABLE_DEPRECATION_WARNINGS\n#endif\n        av_frame_set_pkt_pos     (frame, pkt->pos);\n        av_frame_set_pkt_duration(frame, pkt->duration);\n        av_frame_set_pkt_size    (frame, pkt->size);\n\n        for (i = 0; i < FF_ARRAY_ELEMS(sd); i++) {\n            int size;\n            uint8_t *packet_sd = av_packet_get_side_data(pkt, sd[i].packet, &size);\n            if (packet_sd) {\n                AVFrameSideData *frame_sd = av_frame_new_side_data(frame,\n                                                                   sd[i].frame,\n                                                                   size);\n                if (!frame_sd)\n                    return AVERROR(ENOMEM);\n\n                memcpy(frame_sd->data, packet_sd, size);\n            }\n        }\n        add_metadata_from_side_data(pkt, frame);\n\n        if (pkt->flags & AV_PKT_FLAG_DISCARD) {\n            frame->flags |= AV_FRAME_FLAG_DISCARD;\n        } else {\n            frame->flags = (frame->flags & ~AV_FRAME_FLAG_DISCARD);\n        }\n    } else {\n        frame->pts = AV_NOPTS_VALUE;\n#if FF_API_PKT_PTS\nFF_DISABLE_DEPRECATION_WARNINGS\n        frame->pkt_pts = AV_NOPTS_VALUE;\nFF_ENABLE_DEPRECATION_WARNINGS\n#endif\n        av_frame_set_pkt_pos     (frame, -1);\n        av_frame_set_pkt_duration(frame, 0);\n        av_frame_set_pkt_size    (frame, -1);\n    }\n    frame->reordered_opaque = avctx->reordered_opaque;\n\n    if (frame->color_primaries == AVCOL_PRI_UNSPECIFIED)\n        frame->color_primaries = avctx->color_primaries;\n    if (frame->color_trc == AVCOL_TRC_UNSPECIFIED)\n        frame->color_trc = avctx->color_trc;\n    if (av_frame_get_colorspace(frame) == AVCOL_SPC_UNSPECIFIED)\n        av_frame_set_colorspace(frame, avctx->colorspace);\n    if (av_frame_get_color_range(frame) == AVCOL_RANGE_UNSPECIFIED)\n        av_frame_set_color_range(frame, avctx->color_range);\n    if (frame->chroma_location == AVCHROMA_LOC_UNSPECIFIED)\n        frame->chroma_location = avctx->chroma_sample_location;\n\n    switch (avctx->codec->type) {\n    case AVMEDIA_TYPE_VIDEO:\n        frame->format              = avctx->pix_fmt;\n        if (!frame->sample_aspect_ratio.num)\n            frame->sample_aspect_ratio = avctx->sample_aspect_ratio;\n\n        if (frame->width && frame->height &&\n            av_image_check_sar(frame->width, frame->height,\n                               frame->sample_aspect_ratio) < 0) {\n            av_log(avctx, AV_LOG_WARNING, \"ignoring invalid SAR: %u/%u\\n\",\n                   frame->sample_aspect_ratio.num,\n                   frame->sample_aspect_ratio.den);\n            frame->sample_aspect_ratio = (AVRational){ 0, 1 };\n        }\n\n        break;\n    case AVMEDIA_TYPE_AUDIO:\n        if (!frame->sample_rate)\n            frame->sample_rate    = avctx->sample_rate;\n        if (frame->format < 0)\n            frame->format         = avctx->sample_fmt;\n        if (!frame->channel_layout) {\n            if (avctx->channel_layout) {\n                 if (av_get_channel_layout_nb_channels(avctx->channel_layout) !=\n                     avctx->channels) {\n                     av_log(avctx, AV_LOG_ERROR, \"Inconsistent channel \"\n                            \"configuration.\\n\");\n                     return AVERROR(EINVAL);\n                 }\n\n                frame->channel_layout = avctx->channel_layout;\n            } else {\n                if (avctx->channels > FF_SANE_NB_CHANNELS) {\n                    av_log(avctx, AV_LOG_ERROR, \"Too many channels: %d.\\n\",\n                           avctx->channels);\n                    return AVERROR(ENOSYS);\n                }\n            }\n        }\n        av_frame_set_channels(frame, avctx->channels);\n        break;\n    }\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavcodec/utvideodec.c",
+            "build_huff10",
+            "static int build_huff10(const uint8_t *src, VLC *vlc, int *fsym) /* <=== build_huff10 */ \n{\n    int i;\n    HuffEntry he[1024];\n    int last;\n    uint32_t codes[1024];\n    uint8_t bits[1024];\n    uint16_t syms[1024];\n    uint32_t code;\n\n    *fsym = -1;\n    for (i = 0; i < 1024; i++) {\n        he[i].sym = i;\n        he[i].len = *src++;\n    }\n    qsort(he, 1024, sizeof(*he), ff_ut10_huff_cmp_len);\n\n    if (!he[0].len) {\n        *fsym = he[0].sym;\n        return 0;\n    }\n\n    last = 1023;\n    while (he[last].len == 255 && last)\n        last--;\n\n    if (he[last].len > 32) {\n        return -1;\n    }\n\n    code = 1;\n    for (i = last; i >= 0; i--) {\n        codes[i] = code >> (32 - he[i].len);\n        bits[i]  = he[i].len;\n        syms[i]  = he[i].sym;\n        code += 0x80000000u >> (he[i].len - 1);\n    }\n\n    return ff_init_vlc_sparse(vlc, FFMIN(he[last].len, 11), last + 1,\n                              bits,  sizeof(*bits),  sizeof(*bits),\n                              codes, sizeof(*codes), sizeof(*codes),\n                              syms,  sizeof(*syms),  sizeof(*syms), 0);\n}",
+            2
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_ERROR",
+            "#define AV_LOG_ERROR    16 /* <=== libavutil/log.h:176:176:AV_LOG_ERROR:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/indeo3.c",
+            "parse_bintree",
+            "static int parse_bintree(Indeo3DecodeContext *ctx, AVCodecContext *avctx, /* <=== parse_bintree */ \n                         Plane *plane, int code, Cell *ref_cell,\n                         const int depth, const int strip_width)\n{\n    Cell    curr_cell;\n    int     bytes_used, ret;\n\n    if (depth <= 0) {\n        av_log(avctx, AV_LOG_ERROR, \"Stack overflow (corrupted binary tree)!\\n\");\n        return AVERROR_INVALIDDATA; // unwind recursion\n    }\n\n    curr_cell = *ref_cell; // clone parent cell\n    if (code == H_SPLIT) {\n        SPLIT_CELL(ref_cell->height, curr_cell.height);\n        ref_cell->ypos   += curr_cell.height;\n        ref_cell->height -= curr_cell.height;\n        if (ref_cell->height <= 0 || curr_cell.height <= 0)\n            return AVERROR_INVALIDDATA;\n    } else if (code == V_SPLIT) {\n        if (curr_cell.width > strip_width) {\n            /* split strip */\n            curr_cell.width = (curr_cell.width <= (strip_width << 1) ? 1 : 2) * strip_width;\n        } else\n            SPLIT_CELL(ref_cell->width, curr_cell.width);\n        ref_cell->xpos  += curr_cell.width;\n        ref_cell->width -= curr_cell.width;\n        if (ref_cell->width <= 0 || curr_cell.width <= 0)\n            return AVERROR_INVALIDDATA;\n    }\n\n    while (get_bits_left(&ctx->gb) >= 2) { /* loop until return */\n        RESYNC_BITSTREAM;\n        switch (code = get_bits(&ctx->gb, 2)) {\n        case H_SPLIT:\n        case V_SPLIT:\n            if (parse_bintree(ctx, avctx, plane, code, &curr_cell, depth - 1, strip_width))\n                return AVERROR_INVALIDDATA;\n            break;\n        case INTRA_NULL:\n            if (!curr_cell.tree) { /* MC tree INTRA code */\n                curr_cell.mv_ptr = 0; /* mark the current strip as INTRA */\n                curr_cell.tree   = 1; /* enter the VQ tree */\n            } else { /* VQ tree NULL code */\n                RESYNC_BITSTREAM;\n                code = get_bits(&ctx->gb, 2);\n                if (code >= 2) {\n                    av_log(avctx, AV_LOG_ERROR, \"Invalid VQ_NULL code: %d\\n\", code);\n                    return AVERROR_INVALIDDATA;\n                }\n                if (code == 1)\n                    av_log(avctx, AV_LOG_ERROR, \"SkipCell procedure not implemented yet!\\n\");\n\n                CHECK_CELL\n                if (!curr_cell.mv_ptr)\n                    return AVERROR_INVALIDDATA;\n\n                ret = copy_cell(ctx, plane, &curr_cell);\n                return ret;\n            }\n            break;\n        case INTER_DATA:\n            if (!curr_cell.tree) { /* MC tree INTER code */\n                unsigned mv_idx;\n                /* get motion vector index and setup the pointer to the mv set */\n                if (!ctx->need_resync)\n                    ctx->next_cell_data = &ctx->gb.buffer[(get_bits_count(&ctx->gb) + 7) >> 3];\n                if (ctx->next_cell_data >= ctx->last_byte) {\n                    av_log(avctx, AV_LOG_ERROR, \"motion vector out of array\\n\");\n                    return AVERROR_INVALIDDATA;\n                }\n                mv_idx = *(ctx->next_cell_data++);\n                if (mv_idx >= ctx->num_vectors) {\n                    av_log(avctx, AV_LOG_ERROR, \"motion vector index out of range\\n\");\n                    return AVERROR_INVALIDDATA;\n                }\n                curr_cell.mv_ptr = &ctx->mc_vectors[mv_idx << 1];\n                curr_cell.tree   = 1; /* enter the VQ tree */\n                UPDATE_BITPOS(8);\n            } else { /* VQ tree DATA code */\n                if (!ctx->need_resync)\n                    ctx->next_cell_data = &ctx->gb.buffer[(get_bits_count(&ctx->gb) + 7) >> 3];\n\n                CHECK_CELL\n                bytes_used = decode_cell(ctx, avctx, plane, &curr_cell,\n                                         ctx->next_cell_data, ctx->last_byte);\n                if (bytes_used < 0)\n                    return AVERROR_INVALIDDATA;\n\n                UPDATE_BITPOS(bytes_used << 3);\n                ctx->next_cell_data += bytes_used;\n                return 0;\n            }\n            break;\n        }\n    }//while\n\n    return AVERROR_INVALIDDATA;\n}",
+            2
+        ],
+        [
+            "libavcodec/pthread_frame.c",
+            "ff_thread_get_buffer",
+            "int ff_thread_get_buffer(AVCodecContext *avctx, ThreadFrame *f, int flags) /* <=== ff_thread_get_buffer */ \n{\n    int ret = thread_get_buffer_internal(avctx, f, flags);\n    if (ret < 0)\n        av_log(avctx, AV_LOG_ERROR, \"thread_get_buffer() failed\\n\");\n    return ret;\n}",
+            1
+        ],
+        [
+            "libavutil/common.h",
+            "FFMAX",
+            "#define FFMAX(a,b) ((a) > (b) ? (a) : (b)) /* <=== libavutil/common.h:94:94:FFMAX:2 */ ",
+            1
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream_get_le32",
+            "DEF(unsigned int, le32, 4, AV_RL32, AV_WL32) /* <=== bytestream_get_le32 */ ",
+            2
+        ],
+        [
+            "libavcodec/utils.c",
+            "ff_thread_finish_setup",
+            "void ff_thread_finish_setup(AVCodecContext *avctx) /* <=== ff_thread_finish_setup */ \n{\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"thread.h\"",
+        "#include \"avcodec.h\"",
+        "#include \"utvideo.h\"",
+        "#include \"libavutil/intreadwrite.h\"",
+        "#include \"bytestream.h\"",
+        "#include <inttypes.h>",
+        "#include <stdlib.h>",
+        "#include \"bswapdsp.h\"",
+        "#include \"get_bits.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct ThreadFrame {\n    AVFrame *f;\n    AVCodecContext *owner;\n    // progress->data is an array of 2 ints holding progress for top/bottom\n    // fields\n    AVBufferRef *progress;\n} ThreadFrame;",
+            "ThreadFrame"
+        ],
+        [
+            "typedef struct UtvideoContext {\n    const AVClass *class;\n    AVCodecContext *avctx;\n    BswapDSPContext bdsp;\n    HuffYUVEncDSPContext hdsp;\n\n    uint32_t frame_info_size, flags, frame_info;\n    int      planes;\n    int      slices;\n    int      compression;\n    int      interlaced;\n    int      frame_pred;\n    int      pro;\n\n    int      slice_stride;\n    uint8_t *slice_bits, *slice_buffer[4];\n    int      slice_bits_size;\n} UtvideoContext;",
+            "UtvideoContext"
+        ],
+        [
+            "typedef struct GetByteContext {\n    const uint8_t *buffer, *buffer_end, *buffer_start;\n} GetByteContext;",
+            "GetByteContext"
+        ],
+        [
+            "typedef struct ThreadFrame {\n    AVFrame *f;\n    AVCodecContext *owner;\n    // progress->data is an array of 2 ints holding progress for top/bottom\n    // fields\n    AVBufferRef *progress;\n}",
+            "ThreadFrame"
+        ],
+        [
+            "typedef struct AVCodecContext {\n    /**\n     * information on struct for av_log\n     * - set by avcodec_alloc_context3\n     */\n    const AVClass *av_class;\n    int log_level_offset;\n\n    enum AVMediaType codec_type; /* see AVMEDIA_TYPE_xxx */\n    const struct AVCodec  *codec;\n#if FF_API_CODEC_NAME\n    /**\n     * @deprecated this field is not used for anything in libavcodec\n     */\n    attribute_deprecated\n    char             codec_name[32];\n#endif\n    enum AVCodecID     codec_id; /* see AV_CODEC_ID_xxx */\n\n    /**\n     * fourcc (LSB first, so \"ABCD\" -> ('D'<<24) + ('C'<<16) + ('B'<<8) + 'A').\n     * This is used to work around some encoder bugs.\n     * A demuxer should set this to what is stored in the field used to identify the codec.\n     * If there are multiple such fields in a container then the demuxer should choose the one\n     * which maximizes the information about the used codec.\n     * If the codec tag field in a container is larger than 32 bits then the demuxer should\n     * remap the longer ID to 32 bits with a table or other structure. Alternatively a new\n     * extra_codec_tag + size could be added but for this a clear advantage must be demonstrated\n     * first.\n     * - encoding: Set by user, if not then the default based on codec_id will be used.\n     * - decoding: Set by user, will be converted to uppercase by libavcodec during init.\n     */\n    unsigned int codec_tag;\n\n#if FF_API_STREAM_CODEC_TAG\n    /**\n     * @deprecated this field is unused\n     */\n    attribute_deprecated\n    unsigned int stream_codec_tag;\n#endif\n\n    void *priv_data;\n\n    /**\n     * Private context used for internal data.\n     *\n     * Unlike priv_data, this is not codec-specific. It is used in general\n     * libavcodec functions.\n     */\n    struct AVCodecInternal *internal;\n\n    /**\n     * Private data of the user, can be used to carry app specific stuff.\n     * - encoding: Set by user.\n     * - decoding: Set by user.\n     */\n    void *opaque;\n\n    /**\n     * the average bitrate\n     * - encoding: Set by user; unused for constant quantizer encoding.\n     * - decoding: Set by user, may be overwritten by libavcodec\n     *             if this info is available in the stream\n     */\n    int64_t bit_rate;\n\n    /**\n     * number of bits the bitstream is allowed to diverge from the reference.\n     *           the reference can be CBR (for CBR pass1) or VBR (for pass2)\n     * - encoding: Set by user; unused for constant quantizer encoding.\n     * - decoding: unused\n     */\n    int bit_rate_tolerance;\n\n    /**\n     * Global quality for codecs which cannot change it per frame.\n     * This should be proportional to MPEG-1/2/4 qscale.\n     * - encoding: Set by user.\n     * - decoding: unused\n     */\n    int global_quality;\n\n    /**\n     * - encoding: Set by user.\n     * - decoding: unused\n     */\n    int compression_level;\n#define FF_COMPRESSION_DEFAULT -1\n\n    /**\n     * AV_CODEC_FLAG_*.\n     * - encoding: Set by user.\n     * - decoding: Set by user.\n     */\n    int flags;\n\n    /**\n     * AV_CODEC_FLAG2_*\n     * - encoding: Set by user.\n     * - decoding: Set by user.\n     */\n    int flags2;\n\n    /**\n     * some codecs need / can use extradata like Huffman tables.\n     * MJPEG: Huffman tables\n     * rv10: additional flags\n     * MPEG-4: global headers (they can be in the bitstream or here)\n     * The allocated memory should be AV_INPUT_BUFFER_PADDING_SIZE bytes larger\n     * than extradata_size to avoid problems if it is read with the bitstream reader.\n     * The bytewise contents of extradata must not depend on the architecture or CPU endianness.\n     * - encoding: Set/allocated/freed by libavcodec.\n     * - decoding: Set/allocated/freed by user.\n     */\n    uint8_t *extradata;\n    int extradata_size;\n\n    /**\n     * This is the fundamental unit of time (in seconds) in terms\n     * of which frame timestamps are represented. For fixed-fps content,\n     * timebase should be 1/framerate and timestamp increments should be\n     * identically 1.\n     * This often, but not always is the inverse of the frame rate or field rate\n     * for video. 1/time_base is not the average frame rate if the frame rate is not\n     * constant.\n     *\n     * Like containers, elementary streams also can store timestamps, 1/time_base\n     * is the unit in which these timestamps are specified.\n     * As example of such codec time base see ISO/IEC 14496-2:2001(E)\n     * vop_time_increment_resolution and fixed_vop_rate\n     * (fixed_vop_rate == 0 implies that it is different from the framerate)\n     *\n     * - encoding: MUST be set by user.\n     * - decoding: the use of this field for decoding is deprecated.\n     *             Use framerate instead.\n     */\n    AVRational time_base;\n\n    /**\n     * For some codecs, the time base is closer to the field rate than the frame rate.\n     * Most notably, H.264 and MPEG-2 specify time_base as half of frame duration\n     * if no telecine is used ...\n     *\n     * Set to time_base ticks per frame. Default 1, e.g., H.264/MPEG-2 set it to 2.\n     */\n    int ticks_per_frame;\n\n    /**\n     * Codec delay.\n     *\n     * Encoding: Number of frames delay there will be from the encoder input to\n     *           the decoder output. (we assume the decoder matches the spec)\n     * Decoding: Number of frames delay in addition to what a standard decoder\n     *           as specified in the spec would produce.\n     *\n     * Video:\n     *   Number of frames the decoded output will be delayed relative to the\n     *   encoded input.\n     *\n     * Audio:\n     *   For encoding, this field is unused (see initial_padding).\n     *\n     *   For decoding, this is the number of samples the decoder needs to\n     *   output before the decoder's output is valid. When seeking, you should\n     *   start decoding this many samples prior to your desired seek point.\n     *\n     * - encoding: Set by libavcodec.\n     * - decoding: Set by libavcodec.\n     */\n    int delay;\n\n\n    /* video only */\n    /**\n     * picture width / height.\n     *\n     * @note Those fields may not match the values of the last\n     * AVFrame output by avcodec_decode_video2 due frame\n     * reordering.\n     *\n     * - encoding: MUST be set by user.\n     * - decoding: May be set by the user before opening the decoder if known e.g.\n     *             from the container. Some decoders will require the dimensions\n     *             to be set by the caller. During decoding, the decoder may\n     *             overwrite those values as required while parsing the data.\n     */\n    int width, height;\n\n    /**\n     * Bitstream width / height, may be different from width/height e.g. when\n     * the decoded frame is cropped before being output or lowres is enabled.\n     *\n     * @note Those field may not match the value of the last\n     * AVFrame output by avcodec_receive_frame() due frame\n     * reordering.\n     *\n     * - encoding: unused\n     * - decoding: May be set by the user before opening the decoder if known\n     *             e.g. from the container. During decoding, the decoder may\n     *             overwrite those values as required while parsing the data.\n     */\n    int coded_width, coded_height;\n\n#if FF_API_ASPECT_EXTENDED\n#define FF_ASPECT_EXTENDED 15\n#endif\n\n    /**\n     * the number of pictures in a group of pictures, or 0 for intra_only\n     * - encoding: Set by user.\n     * - decoding: unused\n     */\n    int gop_size;\n\n    /**\n     * Pixel format, see AV_PIX_FMT_xxx.\n     * May be set by the demuxer if known from headers.\n     * May be overridden by the decoder if it knows better.\n     *\n     * @note This field may not match the value of the last\n     * AVFrame output by avcodec_receive_frame() due frame\n     * reordering.\n     *\n     * - encoding: Set by user.\n     * - decoding: Set by user if known, overridden by libavcodec while\n     *             parsing the data.\n     */\n    enum AVPixelFormat pix_fmt;\n\n#if FF_API_MOTION_EST\n    /**\n     * This option does nothing\n     * @deprecated use codec private options instead\n     */\n    attribute_deprecated int me_method;\n#endif\n\n    /**\n     * If non NULL, 'draw_horiz_band' is called by the libavcodec\n     * decoder to draw a horizontal band. It improves cache usage. Not\n     * all codecs can do that. You must check the codec capabilities\n     * beforehand.\n     * When multithreading is used, it may be called from multiple threads\n     * at the same time; threads might draw different parts of the same AVFrame,\n     * or multiple AVFrames, and there is no guarantee that slices will be drawn\n     * in order.\n     * The function is also used by hardware acceleration APIs.\n     * It is called at least once during frame decoding to pass\n     * the data needed for hardware render.\n     * In that mode instead of pixel data, AVFrame points to\n     * a structure specific to the acceleration API. The application\n     * reads the structure and can change some fields to indicate progress\n     * or mark state.\n     * - encoding: unused\n     * - decoding: Set by user.\n     * @param height the height of the slice\n     * @param y the y position of the slice\n     * @param type 1->top field, 2->bottom field, 3->frame\n     * @param offset offset into the AVFrame.data from which the slice should be read\n     */\n    void (*draw_horiz_band)(struct AVCodecContext *s,\n                            const AVFrame *src, int offset[AV_NUM_DATA_POINTERS],\n                            int y, int type, int height);\n\n    /**\n     * callback to negotiate the pixelFormat\n     * @param fmt is the list of formats which are supported by the codec,\n     * it is terminated by -1 as 0 is a valid format, the formats are ordered by quality.\n     * The first is always the native one.\n     * @note The callback may be called again immediately if initialization for\n     * the selected (hardware-accelerated) pixel format failed.\n     * @warning Behavior is undefined if the callback returns a value not\n     * in the fmt list of formats.\n     * @return the chosen format...",
+            "AVCodecContext"
+        ],
+        [
+            "typedef struct UtvideoContext {\n    const AVClass *class;\n    AVCodecContext *avctx;\n    BswapDSPContext bdsp;\n    HuffYUVEncDSPContext hdsp;\n\n    uint32_t frame_info_size, flags, frame_info;\n    int      planes;\n    int      slices;\n    int      compression;\n    int      interlaced;\n    int      frame_pred;\n    int      pro;\n\n    int      slice_stride;\n    uint8_t *slice_bits, *slice_buffer[4];\n    int      slice_bits_size;\n}",
+            "UtvideoContext"
+        ],
+        [
+            "typedef struct GetByteContext {\n    const uint8_t *buffer, *buffer_end, *buffer_start;\n}",
+            "GetByteContext"
+        ]
+    ],
+    "visitedLines_after": {
+        "libavcodec/utvideodec.c": [
+            501,
+            506,
+            512,
+            514,
+            518,
+            519,
+            520,
+            524,
+            525,
+            526,
+            527,
+            528,
+            529,
+            530,
+            532,
+            533,
+            534,
+            535,
+            536,
+            537,
+            538,
+            539,
+            541,
+            542,
+            543,
+            545,
+            546,
+            547,
+            549,
+            584,
+            586,
+            587,
+            588,
+            591,
+            592,
+            594,
+            595,
+            596,
+            599,
+            600,
+            601,
+            602,
+            603,
+            604,
+            605,
+            606,
+            607,
+            608,
+            609,
+            610,
+            611,
+            612,
+            613,
+            615,
+            616,
+            617,
+            618,
+            622,
+            623,
+            625,
+            626,
+            627,
+            628,
+            629,
+            630,
+            631,
+            632,
+            633,
+            634,
+            636,
+            638,
+            639,
+            640,
+            641,
+            642,
+            643,
+            644,
+            645,
+            646,
+            647,
+            648,
+            649,
+            651,
+            652,
+            653,
+            654,
+            659,
+            660,
+            661,
+            662,
+            663,
+            664,
+            665,
+            666,
+            667,
+            668,
+            669,
+            670,
+            672,
+            673,
+            674,
+            679,
+            680,
+            681,
+            682,
+            683,
+            684,
+            685,
+            686,
+            687,
+            688,
+            689,
+            690,
+            692,
+            693,
+            694,
+            699,
+            700,
+            701,
+            702,
+            703,
+            704,
+            705,
+            710,
+            711,
+            712,
+            714,
+            717
+        ]
+    },
+    "visitedLines_before": {
+        "libavcodec/utvideodec.c": [
+            501,
+            506,
+            512,
+            514,
+            518,
+            519,
+            520,
+            524,
+            525,
+            526,
+            527,
+            528,
+            529,
+            530,
+            532,
+            533,
+            534,
+            535,
+            536,
+            537,
+            538,
+            539,
+            541,
+            542,
+            543,
+            545,
+            546,
+            547,
+            549,
+            584,
+            586,
+            587,
+            588,
+            591,
+            592,
+            594,
+            595,
+            596,
+            599,
+            600,
+            601,
+            602,
+            603,
+            604,
+            605,
+            606,
+            607,
+            608,
+            609,
+            610,
+            611,
+            612,
+            613,
+            615,
+            616,
+            617,
+            618,
+            622,
+            623,
+            625,
+            626,
+            627,
+            628,
+            629,
+            630,
+            631,
+            632,
+            633,
+            634,
+            636,
+            638,
+            639,
+            640,
+            641,
+            642,
+            643,
+            644,
+            645,
+            646,
+            647,
+            648,
+            649,
+            651,
+            652,
+            653,
+            654,
+            659,
+            660,
+            661,
+            662,
+            663,
+            664,
+            665,
+            666,
+            667,
+            668,
+            669,
+            670,
+            672,
+            673,
+            674,
+            679,
+            680,
+            681,
+            682,
+            683,
+            684,
+            685,
+            686,
+            687,
+            688,
+            689,
+            690,
+            692,
+            693,
+            694,
+            699,
+            700,
+            701,
+            702,
+            703,
+            704,
+            705,
+            710,
+            711,
+            712,
+            714,
+            717
+        ]
+    },
+    "visitedParams": {
+        "libavcodec/utvideodec.c": [
+            [
+                "AVCodecContext *avctx",
+                "decode_frame"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libavcodec/utvideodec.c",
+            "decode_frame",
+            "static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, /* <=== decode_frame */ \n                        AVPacket *avpkt)\n{\n    const uint8_t *buf = avpkt->data;\n    int buf_size = avpkt->size;\n    UtvideoContext *c = avctx->priv_data;\n    int i, j;\n    const uint8_t *plane_start[5];\n    int plane_size, max_slice_size = 0, slice_start, slice_end, slice_size;\n    int ret;\n    GetByteContext gb;\n    ThreadFrame frame = { .f = data };\n\n    if ((ret = ff_thread_get_buffer(avctx, &frame, 0)) < 0)\n        return ret;\n\n    /* parse plane structure to get frame flags and validate slice offsets */\n    bytestream2_init(&gb, buf, buf_size);\n    if (c->pro) {\n        if (bytestream2_get_bytes_left(&gb) < c->frame_info_size) {\n            av_log(avctx, AV_LOG_ERROR, \"Not enough data for frame information\\n\");\n            return AVERROR_INVALIDDATA;\n        }\n        c->frame_info = bytestream2_get_le32u(&gb);\n        c->slices = ((c->frame_info >> 16) & 0xff) + 1;\n        for (i = 0; i < c->planes; i++) {\n            plane_start[i] = gb.buffer;\n            if (bytestream2_get_bytes_left(&gb) < 1024 + 4 * c->slices) {\n                av_log(avctx, AV_LOG_ERROR, \"Insufficient data for a plane\\n\");\n                return AVERROR_INVALIDDATA;\n            }\n            slice_start = 0;\n            slice_end   = 0;\n            for (j = 0; j < c->slices; j++) {\n                slice_end   = bytestream2_get_le32u(&gb);\n                if (slice_end < 0 || slice_end < slice_start ||\n                    bytestream2_get_bytes_left(&gb) < slice_end + 1024LL) {\n                    av_log(avctx, AV_LOG_ERROR, \"Incorrect slice size\\n\");\n                    return AVERROR_INVALIDDATA;\n                }\n                slice_size  = slice_end - slice_start;\n                slice_start = slice_end;\n                max_slice_size = FFMAX(max_slice_size, slice_size);\n            }\n            plane_size = slice_end;\n            bytestream2_skipu(&gb, plane_size);\n            bytestream2_skipu(&gb, 1024);\n        }\n        plane_start[c->planes] = gb.buffer;\n    } else {\n        for (i = 0; i < c->planes; i++) {\n            plane_start[i] = gb.buffer;\n            if (bytestream2_get_bytes_left(&gb) < 256 + 4 * c->slices) {\n                av_log(avctx, AV_LOG_ERROR, \"Insufficient data for a plane\\n\");\n                return AVERROR_INVALIDDATA;\n            }\n            bytestream2_skipu(&gb, 256);\n            slice_start = 0;\n            slice_end   = 0;\n            for (j = 0; j < c->slices; j++) {\n                slice_end   = bytestream2_get_le32u(&gb);\n                if (slice_end < 0 || slice_end < slice_start ||\n                    bytestream2_get_bytes_left(&gb) < slice_end) {\n                    av_log(avctx, AV_LOG_ERROR, \"Incorrect slice size\\n\");\n                    return AVERROR_INVALIDDATA;\n                }\n                slice_size  = slice_end - slice_start;\n                slice_start = slice_end;\n                max_slice_size = FFMAX(max_slice_size, slice_size);\n            }\n            plane_size = slice_end;\n            bytestream2_skipu(&gb, plane_size);\n        }\n        plane_start[c->planes] = gb.buffer;\n        if (bytestream2_get_bytes_left(&gb) < c->frame_info_size) {\n            av_log(avctx, AV_LOG_ERROR, \"Not enough data for frame information\\n\");\n            return AVERROR_INVALIDDATA;\n        }\n        c->frame_info = bytestream2_get_le32u(&gb);\n    }\n    av_log(avctx, AV_LOG_DEBUG, \"frame information flags %\"PRIX32\"\\n\",\n           c->frame_info);\n\n    c->frame_pred = (c->frame_info >> 8) & 3;\n\n    if (c->frame_pred == PRED_GRADIENT) {\n        avpriv_request_sample(avctx, \"Frame with gradient prediction\");\n        return AVERROR_PATCHWELCOME;\n    }\n\n    av_fast_malloc(&c->slice_bits, &c->slice_bits_size,\n                   max_slice_size + AV_INPUT_BUFFER_PADDING_SIZE);\n\n    if (!c->slice_bits) {\n        av_log(avctx, AV_LOG_ERROR, \"Cannot allocate temporary buffer\\n\");\n        return AVERROR(ENOMEM);\n    }\n\n    switch (c->avctx->pix_fmt) {\n    case AV_PIX_FMT_RGB24:\n    case AV_PIX_FMT_RGBA:\n        for (i = 0; i < c->planes; i++) {\n            ret = decode_plane(c, i, frame.f->data[0] + ff_ut_rgb_order[i],\n                               c->planes, frame.f->linesize[0], avctx->width,\n                               avctx->height, plane_start[i],\n                               c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n            if (c->frame_pred == PRED_MEDIAN) {\n                if (!c->interlaced) {\n                    restore_median(frame.f->data[0] + ff_ut_rgb_order[i],\n                                   c->planes, frame.f->linesize[0], avctx->width,\n                                   avctx->height, c->slices, 0);\n                } else {\n                    restore_median_il(frame.f->data[0] + ff_ut_rgb_order[i],\n                                      c->planes, frame.f->linesize[0],\n                                      avctx->width, avctx->height, c->slices,\n                                      0);\n                }\n            }\n        }\n        restore_rgb_planes(frame.f->data[0], c->planes, frame.f->linesize[0],\n                           avctx->width, avctx->height);\n        break;\n    case AV_PIX_FMT_GBRAP10:\n    case AV_PIX_FMT_GBRP10:\n        for (i = 0; i < c->planes; i++) {\n            ret = decode_plane10(c, i, (uint16_t *)frame.f->data[i], 1,\n                                 frame.f->linesize[i] / 2, avctx->width,\n                                 avctx->height, plane_start[i],\n                                 plane_start[i + 1] - 1024,\n                                 c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n        }\n        restore_rgb_planes10(frame.f, avctx->width, avctx->height);\n        break;\n    case AV_PIX_FMT_YUV420P:\n        for (i = 0; i < 3; i++) {\n            ret = decode_plane(c, i, frame.f->data[i], 1, frame.f->linesize[i],\n                               avctx->width >> !!i, avctx->height >> !!i,\n                               plane_start[i], c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n            if (c->frame_pred == PRED_MEDIAN) {\n                if (!c->interlaced) {\n                    restore_median(frame.f->data[i], 1, frame.f->linesize[i],\n                                   avctx->width >> !!i, avctx->height >> !!i,\n                                   c->slices, !i);\n                } else {\n                    restore_median_il(frame.f->data[i], 1, frame.f->linesize[i],\n                                      avctx->width  >> !!i,\n                                      avctx->height >> !!i,\n                                      c->slices, !i);\n                }\n            }\n        }\n        break;\n    case AV_PIX_FMT_YUV422P:\n        for (i = 0; i < 3; i++) {\n            ret = decode_plane(c, i, frame.f->data[i], 1, frame.f->linesize[i],\n                               avctx->width >> !!i, avctx->height,\n                               plane_start[i], c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n            if (c->frame_pred == PRED_MEDIAN) {\n                if (!c->interlaced) {\n                    restore_median(frame.f->data[i], 1, frame.f->linesize[i],\n                                   avctx->width >> !!i, avctx->height,\n                                   c->slices, 0);\n                } else {\n                    restore_median_il(frame.f->data[i], 1, frame.f->linesize[i],\n                                      avctx->width >> !!i, avctx->height,\n                                      c->slices, 0);\n                }\n            }\n        }\n        break;\n    case AV_PIX_FMT_YUV444P:\n        for (i = 0; i < 3; i++) {\n            ret = decode_plane(c, i, frame.f->data[i], 1, frame.f->linesize[i],\n                               avctx->width, avctx->height,\n                               plane_start[i], c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n            if (c->frame_pred == PRED_MEDIAN) {\n                if (!c->interlaced) {\n                    restore_median(frame.f->data[i], 1, frame.f->linesize[i],\n                                   avctx->width, avctx->height,\n                                   c->slices, 0);\n                } else {\n                    restore_median_il(frame.f->data[i], 1, frame.f->linesize[i],\n                                      avctx->width, avctx->height,\n                                      c->slices, 0);\n                }\n            }\n        }\n        break;\n    case AV_PIX_FMT_YUV422P10:\n        for (i = 0; i < 3; i++) {\n            ret = decode_plane10(c, i, (uint16_t *)frame.f->data[i], 1, frame.f->linesize[i] / 2,\n                                 avctx->width >> !!i, avctx->height,\n                                 plane_start[i], plane_start[i + 1] - 1024, c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n        }\n        break;\n    }\n\n    frame.f->key_frame = 1;\n    frame.f->pict_type = AV_PICTURE_TYPE_I;\n    frame.f->interlaced_frame = !!c->interlaced;\n\n    *got_frame = 1;\n\n    /* always report that the buffer was completely consumed */\n    return buf_size;\n}",
+            501
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libavcodec/utvideodec.c",
+            "decode_frame",
+            "static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, /* <=== decode_frame */ \n                        AVPacket *avpkt)\n{\n    const uint8_t *buf = avpkt->data;\n    int buf_size = avpkt->size;\n    UtvideoContext *c = avctx->priv_data;\n    int i, j;\n    const uint8_t *plane_start[5];\n    int plane_size, max_slice_size = 0, slice_start, slice_end, slice_size;\n    int ret;\n    GetByteContext gb;\n    ThreadFrame frame = { .f = data };\n\n    if ((ret = ff_thread_get_buffer(avctx, &frame, 0)) < 0)\n        return ret;\n\n    /* parse plane structure to get frame flags and validate slice offsets */\n    bytestream2_init(&gb, buf, buf_size);\n    if (c->pro) {\n        if (bytestream2_get_bytes_left(&gb) < c->frame_info_size) {\n            av_log(avctx, AV_LOG_ERROR, \"Not enough data for frame information\\n\");\n            return AVERROR_INVALIDDATA;\n        }\n        c->frame_info = bytestream2_get_le32u(&gb);\n        c->slices = ((c->frame_info >> 16) & 0xff) + 1;\n        for (i = 0; i < c->planes; i++) {\n            plane_start[i] = gb.buffer;\n            if (bytestream2_get_bytes_left(&gb) < 1024 + 4 * c->slices) {\n                av_log(avctx, AV_LOG_ERROR, \"Insufficient data for a plane\\n\");\n                return AVERROR_INVALIDDATA;\n            }\n            slice_start = 0;\n            slice_end   = 0;\n            for (j = 0; j < c->slices; j++) {\n                slice_end   = bytestream2_get_le32u(&gb);\n                if (slice_end < 0 || slice_end < slice_start ||\n                    bytestream2_get_bytes_left(&gb) < slice_end) {\n                    av_log(avctx, AV_LOG_ERROR, \"Incorrect slice size\\n\");\n                    return AVERROR_INVALIDDATA;\n                }\n                slice_size  = slice_end - slice_start;\n                slice_start = slice_end;\n                max_slice_size = FFMAX(max_slice_size, slice_size);\n            }\n            plane_size = slice_end;\n            bytestream2_skipu(&gb, plane_size);\n            bytestream2_skipu(&gb, 1024);\n        }\n        plane_start[c->planes] = gb.buffer;\n    } else {\n        for (i = 0; i < c->planes; i++) {\n            plane_start[i] = gb.buffer;\n            if (bytestream2_get_bytes_left(&gb) < 256 + 4 * c->slices) {\n                av_log(avctx, AV_LOG_ERROR, \"Insufficient data for a plane\\n\");\n                return AVERROR_INVALIDDATA;\n            }\n            bytestream2_skipu(&gb, 256);\n            slice_start = 0;\n            slice_end   = 0;\n            for (j = 0; j < c->slices; j++) {\n                slice_end   = bytestream2_get_le32u(&gb);\n                if (slice_end < 0 || slice_end < slice_start ||\n                    bytestream2_get_bytes_left(&gb) < slice_end) {\n                    av_log(avctx, AV_LOG_ERROR, \"Incorrect slice size\\n\");\n                    return AVERROR_INVALIDDATA;\n                }\n                slice_size  = slice_end - slice_start;\n                slice_start = slice_end;\n                max_slice_size = FFMAX(max_slice_size, slice_size);\n            }\n            plane_size = slice_end;\n            bytestream2_skipu(&gb, plane_size);\n        }\n        plane_start[c->planes] = gb.buffer;\n        if (bytestream2_get_bytes_left(&gb) < c->frame_info_size) {\n            av_log(avctx, AV_LOG_ERROR, \"Not enough data for frame information\\n\");\n            return AVERROR_INVALIDDATA;\n        }\n        c->frame_info = bytestream2_get_le32u(&gb);\n    }\n    av_log(avctx, AV_LOG_DEBUG, \"frame information flags %\"PRIX32\"\\n\",\n           c->frame_info);\n\n    c->frame_pred = (c->frame_info >> 8) & 3;\n\n    if (c->frame_pred == PRED_GRADIENT) {\n        avpriv_request_sample(avctx, \"Frame with gradient prediction\");\n        return AVERROR_PATCHWELCOME;\n    }\n\n    av_fast_malloc(&c->slice_bits, &c->slice_bits_size,\n                   max_slice_size + AV_INPUT_BUFFER_PADDING_SIZE);\n\n    if (!c->slice_bits) {\n        av_log(avctx, AV_LOG_ERROR, \"Cannot allocate temporary buffer\\n\");\n        return AVERROR(ENOMEM);\n    }\n\n    switch (c->avctx->pix_fmt) {\n    case AV_PIX_FMT_RGB24:\n    case AV_PIX_FMT_RGBA:\n        for (i = 0; i < c->planes; i++) {\n            ret = decode_plane(c, i, frame.f->data[0] + ff_ut_rgb_order[i],\n                               c->planes, frame.f->linesize[0], avctx->width,\n                               avctx->height, plane_start[i],\n                               c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n            if (c->frame_pred == PRED_MEDIAN) {\n                if (!c->interlaced) {\n                    restore_median(frame.f->data[0] + ff_ut_rgb_order[i],\n                                   c->planes, frame.f->linesize[0], avctx->width,\n                                   avctx->height, c->slices, 0);\n                } else {\n                    restore_median_il(frame.f->data[0] + ff_ut_rgb_order[i],\n                                      c->planes, frame.f->linesize[0],\n                                      avctx->width, avctx->height, c->slices,\n                                      0);\n                }\n            }\n        }\n        restore_rgb_planes(frame.f->data[0], c->planes, frame.f->linesize[0],\n                           avctx->width, avctx->height);\n        break;\n    case AV_PIX_FMT_GBRAP10:\n    case AV_PIX_FMT_GBRP10:\n        for (i = 0; i < c->planes; i++) {\n            ret = decode_plane10(c, i, (uint16_t *)frame.f->data[i], 1,\n                                 frame.f->linesize[i] / 2, avctx->width,\n                                 avctx->height, plane_start[i],\n                                 plane_start[i + 1] - 1024,\n                                 c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n        }\n        restore_rgb_planes10(frame.f, avctx->width, avctx->height);\n        break;\n    case AV_PIX_FMT_YUV420P:\n        for (i = 0; i < 3; i++) {\n            ret = decode_plane(c, i, frame.f->data[i], 1, frame.f->linesize[i],\n                               avctx->width >> !!i, avctx->height >> !!i,\n                               plane_start[i], c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n            if (c->frame_pred == PRED_MEDIAN) {\n                if (!c->interlaced) {\n                    restore_median(frame.f->data[i], 1, frame.f->linesize[i],\n                                   avctx->width >> !!i, avctx->height >> !!i,\n                                   c->slices, !i);\n                } else {\n                    restore_median_il(frame.f->data[i], 1, frame.f->linesize[i],\n                                      avctx->width  >> !!i,\n                                      avctx->height >> !!i,\n                                      c->slices, !i);\n                }\n            }\n        }\n        break;\n    case AV_PIX_FMT_YUV422P:\n        for (i = 0; i < 3; i++) {\n            ret = decode_plane(c, i, frame.f->data[i], 1, frame.f->linesize[i],\n                               avctx->width >> !!i, avctx->height,\n                               plane_start[i], c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n            if (c->frame_pred == PRED_MEDIAN) {\n                if (!c->interlaced) {\n                    restore_median(frame.f->data[i], 1, frame.f->linesize[i],\n                                   avctx->width >> !!i, avctx->height,\n                                   c->slices, 0);\n                } else {\n                    restore_median_il(frame.f->data[i], 1, frame.f->linesize[i],\n                                      avctx->width >> !!i, avctx->height,\n                                      c->slices, 0);\n                }\n            }\n        }\n        break;\n    case AV_PIX_FMT_YUV444P:\n        for (i = 0; i < 3; i++) {\n            ret = decode_plane(c, i, frame.f->data[i], 1, frame.f->linesize[i],\n                               avctx->width, avctx->height,\n                               plane_start[i], c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n            if (c->frame_pred == PRED_MEDIAN) {\n                if (!c->interlaced) {\n                    restore_median(frame.f->data[i], 1, frame.f->linesize[i],\n                                   avctx->width, avctx->height,\n                                   c->slices, 0);\n                } else {\n                    restore_median_il(frame.f->data[i], 1, frame.f->linesize[i],\n                                      avctx->width, avctx->height,\n                                      c->slices, 0);\n                }\n            }\n        }\n        break;\n    case AV_PIX_FMT_YUV422P10:\n        for (i = 0; i < 3; i++) {\n            ret = decode_plane10(c, i, (uint16_t *)frame.f->data[i], 1, frame.f->linesize[i] / 2,\n                                 avctx->width >> !!i, avctx->height,\n                                 plane_start[i], plane_start[i + 1] - 1024, c->frame_pred == PRED_LEFT);\n            if (ret)\n                return ret;\n        }\n        break;\n    }\n\n    frame.f->key_frame = 1;\n    frame.f->pict_type = AV_PICTURE_TYPE_I;\n    frame.f->interlaced_frame = !!c->interlaced;\n\n    *got_frame = 1;\n\n    /* always report that the buffer was completely consumed */\n    return buf_size;\n}",
+            501
+        ]
+    ]
+}

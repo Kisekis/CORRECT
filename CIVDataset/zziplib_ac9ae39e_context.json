@@ -1,0 +1,122 @@
+{
+    "calleeMethods": [
+        [
+            "zzip/file.c",
+            "zzip_file_open",
+            "ZZIP_FILE * /* <=== zzip_file_open */ \nzzip_file_open(ZZIP_DIR * dir, zzip_char_t * name, int o_mode)\n{\n    auto int self;\n    zzip_error_t err = 0;\n    struct zzip_file *fp = 0;\n    struct zzip_dir_hdr *hdr = dir->hdr0;\n    int (*filename_strcmp) (zzip_char_t *, zzip_char_t *);\n    zzip_char_t* (*filename_basename)(zzip_char_t*);\n\n    filename_strcmp = (o_mode & ZZIP_CASELESS) ? dirsep_strcasecmp : strcmp;\n    filename_basename = (o_mode & ZZIP_CASELESS) ? dirsep_basename : strrchr_basename;\n\n    if (! dir)\n        return NULL;\n    if (! dir->fd || dir->fd == -1)\n        { dir->errcode = EBADF; return NULL; }\n    if (! hdr)\n        { dir->errcode = ENOENT; return NULL; }\n\n    if (o_mode & ZZIP_NOPATHS)\n        name = filename_basename(name);\n\n    while (1)\n    {\n        register zzip_char_t *hdr_name = hdr->d_name;\n\n        if (o_mode & ZZIP_NOPATHS)\n            hdr_name = filename_basename(hdr_name);\n\n        HINT4(\"name='%s', compr=%d, size=%d\\n\",\n              hdr->d_name, hdr->d_compr, hdr->d_usize);\n\n        if (! filename_strcmp(hdr_name, name))\n        {\n            switch (hdr->d_compr)\n            {\n            case 0:            /* store */\n            case 8:            /* inflate */\n                break;\n            default:\n                { err = ZZIP_UNSUPP_COMPR; goto error; }\n            }\n\n            if (dir->cache.locked == NULL)\n                dir->cache.locked = &self;\n\n            if (dir->cache.locked == &self && dir->cache.fp)\n            {\n                fp = dir->cache.fp;\n                dir->cache.fp = NULL;\n                /* memset(zfp, 0, sizeof *fp); cleared in zzip_file_close() */\n            } else\n            {\n                if (! (fp = (ZZIP_FILE *) calloc(1, sizeof(*fp))))\n                    { err =  ZZIP_OUTOFMEM; goto error; }\n            }\n\n            fp->dir = dir;\n            fp->io = dir->io;\n            dir->refcount++;\n\n            if (dir->cache.locked == &self && dir->cache.buf32k)\n            {\n                fp->buf32k = dir->cache.buf32k;\n                dir->cache.buf32k = NULL;\n            } else\n            {\n                if (! (fp->buf32k = (char *) malloc(ZZIP_32K)))\n                    { err = ZZIP_OUTOFMEM; goto error; }\n            }\n\n            if (dir->cache.locked == &self)\n                dir->cache.locked = NULL;\n            /*\n             * In order to support simultaneous open files in one zip archive\n             * we'll fix the fd offset when opening new file/changing which\n             * file to read...\n             */\n\n            if (zzip_file_saveoffset(dir->currentfp) < 0)\n                { err = ZZIP_DIR_SEEK; goto error; }\n\n            fp->offset = hdr->d_off;\n            dir->currentfp = fp;\n\n            if (dir->io->fd.seeks(dir->fd, hdr->d_off, SEEK_SET) < 0)\n                { err = ZZIP_DIR_SEEK; goto error; }\n\n            {\n                /* skip local header - should test tons of other info,\n                 * but trust that those are correct */\n                zzip_ssize_t dataoff;\n                struct zzip_file_header *p = (void *) fp->buf32k;\n\n                dataoff = dir->io->fd.read(dir->fd, (void *) p, sizeof(*p));\n                if (dataoff < (zzip_ssize_t) sizeof(*p))\n                    { err = ZZIP_DIR_READ;  goto error; }\n                if (! zzip_file_header_check_magic(p))   /* PK\\3\\4 */\n                    { err = ZZIP_CORRUPTED; goto error; }\n\n                dataoff = zzip_file_header_sizeof_tail(p);\n\n                if (dir->io->fd.seeks(dir->fd, dataoff, SEEK_CUR) < 0)\n                    { err = ZZIP_DIR_SEEK; goto error; }\n\n                fp->dataoffset = dir->io->fd.tells(dir->fd);\n                fp->usize = hdr->d_usize;\n                fp->csize = hdr->d_csize;\n            }\n\n            err = zzip_inflate_init(fp, hdr);\n            if (err)\n                goto error;\n\n            return fp;\n        } else\n        {\n            if (hdr->d_reclen == 0)\n                break;\n            hdr = (struct zzip_dir_hdr *) ((char *) hdr + hdr->d_reclen);\n        }                       /*filename_strcmp */\n    }                           /*forever */\n    dir->errcode = ZZIP_ENOENT;\n    return NULL;\n  error:\n    if (fp)\n        zzip_file_close(fp);\n    dir->errcode = err;\n    return NULL;\n}",
+            1
+        ],
+        [
+            "zzip/file.c",
+            "zzip_file_close",
+            "int /* <=== zzip_file_close */ \nzzip_file_close(ZZIP_FILE * fp)\n{\n    auto int self;\n    ZZIP_DIR *dir = fp->dir;\n\n    if (fp->method)\n        inflateEnd(&fp->d_stream);      /* inflateEnd() can be called many times */\n\n    if (dir->cache.locked == NULL)\n        dir->cache.locked = &self;\n\n    if (fp->buf32k)\n    {\n        if (dir->cache.locked == &self && dir->cache.buf32k == NULL)\n            dir->cache.buf32k = fp->buf32k;\n        else\n            free(fp->buf32k);\n    }\n\n    if (dir->currentfp == fp)\n        dir->currentfp = NULL;\n\n    dir->refcount--;\n    /* ease to notice possible dangling reference errors */\n    memset(fp, 0, sizeof(*fp));\n\n    if (dir->cache.locked == &self && dir->cache.fp == NULL)\n        dir->cache.fp = fp;\n    else\n        free(fp);\n\n    if (dir->cache.locked == &self)\n        dir->cache.locked = NULL;\n\n    if (! dir->refcount)\n        return zzip_dir_close(dir);\n    else\n        return 0;\n}",
+            1
+        ],
+        [
+            "zzip/file.c",
+            "zzip_inflate_init",
+            "static int /* <=== zzip_inflate_init */ \nzzip_inflate_init(ZZIP_FILE * fp, struct zzip_dir_hdr *hdr)\n{\n    int err;\n\n    fp->method = hdr->d_compr;\n    fp->restlen = hdr->d_usize;\n\n    if (fp->method)\n    {\n        memset(&fp->d_stream, 0, sizeof(fp->d_stream));\n\n        err = inflateInit2(&fp->d_stream, -MAX_WBITS);\n        if (err != Z_OK)\n            goto error;\n\n        fp->crestlen = hdr->d_csize;\n    }\n    return 0;\n  error:\n    if (fp)\n        zzip_file_close(fp);\n    return err;\n}",
+            2
+        ],
+        [
+            "zzip/file.c",
+            "zzip_file_read",
+            "zzip_ssize_t /* <=== zzip_file_read */ \nzzip_file_read(ZZIP_FILE * fp, void *buf, zzip_size_t len)\n{\n    ZZIP_DIR *dir;\n    zzip_size_t l;\n    zzip_ssize_t rv;\n\n    if (! fp || ! fp->dir)\n        return 0;\n\n    dir = fp->dir;\n    l = fp->restlen > len ? len : fp->restlen;\n    if (fp->restlen == 0)\n        return 0;\n\n    /*\n     * If this is other handle than previous, save current seek pointer\n     * and read the file position of `this' handle.\n     */\n    if (dir->currentfp != fp)\n    {\n        if (zzip_file_saveoffset(dir->currentfp) < 0\n            || fp->io->fd.seeks(dir->fd, fp->offset, SEEK_SET) < 0)\n            { dir->errcode = ZZIP_DIR_SEEK; return -1; }\n        else\n            { dir->currentfp = fp; }\n    }\n\n    /* if more methods is to be supported, change this to `switch ()' */\n    if (fp->method)             /* method != 0   == 8, inflate */\n    {\n        fp->d_stream.avail_out = l;\n        fp->d_stream.next_out = (unsigned char *) buf;\n\n        do\n        {\n            int err;\n            zzip_size_t startlen;\n\n            if (fp->crestlen > 0 && fp->d_stream.avail_in == 0)\n            {\n                zzip_size_t cl = (fp->crestlen < ZZIP_32K ?\n                                  fp->crestlen : ZZIP_32K);\n                /*  zzip_size_t cl =\n                 *      fp->crestlen > 128 ? 128 : fp->crestlen;\n                 */\n                zzip_ssize_t i = fp->io->fd.read(dir->fd, fp->buf32k, cl);\n\n                if (i <= 0)\n                {\n                    dir->errcode = ZZIP_DIR_READ;\n                    /* or ZZIP_DIR_READ_EOF ? */\n                    return -1;\n                }\n                fp->crestlen -= i;\n                fp->d_stream.avail_in = i;\n                fp->d_stream.next_in = (unsigned char *) fp->buf32k;\n            }\n\n            startlen = fp->d_stream.total_out;\n            err = inflate(&fp->d_stream, Z_NO_FLUSH);\n\n            if (err == Z_STREAM_END)\n                { fp->restlen = 0; }\n            else if (err == Z_OK)\n                { fp->restlen -= (fp->d_stream.total_out - startlen); }\n            else\n                { dir->errcode = err; return -1; }\n        }\n        while (fp->restlen && fp->d_stream.avail_out);\n\n        return l - fp->d_stream.avail_out;\n    } else\n    {                           /* method == 0 -- unstore */\n        rv = fp->io->fd.read(dir->fd, buf, l);\n        if (rv > 0)\n            { fp->restlen-= rv; }\n        else if (rv < 0)\n            { dir->errcode = ZZIP_DIR_READ; }\n        return rv;\n    }\n}",
+            1
+        ],
+        [
+            "zzip/file.c",
+            "tells",
+            "#define tells(fd) seeks(fd,0,SEEK_CUR) /* <=== zzip/file.c:31:31:tells:1 */ ",
+            2
+        ],
+        [
+            "zzip/zzip.h",
+            "zzip_dir_close",
+            "int\t  \tzzip_dir_close(ZZIP_DIR * dir); /* <=== zzip_dir_close */ ",
+            2
+        ],
+        [
+            "zzip/file.c",
+            "zzip_file_saveoffset",
+            "static int /* <=== zzip_file_saveoffset */ \nzzip_file_saveoffset(ZZIP_FILE * fp)\n{\n    if (fp)\n    {\n        int fd = fp->dir->fd;\n        zzip_off_t off = fp->io->fd.seeks(fd, 0, SEEK_CUR);\n\n        if (off < 0)\n            return -1;\n\n        fp->offset = off;\n    }\n    return 0;\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <zzip/__debug.h>",
+        "#include <zzip/lib.h>",
+        "#include <unistd.h>",
+        "#include <zzip/__string.h>",
+        "#include <sys/stat.h>",
+        "#include <io.h>",
+        "#include \"unzzipcat-zip.h\"",
+        "#include <string.h>",
+        "#include \"unzzip-states.h\"",
+        "#include <stdio.h>",
+        "#include <zzip/__fnmatch.h>",
+        "#include <zzip/__mkdir.h>",
+        "#include <stdlib.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct zzip_dir\t\tZZIP_DIR;",
+            "ZZIP_DIR"
+        ],
+        [
+            "typedef struct zzip_file\tZZIP_FILE;",
+            "ZZIP_FILE"
+        ]
+    ],
+    "visitedLines_after": {
+        "bins/unzzipcat-zip.c": [
+            31,
+            33,
+            34,
+            36,
+            37,
+            39,
+            42
+        ]
+    },
+    "visitedLines_before": {
+        "bins/unzzipcat-zip.c": [
+            31,
+            33,
+            34,
+            36,
+            37,
+            39,
+            42
+        ]
+    },
+    "visitedParams": {
+        "bins/unzzipcat-zip.c": [
+            [
+                "ZZIP_DIR* disk",
+                "unzzip_cat_file"
+            ],
+            [
+                "char* name",
+                "unzzip_cat_file"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "bins/unzzipcat-zip.c",
+            "unzzip_cat_file",
+            "static void unzzip_cat_file(ZZIP_DIR* disk, char* name, FILE* out) /* <=== unzzip_cat_file */ \n{\n    ZZIP_FILE* file = zzip_file_open (disk, name, 0);\n    if (file) \n    {\n\tchar buffer[1024]; int len;\n\twhile (0 < (len = zzip_file_read (file, buffer, 1024))) \n\t{\n\t    fwrite (buffer, 1, len, out);\n\t}\n\t\n\tzzip_file_close (file);\n    }\n}",
+            31
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "bins/unzzipcat-zip.c",
+            "unzzip_cat_file",
+            "static void unzzip_cat_file(ZZIP_DIR* disk, char* name, FILE* out) /* <=== unzzip_cat_file */ \n{\n    ZZIP_FILE* file = zzip_file_open (disk, name, 0);\n    if (file) \n    {\n\tchar buffer[1024]; int len;\n\twhile ((len = zzip_file_read (file, buffer, 1024))) \n\t{\n\t    fwrite (buffer, 1, len, out);\n\t}\n\t\n\tzzip_file_close (file);\n    }\n}",
+            31
+        ]
+    ]
+}

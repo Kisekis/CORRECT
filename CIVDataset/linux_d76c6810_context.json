@@ -1,0 +1,477 @@
+{
+    "calleeMethods": [
+        [
+            "include/linux/kasan.h",
+            "kasan_slab_free",
+            "static inline bool kasan_slab_free(struct kmem_cache *s, void *object) /* <=== kasan_slab_free */ \n{\n\treturn false;\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "set_slob_page_free",
+            "static void set_slob_page_free(struct page *sp, struct list_head *list) /* <=== set_slob_page_free */ \n{\n\tlist_add(&sp->lru, list);\n\t__SetPageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "slob_last",
+            "static int slob_last(slob_t *s) /* <=== slob_last */ \n{\n\treturn !((unsigned long)slob_next(s) & ~PAGE_MASK);\n}",
+            3
+        ],
+        [
+            "crypto/algapi.c",
+            "crypto_wait_for_test",
+            "static void crypto_wait_for_test(struct crypto_larval *larval) /* <=== crypto_wait_for_test */ \n{\n\tint err;\n\n\terr = crypto_probing_notify(CRYPTO_MSG_ALG_REGISTER, larval->adult);\n\tif (err != NOTIFY_STOP) {\n\t\tif (WARN_ON(err != NOTIFY_DONE))\n\t\t\tgoto out;\n\t\tcrypto_alg_tested(larval->alg.cra_driver_name, 0);\n\t}\n\n\terr = wait_for_completion_killable(&larval->completion);\n\tWARN_ON(err);\n\nout:\n\tcrypto_larval_kill(&larval->alg);\n}",
+            3
+        ],
+        [
+            "include/crypto/internal/aead.h",
+            "aead_crypto_instance",
+            "static inline struct crypto_instance *aead_crypto_instance( /* <=== aead_crypto_instance */ \n\tstruct aead_instance *inst)\n{\n\treturn container_of(&inst->alg.base, struct crypto_instance, alg);\n}",
+            2
+        ],
+        [
+            "tools/include/linux/list.h",
+            "hlist_add_head",
+            "static inline void hlist_add_head(struct hlist_node *n, struct hlist_head *h) /* <=== hlist_add_head */ \n{\n\tstruct hlist_node *first = h->first;\n\tn->next = first;\n\tif (first)\n\t\tfirst->pprev = &n->next;\n\th->first = n;\n\tn->pprev = &h->first;\n}",
+            3
+        ],
+        [
+            "include/crypto/algapi.h",
+            "crypto_instance_ctx",
+            "static inline void *crypto_instance_ctx(struct crypto_instance *inst) /* <=== crypto_instance_ctx */ \n{\n\treturn inst->__ctx;\n}",
+            1
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kmalloc",
+            "static inline void *kmalloc(size_t s, gfp_t gfp) /* <=== kmalloc */ \n{\n\tif (__kmalloc_fake)\n\t\treturn __kmalloc_fake;\n\treturn malloc(s);\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_free",
+            "static void slob_free(void *block, int size) /* <=== slob_free */ \n{\n\tstruct page *sp;\n\tslob_t *prev, *next, *b = (slob_t *)block;\n\tslobidx_t units;\n\tunsigned long flags;\n\tstruct list_head *slob_list;\n\n\tif (unlikely(ZERO_OR_NULL_PTR(block)))\n\t\treturn;\n\tBUG_ON(!size);\n\n\tsp = virt_to_page(block);\n\tunits = SLOB_UNITS(size);\n\n\tspin_lock_irqsave(&slob_lock, flags);\n\n\tif (sp->units + units == SLOB_UNITS(PAGE_SIZE)) {\n\t\t/* Go directly to page allocator. Do not pass slob allocator */\n\t\tif (slob_page_free(sp))\n\t\t\tclear_slob_page_free(sp);\n\t\tspin_unlock_irqrestore(&slob_lock, flags);\n\t\t__ClearPageSlab(sp);\n\t\tpage_mapcount_reset(sp);\n\t\tslob_free_pages(b, 0);\n\t\treturn;\n\t}\n\n\tif (!slob_page_free(sp)) {\n\t\t/* This slob page is about to become partially free. Easy! */\n\t\tsp->units = units;\n\t\tsp->freelist = b;\n\t\tset_slob(b, units,\n\t\t\t(void *)((unsigned long)(b +\n\t\t\t\t\tSLOB_UNITS(PAGE_SIZE)) & PAGE_MASK));\n\t\tif (size < SLOB_BREAK1)\n\t\t\tslob_list = &free_slob_small;\n\t\telse if (size < SLOB_BREAK2)\n\t\t\tslob_list = &free_slob_medium;\n\t\telse\n\t\t\tslob_list = &free_slob_large;\n\t\tset_slob_page_free(sp, slob_list);\n\t\tgoto out;\n\t}\n\n\t/*\n\t * Otherwise the page is already partially free, so find reinsertion\n\t * point.\n\t */\n\tsp->units += units;\n\n\tif (b < (slob_t *)sp->freelist) {\n\t\tif (b + units == sp->freelist) {\n\t\t\tunits += slob_units(sp->freelist);\n\t\t\tsp->freelist = slob_next(sp->freelist);\n\t\t}\n\t\tset_slob(b, units, sp->freelist);\n\t\tsp->freelist = b;\n\t} else {\n\t\tprev = sp->freelist;\n\t\tnext = slob_next(prev);\n\t\twhile (b > next) {\n\t\t\tprev = next;\n\t\t\tnext = slob_next(prev);\n\t\t}\n\n\t\tif (!slob_last(prev) && b + units == next) {\n\t\t\tunits += slob_units(next);\n\t\t\tset_slob(b, units, slob_next(next));\n\t\t} else\n\t\t\tset_slob(b, units, next);\n\n\t\tif (prev + slob_units(prev) == b) {\n\t\t\tunits = slob_units(b) + slob_units(prev);\n\t\t\tset_slob(prev, units, slob_next(b));\n\t\t} else\n\t\t\tset_slob(prev, slob_units(prev), b);\n\t}\nout:\n\tspin_unlock_irqrestore(&slob_lock, flags);\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_units",
+            "static slobidx_t slob_units(slob_t *s) /* <=== slob_units */ \n{\n\tif (s->units > 0)\n\t\treturn s->units;\n\treturn 1;\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "slob_page_free",
+            "static inline int slob_page_free(struct page *sp) /* <=== slob_page_free */ \n{\n\treturn PageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "tools/testing/radix-tree/linux.c",
+            "kmalloc",
+            "void *kmalloc(size_t size, gfp_t gfp) /* <=== kmalloc */ \n{\n\tvoid *ret = malloc(size);\n\tuatomic_inc(&nr_allocated);\n\tif (kmalloc_verbose)\n\t\tprintf(\"Allocating %p from malloc\\n\", ret);\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "include/linux/rwsem.h",
+            "down_write",
+            "extern void down_write(struct rw_semaphore *sem); /* <=== down_write */ ",
+            3
+        ],
+        [
+            "crypto/algapi.c",
+            "crypto_get_attr_type",
+            "struct crypto_attr_type *crypto_get_attr_type(struct rtattr **tb) /* <=== crypto_get_attr_type */ \n{\n\tstruct rtattr *rta = tb[0];\n\tstruct crypto_attr_type *algt;\n\n\tif (!rta)\n\t\treturn ERR_PTR(-ENOENT);\n\tif (RTA_PAYLOAD(rta) < sizeof(*algt))\n\t\treturn ERR_PTR(-EINVAL);\n\tif (rta->rta_type != CRYPTOA_TYPE)\n\t\treturn ERR_PTR(-EINVAL);\n\n\talgt = RTA_DATA(rta);\n\n\treturn algt;\n}",
+            1
+        ],
+        [
+            "include/linux/kasan.h",
+            "kasan_kfree_large",
+            "static inline void kasan_kfree_large(const void *ptr) {} /* <=== kasan_kfree_large */ ",
+            3
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "kfree",
+            "static void kfree(void *p) /* <=== kfree */ \n{\n\tif (p)\n\t\tfree(p);\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_BREAK1",
+            "#define SLOB_BREAK1 256 /* <=== mm/slob.c:99:99:SLOB_BREAK1:0 */ ",
+            3
+        ],
+        [
+            "crypto/algapi.c",
+            "__crypto_register_alg",
+            "static struct crypto_larval *__crypto_register_alg(struct crypto_alg *alg) /* <=== __crypto_register_alg */ \n{\n\tstruct crypto_alg *q;\n\tstruct crypto_larval *larval;\n\tint ret = -EAGAIN;\n\n\tif (crypto_is_dead(alg))\n\t\tgoto err;\n\n\tINIT_LIST_HEAD(&alg->cra_users);\n\n\t/* No cheating! */\n\talg->cra_flags &= ~CRYPTO_ALG_TESTED;\n\n\tret = -EEXIST;\n\n\tlist_for_each_entry(q, &crypto_alg_list, cra_list) {\n\t\tif (q == alg)\n\t\t\tgoto err;\n\n\t\tif (crypto_is_moribund(q))\n\t\t\tcontinue;\n\n\t\tif (crypto_is_larval(q)) {\n\t\t\tif (!strcmp(alg->cra_driver_name, q->cra_driver_name))\n\t\t\t\tgoto err;\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (!strcmp(q->cra_driver_name, alg->cra_name) ||\n\t\t    !strcmp(q->cra_name, alg->cra_driver_name))\n\t\t\tgoto err;\n\t}\n\n\tlarval = crypto_larval_alloc(alg->cra_name,\n\t\t\t\t     alg->cra_flags | CRYPTO_ALG_TESTED, 0);\n\tif (IS_ERR(larval))\n\t\tgoto out;\n\n\tret = -ENOENT;\n\tlarval->adult = crypto_mod_get(alg);\n\tif (!larval->adult)\n\t\tgoto free_larval;\n\n\tatomic_set(&larval->alg.cra_refcnt, 1);\n\tmemcpy(larval->alg.cra_driver_name, alg->cra_driver_name,\n\t       CRYPTO_MAX_ALG_NAME);\n\tlarval->alg.cra_priority = alg->cra_priority;\n\n\tlist_add(&alg->cra_list, &crypto_alg_list);\n\tlist_add(&larval->alg.cra_list, &crypto_alg_list);\n\nout:\n\treturn larval;\n\nfree_larval:\n\tkfree(larval);\nerr:\n\tlarval = ERR_PTR(ret);\n\tgoto out;\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_BREAK2",
+            "#define SLOB_BREAK2 1024 /* <=== mm/slob.c:100:100:SLOB_BREAK2:0 */ ",
+            3
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "spin_lock_irqsave",
+            "static void spin_lock_irqsave(spinlock_t *lock, unsigned long f) /* <=== spin_lock_irqsave */ \n{\n\tspin_lock(lock);\n}",
+            3
+        ],
+        [
+            "include/linux/list.h",
+            "list_del",
+            "static inline void list_del(struct list_head *entry) /* <=== list_del */ \n{\n\t__list_del_entry(entry);\n\tentry->next = LIST_POISON1;\n\tentry->prev = LIST_POISON2;\n}",
+            3
+        ],
+        [
+            "tools/testing/radix-tree/linux.c",
+            "kfree",
+            "void kfree(void *p) /* <=== kfree */ \n{\n\tif (!p)\n\t\treturn;\n\tuatomic_dec(&nr_allocated);\n\tif (kmalloc_verbose)\n\t\tprintf(\"Freeing %p to malloc\\n\", p);\n\tfree(p);\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "virt_to_cache",
+            "static inline struct kmem_cache *virt_to_cache(const void *obj) /* <=== virt_to_cache */ \n{\n\tstruct page *page = virt_to_head_page(obj);\n\treturn page->slab_cache;\n}",
+            2
+        ],
+        [
+            "crypto/algapi.c",
+            "crypto_check_alg",
+            "static int crypto_check_alg(struct crypto_alg *alg) /* <=== crypto_check_alg */ \n{\n\tcrypto_check_module_sig(alg->cra_module);\n\n\tif (alg->cra_alignmask & (alg->cra_alignmask + 1))\n\t\treturn -EINVAL;\n\n\tif (alg->cra_blocksize > PAGE_SIZE / 8)\n\t\treturn -EINVAL;\n\n\tif (alg->cra_priority < 0)\n\t\treturn -EINVAL;\n\n\tatomic_set(&alg->cra_refcnt, 1);\n\n\treturn crypto_set_driver_name(alg);\n}",
+            3
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "spin_unlock_irqrestore",
+            "static void spin_unlock_irqrestore(spinlock_t *lock, unsigned long f) /* <=== spin_unlock_irqrestore */ \n{\n\tspin_unlock(lock);\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "SLOB_UNITS",
+            "#define SLOB_UNITS(size) DIV_ROUND_UP(size, SLOB_UNIT) /* <=== mm/slob.c:126:126:SLOB_UNITS:1 */ ",
+            3
+        ],
+        [
+            "include/crypto/algapi.h",
+            "crypto_mod_put",
+            "void crypto_mod_put(struct crypto_alg *alg); /* <=== crypto_mod_put */ ",
+            3
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kfree",
+            "static inline void kfree(void *p) /* <=== kfree */ \n{\n\tif (p >= __kfree_ignore_start && p < __kfree_ignore_end)\n\t\treturn;\n\tfree(p);\n}",
+            1
+        ],
+        [
+            "mm/slob.c",
+            "slob_next",
+            "static slob_t *slob_next(slob_t *s) /* <=== slob_next */ \n{\n\tslob_t *base = (slob_t *)((unsigned long)s & PAGE_MASK);\n\tslobidx_t next;\n\n\tif (s[0].units < 0)\n\t\tnext = -s[0].units;\n\telse\n\t\tnext = s[1].units;\n\treturn base+next;\n}",
+            3
+        ],
+        [
+            "crypto/aead.c",
+            "aead_register_instance",
+            "int aead_register_instance(struct crypto_template *tmpl, /* <=== aead_register_instance */ \n\t\t\t   struct aead_instance *inst)\n{\n\tint err;\n\n\terr = aead_prepare_alg(&inst->alg);\n\tif (err)\n\t\treturn err;\n\n\treturn crypto_register_instance(tmpl, aead_crypto_instance(inst));\n}",
+            1
+        ],
+        [
+            "include/crypto/internal/aead.h",
+            "aead_instance_ctx",
+            "static inline void *aead_instance_ctx(struct aead_instance *inst) /* <=== aead_instance_ctx */ \n{\n\treturn crypto_instance_ctx(aead_crypto_instance(inst));\n}",
+            1
+        ],
+        [
+            "include/crypto/internal/aead.h",
+            "crypto_drop_aead",
+            "static inline void crypto_drop_aead(struct crypto_aead_spawn *spawn) /* <=== crypto_drop_aead */ \n{\n\tcrypto_drop_spawn(&spawn->base);\n}",
+            1
+        ],
+        [
+            "mm/slub.c",
+            "kfree_hook",
+            "static inline void kfree_hook(const void *x) /* <=== kfree_hook */ \n{\n\tkmemleak_free(x);\n\tkasan_kfree_large(x);\n}",
+            2
+        ],
+        [
+            "include/linux/list.h",
+            "hlist_add_head",
+            "static inline void hlist_add_head(struct hlist_node *n, struct hlist_head *h) /* <=== hlist_add_head */ \n{\n\tstruct hlist_node *first = h->first;\n\tn->next = first;\n\tif (first)\n\t\tfirst->pprev = &n->next;\n\tWRITE_ONCE(h->first, n);\n\tn->pprev = &h->first;\n}",
+            3
+        ],
+        [
+            "mm/slab.c",
+            "kfree",
+            "void kfree(const void *objp) /* <=== kfree */ \n{\n\tstruct kmem_cache *c;\n\tunsigned long flags;\n\n\ttrace_kfree(_RET_IP_, objp);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(objp)))\n\t\treturn;\n\tlocal_irq_save(flags);\n\tkfree_debugcheck(objp);\n\tc = virt_to_cache(objp);\n\tdebug_check_no_locks_freed(objp, c->object_size);\n\n\tdebug_check_no_obj_freed(objp, c->object_size);\n\t__cache_free(c, (void *)objp, _RET_IP_);\n\tlocal_irq_restore(flags);\n}",
+            1
+        ],
+        [
+            "include/linux/kmemleak.h",
+            "kmemleak_free",
+            "static inline void kmemleak_free(const void *ptr) /* <=== kmemleak_free */ \n{\n}",
+            2
+        ],
+        [
+            "mm/slab.c",
+            "___cache_free",
+            "void ___cache_free(struct kmem_cache *cachep, void *objp, /* <=== ___cache_free */ \n\t\tunsigned long caller)\n{\n\tstruct array_cache *ac = cpu_cache_get(cachep);\n\n\tcheck_irq_off();\n\tkmemleak_free_recursive(objp, cachep->flags);\n\tobjp = cache_free_debugcheck(cachep, objp, caller);\n\n\t/*\n\t * Skip calling cache_free_alien() when the platform is not numa.\n\t * This will avoid cache misses that happen while accessing slabp (which\n\t * is per page memory  reference) to get nodeid. Instead use a global\n\t * variable to skip the call, which is mostly likely to be present in\n\t * the cache.\n\t */\n\tif (nr_online_nodes > 1 && cache_free_alien(cachep, objp))\n\t\treturn;\n\n\tif (ac->avail < ac->limit) {\n\t\tSTATS_INC_FREEHIT(cachep);\n\t} else {\n\t\tSTATS_INC_FREEMISS(cachep);\n\t\tcache_flusharray(cachep, ac);\n\t}\n\n\tif (sk_memalloc_socks()) {\n\t\tstruct page *page = virt_to_head_page(objp);\n\n\t\tif (unlikely(PageSlabPfmemalloc(page))) {\n\t\t\tcache_free_pfmemalloc(cachep, page, objp);\n\t\t\treturn;\n\t\t}\n\t}\n\n\tac->entry[ac->avail++] = objp;\n}",
+            3
+        ],
+        [
+            "crypto/algapi.c",
+            "crypto_unregister_instance",
+            "int crypto_unregister_instance(struct crypto_instance *inst) /* <=== crypto_unregister_instance */ \n{\n\tLIST_HEAD(list);\n\n\tdown_write(&crypto_alg_sem);\n\n\tcrypto_remove_spawns(&inst->alg, &list, NULL);\n\tcrypto_remove_instance(inst, &list);\n\n\tup_write(&crypto_alg_sem);\n\n\tcrypto_remove_final(&list);\n\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "clear_slob_page_free",
+            "static inline void clear_slob_page_free(struct page *sp) /* <=== clear_slob_page_free */ \n{\n\tlist_del(&sp->lru);\n\t__ClearPageSlobFree(sp);\n}",
+            3
+        ],
+        [
+            "include/linux/slab.h",
+            "kzalloc",
+            "static inline void *kzalloc(size_t size, gfp_t flags) /* <=== kzalloc */ \n{\n\treturn kmalloc(size, flags | __GFP_ZERO);\n}",
+            1
+        ],
+        [
+            "include/linux/gfp.h",
+            "__free_pages",
+            "extern void __free_pages(struct page *page, unsigned int order); /* <=== __free_pages */ ",
+            2
+        ],
+        [
+            "include/crypto/algapi.h",
+            "crypto_instance_ctx",
+            "static inline void *crypto_instance_ctx(struct crypto_instance *inst) /* <=== crypto_instance_ctx */ \n{\n\treturn inst->__ctx;\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "kfree",
+            "void kfree(const void *block) /* <=== kfree */ \n{\n\tstruct page *sp;\n\n\ttrace_kfree(_RET_IP_, block);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(block)))\n\t\treturn;\n\tkmemleak_free(block);\n\n\tsp = virt_to_page(block);\n\tif (PageSlab(sp)) {\n\t\tint align = max_t(size_t, ARCH_KMALLOC_MINALIGN, ARCH_SLAB_MINALIGN);\n\t\tunsigned int *m = (unsigned int *)(block - align);\n\t\tslob_free(m, *m + align);\n\t} else\n\t\t__free_pages(sp, compound_order(sp));\n}",
+            1
+        ],
+        [
+            "include/linux/rwsem.h",
+            "up_write",
+            "extern void up_write(struct rw_semaphore *sem); /* <=== up_write */ ",
+            3
+        ],
+        [
+            "crypto/algapi.c",
+            "crypto_drop_spawn",
+            "void crypto_drop_spawn(struct crypto_spawn *spawn) /* <=== crypto_drop_spawn */ \n{\n\tif (!spawn->alg)\n\t\treturn;\n\n\tdown_write(&crypto_alg_sem);\n\tlist_del(&spawn->list);\n\tup_write(&crypto_alg_sem);\n}",
+            2
+        ],
+        [
+            "mm/slob.c",
+            "slob_free_pages",
+            "static void slob_free_pages(void *b, int order) /* <=== slob_free_pages */ \n{\n\tif (current->reclaim_state)\n\t\tcurrent->reclaim_state->reclaimed_slab += 1 << order;\n\tfree_pages((unsigned long)b, order);\n}",
+            3
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "kzalloc",
+            "static void *kzalloc(unsigned size, gfp_t gfp) /* <=== kzalloc */ \n{\n\tvoid *p = memalign(64, size);\n\tif (!p)\n\t\treturn p;\n\tmemset(p, 0, size);\n\n\treturn p;\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "kfree_debugcheck",
+            "#define kfree_debugcheck(x) do { } while(0) /* <=== mm/slab.c:2814:2814:kfree_debugcheck:1 */ ",
+            2
+        ],
+        [
+            "tools/virtio/linux/kernel.h",
+            "kzalloc",
+            "static inline void *kzalloc(size_t s, gfp_t gfp) /* <=== kzalloc */ \n{\n\tvoid *p = kmalloc(s, gfp);\n\n\tmemset(p, 0, s);\n\treturn p;\n}",
+            1
+        ],
+        [
+            "crypto/algapi.c",
+            "crypto_attr_alg_name",
+            "const char *crypto_attr_alg_name(struct rtattr *rta) /* <=== crypto_attr_alg_name */ \n{\n\tstruct crypto_attr_alg *alga;\n\n\tif (!rta)\n\t\treturn ERR_PTR(-ENOENT);\n\tif (RTA_PAYLOAD(rta) < sizeof(*alga))\n\t\treturn ERR_PTR(-EINVAL);\n\tif (rta->rta_type != CRYPTOA_ALG)\n\t\treturn ERR_PTR(-EINVAL);\n\n\talga = RTA_DATA(rta);\n\talga->name[CRYPTO_MAX_ALG_NAME - 1] = 0;\n\n\treturn alga->name;\n}",
+            1
+        ],
+        [
+            "tools/include/linux/list.h",
+            "list_del",
+            "static inline void list_del(struct list_head *entry) /* <=== list_del */ \n{\n\t__list_del(entry->prev, entry->next);\n\tentry->next = LIST_POISON1;\n\tentry->prev = LIST_POISON2;\n}",
+            3
+        ],
+        [
+            "mm/slob.c",
+            "set_slob",
+            "static void set_slob(slob_t *s, slobidx_t size, slob_t *next) /* <=== set_slob */ \n{\n\tslob_t *base = (slob_t *)((unsigned long)s & PAGE_MASK);\n\tslobidx_t offset = next - base;\n\n\tif (size > 1) {\n\t\ts[0].units = size;\n\t\ts[1].units = offset;\n\t} else\n\t\ts[0].units = -offset;\n}",
+            3
+        ],
+        [
+            "crypto/algapi.c",
+            "crypto_register_instance",
+            "int crypto_register_instance(struct crypto_template *tmpl, /* <=== crypto_register_instance */ \n\t\t\t     struct crypto_instance *inst)\n{\n\tstruct crypto_larval *larval;\n\tint err;\n\n\terr = crypto_check_alg(&inst->alg);\n\tif (err)\n\t\treturn err;\n\n\tinst->alg.cra_module = tmpl->module;\n\tinst->alg.cra_flags |= CRYPTO_ALG_INSTANCE;\n\n\tif (unlikely(!crypto_mod_get(&inst->alg)))\n\t\treturn -EAGAIN;\n\n\tdown_write(&crypto_alg_sem);\n\n\tlarval = __crypto_register_alg(&inst->alg);\n\tif (IS_ERR(larval))\n\t\tgoto unlock;\n\n\thlist_add_head(&inst->list, &tmpl->instances);\n\tinst->tmpl = tmpl;\n\nunlock:\n\tup_write(&crypto_alg_sem);\n\n\terr = PTR_ERR(larval);\n\tif (IS_ERR(larval))\n\t\tgoto err;\n\n\tcrypto_wait_for_test(larval);\n\n\t/* Remove instance if test failed */\n\tif (!(inst->alg.cra_flags & CRYPTO_ALG_TESTED))\n\t\tcrypto_unregister_instance(inst);\n\terr = 0;\n\nerr:\n\tcrypto_mod_put(&inst->alg);\n\treturn err;\n}",
+            2
+        ],
+        [
+            "crypto/aead.c",
+            "aead_prepare_alg",
+            "static int aead_prepare_alg(struct aead_alg *alg) /* <=== aead_prepare_alg */ \n{\n\tstruct crypto_alg *base = &alg->base;\n\n\tif (max3(alg->maxauthsize, alg->ivsize, alg->chunksize) >\n\t    PAGE_SIZE / 8)\n\t\treturn -EINVAL;\n\n\tif (!alg->chunksize)\n\t\talg->chunksize = base->cra_blocksize;\n\n\tbase->cra_type = &crypto_aead_type;\n\tbase->cra_flags &= ~CRYPTO_ALG_TYPE_MASK;\n\tbase->cra_flags |= CRYPTO_ALG_TYPE_AEAD;\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "mm/slub.c",
+            "kfree",
+            "void kfree(const void *x) /* <=== kfree */ \n{\n\tstruct page *page;\n\tvoid *object = (void *)x;\n\n\ttrace_kfree(_RET_IP_, x);\n\n\tif (unlikely(ZERO_OR_NULL_PTR(x)))\n\t\treturn;\n\n\tpage = virt_to_head_page(x);\n\tif (unlikely(!PageSlab(page))) {\n\t\tBUG_ON(!PageCompound(page));\n\t\tkfree_hook(x);\n\t\t__free_pages(page, compound_order(page));\n\t\treturn;\n\t}\n\tslab_free(page->slab_cache, page, object, NULL, 1, _RET_IP_);\n}",
+            1
+        ],
+        [
+            "mm/slab.c",
+            "__cache_free",
+            "static inline void __cache_free(struct kmem_cache *cachep, void *objp, /* <=== __cache_free */ \n\t\t\t\tunsigned long caller)\n{\n\t/* Put the object into the quarantine, don't touch it for now. */\n\tif (kasan_slab_free(cachep, objp))\n\t\treturn;\n\n\t___cache_free(cachep, objp, caller);\n}",
+            2
+        ],
+        [
+            "tools/virtio/ringtest/ptr_ring.c",
+            "kmalloc",
+            "static void *kmalloc(unsigned size, gfp_t gfp) /* <=== kmalloc */ \n{\n\treturn memalign(64, size);\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/notifier.h>",
+        "#include <linux/module.h>",
+        "#include <linux/kobject.h>",
+        "#include <linux/atomic.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/init.h>",
+        "#include <crypto/algapi.h>",
+        "#include <crypto/pcrypt.h>",
+        "#include <linux/cpu.h>",
+        "#include <crypto/internal/aead.h>",
+        "#include <linux/err.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct pcrypt_instance_ctx {\n\tstruct crypto_aead_spawn spawn;\n\tatomic_t tfm_count;\n}",
+            "pcrypt_instance_ctx"
+        ],
+        [
+            "struct crypto_instance {\n\tstruct crypto_alg alg;\n\n\tstruct crypto_template *tmpl;\n\tstruct hlist_node list;\n\n\tvoid *__ctx[] CRYPTO_MINALIGN_ATTR;\n}",
+            "crypto_instance"
+        ],
+        [
+            "struct rtattr",
+            "rtattr"
+        ],
+        [
+            "struct crypto_attr_type {\n\tu32 type;\n\tu32 mask;\n}",
+            "crypto_attr_type"
+        ],
+        [
+            "struct aead_instance {\n\tvoid (*free)(struct aead_instance *inst);\n\tunion {\n\t\tstruct {\n\t\t\tchar head[offsetof(struct aead_alg, base)];\n\t\t\tstruct crypto_instance base;\n\t\t} s;\n\t\tstruct aead_alg alg;\n\t};\n}",
+            "aead_instance"
+        ],
+        [
+            "struct crypto_template {\n\tstruct list_head list;\n\tstruct hlist_head instances;\n\tstruct module *module;\n\n\tstruct crypto_instance *(*alloc)(struct rtattr **tb);\n\tvoid (*free)(struct crypto_instance *inst);\n\tint (*create)(struct crypto_template *tmpl, struct rtattr **tb);\n\n\tchar name[CRYPTO_MAX_ALG_NAME];\n}",
+            "crypto_template"
+        ]
+    ],
+    "visitedLines_after": {
+        "crypto/pcrypt.c": [
+            257,
+            259,
+            261,
+            262,
+            281,
+            291,
+            292,
+            295,
+            296,
+            299,
+            300,
+            303,
+            304,
+            307,
+            311,
+            312,
+            330,
+            332,
+            337,
+            342
+        ]
+    },
+    "visitedLines_before": {
+        "crypto/pcrypt.c": [
+            273,
+            283,
+            284,
+            287,
+            288,
+            291,
+            292,
+            295,
+            296,
+            299,
+            303,
+            304,
+            322,
+            327,
+            332,
+            352,
+            354,
+            356,
+            357
+        ]
+    },
+    "visitedParams": {
+        "crypto/pcrypt.c": [
+            [
+                "struct aead_instance *inst",
+                "pcrypt_free"
+            ],
+            [
+                "struct crypto_instance *inst",
+                "pcrypt_free"
+            ],
+            [
+                "struct rtattr **tb",
+                "pcrypt_create_aead"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "crypto/pcrypt.c",
+            "pcrypt_free",
+            "static void pcrypt_free(struct aead_instance *inst) /* <=== pcrypt_free */ \n{\n\tstruct pcrypt_instance_ctx *ctx = aead_instance_ctx(inst);\n\n\tcrypto_drop_aead(&ctx->spawn);\n\tkfree(inst);\n}",
+            257
+        ],
+        [
+            "crypto/pcrypt.c",
+            "pcrypt_create_aead",
+            "static int pcrypt_create_aead(struct crypto_template *tmpl, struct rtattr **tb, /* <=== pcrypt_create_aead */ \n\t\t\t      u32 type, u32 mask)\n{\n\tstruct pcrypt_instance_ctx *ctx;\n\tstruct crypto_attr_type *algt;\n\tstruct aead_instance *inst;\n\tstruct aead_alg *alg;\n\tconst char *name;\n\tint err;\n\n\talgt = crypto_get_attr_type(tb);\n\tif (IS_ERR(algt))\n\t\treturn PTR_ERR(algt);\n\n\tname = crypto_attr_alg_name(tb[1]);\n\tif (IS_ERR(name))\n\t\treturn PTR_ERR(name);\n\n\tinst = kzalloc(sizeof(*inst) + sizeof(*ctx), GFP_KERNEL);\n\tif (!inst)\n\t\treturn -ENOMEM;\n\n\tctx = aead_instance_ctx(inst);\n\tcrypto_set_aead_spawn(&ctx->spawn, aead_crypto_instance(inst));\n\n\terr = crypto_grab_aead(&ctx->spawn, name, 0, 0);\n\tif (err)\n\t\tgoto out_free_inst;\n\n\talg = crypto_spawn_aead_alg(&ctx->spawn);\n\terr = pcrypt_init_instance(aead_crypto_instance(inst), &alg->base);\n\tif (err)\n\t\tgoto out_drop_aead;\n\n\tinst->alg.base.cra_flags = CRYPTO_ALG_ASYNC;\n\n\tinst->alg.ivsize = crypto_aead_alg_ivsize(alg);\n\tinst->alg.maxauthsize = crypto_aead_alg_maxauthsize(alg);\n\n\tinst->alg.base.cra_ctxsize = sizeof(struct pcrypt_aead_ctx);\n\n\tinst->alg.init = pcrypt_aead_init_tfm;\n\tinst->alg.exit = pcrypt_aead_exit_tfm;\n\n\tinst->alg.setkey = pcrypt_aead_setkey;\n\tinst->alg.setauthsize = pcrypt_aead_setauthsize;\n\tinst->alg.encrypt = pcrypt_aead_encrypt;\n\tinst->alg.decrypt = pcrypt_aead_decrypt;\n\n\tinst->free = pcrypt_free;\n\n\terr = aead_register_instance(tmpl, inst);\n\tif (err)\n\t\tgoto out_drop_aead;\n\nout:\n\treturn err;\n\nout_drop_aead:\n\tcrypto_drop_aead(&ctx->spawn);\nout_free_inst:\n\tkfree(inst);\n\tgoto out;\n}",
+            281
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "crypto/pcrypt.c",
+            "pcrypt_create_aead",
+            "static int pcrypt_create_aead(struct crypto_template *tmpl, struct rtattr **tb, /* <=== pcrypt_create_aead */ \n\t\t\t      u32 type, u32 mask)\n{\n\tstruct pcrypt_instance_ctx *ctx;\n\tstruct crypto_attr_type *algt;\n\tstruct aead_instance *inst;\n\tstruct aead_alg *alg;\n\tconst char *name;\n\tint err;\n\n\talgt = crypto_get_attr_type(tb);\n\tif (IS_ERR(algt))\n\t\treturn PTR_ERR(algt);\n\n\tname = crypto_attr_alg_name(tb[1]);\n\tif (IS_ERR(name))\n\t\treturn PTR_ERR(name);\n\n\tinst = kzalloc(sizeof(*inst) + sizeof(*ctx), GFP_KERNEL);\n\tif (!inst)\n\t\treturn -ENOMEM;\n\n\tctx = aead_instance_ctx(inst);\n\tcrypto_set_aead_spawn(&ctx->spawn, aead_crypto_instance(inst));\n\n\terr = crypto_grab_aead(&ctx->spawn, name, 0, 0);\n\tif (err)\n\t\tgoto out_free_inst;\n\n\talg = crypto_spawn_aead_alg(&ctx->spawn);\n\terr = pcrypt_init_instance(aead_crypto_instance(inst), &alg->base);\n\tif (err)\n\t\tgoto out_drop_aead;\n\n\tinst->alg.base.cra_flags = CRYPTO_ALG_ASYNC;\n\n\tinst->alg.ivsize = crypto_aead_alg_ivsize(alg);\n\tinst->alg.maxauthsize = crypto_aead_alg_maxauthsize(alg);\n\n\tinst->alg.base.cra_ctxsize = sizeof(struct pcrypt_aead_ctx);\n\n\tinst->alg.init = pcrypt_aead_init_tfm;\n\tinst->alg.exit = pcrypt_aead_exit_tfm;\n\n\tinst->alg.setkey = pcrypt_aead_setkey;\n\tinst->alg.setauthsize = pcrypt_aead_setauthsize;\n\tinst->alg.encrypt = pcrypt_aead_encrypt;\n\tinst->alg.decrypt = pcrypt_aead_decrypt;\n\n\terr = aead_register_instance(tmpl, inst);\n\tif (err)\n\t\tgoto out_drop_aead;\n\nout:\n\treturn err;\n\nout_drop_aead:\n\tcrypto_drop_aead(&ctx->spawn);\nout_free_inst:\n\tkfree(inst);\n\tgoto out;\n}",
+            273
+        ],
+        [
+            "crypto/pcrypt.c",
+            "pcrypt_free",
+            "static void pcrypt_free(struct crypto_instance *inst) /* <=== pcrypt_free */ \n{\n\tstruct pcrypt_instance_ctx *ctx = crypto_instance_ctx(inst);\n\n\tcrypto_drop_aead(&ctx->spawn);\n\tkfree(inst);\n}",
+            352
+        ]
+    ]
+}

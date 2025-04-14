@@ -1,0 +1,142 @@
+{
+    "calleeMethods": [
+        [
+            "fmtutils.c",
+            "pcap_fmt_errmsg_for_errno",
+            "void /* <=== pcap_fmt_errmsg_for_errno */ \npcap_fmt_errmsg_for_errno(char *errbuf, size_t errbuflen, int errnum,\n    const char *fmt, ...)\n{\n\tva_list ap;\n\tsize_t msglen;\n\tchar *p;\n\tsize_t errbuflen_remaining;\n\n\tva_start(ap, fmt);\n\tpcap_vsnprintf(errbuf, errbuflen, fmt, ap);\n\tva_end(ap);\n\tmsglen = strlen(errbuf);\n\n\t/*\n\t * Do we have enough space to append \": \"?\n\t * Including the terminating '\\0', that's 3 bytes.\n\t */\n\tif (msglen + 3 > errbuflen) {\n\t\t/* No - just give them what we've produced. */\n\t\treturn;\n\t}\n\tp = errbuf + msglen;\n\terrbuflen_remaining = errbuflen - msglen;\n\t*p++ = ':';\n\t*p++ = ' ';\n\t*p = '\\0';\n\tmsglen += 2;\n\terrbuflen_remaining -= 2;\n\n\t/*\n\t * Now append the string for the error code.\n\t */\n#if defined(HAVE_STRERROR_S)\n\t/*\n\t * We have a Windows-style strerror_s().\n\t */\n\terrno_t err = strerror_s(p, errbuflen_remaining, errnum);\n\tif (err != 0) {\n\t\t/*\n\t\t * It doesn't appear to be documented anywhere obvious\n\t\t * what the error returns from strerror_s().\n\t\t */\n\t\tpcap_snprintf(p, errbuflen_remaining, \"Error %d\", errnum);\n\t}\n#elif defined(HAVE_GNU_STRERROR_R)\n\t/*\n\t * We have a GNU-style strerror_r(), which is *not* guaranteed to\n\t * do anything to the buffer handed to it, and which returns a\n\t * pointer to the error string, which may or may not be in\n\t * the buffer.\n\t *\n\t * It is, however, guaranteed to succeed.\n\t */\n\tchar strerror_buf[PCAP_ERRBUF_SIZE];\n\tchar *errstring = strerror_r(errnum, strerror_buf, PCAP_ERRBUF_SIZE);\n\tpcap_snprintf(p, errbuflen_remaining, \"%s\", errstring);\n#elif defined(HAVE_POSIX_STRERROR_R)\n\t/*\n\t * We have a POSIX-style strerror_r(), which is guaranteed to fill\n\t * in the buffer, but is not guaranteed to succeed.\n\t */\n\tint err = strerror_r(errnum, p, errbuflen_remaining);\n\tif (err == EINVAL) {\n\t\t/*\n\t\t * UNIX 03 says this isn't guaranteed to produce a\n\t\t * fallback error message.\n\t\t */\n\t\tpcap_snprintf(p, errbuflen_remaining, \"Unknown error: %d\",\n\t\t    errnum);\n\t} else if (err == ERANGE) {\n\t\t/*\n\t\t * UNIX 03 says this isn't guaranteed to produce a\n\t\t * fallback error message.\n\t\t */\n\t\tpcap_snprintf(p, errbuflen_remaining,\n\t\t    \"Message for error %d is too long\", errnum);\n\t}\n#else\n\t/*\n\t * We have neither strerror_s() nor strerror_r(), so we're\n\t * stuck with using pcap_strerror().\n\t */\n\tpcap_snprintf(p, errbuflen_remaining, \"%s\", pcap_strerror(errnum));\n#endif\n}",
+            1
+        ],
+        [
+            "missing/snprintf.c",
+            "pcap_vsnprintf",
+            "int /* <=== pcap_vsnprintf */ \npcap_vsnprintf (char *str, size_t sz, const char *format, va_list args)\n{\n  struct state state;\n  int ret;\n  unsigned char *ustr = (unsigned char *)str;\n\n  state.max_sz = 0;\n  state.sz     = sz;\n  state.str    = ustr;\n  state.s      = ustr;\n  state.theend = ustr + sz - 1;\n  state.append_char = sn_append_char;\n  state.reserve     = sn_reserve;\n\n  ret = xyzprintf (&state, format, args);\n  *state.s = '\\0';\n  if (ret)\n    return sz;\n  else\n    return state.s - state.str;\n}",
+            2
+        ],
+        [
+            "pcap.c",
+            "pcap_strerror",
+            "const char * /* <=== pcap_strerror */ \npcap_strerror(int errnum)\n{\n#ifdef HAVE_STRERROR\n#ifdef _WIN32\n\tstatic char errbuf[PCAP_ERRBUF_SIZE];\n\terrno_t err = strerror_s(errbuf, PCAP_ERRBUF_SIZE, errnum);\n\n\tif (err != 0) /* err = 0 if successful */\n\t\tpcap_strlcpy(errbuf, \"strerror_s() error\", PCAP_ERRBUF_SIZE);\n\treturn (errbuf);\n#else\n\treturn (strerror(errnum));\n#endif /* _WIN32 */\n#else\n\textern int sys_nerr;\n\textern const char *const sys_errlist[];\n\tstatic char errbuf[PCAP_ERRBUF_SIZE];\n\n\tif ((unsigned int)errnum < sys_nerr)\n\t\treturn ((char *)sys_errlist[errnum]);\n\t(void)pcap_snprintf(errbuf, sizeof errbuf, \"Unknown error: %d\", errnum);\n\treturn (errbuf);\n#endif\n}",
+            2
+        ],
+        [
+            "missing/win_snprintf.c",
+            "pcap_vsnprintf",
+            "int /* <=== pcap_vsnprintf */ \npcap_vsnprintf(char *str, size_t str_size, const char *format, va_list args)\n{\n\tint ret;\n\n\tret = _vsnprintf_s(str, str_size, _TRUNCATE, format, args);\n\n\t/*\n\t * XXX - _vsnprintf() and _snprintf() do *not* guarantee\n\t * that str is null-terminated, but C99's vsnprintf()\n\t * and snprintf() do, and we want to offer C99 behavior,\n\t * so forcibly null-terminate the string.\n\t *\n\t * We don't, however, offer C99 behavior for the return\n\t * value; _vsnprintf_s() returns -1, not the number of\n\t * characters that would have been put into the buffer\n\t * had it been large enough, if the string is truncated.\n\t * The only way to get that value is to use _vscprintf();\n\t * getting that count isn't worth the re-formatting.\n\t *\n\t * XXX - does _vsnprintf_s() return -1 on a formatting\n\t * error?\n\t */\n\tstr[str_size - 1] = '\\0';\n\treturn (ret);\n}",
+            2
+        ],
+        [
+            "missing/snprintf.c",
+            "pcap_snprintf",
+            "int /* <=== pcap_snprintf */ \npcap_snprintf (char *str, size_t sz, const char *format, ...)\n{\n  va_list args;\n  int ret;\n\n  va_start(args, format);\n  ret = pcap_vsnprintf (str, sz, format, args);\n\n#ifdef PARANOIA\n  {\n    int ret2;\n    char *tmp;\n\n    tmp = malloc (sz);\n    if (tmp == NULL)\n      abort ();\n\n    ret2 = pcap_vsprintf (tmp, format, args);\n    if (ret != ret2 || strcmp(str, tmp))\n      abort ();\n    free (tmp);\n  }\n#endif\n\n  va_end(args);\n  return ret;\n}",
+            1
+        ],
+        [
+            "missing/win_snprintf.c",
+            "pcap_snprintf",
+            "int /* <=== pcap_snprintf */ \npcap_snprintf(char *str, size_t str_size, const char *format, ...)\n{\n\tva_list args;\n\tint ret;\n\n\tva_start(args, format);\n\tret = pcap_vsnprintf(str, str_size, format, args);\n\tva_end(args);\n\treturn (ret);\n}",
+            1
+        ],
+        [
+            "missing/snprintf.c",
+            "xyzprintf",
+            "static int /* <=== xyzprintf */ \nxyzprintf (struct state *state, const char *char_format, va_list ap)\n{\n  const unsigned char *format = (const unsigned char *)char_format;\n  unsigned char c;\n\n  while((c = *format++)) {\n    if (c == '%') {\n      int flags      = 0;\n      int width      = 0;\n      int prec       = -1;\n      int long_flag  = 0;\n      int short_flag = 0;\n\n      /* flags */\n      while((c = *format++)){\n\tif(c == '-')\n\t  flags |= minus_flag;\n\telse if(c == '+')\n\t  flags |= plus_flag;\n\telse if(c == ' ')\n\t  flags |= space_flag;\n\telse if(c == '#')\n\t  flags |= alternate_flag;\n\telse if(c == '0')\n\t  flags |= zero_flag;\n\telse\n\t  break;\n      }\n\n      if((flags & space_flag) && (flags & plus_flag))\n\tflags ^= space_flag;\n\n      if((flags & minus_flag) && (flags & zero_flag))\n\tflags ^= zero_flag;\n\n      /* width */\n      if (isdigit(c))\n\tdo {\n\t  width = width * 10 + c - '0';\n\t  c = *format++;\n\t} while(isdigit(c));\n      else if(c == '*') {\n\twidth = va_arg(ap, int);\n\tc = *format++;\n      }\n\n      /* precision */\n      if (c == '.') {\n\tprec = 0;\n\tc = *format++;\n\tif (isdigit(c))\n\t  do {\n\t    prec = prec * 10 + c - '0';\n\t    c = *format++;\n\t  } while(isdigit(c));\n\telse if (c == '*') {\n\t  prec = va_arg(ap, int);\n\t  c = *format++;\n\t}\n      }\n\n      /* size */\n\n      if (c == 'h') {\n\tshort_flag = 1;\n\tc = *format++;\n      } else if (c == 'l') {\n\tlong_flag = 1;\n\tc = *format++;\n      }\n\n      switch (c) {\n      case 'c' :\n\tif(append_char(state, va_arg(ap, int), width, flags))\n\t  return -1;\n\tbreak;\n      case 's' :\n\tif (append_string(state,\n\t\t\t  va_arg(ap, unsigned char*),\n\t\t\t  width,\n\t\t\t  prec,\n\t\t\t  flags))\n\t  return -1;\n\tbreak;\n      case 'd' :\n      case 'i' : {\n\tlong arg;\n\tunsigned long num;\n\tint minusp = 0;\n\n\tPARSE_INT_FORMAT(arg, ap, signed);\n\n\tif (arg < 0) {\n\t  minusp = 1;\n\t  num = -arg;\n\t} else\n\t  num = arg;\n\n\tif (append_number (state, num, 10, \"0123456789\",\n\t\t\t   width, prec, flags, minusp))\n\t  return -1;\n\tbreak;\n      }\n      case 'u' : {\n\tunsigned long arg;\n\n\tPARSE_INT_FORMAT(arg, ap, unsigned);\n\n\tif (append_number (state, arg, 10, \"0123456789\",\n\t\t\t   width, prec, flags, 0))\n\t  return -1;\n\tbreak;\n      }\n      case 'o' : {\n\tunsigned long arg;\n\n\tPARSE_INT_FORMAT(arg, ap, unsigned);\n\n\tif (append_number (state, arg, 010, \"01234567\",\n\t\t\t   width, prec, flags, 0))\n\t  return -1;\n\tbreak;\n      }\n      case 'x' : {\n\tunsigned long arg;\n\n\tPARSE_INT_FORMAT(arg, ap, unsigned);\n\n\tif (append_number (state, arg, 0x10, \"0123456789abcdef\",\n\t\t\t   width, prec, flags, 0))\n\t  return -1;\n\tbreak;\n      }\n      case 'X' :{\n\tunsigned long arg;\n\n\tPARSE_INT_FORMAT(arg, ap, unsigned);\n\n\tif (append_number (state, arg, 0x10, \"0123456789ABCDEF\",\n\t\t\t   width, prec, flags, 0))\n\t  return -1;\n\tbreak;\n      }\n      case 'p' : {\n\tunsigned long arg = (unsigned long)va_arg(ap, void*);\n\n\tif (append_number (state, arg, 0x10, \"0123456789ABCDEF\",\n\t\t\t   width, prec, flags, 0))\n\t  return -1;\n\tbreak;\n      }\n      case 'n' : {\n\tint *arg = va_arg(ap, int*);\n\t*arg = state->s - state->str;\n\tbreak;\n      }\n      case '\\0' :\n\t  --format;\n\t  /* FALLTHROUGH */\n      case '%' :\n\tif ((*state->append_char)(state, c))\n\t  return -1;\n\tbreak;\n      default :\n\tif (   (*state->append_char)(state, '%')\n\t    || (*state->append_char)(state, c))\n\t  return -1;\n\tbreak;\n      }\n    } else\n      if ((*state->append_char) (state, c))\n\treturn -1;\n  }\n  return 0;\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"portability.h\"",
+        "#include \"sockutils.h\"",
+        "#include <unistd.h>",
+        "#include <stdlib.h>",
+        "#include <process.h>",
+        "#include \"log.h\"",
+        "#include <pcap.h>",
+        "#include <string.h>",
+        "#include <sys/types.h>",
+        "#include <signal.h>",
+        "#include <pwd.h>",
+        "#include \"daemon.h\"",
+        "#include \"varattrs.h\"",
+        "#include \"rpcap-protocol.h\"",
+        "#include <pthread.h>",
+        "#include \"fmtutils.h\"",
+        "#include <config.h>",
+        "#include <sys/time.h>",
+        "#include \"ftmacros.h\"",
+        "#include <shadow.h>",
+        "#include <errno.h>"
+    ],
+    "typeDefs": [],
+    "visitedLines_after": {
+        "rpcapd/daemon.c": [
+            1157,
+            1158,
+            1225,
+            1228,
+            1253,
+            1256,
+            1257,
+            1258,
+            1259,
+            1260,
+            1262,
+            1264,
+            1265,
+            1266,
+            1268,
+            1270,
+            1271,
+            1272,
+            1282
+        ]
+    },
+    "visitedLines_before": {
+        "rpcapd/daemon.c": [
+            1157,
+            1158,
+            1227,
+            1252,
+            1255,
+            1257,
+            1258,
+            1261,
+            1263,
+            1264,
+            1265,
+            1275
+        ]
+    },
+    "visitedParams": {
+        "rpcapd/daemon.c": [
+            [
+                "char *errbuf",
+                "daemon_AuthUserPwd"
+            ],
+            [
+                "char *password",
+                "daemon_AuthUserPwd"
+            ],
+            [
+                "char *username",
+                "daemon_AuthUserPwd"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "rpcapd/daemon.c",
+            "daemon_AuthUserPwd",
+            "static int /* <=== daemon_AuthUserPwd */ \ndaemon_AuthUserPwd(char *username, char *password, char *errbuf)\n{\n#ifdef _WIN32\n\t/*\n\t * Warning: the user which launches the process must have the\n\t * SE_TCB_NAME right.\n\t * This corresponds to have the \"Act as part of the Operating System\"\n\t * turned on (administrative tools, local security settings, local\n\t * policies, user right assignment)\n\t * However, it seems to me that if you run it as a service, this\n\t * right should be provided by default.\n\t *\n\t * XXX - hopefully, this returns errors such as ERROR_LOGON_FAILURE,\n\t * which merely indicates that the user name or password is\n\t * incorrect, not whether it's the user name or the password\n\t * that's incorrect, so a client that's trying to brute-force\n\t * accounts doesn't know whether it's the user name or the\n\t * password that's incorrect, so it doesn't know whether to\n\t * stop trying to log in with a given user name and move on\n\t * to another user name.\n\t */\n\tHANDLE Token;\n\tif (LogonUser(username, \".\", password, LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &Token) == 0)\n\t{\n\t\tpcap_fmt_errmsg_for_win32_err(errbuf, PCAP_ERRBUF_SIZE,\n\t\t    GetLastError(), \"LogonUser() failed\");\n\t\treturn -1;\n\t}\n\n\t// This call should change the current thread to the selected user.\n\t// I didn't test it.\n\tif (ImpersonateLoggedOnUser(Token) == 0)\n\t{\n\t\tpcap_fmt_errmsg_for_win32_err(errbuf, PCAP_ERRBUF_SIZE,\n\t\t    GetLastError(), \"ImpersonateLoggedOnUser() failed\");\n\t\tCloseHandle(Token);\n\t\treturn -1;\n\t}\n\n\tCloseHandle(Token);\n\treturn 0;\n\n#else\n\t/*\n\t * See\n\t *\n\t *\thttp://www.unixpapa.com/incnote/passwd.html\n\t *\n\t * We use the Solaris/Linux shadow password authentication if\n\t * we have getspnam(), otherwise we just do traditional\n\t * authentication, which, on some platforms, might work, even\n\t * with shadow passwords, if we're running as root.  Traditional\n\t * authenticaion won't work if we're not running as root, as\n\t * I think these days all UN*Xes either won't return the password\n\t * at all with getpwnam() or will only do so if you're root.\n\t *\n\t * XXX - perhaps what we *should* be using is PAM, if we have\n\t * it.  That might hide all the details of username/password\n\t * authentication, whether it's done with a visible-to-root-\n\t * only password database or some other authentication mechanism,\n\t * behind its API.\n\t */\n\tstruct passwd *user;\n\tchar *user_password;\n#ifdef HAVE_GETSPNAM\n\tstruct spwd *usersp;\n#endif\n\tchar *crypt_password;\n\n\t// This call is needed to get the uid\n\tif ((user = getpwnam(username)) == NULL)\n\t{\n\t\tpcap_snprintf(errbuf, PCAP_ERRBUF_SIZE, \"Authentication failed: user name or password incorrect\");\n\t\treturn -1;\n\t}\n\n#ifdef HAVE_GETSPNAM\n\t// This call is needed to get the password; otherwise 'x' is returned\n\tif ((usersp = getspnam(username)) == NULL)\n\t{\n\t\tpcap_snprintf(errbuf, PCAP_ERRBUF_SIZE, \"Authentication failed: user name or password incorrect\");\n\t\treturn -1;\n\t}\n\tuser_password = usersp->sp_pwdp;\n#else\n\t/*\n\t * XXX - what about other platforms?\n\t * The unixpapa.com page claims this Just Works on *BSD if you're\n\t * running as root - it's from 2000, so it doesn't indicate whether\n\t * macOS (which didn't come out until 2001, under the name Mac OS\n\t * X) behaves like the *BSDs or not, and might also work on AIX.\n\t * HP-UX does something else.\n\t *\n\t * Again, hopefully PAM hides all that.\n\t */\n\tuser_password = user->pw_passwd;\n#endif\n\n\tcrypt_password = crypt(password, user_password);\n\tif (crypt_password == NULL)\n\t{\n\t\tpcap_snprintf(errbuf, PCAP_ERRBUF_SIZE, \"Authentication failed\");\n\t\treturn -1;\n\t}\n\tif (strcmp(user_password, crypt_password) != 0)\n\t{\n\t\tpcap_snprintf(errbuf, PCAP_ERRBUF_SIZE, \"Authentication failed: user name or password incorrect\");\n\t\treturn -1;\n\t}\n\n\tif (setuid(user->pw_uid))\n\t{\n\t\tpcap_fmt_errmsg_for_errno(errbuf, PCAP_ERRBUF_SIZE,\n\t\t    errno, \"setuid\");\n\t\treturn -1;\n\t}\n\n/*\tif (setgid(user->pw_gid))\n\t{\n\t\tpcap_fmt_errmsg_for_errno(errbuf, PCAP_ERRBUF_SIZE,\n\t\t    errno, \"setgid\");\n\t\treturn -1;\n\t}\n*/\n\treturn 0;\n\n#endif\n\n}",
+            1157
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "rpcapd/daemon.c",
+            "daemon_AuthUserPwd",
+            "static int /* <=== daemon_AuthUserPwd */ \ndaemon_AuthUserPwd(char *username, char *password, char *errbuf)\n{\n#ifdef _WIN32\n\t/*\n\t * Warning: the user which launches the process must have the\n\t * SE_TCB_NAME right.\n\t * This corresponds to have the \"Act as part of the Operating System\"\n\t * turned on (administrative tools, local security settings, local\n\t * policies, user right assignment)\n\t * However, it seems to me that if you run it as a service, this\n\t * right should be provided by default.\n\t *\n\t * XXX - hopefully, this returns errors such as ERROR_LOGON_FAILURE,\n\t * which merely indicates that the user name or password is\n\t * incorrect, not whether it's the user name or the password\n\t * that's incorrect, so a client that's trying to brute-force\n\t * accounts doesn't know whether it's the user name or the\n\t * password that's incorrect, so it doesn't know whether to\n\t * stop trying to log in with a given user name and move on\n\t * to another user name.\n\t */\n\tHANDLE Token;\n\tif (LogonUser(username, \".\", password, LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &Token) == 0)\n\t{\n\t\tpcap_fmt_errmsg_for_win32_err(errbuf, PCAP_ERRBUF_SIZE,\n\t\t    GetLastError(), \"LogonUser() failed\");\n\t\treturn -1;\n\t}\n\n\t// This call should change the current thread to the selected user.\n\t// I didn't test it.\n\tif (ImpersonateLoggedOnUser(Token) == 0)\n\t{\n\t\tpcap_fmt_errmsg_for_win32_err(errbuf, PCAP_ERRBUF_SIZE,\n\t\t    GetLastError(), \"ImpersonateLoggedOnUser() failed\");\n\t\tCloseHandle(Token);\n\t\treturn -1;\n\t}\n\n\tCloseHandle(Token);\n\treturn 0;\n\n#else\n\t/*\n\t * See\n\t *\n\t *\thttp://www.unixpapa.com/incnote/passwd.html\n\t *\n\t * We use the Solaris/Linux shadow password authentication if\n\t * we have getspnam(), otherwise we just do traditional\n\t * authentication, which, on some platforms, might work, even\n\t * with shadow passwords, if we're running as root.  Traditional\n\t * authenticaion won't work if we're not running as root, as\n\t * I think these days all UN*Xes either won't return the password\n\t * at all with getpwnam() or will only do so if you're root.\n\t *\n\t * XXX - perhaps what we *should* be using is PAM, if we have\n\t * it.  That might hide all the details of username/password\n\t * authentication, whether it's done with a visible-to-root-\n\t * only password database or some other authentication mechanism,\n\t * behind its API.\n\t */\n\tstruct passwd *user;\n\tchar *user_password;\n#ifdef HAVE_GETSPNAM\n\tstruct spwd *usersp;\n#endif\n\n\t// This call is needed to get the uid\n\tif ((user = getpwnam(username)) == NULL)\n\t{\n\t\tpcap_snprintf(errbuf, PCAP_ERRBUF_SIZE, \"Authentication failed: user name or password incorrect\");\n\t\treturn -1;\n\t}\n\n#ifdef HAVE_GETSPNAM\n\t// This call is needed to get the password; otherwise 'x' is returned\n\tif ((usersp = getspnam(username)) == NULL)\n\t{\n\t\tpcap_snprintf(errbuf, PCAP_ERRBUF_SIZE, \"Authentication failed: user name or password incorrect\");\n\t\treturn -1;\n\t}\n\tuser_password = usersp->sp_pwdp;\n#else\n\t/*\n\t * XXX - what about other platforms?\n\t * The unixpapa.com page claims this Just Works on *BSD if you're\n\t * running as root - it's from 2000, so it doesn't indicate whether\n\t * macOS (which didn't come out until 2001, under the name Mac OS\n\t * X) behaves like the *BSDs or not, and might also work on AIX.\n\t * HP-UX does something else.\n\t *\n\t * Again, hopefully PAM hides all that.\n\t */\n\tuser_password = user->pw_passwd;\n#endif\n\n\tif (strcmp(user_password, (char *) crypt(password, user_password)) != 0)\n\t{\n\t\tpcap_snprintf(errbuf, PCAP_ERRBUF_SIZE, \"Authentication failed: user name or password incorrect\");\n\t\treturn -1;\n\t}\n\n\tif (setuid(user->pw_uid))\n\t{\n\t\tpcap_fmt_errmsg_for_errno(errbuf, PCAP_ERRBUF_SIZE,\n\t\t    errno, \"setuid\");\n\t\treturn -1;\n\t}\n\n/*\tif (setgid(user->pw_gid))\n\t{\n\t\tpcap_fmt_errmsg_for_errno(errbuf, PCAP_ERRBUF_SIZE,\n\t\t    errno, \"setgid\");\n\t\treturn -1;\n\t}\n*/\n\treturn 0;\n\n#endif\n\n}",
+            1157
+        ]
+    ]
+}

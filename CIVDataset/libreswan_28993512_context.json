@@ -1,0 +1,1457 @@
+{
+    "calleeMethods": [
+        [
+            "programs/pluto/kernel.c",
+            "do_command",
+            "bool do_command(struct connection *c, struct spd_route *sr, const char *verb, /* <=== do_command */ \n\t\tstruct state *st)\n{\n\tconst char *verb_suffix;\n\n\t/* figure out which verb suffix applies for logging purposes */\n\t{\n\t\tconst char *hs, *cs;\n\n\t\tswitch (addrtypeof(&sr->this.host_addr)) {\n\t\tcase AF_INET:\n\t\t\ths = \"-host\";\n\t\t\tcs = \"-client\";\n\t\t\tbreak;\n\t\tcase AF_INET6:\n\t\t\ths = \"-host-v6\";\n\t\t\tcs = \"-client-v6\";\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tloglog(RC_LOG_SERIOUS, \"unknown address family\");\n\t\t\treturn FALSE;\n\t\t}\n\t\tverb_suffix = subnetisaddr(&sr->this.client,\n\t\t\t\t\t   &sr->this.host_addr) ?\n\t\t\t      hs : cs;\n\t}\n\n\tDBG(DBG_CONTROL, DBG_log(\"command executing %s%s\",\n\t\t\t\t verb, verb_suffix));\n\n\tif (kernel_ops->docommand != NULL) {\n\t\treturn (*kernel_ops->docommand)(c, sr, verb, st);\n\t} else {\n\t\tDBG(DBG_CONTROL, DBG_log(\"no do_command for method %s\",\n\t\t\t\t\t kernel_ops->kern_name));\n\t}\n\treturn TRUE;\n}",
+            3
+        ],
+        [
+            "programs/pluto/kernel.c",
+            "unroute_connection",
+            "void unroute_connection(struct connection *c) /* <=== unroute_connection */ \n{\n\tstruct spd_route *sr;\n\tenum routing_t cr;\n\n\tfor (sr = &c->spd; sr; sr = sr->next) {\n\t\tcr = sr->routing;\n\n\t\tif (erouted(cr)) {\n\t\t\t/* cannot handle a live one */\n\t\t\tpassert(sr->routing != RT_ROUTED_TUNNEL);\n\t\t\tif (kernel_ops->shunt_eroute) {\n\t\t\t\tkernel_ops->shunt_eroute(c, sr, RT_UNROUTED,\n\t\t\t\t\t\t\t ERO_DELETE, \"delete\");\n\t\t\t} else {   loglog(RC_COMMENT,\n\t\t\t\t\t  \"no shunt_eroute implemented for %s interface\",\n\t\t\t\t\t  kernel_ops->kern_name);\n\t\t\t}\n#ifdef IPSEC_CONNECTION_LIMIT\n\t\t\tnum_ipsec_eroute--;\n#endif\n\t\t}\n\n\t\tsr->routing = RT_UNROUTED; /* do now so route_owner won't find us */\n\n\t\t/* only unroute if no other connection shares it */\n\t\tif (routed(cr) && route_owner(c, sr, NULL, NULL, NULL) == NULL)\n\t\t\t(void) do_command(c, sr, \"unroute\", NULL);\n\t}\n}",
+            3
+        ],
+        [
+            "include/ietf_constants.h",
+            "ISAKMP_PAYLOAD_LIBRESWAN_BOGUS",
+            "#define ISAKMP_PAYLOAD_LIBRESWAN_BOGUS 0x01 /* <=== include/ietf_constants.h:622:622:ISAKMP_PAYLOAD_LIBRESWAN_BOGUS:0 */ ",
+            2
+        ],
+        [
+            "include/lswalloc.h",
+            "clonereplacechunk",
+            "#define clonereplacechunk(ch, addr, size, name) \\ /* <=== include/lswalloc.h:66:68:clonereplacechunk:4 */ \n\tdo { pfreeany((ch).ptr); clonetochunk(ch, addr, size, name); \\\n\t} while (0)",
+            3
+        ],
+        [
+            "include/pluto_constants.h",
+            "IS_CHILD_SA_ESTABLISHED",
+            "#define IS_CHILD_SA_ESTABLISHED(st) ( (((st->st_state == STATE_PARENT_I3) || \\ /* <=== include/pluto_constants.h:381:384:IS_CHILD_SA_ESTABLISHED:1 */ \n\t\t\t\t\t(st->st_state == STATE_PARENT_R2)) && \\\n\t\t\t\t       (st->st_clonedfrom != SOS_NOBODY)) || \\\n\t\t\t\t      (st->st_state == STATE_CHILDSA_DEL) )",
+            2
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "SEND_NOTIFICATION_AA",
+            "#define SEND_NOTIFICATION_AA(t, d) \\ /* <=== programs/pluto/ikev2_parent.c:62:66:SEND_NOTIFICATION_AA:2 */ \n\tif (st) \\\n\t\tsend_v2_notification_from_state(st, st->st_state, t, d); \\\n\telse \\\n\t\tsend_v2_notification_from_md(md, t, d);",
+            2
+        ],
+        [
+            "programs/pluto/kernel.c",
+            "delete_ipsec_sa",
+            "void delete_ipsec_sa(struct state *st USED_BY_KLIPS, /* <=== delete_ipsec_sa */ \n\t\t     bool inbound_only USED_BY_KLIPS)\n{\n\tswitch (kern_interface) {\n\tcase USE_MASTKLIPS:\n\tcase USE_KLIPS:\n\tcase USE_NETKEY:\n\t\tif (!inbound_only) {\n\t\t\t/* If the state is the eroute owner, we must adjust\n\t\t\t * the routing for the connection.\n\t\t\t */\n\t\t\tstruct connection *c = st->st_connection;\n\t\t\tstruct spd_route *sr;\n\n\t\t\tpassert(st->st_connection);\n\n\t\t\tfor (sr = &c->spd; sr; sr = sr->next) {\n\t\t\t\tif (sr->eroute_owner == st->st_serialno &&\n\t\t\t\t    sr->routing == RT_ROUTED_TUNNEL) {\n\t\t\t\t\tsr->eroute_owner = SOS_NOBODY;\n\n\t\t\t\t\t/* Routing should become RT_ROUTED_FAILURE,\n\t\t\t\t\t * but if POLICY_FAIL_NONE, then we just go\n\t\t\t\t\t * right back to RT_ROUTED_PROSPECTIVE as if no\n\t\t\t\t\t * failure happened.\n\t\t\t\t\t */\n\t\t\t\t\tsr->routing =\n\t\t\t\t\t\t(c->policy &\n\t\t\t\t\t\t POLICY_FAIL_MASK) ==\n\t\t\t\t\t\tPOLICY_FAIL_NONE ?\n\t\t\t\t\t\tRT_ROUTED_PROSPECTIVE :\n\t\t\t\t\t\tRT_ROUTED_FAILURE;\n\n\t\t\t\t\tif (sr == &c->spd &&\n\t\t\t\t\t    c->remotepeertype == CISCO)\n\t\t\t\t\t\tcontinue;\n\n\t\t\t\t\t(void) do_command(c, sr, \"down\", st);\n\t\t\t\t\tif ((c->policy & POLICY_DONT_REKEY) &&\n\t\t\t\t\t    c->kind == CK_INSTANCE) {\n\t\t\t\t\t\t/* in this special case, even if the connection\n\t\t\t\t\t\t * is still alive (due to an ISAKMP SA),\n\t\t\t\t\t\t * we get rid of routing.\n\t\t\t\t\t\t * Even though there is still an eroute, the c->routing\n\t\t\t\t\t\t * setting will convince unroute_connection to delete it.\n\t\t\t\t\t\t * unroute_connection would be upset if c->routing == RT_ROUTED_TUNNEL\n\t\t\t\t\t\t */\n\t\t\t\t\t\tunroute_connection(c);\n\t\t\t\t\t} else {\n\t\t\t\t\t\t(void) shunt_eroute(c, sr,\n\t\t\t\t\t\t\t\t    sr->routing, ERO_REPLACE,\n\t\t\t\t\t\t\t\t    \"replace with shunt\");\n\t\t\t\t\t}\n\n#ifdef KLIPS_MAST\n\t\t\t\t\t/* in mast mode we must also delete the iptables rule */\n\t\t\t\t\tif (kern_interface == USE_MASTKLIPS)\n\t\t\t\t\t\t(void) sag_eroute(st, sr,\n\t\t\t\t\t\t\t\t  ERO_DELETE,\n\t\t\t\t\t\t\t\t  \"delete\");\n#endif\n\t\t\t\t}\n\t\t\t}\n#ifdef HAVE_LABELED_IPSEC\n\t\t\tif (!st->st_connection->loopback) {\n#endif\n\t\t\t(void) teardown_half_ipsec_sa(st, FALSE);\n#ifdef HAVE_LABELED_IPSEC\n\t\t}\n#endif\n\t\t}\n#ifdef HAVE_LABELED_IPSEC\n\t\tif (!st->st_connection->loopback || st->st_state ==\n\t\t    STATE_QUICK_I2) {\n#endif\n\t\t(void) teardown_half_ipsec_sa(st, TRUE);\n#ifdef HAVE_LABELED_IPSEC\n\t}\n#endif\n\n\t\tbreak;\n#if defined(WIN32) && defined(WIN32_NATIVE)\n\tcase USE_WIN32_NATIVE:\n\t\tDBG(DBG_CONTROL,\n\t\t    DBG_log(\n\t\t\t    \"No support (required?) to delete_ipsec_sa with Win2k\"));\n\t\tbreak;\n#endif\n\tcase NO_KERNEL:\n\t\tDBG(DBG_CONTROL,\n\t\t    DBG_log(\n\t\t\t    \"No support required to delete_ipsec_sa with NoKernel support\"));\n\t\tbreak;\n\tdefault:\n\t\tDBG(DBG_CONTROL,\n\t\t    DBG_log(\"Unknown kernel stack in delete_ipsec_sa\"));\n\t\tbreak;\n\t} /* switch kern_interface */\n}",
+            2
+        ],
+        [
+            "programs/pluto/ipsec_doi.c",
+            "accept_KE",
+            "notification_t accept_KE(chunk_t *dest, const char *val_name, /* <=== accept_KE */ \n\t\t\t const struct oakley_group_desc *gr,\n\t\t\t pb_stream *pbs)\n{\n\t/* To figure out which function calls us without a pbs */\n\tpassert(pbs != NULL);\n\n\tif (pbs_left(pbs) != gr->bytes) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"KE has %u byte DH public value; %u required\",\n\t\t       (unsigned) pbs_left(pbs), (unsigned) gr->bytes);\n\t\t/* XXX Could send notification back */\n\t\treturn INVALID_KEY_INFORMATION;\n\t}\n\tclonereplacechunk(*dest, pbs->cur, pbs_left(pbs), val_name);\n\tDBG_cond_dump_chunk(DBG_CRYPT, \"DH public value received:\\n\", *dest);\n\treturn NOTHING_WRONG;\n}",
+            2
+        ],
+        [
+            "linux/include/libreswan/passert.h",
+            "passert",
+            "# define passert(pred)  { }             /* do nothing */ /* <=== linux/include/libreswan/passert.h:73:73:passert:1 */ ",
+            2
+        ],
+        [
+            "testing/lib/libpluto/seam_crypt.c",
+            "delete_cryptographic_continuation",
+            "void delete_cryptographic_continuation(struct state *st) /* <=== delete_cryptographic_continuation */ \n{\n}",
+            2
+        ],
+        [
+            "programs/pluto/ikev1.h",
+            "ikev1_delete_out",
+            "extern void ikev1_delete_out(struct state *st); /* <=== ikev1_delete_out */ ",
+            3
+        ],
+        [
+            "programs/pluto/connections.h",
+            "find_host_connection",
+            "#define find_host_connection(me, my_port, him, his_port, \\ /* <=== programs/pluto/connections.h:357:361:find_host_connection:5 */ \n\t\t\t     policy) find_host_connection2(__FUNCTION__, me, \\\n\t\t\t\t\t\t\t   my_port, him, \\\n\t\t\t\t\t\t\t   his_port, \\\n\t\t\t\t\t\t\t   policy)",
+            1
+        ],
+        [
+            "programs/pluto/defs.h",
+            "SOS_FIRST",
+            "#define SOS_FIRST       1       /* first normal serial number */ /* <=== programs/pluto/defs.h:39:39:SOS_FIRST:0 */ ",
+            2
+        ],
+        [
+            "lib/libswan/constants.c",
+            "enum_name",
+            "const char *enum_name(enum_names *ed, unsigned long val) /* <=== enum_name */ \n{\n\tenum_names  *p;\n\n\tfor (p = ed; p != NULL; p = p->en_next_range)\n\t\tif (p->en_first <= val && val <= p->en_last)\n\t\t\treturn p->en_names[val - p->en_first];\n\n\treturn NULL;\n}",
+            1
+        ],
+        [
+            "programs/pluto/state.c",
+            "humanize_number",
+            "static char *humanize_number(unsigned long num, /* <=== humanize_number */ \n\t\t\t     char *buf,\n\t\t\t     char *buf_roof,\n\t\t\t     const char *prefix)\n{\n\tsize_t buf_len = buf_roof - buf;\n\tunsigned long to_print = num;\n\tconst char *suffix;\n\tint ret;\n\tbool kilos = prefix[0] == '!';\n\n\tif (!kilos && num < 1024) {\n\t\tsuffix = \"B\";\n\t} else {\n\t\tif (!kilos)\n\t\t\tto_print /= 1024;\n\n\t\tif (to_print < 1024) {\n\t\t\tsuffix = \"KB\";\n\t\t} else {\n\t\t\tto_print /= 1024;\n\t\t\tsuffix = \"MB\";\n\t\t}\n\t}\n\n\tret = snprintf(buf, buf_len, \"%s%lu%s\", prefix, to_print,\n\t\t       suffix + kilos);\n\tif (ret < 0 || (size_t) ret >= buf_len)\n\t\treturn buf;\n\n\treturn buf + ret;\n}",
+            2
+        ],
+        [
+            "programs/pluto/pluto_crypt.c",
+            "pluto_do_crypto_op",
+            "static void pluto_do_crypto_op(struct pluto_crypto_req *r, int helpernum) /* <=== pluto_do_crypto_op */ \n{\n\tDBG(DBG_CONTROL,\n\t    DBG_log(\"helper %d doing %s op id: %u\",\n\t\t    helpernum,\n\t\t    enum_show(&pluto_cryptoop_names, r->pcr_type),\n\t\t    r->pcr_id));\n#ifdef DEBUG\n\t{\n\t\tchar *d = getenv(\"PLUTO_CRYPTO_HELPER_DELAY\");\n\t\tif (d != NULL) {\n\t\t\tint delay = atoi(d);\n\n\t\t\tDBG_log(\"helper is pausing for %d seconds\", delay);\n\t\t\tsleep(delay);\n\t\t}\n\t}\n#endif\n\n\t/* now we have the entire request in the buffer, process it */\n\tswitch (r->pcr_type) {\n\tcase pcr_build_kenonce:\n\t\tcalc_ke(r);\n\t\tcalc_nonce(r);\n\t\tbreak;\n\n\tcase pcr_build_nonce:\n\t\tcalc_nonce(r);\n\t\tbreak;\n\n\tcase pcr_compute_dh_iv:\n\t\tcalc_dh_iv(r);\n\t\tbreak;\n\n\tcase pcr_compute_dh:\n\t\tcalc_dh(r);\n\t\tbreak;\n\n\tcase pcr_compute_dh_v2:\n\t\tcalc_dh_v2(r);\n\t\tbreak;\n\n\tcase pcr_rsa_sign:\n\tcase pcr_rsa_check:\n\tcase pcr_x509cert_fetch:\n\tcase pcr_x509crl_fetch:\n\t\tbreak;\n\t}\n}",
+            3
+        ],
+        [
+            "include/lswalloc.h",
+            "clone_thing",
+            "#define clone_thing(orig, name) clone_bytes((const void *)&(orig), \\ /* <=== include/lswalloc.h:42:43:clone_thing:2 */ \n\t\t\t\t\t    sizeof(orig), (name))",
+            2
+        ],
+        [
+            "programs/pluto/state.c",
+            "new_state",
+            "struct state *new_state(void) /* <=== new_state */ \n{\n\tstatic const struct state blank_state;  /* initialized all to zero & NULL */\n\tstatic so_serial_t next_so = SOS_FIRST;\n\tstruct state *st;\n\n\tst = clone_thing(blank_state, \"struct state in new_state()\");\n\tst->st_serialno = next_so++;\n\tpassert(next_so > SOS_FIRST);   /* overflow can't happen! */\n\tst->st_whack_sock = NULL_FD;\n\n\tanyaddr(AF_INET, &st->hidden_variables.st_nat_oa);\n\tanyaddr(AF_INET, &st->hidden_variables.st_natd);\n\n\tDBG(DBG_CONTROL, DBG_log(\"creating state object #%lu at %p\",\n\t\t\t\t st->st_serialno, (void *) st));\n\treturn st;\n}",
+            1
+        ],
+        [
+            "include/ietf_constants.h",
+            "ISAKMP_ATTR_AF_MASK",
+            "#define ISAKMP_ATTR_AF_MASK 0x8000 /* <=== include/ietf_constants.h:1224:1224:ISAKMP_ATTR_AF_MASK:0 */ ",
+            3
+        ],
+        [
+            "testing/lib/libpluto/seam_crypt.c",
+            "build_ke",
+            "stf_status build_ke(struct pluto_crypto_req_cont *cn, /* <=== build_ke */ \n\t\t    struct state *st,\n\t\t    const struct oakley_group_desc *group,\n\t\t    enum crypto_importance importance)\n{\n\tcontinuation = cn;\n\tmemset(&rd, 0, sizeof(rd));\n\n\tr->pcr_len  = sizeof(struct pluto_crypto_req);\n\tr->pcr_type = pcr_build_kenonce;\n\tr->pcr_pcim = importance;\n\n\tpcr_init(r, pcr_build_kenonce, importance);\n\tr->pcr_d.kn.oakley_group   = group->group;\n\n\treturn STF_SUSPEND;\n}",
+            1
+        ],
+        [
+            "programs/pluto/packet.c",
+            "out_zero",
+            "bool out_zero(size_t len, pb_stream *outs, const char *name) /* <=== out_zero */ \n{\n\tif (pbs_left(outs) < len) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"not enough room left to place %s in %s\", name,\n\t\t       outs->name);\n\t\treturn FALSE;\n\t} else {\n\t\tDBG(DBG_EMITTING,\n\t\t    DBG_log(\"emitting %u zero bytes of %s into %s\",\n\t\t\t    (unsigned) len, name, outs->name));\n\t\tmemset(outs->cur, 0x00, len);\n\t\touts->cur += len;\n\t\treturn TRUE;\n\t}\n}",
+            3
+        ],
+        [
+            "include/lswalloc.h",
+            "clone_bytes",
+            "# define clone_bytes(orig, size, \\ /* <=== include/lswalloc.h:37:38:clone_bytes:3 */ \n\t\t     name) (clone_bytes2(orig, size, name, leak_detective))",
+            3
+        ],
+        [
+            "programs/pluto/ikev2.c",
+            "accept_v2_nonce",
+            "v2_notification_t accept_v2_nonce(struct msg_digest *md, chunk_t *dest, /* <=== accept_v2_nonce */ \n\t\t\t\t  const char *name)\n{\n\tpb_stream *nonce_pbs = &md->chain[ISAKMP_NEXT_v2Ni]->pbs;\n\tsize_t len = pbs_left(nonce_pbs);\n\n\tif (len < MINIMUM_NONCE_SIZE || MAXIMUM_NONCE_SIZE < len) {\n\t\tloglog(RC_LOG_SERIOUS, \"%s length not between %d and %d\",\n\t\t\tname, MINIMUM_NONCE_SIZE, MAXIMUM_NONCE_SIZE);\n\t\treturn v2N_INVALID_SYNTAX; /* ??? */\n\t}\n\tclonereplacechunk(*dest, nonce_pbs->cur, len, \"nonce\");\n\treturn NOTHING_WRONG;\n}",
+            2
+        ],
+        [
+            "programs/pluto/connections.c",
+            "connection_discard",
+            "void connection_discard(struct connection *c) /* <=== connection_discard */ \n{\n\tif (c->kind == CK_INSTANCE) {\n\t\tif (in_pending_use(c))\n\t\t\treturn;\n\n\t\tif (!states_use_connection(c))\n\t\t\tdelete_connection(c, FALSE);\n\t}\n}",
+            2
+        ],
+        [
+            "programs/pluto/hostpair.c",
+            "host_pair_first_pending",
+            "struct pending **host_pair_first_pending(const struct connection *c) /* <=== host_pair_first_pending */ \n{\n\tif (c->host_pair == NULL)\n\t\treturn NULL;\n\n\treturn &c->host_pair->pending;\n}",
+            3
+        ],
+        [
+            "lib/libswan/lswlog.c",
+            "libreswan_loglog",
+            "void libreswan_loglog(int mess_no UNUSED, const char *message, ...) /* <=== libreswan_loglog */ \n{\n\tva_list args;\n\tchar m[LOG_WIDTH]; /* longer messages will be truncated */\n\n\tva_start(args, message);\n\tfmt_log(m, sizeof(m), message, args);\n\tva_end(args);\n\n\tif (log_to_stderr)\n\t\tfprintf(stderr, \"%s\\n\", m);\n\tif (log_to_syslog)\n\t\tsyslog(LOG_WARNING, \"%s\", m);\n}",
+            1
+        ],
+        [
+            "linux/net/ipsec/addrtot.c",
+            "TF",
+            "#       define  TF(t, f)        (((t) << 8) | (f)) /* <=== linux/net/ipsec/addrtot.c:81:81:TF:2 */ ",
+            2
+        ],
+        [
+            "linux/net/ipsec/addrtot.c",
+            "normal6",
+            "static size_t                   /* size of text, including NUL */ /* <=== normal6 */ \nnormal6(srcp, srclen, buf, dstp, squish)\nconst unsigned char *srcp;\nsize_t srclen;\nchar *buf;                      /* guaranteed large enough, plus 2 */\nchar **dstp;                    /* where to put result pointer */\nint squish;                     /* whether to squish out 0:0 */\n{\n\tint i;\n\tunsigned long piece;\n\tchar *p;\n\tchar *q;\n\n\tif (srclen != IP6BYTES) /* \"can't happen\" */\n\t\treturn 0;\n\n\tp = buf;\n\t*p++ = ':';\n\tfor (i = 0; i < IP6BYTES / 2; i++) {\n\t\tpiece = (srcp[2 * i] << 8) + srcp[2 * i + 1];\n\t\tp += ultot(piece, 16, p, 5);    /* 5 = abcd + NUL */\n\t\t*(p - 1) = ':';                 /* overwrites the NUL */\n\t}\n\t*p = '\\0';\n\tq = strstr(buf, \":0:0:\");\n\tif (squish && q != NULL) {      /* zero squishing is possible */\n\t\tp = q + 1;\n\t\twhile (*p == '0' && *(p + 1) == ':')\n\t\t\tp += 2;\n\t\tq++;\n\t\t*q++ = ':';     /* overwrite first 0 */\n\t\twhile (*p != '\\0')\n\t\t\t*q++ = *p++;\n\t\t*q = '\\0';\n\t\tif (!(*(q - 1) == ':' && *(q - 2) == ':'))\n\t\t\t*--q = '\\0';    /* strip final : unless :: */\n\t\tp = buf;\n\t\tif (!(*p == ':' && *(p + 1) == ':'))\n\t\t\tp++;    /* skip initial : unless :: */\n\t} else {\n\t\tq = p;\n\t\t*--q = '\\0';    /* strip final : */\n\t\tp = buf + 1;    /* skip initial : */\n\t}\n\t*dstp = p;\n\treturn q - p + 1;\n}",
+            2
+        ],
+        [
+            "programs/pluto/pending.c",
+            "in_pending_use",
+            "bool in_pending_use(struct connection *c) /* <=== in_pending_use */ \n{\n\t/* see if it is being used by a pending */\n\tstruct pending **pp, *p;\n\n\tpp = host_pair_first_pending(c);\n\tif (pp == NULL)\n\t\treturn FALSE;\n\n\tfor (p = *pp; p != NULL; p = p->next)\n\t\tif (p->connection == c)\n\t\t\treturn TRUE; /* in use, so we're done */\n\n\treturn FALSE;\n}",
+            3
+        ],
+        [
+            "programs/pluto/pluto_crypt.h",
+            "pcrc_init",
+            "#define pcrc_init(pcrc) do { /* nothing yet */ } while (0) /* <=== programs/pluto/pluto_crypt.h:293:293:pcrc_init:1 */ ",
+            1
+        ],
+        [
+            "include/lswalloc.h",
+            "pfree",
+            "# define pfree(ptr) leak_pfree(ptr, leak_detective) /* <=== include/lswalloc.h:35:35:pfree:1 */ ",
+            2
+        ],
+        [
+            "programs/pluto/timer.c",
+            "_delete_dpd_event",
+            "void _delete_dpd_event(struct state *st, const char *file, int lineno) /* <=== _delete_dpd_event */ \n{\n\tDBG(DBG_DPD | DBG_CONTROL,\n\t    DBG_log(\"state: %ld requesting DPD event %s to be deleted by %s:%d\",\n\t\t    st->st_serialno,\n\t\t    (st->st_dpd_event != NULL ?\n\t\t     enum_show(&timer_event_names, st->st_dpd_event->ev_type) :\n\t\t     \"none\"),\n\t\t    file, lineno));\n\n\tif (st->st_dpd_event != (struct event *) NULL) {\n\t\tstruct event **ev;\n\n\t\tfor (ev = &evlist;; ev = &(*ev)->ev_next) {\n\t\t\tif (*ev == NULL) {\n\t\t\t\tDBG(DBG_DPD | DBG_CONTROL,\n\t\t\t\t    DBG_log(\n\t\t\t\t\t    \"DPD event %s to be deleted not found\",\n\t\t\t\t\t    enum_show(&timer_event_names,\n\t\t\t\t\t\t      st->st_dpd_event->ev_type)));\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif ((*ev) == st->st_dpd_event) {\n\t\t\t\t*ev = (*ev)->ev_next;\n\t\t\t\tpfree(st->st_dpd_event);\n\t\t\t\tst->st_dpd_event = (struct event *) NULL;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t}\n}",
+            2
+        ],
+        [
+            "programs/pluto/connections.c",
+            "delete_connection",
+            "void delete_connection(struct connection *c, bool relations) /* <=== delete_connection */ \n{\n\tstruct spd_route *sr;\n\tstruct connection *old_cur_connection =\n\t\tcur_connection == c ? NULL : cur_connection;\n\n#ifdef DEBUG\n\tlset_t old_cur_debugging = cur_debugging;\n#endif\n\tunion {\n\t\tstruct alg_info** ppai;\n\t\tstruct alg_info_esp** ppai_esp;\n\t\tstruct alg_info_ike** ppai_ike;\n\t} palg_info;\n\n\tset_cur_connection(c);\n\n\t/*\n\t * Must be careful to avoid circularity:\n\t * we mark c as going away so it won't get deleted recursively.\n\t */\n\tpassert(c->kind != CK_GOING_AWAY);\n\tif (c->kind == CK_INSTANCE) {\n\t\tlibreswan_log(\n\t\t\t\"deleting connection \\\"%s\\\" instance with peer %s \"\n\t\t\t\"{isakmp=#%lu/ipsec=#%lu}\",\n\t\t\tc->name,\n\t\t\tip_str(&c->spd.that.host_addr),\n\t\t\tc->newest_isakmp_sa, c->newest_ipsec_sa);\n\t\tc->kind = CK_GOING_AWAY;\n\t\trel_lease_addr(c);\n\t} else {\n\t\tlibreswan_log(\"deleting connection\");\n\t}\n\trelease_connection(c, relations); /* won't delete c */\n\n\tif (c->kind == CK_GROUP)\n\t\tdelete_group(c);\n\n#if 0\n\t/* TODO:  this will be enabled in the next version */\n\tif ((c->pool != NULL) && (c->kind == CK_TEMPLATE)) {\n\t\tDBG(DBG_CONTROLMORE,\n\t\t\tDBG_log(\"free addresspool entry for the conn %s \"\n\t\t\t\t\"kind %s conn serial %d pool refcnt %u\",\n\t\t\t\tc->name, enum_name(&connection_kind_names,\n\t\t\t\t\t\tc->kind),\n\t\t\t\tc->instance_serial,\n\t\t\t\tc->pool->refcnt));\n\t\tfree_addresspool_entry(c->pool);\n\t\t*&c->pool = NULL;\n\t}\n#endif\n\n\t/* free up any logging resources */\n\tperpeer_logfree(c);\n\n\t/* find and delete c from connections list */\n\tlist_rm(struct connection, ac_next, c, connections);\n\tcur_connection = old_cur_connection;\n\n\t/* find and delete c from the host pair list */\n\tif (c->host_pair == NULL) {\n\t\tlist_rm(struct connection, hp_next, c, unoriented_connections);\n\t} else {\n\t\tstruct host_pair *hp = c->host_pair;\n\n\t\tlist_rm(struct connection, hp_next, c, hp->connections);\n\t\tc->host_pair = NULL; /* redundant, but safe */\n\n\t\t/*\n\t\t * if there are no more connections with this host_pair\n\t\t * and we haven't even made an initial contact, let's delete\n\t\t * this guy in case we were created by an attempted DOS attack.\n\t\t */\n\t\tif (hp->connections == NULL) {\n\t\t\t/* ??? must deal with this! */\n\t\t\tpassert(hp->pending == NULL);\n\t\t\tremove_host_pair(hp);\n\t\t\tpfree(hp);\n\t\t}\n\t}\n\n\tif (c->kind != CK_GOING_AWAY)\n\t\tpfreeany(c->spd.that.virt);\n\n#ifdef DEBUG\n\tset_debugging(old_cur_debugging);\n#endif\n\tpfreeany(c->name);\n\tpfreeany(c->cisco_dns_info);\n\tpfreeany(c->modecfg_domain);\n\tpfreeany(c->modecfg_banner);\n#ifdef HAVE_LABELED_IPSEC\n\tpfreeany(c->policy_label);\n#endif\n\tpfreeany(c->dnshostname);\n\n\tsr = &c->spd;\n\twhile (sr) {\n\t\tdelete_sr(sr);\n\t\tsr = sr->next;\n\t}\n\n\tfree_generalNames(c->requested_ca, TRUE);\n\n\tgw_delref(&c->gw_info);\n\tpalg_info.ppai_esp = &c->alg_info_esp;\n\talg_info_delref(palg_info.ppai);\n\tpalg_info.ppai_ike = &c->alg_info_ike;\n\talg_info_delref(palg_info.ppai);\n\tpfree(c);\n}",
+            3
+        ],
+        [
+            "programs/pluto/packet.c",
+            "out_raw",
+            "bool out_raw(const void *bytes, size_t len, pb_stream *outs, const char *name) /* <=== out_raw */ \n{\n\tif (pbs_left(outs) < len) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"not enough room left to place %lu bytes of %s in %s\",\n\t\t       (unsigned long) len, name, outs->name);\n\t\treturn FALSE;\n\t} else {\n\t\tDBG(DBG_EMITTING,\n\t\t    DBG_log(\"emitting %u raw bytes of %s into %s\",\n\t\t\t    (unsigned) len, name, outs->name);\n\t\t    DBG_dump(name, bytes, len));\n\t\tmemcpy(outs->cur, bytes, len);\n\t\touts->cur += len;\n\t\treturn TRUE;\n\t}\n}",
+            2
+        ],
+        [
+            "lib/libswan/lswlog.c",
+            "fmt_log",
+            "static void fmt_log(char *buf, size_t buf_len, /* <=== fmt_log */ \n\t\t    const char *fmt, va_list ap)\n{\n\tbool reproc = *fmt == '~';\n\tsize_t ps;\n\n\tbuf[0] = '\\0';\n\tif (reproc) {\n\t\tfmt++; /* ~ at start of format suppresses this prefix */\n\t} else if (progname != NULL && (strlen(progname) + 1 + 1) < buf_len) {\n\t\t/* start with name of connection */\n\t\tstrncat(buf, progname, buf_len - 1);\n\t\tstrncat(buf, \" \", buf_len - 1);\n\t}\n\n\tps = strlen(buf);\n\tvsnprintf(buf + ps, buf_len - ps, fmt, ap);\n\tif (!reproc)\n\t\t(void)sanitize_string(buf, buf_len);\n}",
+            2
+        ],
+        [
+            "programs/pluto/kernel.c",
+            "shunt_eroute",
+            "static bool shunt_eroute(struct connection *c, /* <=== shunt_eroute */ \n\t\t\t struct spd_route *sr,\n\t\t\t enum routing_t rt_kind,\n\t\t\t enum pluto_sadb_operations op,\n\t\t\t const char *opname)\n{\n\tif (kernel_ops->shunt_eroute)\n\t\treturn kernel_ops->shunt_eroute(c, sr, rt_kind, op, opname);\n\n\tloglog(RC_COMMENT, \"no shunt_eroute implemented for %s interface\",\n\t       kernel_ops->kern_name);\n\treturn TRUE;\n}",
+            3
+        ],
+        [
+            "include/ietf_constants.h",
+            "SHA1_DIGEST_SIZE",
+            "#define SHA1_DIGEST_SIZE BYTES_FOR_BITS(160) /* <=== include/ietf_constants.h:283:283:SHA1_DIGEST_SIZE:0 */ ",
+            1
+        ],
+        [
+            "linux/include/libreswan.h",
+            "IPsecSAref2NFmark",
+            "#define IPsecSAref2NFmark(x) (((x) & \\ /* <=== linux/include/libreswan.h:254:255:IPsecSAref2NFmark:1 */ \n\t\t\t       IPSEC_SA_REF_MASK) << IPSEC_SA_REF_TABLE_OFFSET)",
+            3
+        ],
+        [
+            "linux/include/libreswan.h",
+            "ADDRTOT_BUF",
+            "#define ADDRTOT_BUF     (32 * 2 + 3 + 1 + 3 + 1 + 1) /* <=== linux/include/libreswan.h:306:306:ADDRTOT_BUF:0 */ ",
+            1
+        ],
+        [
+            "include/lswtime.h",
+            "now",
+            "extern time_t now(void);        /* careful version of time(2) */ /* <=== now */ ",
+            3
+        ],
+        [
+            "linux/net/ipsec/addrtot.c",
+            "PERBYTE",
+            "#define PERBYTE         4       /* three digits plus a dot or NUL */ /* <=== linux/net/ipsec/addrtot.c:29:29:PERBYTE:0 */ ",
+            3
+        ],
+        [
+            "programs/pluto/defs.h",
+            "pad_up",
+            "#define pad_up(n, m) (((m) - 1) - (((n) + (m) - 1) % (m))) /* <=== programs/pluto/defs.h:58:58:pad_up:2 */ ",
+            3
+        ],
+        [
+            "programs/pluto/pluto_crypt.c",
+            "send_crypto_helper_request",
+            "err_t send_crypto_helper_request(struct pluto_crypto_req *r, /* <=== send_crypto_helper_request */ \n\t\t\t\t struct pluto_crypto_req_cont *cn,\n\t\t\t\t bool *toomuch)\n{\n\tstruct pluto_crypto_worker *w;\n\tint cnt;\n\n\t/* do it all ourselves? */\n\tif (pc_workers == NULL) {\n\t\treset_cur_state();\n\n\t\tpluto_do_crypto_op(r, pc_helper_num);\n\t\t/* call the continuation */\n\t\t(*cn->pcrc_func)(cn, r, NULL);\n\n\t\t/* indicate that we did everything ourselves */\n\t\t*toomuch = TRUE;\n\n\t\tpfree(cn);\n\t\treturn NULL;\n\t}\n\n\t/* set up the id */\n\tr->pcr_id = pcw_id++;\n\tcn->pcrc_id = r->pcr_id;\n\tcn->pcrc_pcr = r;\n\n\t/* find an available worker */\n\tcnt = pc_workers_cnt;\n\tdo {\n\t\tpc_worker_num++;\n\t\tif (pc_worker_num >= pc_workers_cnt)\n\t\t\tpc_worker_num = 0;\n\t\tw = &pc_workers[pc_worker_num];\n\n\t\tDBG(DBG_CONTROL,\n\t\t    DBG_log(\"%d: w->pcw_dead: %d w->pcw_work: %d cnt: %d\",\n\t\t\t    pc_worker_num, w->pcw_dead, w->pcw_work, cnt));\n\n\t\t/* see if there is something to clean up after */\n\t\tif (w->pcw_dead      == TRUE &&\n\t\t    w->pcw_reaped == TRUE) {\n\t\t\tcleanup_crypto_helper(w, 0);\n\t\t\tDBG(DBG_CONTROL,\n\t\t\t    DBG_log(\n\t\t\t\t    \"clnup %d: w->pcw_dead: %d w->pcw_work: %d cnt: %d\",\n\t\t\t\t    pc_worker_num, w->pcw_dead, w->pcw_work,\n\t\t\t\t    cnt));\n\t\t}\n\t} while (((w->pcw_work >= w->pcw_maxbasicwork)) &&\n\t\t --cnt > 0);\n\n\tif (cnt == 0 && r->pcr_pcim > pcim_ongoing_crypto) {\n\t\tcnt = pc_workers_cnt;\n\t\twhile ((w->pcw_work >= w->pcw_maxcritwork) &&\n\t\t       --cnt > 0) {\n\n\t\t\t/* find an available worker */\n\t\t\tpc_worker_num++;\n\t\t\tif (pc_worker_num >= pc_workers_cnt)\n\t\t\t\tpc_worker_num = 0;\n\n\t\t\tw = &pc_workers[pc_worker_num];\n\t\t\t/* see if there is something to clean up after */\n\t\t\tif (w->pcw_dead      == TRUE &&\n\t\t\t    w->pcw_reaped == TRUE)\n\t\t\t\tcleanup_crypto_helper(w, 0);\n\t\t}\n\t\tDBG(DBG_CONTROL,\n\t\t    DBG_log(\"crit %d: w->pcw_dead: %d w->pcw_work: %d cnt: %d\",\n\t\t\t    pc_worker_num, w->pcw_dead, w->pcw_work, cnt));\n\t}\n\n\tif (cnt == 0 && r->pcr_pcim >= pcim_demand_crypto) {\n\t\t/* it is very important. Put it all on a queue for later */\n\n\t\tTAILQ_INSERT_TAIL(&backlog, cn, pcrc_list);\n\n\t\t/* copy the request */\n\t\tr = clone_bytes(r, r->pcr_len, \"saved cryptorequest\");\n\t\tcn->pcrc_pcr = r;\n\n\t\tcn->pcrc_reply_stream = reply_stream;\n\t\tif (pbs_offset(&reply_stream)) {\n\t\t\tcn->pcrc_reply_buffer = clone_bytes(reply_stream.start,\n\t\t\t\t\t\t\t    pbs_offset(&\n\t\t\t\t\t\t\t\t       reply_stream),\n\t\t\t\t\t\t\t    \"saved reply buffer\");\n\t\t}\n\n\t\tbacklogqueue_len++;\n\t\tDBG(DBG_CONTROL,\n\t\t    DBG_log(\n\t\t\t    \"critical demand crypto operation queued on backlog as %d'th item, id: q#%u\",\n\t\t\t    backlogqueue_len, r->pcr_id));\n\t\t*toomuch = FALSE;\n\t\treturn NULL;\n\t}\n\n\tif (cnt == 0) {\n\t\t/* didn't find any workers */\n\t\tDBG(DBG_CONTROL,\n\t\t    DBG_log(\"failed to find any available worker (import=%s)\",\n\t\t\t    enum_name(&pluto_cryptoimportance_names,\n\t\t\t\t      r->pcr_pcim)));\n\n\t\t*toomuch = TRUE;\n\t\treturn \"failed to find any available worker\";\n\t}\n\n\t/* w points to a work. Make sure it is live */\n\tif (w->pcw_pid == -1) {\n\t\tinit_crypto_helper(w, pc_worker_num);\n\t\tif (w->pcw_pid == -1) {\n\t\t\tDBG(DBG_CONTROL,\n\t\t\t    DBG_log(\n\t\t\t\t    \"found only a dead helper, and failed to restart it\"));\n\t\t\t*toomuch = TRUE;\n\t\t\treturn \"failed to start a new helper\";\n\t\t}\n\t}\n\n\t/* link it to the active worker list */\n\tTAILQ_INSERT_TAIL(&w->pcw_active, cn, pcrc_list);\n\n\tpassert(w->pcw_pid != -1);\n\tpassert(w->pcw_pipe != -1);\n\tpassert(w->pcw_work < w->pcw_maxcritwork);\n\n\tcn->pcrc_reply_stream = reply_stream;\n\tif (pbs_offset(&reply_stream)) {\n\t\tcn->pcrc_reply_buffer = clone_bytes(reply_stream.start,\n\t\t\t\t\t\t    pbs_offset(\n\t\t\t\t\t\t\t    &reply_stream),\n\t\t\t\t\t\t    \"saved reply buffer\");\n\t}\n\n\tif (!crypto_write_request(w, r)) {\n\t\tlibreswan_log(\"failed to write crypto request: %s\\n\",\n\t\t\t      strerror(errno));\n\t\tif (pbs_offset(&cn->pcrc_reply_stream))\n\t\t\tpfree(cn->pcrc_reply_buffer);\n\t\tcn->pcrc_reply_buffer = NULL;\n\t\treturn \"failed to write\";\n\t}\n\n\tw->pcw_work++;\n\t*toomuch = FALSE;\n\treturn NULL;\n}",
+            2
+        ],
+        [
+            "linux/include/libreswan.h",
+            "subnettypeof",
+            "extern int subnettypeof(const ip_subnet *src); /* <=== subnettypeof */ ",
+            2
+        ],
+        [
+            "programs/pluto/log.h",
+            "reset_cur_state",
+            "#define reset_cur_state() { \\ /* <=== programs/pluto/log.h:127:130:reset_cur_state:0 */ \n\t\tcur_state = NULL; \\\n\t\treset_debugging(); \\\n}",
+            3
+        ],
+        [
+            "linux/net/ipsec/addrtot.c",
+            "IP6BYTES",
+            "#define IP6BYTES        16      /* bytes in an IPv6 address */ /* <=== linux/net/ipsec/addrtot.c:30:30:IP6BYTES:0 */ ",
+            3
+        ],
+        [
+            "include/pluto_constants.h",
+            "EVENT_CRYPTO_FAILED_DELAY",
+            "#define EVENT_CRYPTO_FAILED_DELAY               300 /* <=== include/pluto_constants.h:99:99:EVENT_CRYPTO_FAILED_DELAY:0 */ ",
+            2
+        ],
+        [
+            "include/constants.h",
+            "NULL_FD",
+            "#define NULL_FD (-1)    /* NULL file descriptor */ /* <=== include/constants.h:58:58:NULL_FD:0 */ ",
+            2
+        ],
+        [
+            "programs/pluto/pending.c",
+            "flush_pending_by_state",
+            "void flush_pending_by_state(struct state *st) /* <=== flush_pending_by_state */ \n{\n\tstruct pending **pp,\n\t*p;\n\n\tpp = host_pair_first_pending(st->st_connection);\n\tif (pp == NULL)\n\t\treturn;\n\n\twhile ((p = *pp) != NULL) {\n\t\tif (p->isakmp_sa == st) {\n\t\t\t/* we don't have to worry about deref to free'ed\n\t\t\t * *pp, because delete_pending updates pp to\n\t\t\t * point to the next element before it frees *pp\n\t\t\t */\n\t\t\tdelete_pending(pp);\n\t\t} else {\n\t\t\tpp = &p->next;\n\t\t}\n\t}\n}",
+            2
+        ],
+        [
+            "lib/libswan/constants.c",
+            "enum_show",
+            "const char *enum_show(enum_names *ed, unsigned long val) /* <=== enum_show */ \n{\n\tconst char *p = enum_name(ed, val);\n\n\tif (p == NULL) {\n\t\tstatic char buf[12]; /* only one!  I hope that it is big enough */\n\n\t\tsnprintf(buf, sizeof(buf), \"%lu??\", val);\n\t\tp = buf;\n\t}\n\treturn p;\n}",
+            3
+        ],
+        [
+            "include/lswlog.h",
+            "LOG_WIDTH",
+            "#define LOG_WIDTH   1024                                        /* roof of number of chars in log line */ /* <=== include/lswlog.h:91:91:LOG_WIDTH:0 */ ",
+            2
+        ],
+        [
+            "programs/pluto/defs.h",
+            "SOS_NOBODY",
+            "#define SOS_NOBODY      0       /* null serial number */ /* <=== programs/pluto/defs.h:38:38:SOS_NOBODY:0 */ ",
+            2
+        ],
+        [
+            "programs/pluto/pending.c",
+            "delete_pending",
+            "static void delete_pending(struct pending **pp) /* <=== delete_pending */ \n{\n\tstruct pending *p = *pp;\n\n\t*pp = p->next;\n\tif (p->connection != NULL)\n\t\tconnection_discard(p->connection);\n\tclose_any(p->whack_sock);\n\n\tDBG(DBG_DPD,\n\t    DBG_log(\"removing pending policy for \\\"%s\\\" {%p}\",\n\t\t    p->connection ? p->connection->name : \"none\", p));\n\n#ifdef HAVE_LABELED_IPSEC\n\tpfreeany(p->uctx);\n#endif\n\n\tpfree(p);\n}",
+            3
+        ],
+        [
+            "programs/pluto/defs.h",
+            "zero",
+            "#define zero(x) memset((x), '\\0', sizeof(*(x))) /* <=== programs/pluto/defs.h:52:52:zero:1 */ ",
+            2
+        ],
+        [
+            "programs/pluto/ipsec_doi.c",
+            "unpack_nonce",
+            "void unpack_nonce(chunk_t *n, struct pluto_crypto_req *r) /* <=== unpack_nonce */ \n{\n\tstruct pcr_kenonce *kn = &r->pcr_d.kn;\n\n\tfreeanychunk(*n);\n\tclonetochunk(*n, wire_chunk_ptr(kn, &(kn->n)),\n\t\t     DEFAULT_NONCE_SIZE, \"initiator nonce\");\n}",
+            2
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_delete_out",
+            "void ikev2_delete_out(struct state *st) /* <=== ikev2_delete_out */ \n{\n\tstruct state *pst = NULL;\n\n\tif (st->st_clonedfrom != 0) {\n\t\t/*child SA*/\n\t\tpst = state_with_serialno(st->st_clonedfrom);\n\n\t\tif (!pst) {\n\t\t\tDBG(DBG_CONTROL,\n\t\t\t    DBG_log(\"IKE SA does not exist for this child SA\"));\n\t\t\tDBG(DBG_CONTROL,\n\t\t\t    DBG_log(\n\t\t\t\t    \"INFORMATIONAL exchange can not be sent, deleting state\"));\n\t\t\tgoto end;\n\t\t}\n\t} else {\n\t\t/* Parent SA*/\n\t\tpst = st;\n\n\t}\n\n\t{\n\t\tunsigned char *authstart;\n\t\tpb_stream e_pbs, e_pbs_cipher;\n\t\tpb_stream rbody;\n\t\tstruct ikev2_generic e;\n\t\tunsigned char *iv;\n\t\tint ivsize;\n\t\tunsigned char *encstart;\n\t\tstruct msg_digest md;\n\t\tenum phase1_role role;\n\n\t\tmd.st = st;\n\t\tmd.pst = pst;\n\t\t/* beginning of data going out */\n\t\tauthstart = reply_stream.cur;\n\n\t\t/* make sure HDR is at start of a clean buffer */\n\t\tzero(reply_buffer);\n\t\tinit_pbs(&reply_stream, reply_buffer, sizeof(reply_buffer),\n\t\t\t \"information exchange request packet\");\n\n\t\t/* HDR out */\n\t\t{\n\t\t\tstruct isakmp_hdr r_hdr;\n\t\t\tzero(&r_hdr); /* default to 0 */  /* AAA should we copy from MD? */\n\t\t\tr_hdr.isa_version = build_ike_version();\n\t\t\tmemcpy(r_hdr.isa_rcookie, pst->st_rcookie,\n\t\t\t       COOKIE_SIZE);\n\t\t\tmemcpy(r_hdr.isa_icookie, pst->st_icookie,\n\t\t\t       COOKIE_SIZE);\n\t\t\tr_hdr.isa_xchg = ISAKMP_v2_INFORMATIONAL;\n\t\t\tr_hdr.isa_np = ISAKMP_NEXT_v2E;\n\t\t\tr_hdr.isa_msgid = htonl(pst->st_msgid_nextuse);\n\n\t\t\t/*set initiator bit if we are initiator*/\n\t\t\tif (pst->st_state == STATE_PARENT_I2 ||\n\t\t\t    pst->st_state == STATE_PARENT_I3) {\n\t\t\t\tr_hdr.isa_flags |= ISAKMP_FLAGS_I;\n\t\t\t\trole = INITIATOR;\n\t\t\t} else {\n\t\t\t\trole = RESPONDER;\n\t\t\t}\n\n\t\t\t/* r_hdr.isa_flags  |=  ISAKMP_FLAGS_R; */\n\n\t\t\tif (!out_struct(&r_hdr, &isakmp_hdr_desc,\n\t\t\t\t\t&reply_stream, &rbody)) {\n\t\t\t\tlibreswan_log(\n\t\t\t\t\t\"error initializing hdr for informational message\");\n\t\t\t\tgoto end;\n\t\t\t}\n\n\t\t} /*HDR Done*/\n\n\t\t/* insert an Encryption payload header */\n\t\te.isag_np = ISAKMP_NEXT_v2D;\n\t\te.isag_critical = ISAKMP_PAYLOAD_NONCRITICAL;\n\n\t\tif (!out_struct(&e, &ikev2_e_desc, &rbody, &e_pbs))\n\t\t\tgoto end;\n\n\t\t/* insert IV */\n\t\tiv     = e_pbs.cur;\n\t\tivsize = pst->st_oakley.encrypter->iv_size;\n\t\tif (!out_zero(ivsize, &e_pbs, \"iv\"))\n\t\t\tgoto end;\n\t\tget_rnd_bytes(iv, ivsize);\n\n\t\t/* note where cleartext starts */\n\t\tinit_pbs(&e_pbs_cipher, e_pbs.cur, e_pbs.roof - e_pbs.cur,\n\t\t\t \"cleartext\");\n\t\te_pbs_cipher.container = &e_pbs;\n\t\te_pbs_cipher.desc = NULL;\n\t\te_pbs_cipher.cur = e_pbs.cur;\n\t\tencstart = e_pbs_cipher.cur;\n\n\t\t{\n\t\t\tpb_stream del_pbs;\n\t\t\tstruct ikev2_delete v2del_tmp;\n\t\t\t/*\n\t\t\t * u_int16_t i, j=0;\n\t\t\t * u_char *spi;\n\t\t\t * char spi_buf[1024];\n\t\t\t */\n\n\t\t\tzero(&v2del_tmp);\n\t\t\tv2del_tmp.isad_np = ISAKMP_NEXT_v2NONE;\n\n\t\t\tif (st->st_clonedfrom != 0 ) {\n\t\t\t\tv2del_tmp.isad_protoid = PROTO_IPSEC_ESP;\n\t\t\t\tv2del_tmp.isad_spisize = sizeof(ipsec_spi_t);\n\t\t\t\tv2del_tmp.isad_nrspi = 1;\n\t\t\t} else {\n\t\t\t\tv2del_tmp.isad_protoid = PROTO_ISAKMP;\n\t\t\t\tv2del_tmp.isad_spisize = 0;\n\t\t\t\tv2del_tmp.isad_nrspi = 0;\n\t\t\t}\n\n\t\t\t/* Emit delete payload header out*/\n\t\t\tif (!out_struct(&v2del_tmp, &ikev2_delete_desc,\n\t\t\t\t\t&e_pbs_cipher, &del_pbs)) {\n\t\t\t\tlibreswan_log(\n\t\t\t\t\t\"error initializing hdr for delete payload\");\n\t\t\t\tgoto end;\n\t\t\t}\n\n\t\t\t/* Emit values of spi to be sent to the peer*/\n\t\t\tif (st->st_clonedfrom != 0) {\n\t\t\t\tif (!out_raw( (u_char *)&st->st_esp.our_spi,\n\t\t\t\t\t      sizeof(ipsec_spi_t), &del_pbs,\n\t\t\t\t\t      \"local spis\")) {\n\t\t\t\t\tlibreswan_log(\n\t\t\t\t\t\t\"error sending spi values in delete payload\");\n\t\t\t\t\tgoto end;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tclose_output_pbs(&del_pbs);\n\n\t\t}\n\n\t\tikev2_padup_pre_encrypt(&md, &e_pbs_cipher);\n\t\tclose_output_pbs(&e_pbs_cipher);\n\n\t\t{\n\t\t\tstf_status ret;\n\t\t\tunsigned char *authloc = ikev2_authloc(&md, &e_pbs);\n\t\t\tif (authloc == NULL)\n\t\t\t\tgoto end;\n\t\t\tclose_output_pbs(&e_pbs);\n\t\t\tclose_output_pbs(&rbody);\n\t\t\tclose_output_pbs(&reply_stream);\n\n\t\t\tret = ikev2_encrypt_msg(&md, role,\n\t\t\t\t\t\tauthstart,\n\t\t\t\t\t\tiv, encstart, authloc,\n\t\t\t\t\t\t&e_pbs, &e_pbs_cipher);\n\t\t\tif (ret != STF_OK)\n\t\t\t\tgoto end;\n\t\t}\n\n\t\t/* keep it for a retransmit if necessary */\n\t\tfreeanychunk(pst->st_tpacket);\n\t\tclonetochunk(pst->st_tpacket, reply_stream.start,\n\t\t\t     pbs_offset(&reply_stream),\n\t\t\t     \"request packet for informational exchange\");\n\n\t\tsend_ike_msg(pst, __FUNCTION__);\n\n\t\t/* update state */\n\t\tikev2_update_counters(&md);\n\n\t}\n\n\t/* If everything is fine, and we sent packet, goto real_end*/\n\tgoto real_end;\n\nend:\n\t/* If some error occurs above that prevents us sending a request packet*/\n\t/* delete the states right now*/\n\n\tif (st->st_clonedfrom != SOS_NOBODY) {\n\t\tchange_state(st, STATE_CHILDSA_DEL);\n\t\tdelete_state(st);\n\t} else {\n\n\t\tstruct state *current_st = pst;\n\t\tstruct state *next_st = NULL;\n\t\tstruct state *first_st = NULL;\n\n\t\t/* Find the first state in the hash chain*/\n\t\twhile (current_st != (struct state *) NULL) {\n\t\t\tfirst_st = current_st;\n\t\t\tcurrent_st = first_st->st_hashchain_prev;\n\t\t}\n\n\t\tcurrent_st = first_st;\n\t\twhile (current_st != (struct state *) NULL) {\n\t\t\tnext_st = current_st->st_hashchain_next;\n\t\t\tif (current_st->st_clonedfrom != 0 )\n\t\t\t\tchange_state(current_st, STATE_CHILDSA_DEL);\n\t\t\telse\n\t\t\t\tchange_state(current_st, STATE_IKESA_DEL);\n\t\t\tdelete_state(current_st);\n\t\t\tcurrent_st = next_st;\n\t\t}\n\t}\n\nreal_end:;\n}",
+            3
+        ],
+        [
+            "include/lswlog.h",
+            "builddiag",
+            "extern err_t builddiag(const char *fmt, ...) PRINTF_LIKE(1);    /* NOT RE-ENTRANT */ /* <=== builddiag */ ",
+            3
+        ],
+        [
+            "lib/libswan/lswlog.c",
+            "libreswan_log_abort",
+            "void libreswan_log_abort(const char *file_str, int line_no) /* <=== libreswan_log_abort */ \n{\n\tlibreswan_loglog(RC_LOG_SERIOUS, \"ABORT at %s:%d\", file_str, line_no);\n\tabort();\n}",
+            3
+        ],
+        [
+            "linux/include/libreswan/passert.h",
+            "passert",
+            "# define passert(pred)  { }             /* do nothing */ /* <=== linux/include/libreswan/passert.h:73:73:passert:1 */ ",
+            1
+        ],
+        [
+            "programs/pluto/state.c",
+            "release_fragments",
+            "void release_fragments(struct state *st) /* <=== release_fragments */ \n{\n\tstruct ike_frag *frag;\n\n\tif (!st)\n\t\treturn;\n\n\tfrag = st->ike_frags;\n\twhile (frag) {\n\t\tstruct ike_frag *this = frag;\n\t\tfrag = this->next;\n\t\trelease_md(this->md);\n\t\tfree(this);\n\t}\n\n\tst->ike_frags = NULL;\n}",
+            2
+        ],
+        [
+            "programs/pluto/pluto_crypt.c",
+            "crypto_write_request",
+            "static bool crypto_write_request(struct pluto_crypto_worker *w, /* <=== crypto_write_request */ \n\t\t\t\t struct pluto_crypto_req *r)\n{\n\tunsigned char *wdat = (unsigned char *)r;\n\tint wlen = r->pcr_len;\n\tint cnt;\n\n\tDBG(DBG_CONTROL,\n\t    DBG_log(\n\t\t    \"asking helper %d to do %s op on seq: %u (len=%u, pcw_work=%d)\",\n\t\t    w->pcw_helpernum,\n\t\t    enum_show(&pluto_cryptoop_names, r->pcr_type),\n\t\t    r->pcr_id, (unsigned int)r->pcr_len, w->pcw_work + 1));\n\n\tdo {\n\t\terrno = 0;\n\t\tcnt = write(w->pcw_pipe, wdat, wlen);\n\n\t\tif (cnt <= 0) {\n\t\t\tlibreswan_log(\n\t\t\t\t\"write to helper failed: cnt=%d err=%s\\n\",\n\t\t\t\tcnt, strerror(errno));\n\t\t\treturn FALSE;\n\t\t}\n\t\tif (DBGP(DBG_CONTROL) || cnt != wlen) {\n\t\t\tDBG_log(\n\t\t\t\t\"crypto helper write of request: cnt=%d<wlen=%d. \\n\", cnt,\n\t\t\t\twlen);\n\t\t}\n\n\t\twlen -= cnt;\n\t\twdat += cnt;\n\n\t} while (wlen > 0);\n\n\treturn TRUE;\n}",
+            3
+        ],
+        [
+            "programs/pluto/log.c",
+            "fmt_log",
+            "static void fmt_log(char *buf, size_t buf_len, const char *fmt, va_list ap) /* <=== fmt_log */ \n{\n\tbool reproc = *fmt == '~';\n\tsize_t ps;\n\tstruct connection *c = cur_state != NULL ? cur_state->st_connection :\n\t\t\t       cur_connection;\n\n\tbuf[0] = '\\0';\n\tif (reproc) {\n\t\tfmt++; /* ~ at start of format suppresses this prefix */\n\t} else if (c != NULL) {\n\t\t/* start with name of connection */\n\t\tchar *const be = buf + buf_len;\n\t\tchar *bp = buf;\n\n\t\tsnprintf(bp, be - bp, \"\\\"%s\\\"\", c->name);\n\t\tbp += strlen(bp);\n\n\t\t/* if it fits, put in any connection instance information */\n\t\tif (be - bp > CONN_INST_BUF) {\n\t\t\tfmt_conn_instance(c, bp);\n\t\t\tbp += strlen(bp);\n\t\t}\n\n\t\tif (cur_state != NULL) {\n\t\t\t/* state number */\n\t\t\tsnprintf(bp, be - bp, \" #%lu\", cur_state->st_serialno);\n\t\t\tbp += strlen(bp);\n\t\t}\n\t\tsnprintf(bp, be - bp, \": \");\n\t} else if (cur_from != NULL) {\n\t\t/* peer's IP address */\n\t\t/* Note: must not use ip_str() because our caller might! */\n\t\tchar ab[ADDRTOT_BUF];\n\n\t\t(void) addrtot(cur_from, 0, ab, sizeof(ab));\n\t\tsnprintf(buf, buf_len, \"packet from %s:%u: \",\n\t\t\t ab, (unsigned)cur_from_port);\n\t}\n\n\tps = strlen(buf);\n\tvsnprintf(buf + ps, buf_len - ps, fmt, ap);\n\tif (!reproc)\n\t\t(void)sanitize_string(buf, buf_len);\n}",
+            2
+        ],
+        [
+            "include/pluto_constants.h",
+            "IS_ISAKMP_SA_ESTABLISHED",
+            "#define IS_ISAKMP_SA_ESTABLISHED(s) ((s) == STATE_MAIN_R3 || (s) == \\ /* <=== include/pluto_constants.h:342:353:IS_ISAKMP_SA_ESTABLISHED:1 */ \n\t\t\t\t     STATE_MAIN_I4 \\\n\t\t\t\t     || (s) == STATE_AGGR_I2 || (s) == \\\n\t\t\t\t     STATE_AGGR_R2 \\\n\t\t\t\t     || (s) == STATE_XAUTH_R0 || (s) == \\\n\t\t\t\t     STATE_XAUTH_R1 \\\n\t\t\t\t     || (s) == STATE_MODE_CFG_R0 || (s) == \\\n\t\t\t\t     STATE_MODE_CFG_R1 \\\n\t\t\t\t     || (s) == STATE_MODE_CFG_R2 || (s) == \\\n\t\t\t\t     STATE_MODE_CFG_I1 \\\n\t\t\t\t     || (s) == STATE_XAUTH_I0 || (s) == \\\n\t\t\t\t     STATE_XAUTH_I1)",
+            2
+        ],
+        [
+            "programs/pluto/state.h",
+            "INVALID_MSGID",
+            "#define INVALID_MSGID     0xffffffff /* <=== programs/pluto/state.h:59:59:INVALID_MSGID:0 */ ",
+            1
+        ],
+        [
+            "include/lswlog.h",
+            "sanitize_string",
+            "extern size_t sanitize_string(char *buf, size_t size); /* <=== sanitize_string */ ",
+            3
+        ],
+        [
+            "include/constants.h",
+            "BITS_PER_BYTE",
+            "# define BITS_PER_BYTE  8 /* <=== include/constants.h:68:68:BITS_PER_BYTE:0 */ ",
+            3
+        ],
+        [
+            "include/lswlog.h",
+            "DBG",
+            "#define DBG(cond, action)   do { if (DBGP(cond)) { action; } } while (0) /* <=== include/lswlog.h:47:47:DBG:2 */ ",
+            1
+        ],
+        [
+            "programs/pluto/pluto_crypt.h",
+            "pcr_init",
+            "static inline void pcr_init(struct pluto_crypto_req *r, /* <=== pcr_init */ \n\t\t\t    enum pluto_crypto_requests pcr_type,\n\t\t\t    enum crypto_importance pcr_pcim)\n{\n\tmemset(r, 0, sizeof(*r));\n\tr->pcr_len  = sizeof(struct pluto_crypto_req);\n\tr->pcr_type = pcr_type;\n\tr->pcr_pcim = pcr_pcim;\n\n\tswitch (r->pcr_type) {\n\tcase pcr_build_kenonce:\n\tcase pcr_build_nonce:\n\t\tr->pcr_d.kn.thespace.start = 0;\n\t\tr->pcr_d.kn.thespace.len   = sizeof(r->pcr_d.kn.space);\n\t\tbreak;\n\tcase pcr_compute_dh_iv:\n\tcase pcr_compute_dh:\n\tcase pcr_compute_dh_v2:\n\t\tr->pcr_d.dhq.thespace.start = 0;\n\t\tr->pcr_d.dhq.thespace.len   = sizeof(r->pcr_d.dhq.space);\n\t\tbreak;\n\tcase pcr_rsa_sign:\n\tcase pcr_rsa_check:\n\tcase pcr_x509cert_fetch:\n\tcase pcr_x509crl_fetch:\n\t\tpassert(0);\n\t\tbreak;\n\t}\n}",
+            2
+        ],
+        [
+            "include/ietf_constants.h",
+            "ISAKMP_PAYLOAD_NONCRITICAL",
+            "#define ISAKMP_PAYLOAD_NONCRITICAL 0x00 /* <=== include/ietf_constants.h:618:618:ISAKMP_PAYLOAD_NONCRITICAL:0 */ ",
+            2
+        ],
+        [
+            "programs/pluto/crypt_ke.c",
+            "build_ke",
+            "stf_status build_ke(struct pluto_crypto_req_cont *cn, /* <=== build_ke */ \n\t\t    struct state *st,\n\t\t    const struct oakley_group_desc *group,\n\t\t    enum crypto_importance importance)\n{\n\tstruct pluto_crypto_req rd;\n\tstruct pluto_crypto_req *r = &rd;\n\terr_t e;\n\tbool toomuch = FALSE;\n\n\tpcr_init(r, pcr_build_kenonce, importance);\n\tr->pcr_d.kn.oakley_group   = group->group;\n\n\tcn->pcrc_serialno = st->st_serialno;\n\te = send_crypto_helper_request(r, cn, &toomuch);\n\n\tif (e != NULL) {\n\t\tloglog(RC_LOG_SERIOUS, \"can not start crypto helper: %s\", e);\n\t\tif (toomuch)\n\t\t\treturn STF_TOOMUCHCRYPTO;\n\t\telse\n\t\t\treturn STF_FAIL;\n\t} else if (!toomuch) {\n\t\tst->st_calculating = TRUE;\n\t\tdelete_event(st);\n\t\tevent_schedule(EVENT_CRYPTO_FAILED, EVENT_CRYPTO_FAILED_DELAY,\n\t\t\t       st);\n\t\treturn STF_SUSPEND;\n\t} else {\n\t\t/* we must have run the continuation directly, so\n\t\t * complete_v1_state_transition already got called.\n\t\t */\n\t\treturn STF_INLINE;\n\t}\n}",
+            1
+        ],
+        [
+            "programs/pluto/log.c",
+            "whack_log",
+            "void whack_log(int mess_no, const char *message, ...) /* <=== whack_log */ \n{\n\tint wfd;\n\n\tpthread_mutex_lock(&log_mutex);\n\twfd = whack_log_fd != NULL_FD ? whack_log_fd :\n\t      cur_state != NULL ? cur_state->st_whack_sock :\n\t      NULL_FD;\n\n\tif (wfd != NULL_FD\n#ifdef DEBUG\n\t    || dying_breath\n#endif\n\t    ) {\n\t\tva_list args;\n\t\tchar m[LOG_WIDTH]; /* longer messages will be truncated */\n\t\tint prelen = snprintf(m, sizeof(m), \"%03d \", mess_no);\n\n\t\tpassert(prelen >= 0);\n\n\t\tva_start(args, message);\n\t\tfmt_log(m + prelen, sizeof(m) - prelen, message, args);\n\t\tva_end(args);\n\n#if DEBUG\n\t\tif (dying_breath) {\n\t\t\t/* status output copied to log */\n\t\t\tif (log_to_stderr || (log_to_file && pluto_log_fd))\n\t\t\t\tfprintf(log_to_stderr ? stderr : pluto_log_fd,\n\t\t\t\t\t\"%s\\n\", m + prelen);\n\t\t\tif (log_to_syslog)\n\t\t\t\tsyslog(LOG_WARNING, \"%s\", m + prelen);\n\t\t\tif (log_to_perpeer)\n\t\t\t\tpeerlog(\"\", m);\n\t\t}\n#endif\n\n\t\tif (wfd != NULL_FD) {\n\t\t\t/* write to whack socket, but suppress possible SIGPIPE */\n\t\t\tsize_t len = strlen(m);\n#ifdef MSG_NOSIGNAL                     /* depends on version of glibc??? */\n\t\t\tm[len] = '\\n';  /* don't need NUL, do need NL */\n\t\t\t(void) send(wfd, m, len + 1, MSG_NOSIGNAL);\n#else /* !MSG_NOSIGNAL */\n\t\t\tint r;\n\t\t\tstruct sigaction act,\n\t\t\t\t\t oldact;\n\n\t\t\tm[len] = '\\n'; /* don't need NUL, do need NL */\n\t\t\tact.sa_handler = SIG_IGN;\n\t\t\tsigemptyset(&act.sa_mask);\n\t\t\tact.sa_flags = 0; /* no nothing */\n\t\t\tr = sigaction(SIGPIPE, &act, &oldact);\n\t\t\tpassert(r == 0);\n\n\t\t\t(void) write(wfd, m, len + 1);\n\n\t\t\tr = sigaction(SIGPIPE, &oldact, NULL);\n\t\t\tpassert(r == 0);\n#endif                  /* !MSG_NOSIGNAL */\n\t\t}\n\t}\n\tpthread_mutex_unlock(&log_mutex);\n}",
+            2
+        ],
+        [
+            "include/lswalloc.h",
+            "leak_pfree",
+            "extern void leak_pfree(void *ptr, int leak); /* <=== leak_pfree */ ",
+            2
+        ],
+        [
+            "include/lswalloc.h",
+            "alloc_bytes2",
+            "extern void *alloc_bytes2(size_t size, const char *name, int leak_detective); /* <=== alloc_bytes2 */ ",
+            1
+        ],
+        [
+            "linux/include/libreswan.h",
+            "IPSEC_SAREF_NA",
+            "#define IPSEC_SAREF_NA   ((IPsecSAref_t)0xffff0001) /* <=== linux/include/libreswan.h:261:261:IPSEC_SAREF_NA:0 */ ",
+            3
+        ],
+        [
+            "lib/libswan/constants.c",
+            "testset",
+            "bool testset(const char *const table[], lset_t val) /* <=== testset */ \n{\n\tlset_t bit;\n\tconst char *const *tp;\n\n\tfor (tp = table, bit = 01; val != 0; bit <<= 1, tp++) {\n\t\tconst char *n = *tp;\n\n\t\tif (n == NULL || ((val & bit) && *n == '\\0'))\n\t\t\treturn FALSE;\n\n\t\tval &= ~bit;\n\t}\n\treturn TRUE;\n}",
+            3
+        ],
+        [
+            "programs/pluto/pluto_crypt.c",
+            "cleanup_crypto_helper",
+            "static void cleanup_crypto_helper(struct pluto_crypto_worker *w, /* <=== cleanup_crypto_helper */ \n\t\t\t\t  int status)\n{\n\tif (w->pcw_pipe) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"closing helper(%u) pid=%lu fd=%d exit=%d\",\n\t\t       w->pcw_helpernum, w->pcw_pid, w->pcw_pipe, status);\n\t\tclose(w->pcw_pipe);\n\t}\n\n\tw->pcw_pid = -1;\n\tw->pcw_work = 0;        /* ?!? */\n\tw->pcw_reaped = FALSE;\n\tw->pcw_dead   = FALSE;  /* marking is not dead lets it live again */\n}",
+            3
+        ],
+        [
+            "include/packet.h",
+            "pbs_left",
+            "#define pbs_left(pbs) ((size_t)((pbs)->roof - (pbs)->cur)) /* <=== include/packet.h:92:92:pbs_left:1 */ ",
+            1
+        ],
+        [
+            "include/packet.h",
+            "pbs_offset",
+            "#define pbs_offset(pbs) ((size_t)((pbs)->cur - (pbs)->start)) /* <=== include/packet.h:90:90:pbs_offset:1 */ ",
+            3
+        ],
+        [
+            "include/ietf_constants.h",
+            "ISA_MAJ_SHIFT",
+            "#define ISA_MAJ_SHIFT 4 /* <=== include/ietf_constants.h:1215:1215:ISA_MAJ_SHIFT:0 */ ",
+            3
+        ],
+        [
+            "linux/net/ipsec/addrtot.c",
+            "addrtot",
+            "size_t                          /* space needed for full conversion */ /* <=== addrtot */ \naddrtot(src, format, dst, dstlen)\nconst ip_address * src;\nint format;                     /* character */\nchar *dst;                      /* need not be valid if dstlen is 0 */\nsize_t dstlen;\n{\n\tunsigned char *b;\n\tsize_t n;\n\tchar buf[1 + ADDRTOT_BUF + 1];      /* :address: */\n\tchar *p;\n\tint t = addrtypeof(src);\n#       define  TF(t, f)        (((t) << 8) | (f))\n\n\tn = addrbytesptr(src, &b);\n\tif (n == 0) {\n\t\tdst[0] = '\\0';\n\t\tstrncat(dst, \"<invalid>\", dstlen - 1); /* we hope possible truncation does not cause problems */\n\t\treturn sizeof(\"<invalid>\");\n\t}\n\n\tswitch (TF(t, format)) {\n\tcase TF(AF_INET, 0):\n\t\tn = normal4(b, n, buf, &p);\n\t\tbreak;\n\tcase TF(AF_INET6, 0):\n\t\tn = normal6(b, n, buf, &p, 1);\n\t\tbreak;\n\tcase TF(AF_INET, 'Q'):\n\t\tn = normal4(b, n, buf, &p);\n\t\tbreak;\n\tcase TF(AF_INET6, 'Q'):\n\t\tn = normal6(b, n, buf, &p, 0);\n\t\tbreak;\n\tcase TF(AF_INET, 'r'):\n\t\tn = reverse4(b, n, buf, &p);\n\t\tbreak;\n\tcase TF(AF_INET6, 'r'):\n\t\tn = reverse6(b, n, buf, &p);\n\t\tbreak;\n\tdefault:                                        /* including (AF_INET, 'R') */\n\t\tdst[0] = '\\0';\n\t\tstrncat(dst, \"<invalid>\", dstlen - 1);  /* we hope possible truncation does not cause problems */\n\t\treturn sizeof(\"<invalid>\");\n\t}\n\n\tif (dstlen > 0) {\n\t\tif (dstlen < n)\n\t\t\tp[dstlen - 1] = '\\0';\n\t\tstrcpy(dst, p);\n\t}\n\treturn n;\n}",
+            1
+        ],
+        [
+            "linux/net/ipsec/addrtot.c",
+            "reverse6",
+            "static size_t                   /* size of text, including NUL */ /* <=== reverse6 */ \nreverse6(srcp, srclen, buf, dstp)\nconst unsigned char *srcp;\nsize_t srclen;\nchar *buf;                      /* guaranteed large enough */\nchar **dstp;                    /* where to put result pointer */\n{\n\tint i;\n\tunsigned long piece;\n\tchar *p;\n\n\tif (srclen != IP6BYTES) /* \"can't happen\" */\n\t\treturn 0;\n\n\tp = buf;\n\tfor (i = IP6BYTES - 1; i >= 0; i--) {\n\t\tpiece = srcp[i];\n\t\tp += ultot(piece & 0xf, 16, p, 2);\n\t\t*(p - 1) = '.';\n\t\tp += ultot(piece >> 4, 16, p, 2);\n\t\t*(p - 1) = '.';\n\t}\n\tstrcpy(p, \"IP6.ARPA.\");\n\t*dstp = buf;\n\treturn strlen(buf) + 1;\n}",
+            2
+        ],
+        [
+            "include/constants.h",
+            "close_any",
+            "#define close_any(fd) do { if ((fd) != NULL_FD) { close(fd); (fd) = NULL_FD; \\ /* <=== include/constants.h:60:61:close_any:1 */ \n\t\t\t   } } while (0)",
+            3
+        ],
+        [
+            "include/ietf_constants.h",
+            "ISAKMP_FLAGS_R",
+            "#define ISAKMP_FLAGS_R (1 << 5) /* bit 5 of flags --- response */ /* <=== include/ietf_constants.h:600:600:ISAKMP_FLAGS_R:0 */ ",
+            2
+        ],
+        [
+            "programs/pluto/ipsec_doi.c",
+            "close_message",
+            "void close_message(pb_stream *pbs, struct state *st) /* <=== close_message */ \n{\n\tsize_t padding =  pad_up(pbs_offset(pbs), 4);\n\n\t/* Workaround for overzealous Checkpoint firewal */\n\tif (padding && st && st->st_connection &&\n\t    (st->st_connection->policy & POLICY_NO_IKEPAD)) {\n\t\tDBG(DBG_CONTROLMORE, DBG_log(\"IKE message padding of %lu bytes skipped by policy\",\n\t\t\tpadding));\n\t\tpadding = 0;\n\t}\n\n\tif (padding != 0) {\n\t\tDBG(DBG_CONTROLMORE, DBG_log(\"padding IKE message with %lu bytes\", padding));\n\t\t(void) out_zero(padding, pbs, \"message padding\");\n\t} else {\n\t\tDBG(DBG_CONTROLMORE, DBG_log(\"no IKE message padding required\"));\n\t}\n\n\tclose_output_pbs(pbs);\n}",
+            2
+        ],
+        [
+            "include/ietf_constants.h",
+            "MAXIMUM_NONCE_SIZE",
+            "#define MAXIMUM_NONCE_SIZE 256 /* bytes */ /* <=== include/ietf_constants.h:273:273:MAXIMUM_NONCE_SIZE:0 */ ",
+            3
+        ],
+        [
+            "include/lswlog.h",
+            "DBG_cond_dump_chunk",
+            "#define DBG_cond_dump_chunk(cond, label, ch) DBG(cond, DBG_dump_chunk(label, \\ /* <=== include/lswlog.h:78:79:DBG_cond_dump_chunk:3 */ \n\t\t\t\t\t\t\t\t      ch))",
+            3
+        ],
+        [
+            "include/lswalloc.h",
+            "freeanychunk",
+            "#define freeanychunk(ch) do { pfreeany((ch).ptr); (ch).ptr = NULL; } while (0) /* <=== include/lswalloc.h:62:62:freeanychunk:1 */ ",
+            2
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "build_ike_version",
+            "static int build_ike_version() /* <=== build_ike_version */ \n{\nreturn ((IKEv2_MAJOR_VERSION + (DBGP(IMPAIR_MAJOR_VERSION_BUMP) ? 1 : 0))\n\t<< ISA_MAJ_SHIFT) | (IKEv2_MINOR_VERSION +\n\t(DBGP(IMPAIR_MINOR_VERSION_BUMP) ? 1 : 0));\n}",
+            2
+        ],
+        [
+            "programs/pluto/spdb.c",
+            "free_sa_prop_conj",
+            "void free_sa_prop_conj(struct db_prop_conj *pc) /* <=== free_sa_prop_conj */ \n{\n\tunsigned int i;\n\n\tfor (i = 0; i < pc->prop_cnt; i++)\n\t\tfree_sa_prop(&pc->props[i]);\n\tif (pc->props)\n\t\tpfree(pc->props);\n}",
+            3
+        ],
+        [
+            "programs/pluto/state.c",
+            "delete_state",
+            "void delete_state(struct state *st) /* <=== delete_state */ \n{\n\tstruct connection *const c = st->st_connection;\n\tstruct state *old_cur_state = cur_state == st ? NULL : cur_state;\n\n\tDBG(DBG_CONTROL, DBG_log(\"deleting state #%lu\", st->st_serialno));\n\n\tif (IS_IPSEC_SA_ESTABLISHED(st->st_state)) {\n\t\t/* Note that a state/SA can have more then one of ESP/AH/IPCOMP */\n\t\tif (st->st_esp.present) {\n\t\t\tchar statebuf[1024], *sbcp;\n\n\t\t\tsbcp = humanize_number(st->st_esp.peer_bytes,\n\t\t\t\t\t       statebuf, statebuf +\n\t\t\t\t\t       sizeof(statebuf),\n\t\t\t\t\t       \"ESP traffic information: in=\");\n\t\t\tsbcp = humanize_number(st->st_esp.our_bytes,\n\t\t\t\t\t       sbcp,\n\t\t\t\t\t       statebuf + sizeof(statebuf),\n\t\t\t\t\t       \" out=\");\n\t\t\tif (st->st_xauth_username &&\n\t\t\t    st->st_xauth_username[0] != '\\0')\n\t\t\t\tlibreswan_log(\"%s XAUTHuser=%s\", statebuf,\n\t\t\t\t\t      st->st_xauth_username);\n\t\t\telse\n\t\t\t\tlibreswan_log(\"%s\", statebuf);\n\t\t}\n\n\t\tif (st->st_ah.present) {\n\t\t\tchar statebuf[1024], *sbcp;\n\n\t\t\tsbcp = humanize_number(st->st_ah.peer_bytes,\n\t\t\t\t\t       statebuf, statebuf +\n\t\t\t\t\t       sizeof(statebuf),\n\t\t\t\t\t       \"AH traffic information: in=\");\n\t\t\tsbcp = humanize_number(st->st_ah.our_bytes,\n\t\t\t\t\t       sbcp,\n\t\t\t\t\t       statebuf + sizeof(statebuf),\n\t\t\t\t\t       \" out=\");\n\t\t\tif (st->st_xauth_username &&\n\t\t\t    st->st_xauth_username[0] != '\\0')\n\t\t\t\tlibreswan_log(\"%s XAUTHuser=%s\", statebuf,\n\t\t\t\t\t      st->st_xauth_username);\n\t\t\telse\n\t\t\t\tlibreswan_log(\"%s\", statebuf);\n\t\t}\n\n\t\tif (st->st_ipcomp.present) {\n\t\t\tchar statebuf[1024], *sbcp;\n\n\t\t\tsbcp = humanize_number(st->st_ipcomp.peer_bytes,\n\t\t\t\t\t       statebuf, statebuf +\n\t\t\t\t\t       sizeof(statebuf),\n\t\t\t\t\t       \" IPCOMP traffic information: in=\");\n\t\t\tsbcp = humanize_number(st->st_ipcomp.our_bytes,\n\t\t\t\t\t       sbcp,\n\t\t\t\t\t       statebuf + sizeof(statebuf),\n\t\t\t\t\t       \" out=\");\n\t\t\tif (st->st_xauth_username &&\n\t\t\t    st->st_xauth_username[0] != '\\0')\n\t\t\t\tlibreswan_log(\"%s XAUTHuser=%s\", statebuf,\n\t\t\t\t\t      st->st_xauth_username);\n\t\t\telse\n\t\t\t\tlibreswan_log(\"%s\", statebuf);\n\t\t}\n\t}\n\n#ifdef XAUTH_HAVE_PAM\n\tstate_deletion_xauth_cleanup(st);\n#endif\n\n\t/* If DPD is enabled on this state object, clear any pending events */\n\tif (st->st_dpd_event != NULL)\n\t\tdelete_dpd_event(st);\n\n\t/* if there is a suspended state transition, disconnect us */\n\tif (st->st_suspended_md != NULL) {\n\t\tpassert(st->st_suspended_md->st == st);\n\t\tDBG(DBG_CONTROL, DBG_log(\"disconnecting state #%lu from md\",\n\t\t\t\t\t st->st_serialno));\n\t\tst->st_suspended_md->st = NULL;\n\t}\n\n\t/* tell the other side of any IPSEC SAs that are going down */\n\tif (IS_IPSEC_SA_ESTABLISHED(st->st_state) ||\n\t    IS_ISAKMP_SA_ESTABLISHED(st->st_state))\n\t\tsend_delete(st);\n\n\tdelete_event(st); /* delete any pending timer event */\n\n\t/* Ditch anything pending on ISAKMP SA being established.\n\t * Note: this must be done before the unhash_state to prevent\n\t * flush_pending_by_state inadvertently and prematurely\n\t * deleting our connection.\n\t */\n\tflush_pending_by_state(st);\n\n\t/* if there is anything in the cryptographic queue, then remove this\n\t * state from it.\n\t */\n\tdelete_cryptographic_continuation(st);\n\n\t/* effectively, this deletes any ISAKMP SA that this state represents */\n\tunhash_state(st);\n\n\t/* tell kernel to delete any IPSEC SA\n\t * ??? we ought to tell peer to delete IPSEC SAs\n\t */\n\tif (IS_IPSEC_SA_ESTABLISHED(st->st_state) ||\n\t    IS_CHILD_SA_ESTABLISHED(st))\n\t\tdelete_ipsec_sa(st, FALSE);\n\telse if (IS_ONLY_INBOUND_IPSEC_SA_ESTABLISHED(st->st_state))\n\t\tdelete_ipsec_sa(st, TRUE);\n\n\tif (c->newest_ipsec_sa == st->st_serialno)\n\t\tc->newest_ipsec_sa = SOS_NOBODY;\n\n\tif (c->newest_isakmp_sa == st->st_serialno)\n\t\tc->newest_isakmp_sa = SOS_NOBODY;\n\n\t/*\n\t * fake a state change here while we are still associated with a\n\t * connection.  Without this the state logging (when enabled) cannot\n\t * work out what happened.\n\t */\n\tfake_state(st, STATE_UNDEFINED);\n\n\tst->st_connection = NULL;       /* we might be about to free it */\n\tcur_state = old_cur_state;      /* without st_connection, st isn't complete */\n\tconnection_discard(c);\n\n\tchange_state(st, STATE_UNDEFINED);\n\n\trelease_whack(st);\n\n\t/* from here on we are just freeing RAM */\n\n\t{\n\t\tstruct msgid_list *p = st->st_used_msgids;\n\n\t\twhile (p != NULL) {\n\t\t\tstruct msgid_list *q = p;\n\t\t\tp = p->next;\n\t\t\tpfree(q);\n\t\t}\n\t}\n\n\tunreference_key(&st->st_peer_pubkey);\n\trelease_fragments(st);\n\n\tfree_sa(st->st_sadb);\n\tst->st_sadb = NULL;\n\n\tif (st->st_sec_in_use) {\n\t\tSECKEYPrivateKey *privk;\n\t\tSECKEYPublicKey   *pubk;\n\t\tmemcpy(&pubk, st->pubk.ptr, st->pubk.len);\n\t\tSECKEY_DestroyPublicKey(pubk);\n\t\tfreeanychunk(st->pubk);\n\t\tmemcpy(&privk, st->st_sec_chunk.ptr, st->st_sec_chunk.len);\n\t\tSECKEY_DestroyPrivateKey(privk);\n\t\tpfreeany(st->st_sec_chunk.ptr);\n\t}\n\n\tfreeanychunk(st->st_firstpacket_me);\n\tfreeanychunk(st->st_firstpacket_him);\n\tfreeanychunk(st->st_tpacket);\n\tfreeanychunk(st->st_rpacket);\n\tfreeanychunk(st->st_p1isa);\n\tfreeanychunk(st->st_gi);\n\tfreeanychunk(st->st_gr);\n\tfreeanychunk(st->st_shared);\n\tfreeanychunk(st->st_ni);\n\tfreeanychunk(st->st_nr);\n\tfree_lsw_nss_symkey(st->st_skeyid);\n\tfree_lsw_nss_symkey(st->st_skey_d);\n\tfree_lsw_nss_symkey(st->st_skey_ai);\n\tfree_lsw_nss_symkey(st->st_skey_ar);\n\tfree_lsw_nss_symkey(st->st_skey_ei);\n\tfree_lsw_nss_symkey(st->st_skey_er);\n\tfree_lsw_nss_symkey(st->st_skey_pi);\n\tfree_lsw_nss_symkey(st->st_skey_pr);\n\tfree_lsw_nss_symkey(st->st_enc_key);\n\n\tif (st->st_ah.our_keymat != NULL)\n\t\tmemset(st->st_ah.our_keymat, 0, st->st_ah.keymat_len);\n\n\tif (st->st_ah.peer_keymat != NULL)\n\t\tmemset(st->st_ah.peer_keymat, 0, st->st_ah.keymat_len);\n\n\tif (st->st_esp.our_keymat != NULL)\n\t\tmemset(st->st_esp.our_keymat, 0, st->st_esp.keymat_len);\n\n\tif (st->st_esp.peer_keymat != NULL)\n\t\tmemset(st->st_esp.peer_keymat, 0, st->st_esp.keymat_len);\n\n\tfreeanychunk(st->st_skeyid);\n\tfreeanychunk(st->st_skey_d);\n\tfreeanychunk(st->st_skey_ai);\n\tfreeanychunk(st->st_skey_ar);\n\tfreeanychunk(st->st_skey_ei);\n\tfreeanychunk(st->st_skey_er);\n\tfreeanychunk(st->st_skey_pi);\n\tfreeanychunk(st->st_skey_pr);\n\tfreeanychunk(st->st_enc_key);\n\tpfreeany(st->st_ah.our_keymat);\n\tpfreeany(st->st_ah.peer_keymat);\n\tpfreeany(st->st_esp.our_keymat);\n\tpfreeany(st->st_esp.peer_keymat);\n\tfreeanychunk(st->st_xauth_password);\n#ifdef HAVE_LABELED_IPSEC\n\tpfreeany(st->sec_ctx);\n#endif\n\tpfree(st);\n}",
+            1
+        ],
+        [
+            "include/lswlog.h",
+            "DBGP",
+            "#define DBGP(cond)         (cur_debugging & (cond)) /* <=== include/lswlog.h:46:46:DBGP:1 */ ",
+            2
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "send_v2_notification",
+            "void send_v2_notification(struct state *p1st, u_int16_t type, /* <=== send_v2_notification */ \n\t\t\t  struct state *encst,\n\t\t\t  u_char *icookie,\n\t\t\t  u_char *rcookie,\n\t\t\t  chunk_t *n_data)\n{\n\tu_char buffer[1024];\n\tpb_stream reply;\n\tpb_stream rbody;\n\tchunk_t child_spi, notify_data;\n\n\t/* this function is not generic enough yet just enough for 6msg\n\t * TBD accept HDR FLAGS as arg. default ISAKMP_FLAGS_R\n\t * TBD when there is a child SA use that SPI in the notify paylod.\n\t * TBD support encrypted notifications payloads.\n\t * TBD accept Critical bit as an argument. default is set.\n\t * TBD accept exchange type as an arg, default is ISAKMP_v2_SA_INIT\n\t * do we need to send a notify with empty data?\n\t * do we need to support more Protocol ID? more than PROTO_ISAKMP\n\t */\n\n\tlibreswan_log(\"sending %s notification %s to %s:%u\",\n\t\t      encst ? \"encrypted \" : \"\",\n\t\t      enum_name(&ikev2_notify_names, type),\n\t\t      ip_str(&p1st->st_remoteaddr),\n\t\t      p1st->st_remoteport);\n#if 0\n/* Empty notification data section should be fine? */\n\tif (n_data == NULL) {\n\t\tDBG(DBG_CONTROLMORE,\n\t\t    DBG_log(\"don't send packet when notification data empty\"));\n\t\treturn;\n\t}\n#endif\n\n\tmemset(buffer, 0, sizeof(buffer));\n\tinit_pbs(&reply, buffer, sizeof(buffer), \"notification msg\");\n\n\t/* HDR out */\n\t{\n\t\tstruct isakmp_hdr n_hdr;\n\t\tzero(&n_hdr);                           /* default to 0 */  /* AAA should we copy from MD? */\n\t\t/* Impair function will raise major/minor by 1 for testing */\n\t\tn_hdr.isa_version = build_ike_version();\n\t\tmemcpy(n_hdr.isa_rcookie, rcookie, COOKIE_SIZE);\n\t\tmemcpy(n_hdr.isa_icookie, icookie, COOKIE_SIZE);\n\t\tn_hdr.isa_xchg = ISAKMP_v2_SA_INIT;\n\t\tn_hdr.isa_np = ISAKMP_NEXT_v2N;\n\t\tn_hdr.isa_flags &= ~ISAKMP_FLAGS_I;\n\t\tn_hdr.isa_flags  |=  ISAKMP_FLAGS_R;\n#warning check msgid code here\n\t\t/* PAUL: shouldn't we set n_hdr.isa_msgid = [htonl](p1st->st_msgid); */\n\t\tif (!out_struct(&n_hdr, &isakmp_hdr_desc, &reply, &rbody)) {\n\t\t\tlibreswan_log(\n\t\t\t\t\"error initializing hdr for notify message\");\n\t\t\treturn;\n\t\t}\n\n\t}\n\tchild_spi.ptr = NULL;\n\tchild_spi.len = 0;\n\n\t/* build and add v2N payload to the packet */\n\tmemset(&child_spi, 0, sizeof(child_spi));\n\tmemset(&notify_data, 0, sizeof(notify_data));\n\tship_v2N(ISAKMP_NEXT_v2NONE, DBGP(\n\t\t\t IMPAIR_SEND_BOGUS_ISAKMP_FLAG) ?\n\t\t (ISAKMP_PAYLOAD_NONCRITICAL | ISAKMP_PAYLOAD_LIBRESWAN_BOGUS) :\n\t\t ISAKMP_PAYLOAD_NONCRITICAL, PROTO_ISAKMP,\n\t\t &child_spi,\n\t\t type, n_data, &rbody);\n\n\tclose_message(&rbody, p1st);\n\tclose_output_pbs(&reply);\n\n\tclonetochunk(p1st->st_tpacket, reply.start, pbs_offset(&reply),\n\t\t     \"notification packet\");\n\n\tsend_ike_msg(p1st, __FUNCTION__);\n}",
+            3
+        ],
+        [
+            "programs/pluto/log.c",
+            "peerlog",
+            "static void peerlog(const char *prefix, const char *m) /* <=== peerlog */ \n{\n\tif (cur_connection == NULL) {\n\t\t/* we can not log it in this case. Oh well. */\n\t\treturn;\n\t}\n\n\tif (cur_connection->log_file == NULL)\n\t\topen_peerlog(cur_connection);\n\n\t/* despite our attempts above, we may not be able to open the file. */\n\tif (cur_connection->log_file != NULL) {\n\t\tchar datebuf[32];\n\t\ttime_t n;\n\t\tstruct tm tm1, *t;\n\n\t\ttime(&n);\n\t\tt = localtime_r(&n, &tm1);\n\n\t\tstrftime(datebuf, sizeof(datebuf), \"%Y-%m-%d %T\", t);\n\t\tfprintf(cur_connection->log_file, \"%s %s%s\\n\", datebuf, prefix,\n\t\t\tm);\n\n\t\t/* now move it to the front of the list */\n\t\tCIRCLEQ_REMOVE(&perpeer_list, cur_connection, log_link);\n\t\tCIRCLEQ_INSERT_HEAD(&perpeer_list, cur_connection, log_link);\n\t}\n}",
+            2
+        ],
+        [
+            "linux/include/libreswan.h",
+            "IPSEC_NFMARK_IS_SAREF_BIT",
+            "#define IPSEC_NFMARK_IS_SAREF_BIT 0x80000000u /* <=== linux/include/libreswan.h:252:252:IPSEC_NFMARK_IS_SAREF_BIT:0 */ ",
+            3
+        ],
+        [
+            "linux/net/ipsec/addrtot.c",
+            "IP4BYTES",
+            "#define IP4BYTES        4       /* bytes in an IPv4 address */ /* <=== linux/net/ipsec/addrtot.c:28:28:IP4BYTES:0 */ ",
+            3
+        ],
+        [
+            "programs/pluto/state.h",
+            "set_suspended",
+            "#define set_suspended(st, md) do { st->st_suspended_md = md; \\ /* <=== programs/pluto/state.h:170:173:set_suspended:2 */ \n\t\t\t\t   st->st_suspended_md_func = __FUNCTION__; \\\n\t\t\t\t   st->st_suspended_md_line = __LINE__; \\\n} while (0)",
+            1
+        ],
+        [
+            "include/ietf_constants.h",
+            "ISAKMP_ATTR_AF_TV",
+            "#define ISAKMP_ATTR_AF_TV ISAKMP_ATTR_AF_MASK /* value in lv */ /* <=== include/ietf_constants.h:1225:1225:ISAKMP_ATTR_AF_TV:0 */ ",
+            3
+        ],
+        [
+            "include/ietf_constants.h",
+            "COOKIE_SIZE",
+            "#define COOKIE_SIZE 8 /* <=== include/ietf_constants.h:275:275:COOKIE_SIZE:0 */ ",
+            1
+        ],
+        [
+            "programs/pluto/packet.c",
+            "init_pbs",
+            "void init_pbs(pb_stream *pbs, u_int8_t *start, size_t len, const char *name) /* <=== init_pbs */ \n{\n\tpbs->container = NULL;\n\tpbs->desc = NULL;\n\tpbs->name = name;\n\tpbs->start = pbs->cur = start;\n\tpbs->roof = start + len;\n\tpbs->lenfld = NULL;\n\tpbs->lenfld_desc = NULL;\n}",
+            2
+        ],
+        [
+            "lib/libswan/sameaddr.c",
+            "subnetinsubnet",
+            "bool subnetinsubnet(a, b) /* <=== subnetinsubnet */ \nconst ip_subnet * a;\nconst ip_subnet *b;\n{\n\tif (subnettypeof(a) != subnettypeof(b))\n\t\treturn 0;\n\n\tif (a->maskbits < b->maskbits)  /* a is bigger than b */\n\t\treturn 0;\n\n\tif (!samenbits(&a->addr, &b->addr, b->maskbits))\n\t\treturn 0;\n\n\treturn 1;\n}",
+            1
+        ],
+        [
+            "linux/net/ipsec/addrtot.c",
+            "reverse4",
+            "static size_t                   /* size of text, including NUL */ /* <=== reverse4 */ \nreverse4(srcp, srclen, buf, dstp)\nconst unsigned char *srcp;\nsize_t srclen;\nchar *buf;                      /* guaranteed large enough */\nchar **dstp;                    /* where to put result pointer */\n{\n\tint i;\n\tchar *p;\n\n\tif (srclen != IP4BYTES) /* \"can't happen\" */\n\t\treturn 0;\n\n\tp = buf;\n\tfor (i = IP4BYTES - 1; i >= 0; i--) {\n\t\tp += ultot(srcp[i], 10, p, PERBYTE);\n\t\t*(p - 1) = '.';   /* overwrites the NUL */\n\t}\n\tstrcpy(p, \"IN-ADDR.ARPA.\");\n\t*dstp = buf;\n\treturn strlen(buf) + 1;\n}",
+            2
+        ],
+        [
+            "lib/libswan/lswlog.c",
+            "libreswan_DBG_log",
+            "int libreswan_DBG_log(const char *message, ...) /* <=== libreswan_DBG_log */ \n{\n\tva_list args;\n\tchar m[LOG_WIDTH]; /* longer messages will be truncated */\n\n\tva_start(args, message);\n\tvsnprintf(m, sizeof(m), message, args);\n\tva_end(args);\n\n\t/* then sanitize anything else that is left. */\n\t(void)sanitize_string(m, sizeof(m));\n\n\tif (log_to_stderr)\n\t\tfprintf(stderr, \"| %s\\n\", m);\n\tif (log_to_syslog)\n\t\tsyslog(LOG_DEBUG, \"| %s\", m);\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "programs/pluto/packet.c",
+            "close_output_pbs",
+            "void close_output_pbs(pb_stream *pbs) /* <=== close_output_pbs */ \n{\n\tif (pbs->lenfld != NULL) {\n\t\tu_int32_t len = pbs_offset(pbs);\n\t\tint i = pbs->lenfld_desc->size;\n\n\t\tif (pbs->lenfld_desc->field_type == ft_lv)\n\t\t\tlen -= sizeof(struct isakmp_attribute);\n\t\tDBG(DBG_EMITTING, DBG_log(\"emitting length of %s: %lu\",\n\t\t\t\t\t  pbs->name, (unsigned long) len));\n\t\twhile (i-- != 0) {\n\t\t\tpbs->lenfld[i] = (u_int8_t)len;\n\t\t\tlen >>= BITS_PER_BYTE;\n\t\t}\n\t}\n\tif (pbs->container != NULL)\n\t\tpbs->container->cur = pbs->cur; /* pass space utilization up */\n}",
+            2
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "unpack_v2KE",
+            "static int unpack_v2KE(struct state *st, /* <=== unpack_v2KE */ \n\t\t       struct pluto_crypto_req *r,\n\t\t       chunk_t *g)\n{\n\tstruct pcr_kenonce *kn = &r->pcr_d.kn;\n\n\tunpack_KE(st, r, g);\n\treturn kn->oakley_group;\n}",
+            3
+        ],
+        [
+            "programs/pluto/state.c",
+            "release_whack",
+            "void release_whack(struct state *st) /* <=== release_whack */ \n{\n\tclose_any(st->st_whack_sock);\n}",
+            2
+        ],
+        [
+            "include/lswlog.h",
+            "loglog",
+            "#define loglog  libreswan_loglog /* <=== include/lswlog.h:30:30:loglog:0 */ ",
+            1
+        ],
+        [
+            "programs/pluto/state.c",
+            "unhash_state",
+            "void unhash_state(struct state *st) /* <=== unhash_state */ \n{\n\t/* unlink from forward chain */\n\tstruct state **p;\n\n\tif (st->st_hashchain_prev == NULL) {\n\t\tp = state_hash(st->st_icookie, st->st_rcookie);\n\t\tif (*p != st)\n\t\t\tp = state_hash(st->st_icookie, zero_cookie);\n\t} else {\n\t\tp = &st->st_hashchain_prev->st_hashchain_next;\n\t}\n\n\t/* unlink from forward chain */\n\tpassert(*p == st);\n\t*p = st->st_hashchain_next;\n\n\t/* unlink from backward chain */\n\tif (st->st_hashchain_next != NULL) {\n\t\tpassert(st->st_hashchain_next->st_hashchain_prev == st);\n\t\tst->st_hashchain_next->st_hashchain_prev =\n\t\t\tst->st_hashchain_prev;\n\t}\n\n\tst->st_hashchain_next = st->st_hashchain_prev = NULL;\n}",
+            2
+        ],
+        [
+            "include/lswalloc.h",
+            "clone_bytes2",
+            "extern void *clone_bytes2(const void *orig, size_t size, /* <=== clone_bytes2 */ \n\t\t\t  const char *name, int leak_detective);",
+            2
+        ],
+        [
+            "programs/pluto/packet.c",
+            "out_generic_raw",
+            "bool out_generic_raw(u_int8_t np, struct_desc *sd, /* <=== out_generic_raw */ \n\t\t     pb_stream *outs, const void *bytes, size_t len,\n\t\t     const char *name)\n{\n\tpb_stream pbs;\n\n\tif (!out_generic(np, sd, outs, &pbs) ||\n\t    !out_raw(bytes, len, &pbs, name))\n\t\treturn FALSE;\n\n\tclose_output_pbs(&pbs);\n\treturn TRUE;\n}",
+            2
+        ],
+        [
+            "programs/pluto/log.c",
+            "libreswan_log_abort",
+            "void libreswan_log_abort(const char *file_str, int line_no) /* <=== libreswan_log_abort */ \n{\n\tloglog(RC_LOG_SERIOUS, \"ABORT at %s:%d\", file_str, line_no);\n\tabort();\n}",
+            3
+        ],
+        [
+            "programs/pluto/timer.c",
+            "event_schedule",
+            "void event_schedule(enum event_type type, time_t tm, struct state *st) /* <=== event_schedule */ \n{\n\tstruct event *ev = alloc_thing(struct event,\n\t\t\t\t       \"struct event in event_schedule()\");\n\n\tpassert(tm >= 0);\n\tev->ev_type = type;\n\tev->ev_time = tm + now();\n\tev->ev_state = st;\n\n\t/* If the event is associated with a state, put a backpointer to the\n\t * event in the state object, so we can find and delete the event\n\t * if we need to (for example, if we receive a reply).\n\t */\n\tif (st != NULL) {\n\t\tif (type == EVENT_DPD || type == EVENT_DPD_TIMEOUT) {\n\t\t\tpassert(st->st_dpd_event == NULL);\n\t\t\tst->st_dpd_event = ev;\n\t\t} else if (type == EVENT_v2_LIVENESS) {\n\t\t\tpassert(st->st_liveness_event == NULL);\n\t\t\tst->st_liveness_event = ev;\n\t\t} else {\n\t\t\tpassert(st->st_event == NULL);\n\t\t\tst->st_event = ev;\n\t\t}\n\t}\n\n\tDBG(DBG_CONTROL, {\n\t\t    if (st == NULL) {\n\t\t\t    DBG_log(\n\t\t\t\t    \"inserting event %s, timeout in %lu seconds\",\n\t\t\t\t    enum_show(&timer_event_names,\n\t\t\t\t\t      type), (unsigned long)tm);\n\t\t    } else {\n\t\t\t    DBG_log(\n\t\t\t\t    \"inserting event %s, timeout in %lu seconds for #%lu\",\n\t\t\t\t    enum_show(&timer_event_names,\n\t\t\t\t\t      type), (unsigned long)tm,\n\t\t\t\t    ev->ev_state->st_serialno);\n\t\t    }\n\t    });\n\n\tif (evlist == NULL || evlist->ev_time >= ev->ev_time) {\n\t\tDBG(DBG_CONTROLMORE, DBG_log(\"event added at head of queue\"));\n\t\tev->ev_next = evlist;\n\t\tevlist = ev;\n\t} else {\n\t\tstruct event *evt;\n\n\t\tfor (evt = evlist; evt->ev_next != NULL; evt = evt->ev_next)\n\t\t\tif (evt->ev_next->ev_time >= ev->ev_time)\n\t\t\t\tbreak;\n\n\t\tDBG(DBG_CONTROLMORE, {\n\t\t\t    if (evt->ev_state == NULL) {\n\t\t\t\t    DBG_log(\"event added after event %s\",\n\t\t\t\t\t    enum_show(&timer_event_names,\n\t\t\t\t\t\t      evt->ev_type));\n\t\t\t    } else {\n\t\t\t\t    DBG_log(\n\t\t\t\t\t    \"event added after event %s for #%lu\",\n\t\t\t\t\t    enum_show(&timer_event_names,\n\t\t\t\t\t\t      evt->ev_type),\n\t\t\t\t\t    evt->ev_state->st_serialno);\n\t\t\t    }\n\t\t    });\n\n\t\tev->ev_next = evt->ev_next;\n\t\tevt->ev_next = ev;\n\t}\n}",
+            2
+        ],
+        [
+            "lib/libswan/sameaddr.c",
+            "samenbits",
+            "static bool samenbits(a, b, nbits) /* <=== samenbits */ \nconst ip_address * a;\nconst ip_address *b;\nint nbits;\n{\n\tunsigned char *ap;\n\tunsigned char *bp;\n\tsize_t n;\n\tint m;\n\n\tif (addrtypeof(a) != addrtypeof(b))\n\t\treturn 0;       /* arbitrary */\n\n\tn = addrbytesptr(a, &ap);\n\tif (n == 0)\n\t\treturn 0;       /* arbitrary */\n\n\t(void) addrbytesptr(b, &bp);\n\tif (nbits > (int)n * 8)\n\t\treturn 0;       /* \"can't happen\" */\n\n\tfor (; nbits >= 8 && *ap == *bp; nbits -= 8, ap++, bp++)\n\t\tcontinue;\n\tif (nbits >= 8)\n\t\treturn 0;\n\n\tif (nbits > 0) {        /* partial byte */\n\t\tm = ~(0xff >> nbits);\n\t\tif ((*ap & m) != (*bp & m))\n\t\t\treturn 0;\n\t}\n\treturn 1;\n}",
+            2
+        ],
+        [
+            "include/constants.h",
+            "elemsof",
+            "#define elemsof(array) (sizeof(array) / sizeof(*(array)))       /* number of elements in an array */ /* <=== include/constants.h:40:40:elemsof:1 */ ",
+            2
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "justship_v2KE",
+            "static bool justship_v2KE(struct state *st UNUSED, /* <=== justship_v2KE */ \n\t\t\t  chunk_t *g, unsigned int oakley_group,\n\t\t\t  pb_stream *outs, u_int8_t np)\n{\n\tstruct ikev2_ke v2ke;\n\tpb_stream kepbs;\n\n\tmemset(&v2ke, 0, sizeof(v2ke));\n\tv2ke.isak_np      = np;\n\tv2ke.isak_group   = oakley_group;\n\tif (!out_struct(&v2ke, &ikev2_ke_desc, outs, &kepbs))\n\t\treturn FALSE;\n\n\tif (!out_chunk(*g, &kepbs, \"ikev2 g^x\"))\n\t\treturn FALSE;\n\n\tclose_output_pbs(&kepbs);\n\treturn TRUE;\n}",
+            3
+        ],
+        [
+            "programs/pluto/state.c",
+            "for_each_state",
+            "void for_each_state(void *(f)(struct state *, void *data), void *data) /* <=== for_each_state */ \n{\n\tstruct state *st, *ocs = cur_state;\n\tint i;\n\n\tfor (i = 0; i < STATE_TABLE_SIZE; i++) {\n\t\tfor (st = statetable[i]; st != NULL;\n\t\t     st = st->st_hashchain_next) {\n\t\t\tset_cur_state(st);\n\t\t\tf(st, data);\n\t\t}\n\t}\n\tcur_state = ocs;\n}",
+            3
+        ],
+        [
+            "programs/pluto/packet.c",
+            "out_struct",
+            "bool out_struct(const void *struct_ptr, struct_desc *sd, /* <=== out_struct */ \n\t\tpb_stream *outs, pb_stream *obj_pbs)\n{\n\terr_t ugh = NULL;\n\tconst u_int8_t *inp = struct_ptr;\n\tu_int8_t *cur = outs->cur;\n\n\tDBG(DBG_EMITTING,\n\t    DBG_prefix_print_struct(outs, \"emit \", struct_ptr, sd, obj_pbs ==\n\t\t\t\t    NULL));\n\n\tif (outs->roof - cur < (ptrdiff_t)sd->size) {\n\t\tugh = builddiag(\n\t\t\t\"not enough room left in output packet to place %s\",\n\t\t\tsd->name);\n\t} else {\n\t\tbool immediate = FALSE;\n\t\tpb_stream obj;\n\t\tfield_desc *fp;\n\n\t\tobj.lenfld = NULL; /* until a length field is discovered */\n\t\tobj.lenfld_desc = NULL;\n\n\t\tfor (fp = sd->fields; ugh == NULL; fp++) {\n\t\t\tsize_t i = fp->size;\n\n\t\t\t/* make sure that there is space for the next structure element */\n\t\t\tpassert(outs->roof - cur >= (ptrdiff_t)i);\n\n\t\t\t/* verify that the spot is correct in the offset */\n\t\t\tpassert(cur - outs->cur <= (ptrdiff_t)(sd->size - i));\n\n\t\t\t/* verify that we are at the right place in the input structure */\n\t\t\tpassert(inp - (cur - outs->cur) == struct_ptr);\n\n#if 0\n\t\t\tDBG_log(\"out_struct: %d %s\",\n\t\t\t\t(int) (cur - outs->cur),\n\t\t\t\tfp->name == NULL ? \"<end>\" : fp->name);\n#endif\n\t\t\tswitch (fp->field_type) {\n\t\t\tcase ft_zig: /* should be zero, so ensure it is */\n\t\t\t\tinp += i;\n\t\t\t\tfor (; i != 0; i--)\n\t\t\t\t\t*cur++ = '\\0';\n\t\t\t\tbreak;\n\t\t\tcase ft_nat:            /* natural number (may be 0) */\n\t\t\tcase ft_len:            /* length of this struct and any following crud */\n\t\t\tcase ft_lv:             /* length/value field of attribute */\n\t\t\tcase ft_enum:           /* value from an enumeration */\n\t\t\tcase ft_loose_enum:     /* value from an enumeration with only some names known */\n\t\t\tcase ft_af_enum:        /* Attribute Format + value from an enumeration */\n\t\t\tcase ft_af_loose_enum:  /* Attribute Format + value from an enumeration */\n\t\t\tcase ft_set:            /* bits representing set */\n\t\t\t{\n\t\t\t\tu_int32_t n = 0;\n\n\t\t\t\tswitch (i) {\n\t\t\t\tcase 8 / BITS_PER_BYTE:\n\t\t\t\t\tn = *(const u_int8_t *)inp;\n\t\t\t\t\tbreak;\n\t\t\t\tcase 16 / BITS_PER_BYTE:\n\t\t\t\t\tn = *(const u_int16_t *)inp;\n\t\t\t\t\tbreak;\n\t\t\t\tcase 32 / BITS_PER_BYTE:\n\t\t\t\t\tn = *(const u_int32_t *)inp;\n\t\t\t\t\tbreak;\n\t\t\t\tdefault:\n\t\t\t\t\tbad_case(i);\n\t\t\t\t}\n\n\t\t\t\tswitch (fp->field_type) {\n\t\t\t\tcase ft_len:                            /* length of this struct and any following crud */\n\t\t\t\tcase ft_lv:                             /* length/value field of attribute */\n\t\t\t\t\tif (immediate)\n\t\t\t\t\t\tbreak;                  /* not a length */\n\t\t\t\t\t/* We can't check the length because it will likely\n\t\t\t\t\t * be filled in after variable part is supplied.\n\t\t\t\t\t * We do record where this is so that it can be\n\t\t\t\t\t * filled in by a subsequent close_output_pbs().\n\t\t\t\t\t */\n\t\t\t\t\tpassert(obj.lenfld == NULL);    /* only one ft_len allowed */\n\t\t\t\t\tobj.lenfld = cur;\n\t\t\t\t\tobj.lenfld_desc = fp;\n\t\t\t\t\tbreak;\n\t\t\t\tcase ft_af_loose_enum: /* Attribute Format + value from an enumeration */\n\t\t\t\t\tif ((n & ISAKMP_ATTR_AF_MASK) ==\n\t\t\t\t\t    ISAKMP_ATTR_AF_TV)\n\t\t\t\t\t\timmediate = TRUE;\n\t\t\t\t\tbreak;\n\n\t\t\t\tcase ft_af_enum: /* Attribute Format + value from an enumeration */\n\t\t\t\t\tif ((n & ISAKMP_ATTR_AF_MASK) ==\n\t\t\t\t\t    ISAKMP_ATTR_AF_TV)\n\t\t\t\t\t\timmediate = TRUE;\n\t\t\t\t/* FALL THROUGH */\n\t\t\t\tcase ft_enum:   /* value from an enumeration */\n\t\t\t\t\tif (enum_name(fp->desc, n) == NULL) {\n\t\t\t\t\t\tugh = builddiag(\n\t\t\t\t\t\t\t\"%s of %s has an unknown value: %lu\",\n\t\t\t\t\t\t\tfp->name, sd->name,\n\t\t\t\t\t\t\t(unsigned long)n);\n\t\t\t\t\t}\n\t\t\t\t/* FALL THROUGH */\n\t\t\t\tcase ft_loose_enum:     /* value from an enumeration with only some names known */\n\t\t\t\t\tbreak;\n\t\t\t\tcase ft_set:            /* bits representing set */\n\t\t\t\t\tif (!testset(fp->desc, n)) {\n\t\t\t\t\t\tugh = builddiag(\n\t\t\t\t\t\t\t\"bitset %s of %s has unknown member(s): %s\",\n\t\t\t\t\t\t\tfp->name, sd->name,\n\t\t\t\t\t\t\tbitnamesof(fp->desc,\n\t\t\t\t\t\t\t\t   n));\n\t\t\t\t\t}\n\t\t\t\t\tbreak;\n\t\t\t\tdefault:\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\n\t\t\t\twhile (i-- != 0) {\n\t\t\t\t\tcur[i] = (u_int8_t)n;\n\t\t\t\t\tn >>= BITS_PER_BYTE;\n\t\t\t\t}\n\t\t\t\tinp += fp->size;\n\t\t\t\tcur += fp->size;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tcase ft_raw: /* bytes to be left in network-order */\n\t\t\t\tfor (; i != 0; i--)\n\t\t\t\t\t*cur++ = *inp++;\n\t\t\t\tbreak;\n\t\t\tcase ft_end: /* end of field list */\n\t\t\t\tpassert(cur == outs->cur + sd->size);\n\n\t\t\t\tobj.container = outs;\n\t\t\t\tobj.desc = sd;\n\t\t\t\tobj.name = sd->name;\n\t\t\t\tobj.start = outs->cur;\n\t\t\t\tobj.cur = cur;\n\t\t\t\tobj.roof = outs->roof; /* limit of possible */\n\t\t\t\t/* obj.lenfld and obj.lenfld_desc already set */\n\n\t\t\t\tif (obj_pbs == NULL) {\n\t\t\t\t\tclose_output_pbs(&obj); /* fill in length field, if any */\n\t\t\t\t} else {\n\t\t\t\t\t/* We set outs->cur to outs->roof so that\n\t\t\t\t\t * any attempt to output something into outs\n\t\t\t\t\t * before obj is closed will trigger an error.\n\t\t\t\t\t */\n\t\t\t\t\touts->cur = outs->roof;\n\n\t\t\t\t\t*obj_pbs = obj;\n\t\t\t\t}\n\t\t\t\treturn TRUE;\n\n\t\t\tdefault:\n\t\t\t\tbad_case(fp->field_type);\n\t\t\t}\n\t\t}\n\t}\n\n\t/* some failure got us here: report it */\n\tloglog(RC_LOG_SERIOUS, \"%s\", ugh); /* ??? serious, but errno not relevant */\n\treturn FALSE;\n}",
+            2
+        ],
+        [
+            "linux/include/libreswan.h",
+            "anyaddr",
+            "extern err_t anyaddr(int af, ip_address *dst); /* <=== anyaddr */ ",
+            2
+        ],
+        [
+            "programs/pluto/log.c",
+            "libreswan_loglog",
+            "void loglog(int mess_no, const char *message, ...) /* <=== libreswan_loglog */ \n{\n\tva_list args;\n\tchar m[LOG_WIDTH]; /* longer messages will be truncated */\n\n\tpthread_mutex_lock(&log_mutex);\n\tva_start(args, message);\n\tfmt_log(m, sizeof(m), message, args);\n\tva_end(args);\n\n\tlog_did_something = TRUE;\n\n\tif (log_to_stderr || (log_to_file  && pluto_log_fd)) {\n\t\tif (log_with_timestamp) {\n\t\t\tstruct tm tm1, *timeinfo;\n\t\t\tchar fmt[32];\n\t\t\ttime_t rtime;\n\t\t\ttime(&rtime);\n\t\t\ttimeinfo = localtime_r(&rtime, &tm1);\n\t\t\tstrftime(fmt, sizeof(fmt), \"%b %e %T\", timeinfo);\n\t\t\tfprintf(log_to_stderr ? stderr : pluto_log_fd,\n\t\t\t\t\"%s: %s\\n\", fmt, m);\n\t\t} else {\n\t\t\tfprintf(log_to_stderr ? stderr : pluto_log_fd, \"%s\\n\",\n\t\t\t\tm);\n\t\t}\n\t}\n\tif (log_to_syslog)\n\t\tsyslog(LOG_WARNING, \"%s\", m);\n\tif (log_to_perpeer)\n\t\tpeerlog(\"\", m);\n\n\tpthread_mutex_unlock(&log_mutex);\n\twhack_log(mess_no, \"~%s\", m);\n}",
+            1
+        ],
+        [
+            "programs/pluto/log.c",
+            "libreswan_log",
+            "int libreswan_log(const char *message, ...) /* <=== libreswan_log */ \n{\n\tva_list args;\n\tchar m[LOG_WIDTH]; /* longer messages will be truncated */\n\n\tpthread_mutex_lock(&log_mutex);\n\tva_start(args, message);\n\tfmt_log(m, sizeof(m), message, args);\n\tva_end(args);\n\n\tlog_did_something = TRUE;\n\n\tif (log_to_stderr || (log_to_file && pluto_log_fd)) {\n\t\tif (log_with_timestamp) {\n\t\t\tstruct tm tm1, *timeinfo;\n\t\t\tchar fmt[32];\n\t\t\ttime_t rtime;\n\t\t\ttime(&rtime);\n\t\t\ttimeinfo = localtime_r(&rtime, &tm1);\n\t\t\tstrftime(fmt, sizeof(fmt), \"%b %e %T\", timeinfo);\n\t\t\tfprintf(log_to_stderr ? stderr : pluto_log_fd,\n\t\t\t\t\"%s: %s\\n\", fmt, m);\n\t\t} else {\n\t\t\tfprintf(log_to_stderr ? stderr : pluto_log_fd, \"%s\\n\",\n\t\t\t\tm);\n\t\t}\n\t}\n\tif (log_to_syslog)\n\t\tsyslog(LOG_WARNING, \"%s\", m);\n\tif (log_to_perpeer)\n\t\tpeerlog(\"\", m);\n\n\tpthread_mutex_unlock(&log_mutex);\n\twhack_log(RC_LOG, \"~%s\", m);\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "include/lswalloc.h",
+            "free_lsw_nss_symkey",
+            "#define free_lsw_nss_symkey(ch)  \\ /* <=== include/lswalloc.h:89:93:free_lsw_nss_symkey:1 */ \n\tdo { PK11SymKey *ptr = 0; \\\n\t     if ((ch).ptr != NULL) { memcpy(&ptr, (ch).ptr, (ch).len); \\\n\t\t\t\t     memset((ch).ptr, 0, (ch).len ); } \\\n\t     if (ptr != NULL) { PK11_FreeSymKey(ptr); } } while (0)",
+            2
+        ],
+        [
+            "programs/pluto/ikev2.c",
+            "send_v2_notification_from_state",
+            "void send_v2_notification_from_state(struct state *st, enum state_kind state, /* <=== send_v2_notification_from_state */ \n\t\t\t\t     u_int16_t type, chunk_t *data)\n{\n\tpassert(st);\n\n\tif (state == STATE_UNDEFINED)\n\t\tstate = st->st_state;\n\n\tsend_v2_notification(st, type, NULL, st->st_icookie, st->st_rcookie,\n\t\t\t     data);\n}",
+            2
+        ],
+        [
+            "programs/pluto/msgdigest.c",
+            "release_md",
+            "void release_md(struct msg_digest *md) /* <=== release_md */ \n{\n\tif (!md)\n\t\treturn;\n\n\tpassert(looking_for_md == NULL || md != looking_for_md);\n\tpassert(looking_for_state == NULL || md->st != looking_for_state);\n\tfreeanychunk(md->raw_packet);\n\tpfreeany(md->packet_pbs.start);\n\n\t/* make sure we are not creating a loop */\n\tpassert(md != md_pool);\n\tmd->packet_pbs.start = NULL;\n\tmd->next = md_pool;\n\tmd_pool = md;\n}",
+            3
+        ],
+        [
+            "programs/pluto/spdb.c",
+            "free_sa",
+            "void free_sa(struct db_sa *f) /* <=== free_sa */ \n{\n\tunsigned int i;\n\n\tif (f == NULL)\n\t\treturn;\n\n\tfor (i = 0; i < f->prop_conj_cnt; i++)\n\t\tfree_sa_prop_conj(&f->prop_conjs[i]);\n\tif (f->prop_conjs) {\n\t\tpfree(f->prop_conjs);\n\t\tf->prop_conjs = NULL;\n\t\tf->prop_conj_cnt = 0;\n\t}\n\n\tfor (i = 0; i < f->prop_disj_cnt; i++)\n\t\tfree_sa_v2_prop_disj(&f->prop_disj[i]);\n\tif (f->prop_disj) {\n\t\tpfree(f->prop_disj);\n\t\tf->prop_disj = NULL;\n\t\tf->prop_disj_cnt = 0;\n\t}\n\n\tif (f)\n\t\tpfree(f);\n}",
+            2
+        ],
+        [
+            "programs/pluto/log.c",
+            "open_peerlog",
+            "static void open_peerlog(struct connection *c) /* <=== open_peerlog */ \n{\n\t/* syslog(LOG_INFO, \"opening log file for conn %s\", c->name); */\n\n\tif (c->log_file_name == NULL) {\n\t\tchar peername[ADDRTOT_BUF], dname[ADDRTOT_BUF];\n\t\tint peernamelen, lf_len;\n\n\t\taddrtot(&c->spd.that.host_addr, 'Q', peername,\n\t\t\tsizeof(peername));\n\t\tpeernamelen = strlen(peername);\n\n\t\t/* copy IP address, turning : and . into / */\n\t\t{\n\t\t\tchar ch, *p, *q;\n\n\t\t\tp = peername;\n\t\t\tq = dname;\n\t\t\tdo {\n\t\t\t\tch = *p++;\n\t\t\t\tif (ch == '.' || ch == ':')\n\t\t\t\t\tch = '/';\n\t\t\t\t*q++ = ch;\n\t\t\t} while (ch != '\\0');\n\t\t}\n\n\t\tlf_len = peernamelen * 2 +\n\t\t\t strlen(base_perpeer_logdir) +\n\t\t\t sizeof(\"//.log\") +\n\t\t\t 1;\n\t\tc->log_file_name =\n\t\t\talloc_bytes(lf_len, \"per-peer log file name\");\n\n#if 0\n\t\tfprintf(stderr, \"base dir |%s| dname |%s| peername |%s|\",\n\t\t\tbase_perpeer_logdir, dname, peername);\n#endif\n\t\tsnprintf(c->log_file_name, lf_len, \"%s/%s/%s.log\",\n\t\t\t base_perpeer_logdir, dname, peername);\n\n\t\t/* syslog(LOG_DEBUG, \"conn %s logfile is %s\", c->name, c->log_file_name); */\n\t}\n\n\t/* now open the file, creating directories if necessary */\n\n\tc->log_file_err = !ensure_writeable_parent_directory(c->log_file_name);\n\tif (c->log_file_err)\n\t\treturn;\n\n\tc->log_file = fopen(c->log_file_name, \"w\");\n\tif (c->log_file == NULL) {\n\t\tif (c->log_file_err) {\n\t\t\tsyslog(LOG_CRIT, \"logging system can not open %s: %s\",\n\t\t\t       c->log_file_name, strerror(errno));\n\t\t\tc->log_file_err = TRUE;\n\t\t}\n\t\treturn;\n\t}\n\n\t/* look for a connection to close! */\n\twhile (perpeer_count >= MAX_PEERLOG_COUNT) {\n\t\t/* can not be NULL because perpeer_count > 0 */\n\t\tpassert(perpeer_list.cqh_last != (void *)&perpeer_list);\n\n\t\tperpeer_logclose(perpeer_list.cqh_last);\n\t}\n\n\t/* insert this into the list */\n\tCIRCLEQ_INSERT_HEAD(&perpeer_list, c, log_link);\n\tpassert(c->log_file != NULL);\n\tperpeer_count++;\n}",
+            3
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ship_v2KE",
+            "static bool ship_v2KE(struct state *st, /* <=== ship_v2KE */ \n\t\t      struct pluto_crypto_req *r,\n\t\t      chunk_t *g,\n\t\t      pb_stream *outs, u_int8_t np)\n{\n\tint oakley_group = unpack_v2KE(st, r, g);\n\n\treturn justship_v2KE(st, g, oakley_group, outs, np);\n}",
+            2
+        ],
+        [
+            "include/ietf_constants.h",
+            "IKEv2_MAJOR_VERSION",
+            "#define IKEv2_MAJOR_VERSION 0x2 /* <=== include/ietf_constants.h:325:325:IKEv2_MAJOR_VERSION:0 */ ",
+            3
+        ],
+        [
+            "linux/include/libreswan.h",
+            "ipsec_version_vendorid",
+            "extern const char *ipsec_version_vendorid(void); /* <=== ipsec_version_vendorid */ ",
+            2
+        ],
+        [
+            "programs/pluto/state.c",
+            "state_hash",
+            "static struct state **state_hash(const u_char *icookie, const u_char *rcookie) /* <=== state_hash */ \n{\n\tu_int i = 0, j;\n\n\tDBG(DBG_RAW | DBG_CONTROL, {\n\t\t    DBG_dump(\"ICOOKIE:\", icookie, COOKIE_SIZE);\n\t\t    DBG_dump(\"RCOOKIE:\", rcookie, COOKIE_SIZE);\n\t    });\n\n\t/* XXX the following hash is pretty pathetic */\n\n\tfor (j = 0; j < COOKIE_SIZE; j++)\n\t\ti = i * 407 + icookie[j] + rcookie[j];\n\n\ti = i % STATE_TABLE_SIZE;\n\n\tDBG(DBG_CONTROL, DBG_log(\"state hash entry %d\", i));\n\n\treturn &statetable[i];\n}",
+            3
+        ],
+        [
+            "include/secrets.h",
+            "unreference_key",
+            "extern void unreference_key(struct pubkey **pkp); /* <=== unreference_key */ ",
+            2
+        ],
+        [
+            "include/lswalloc.h",
+            "clonetochunk",
+            "#define clonetochunk(ch, addr, size, name) \\ /* <=== include/lswalloc.h:63:65:clonetochunk:4 */ \n\tdo { (ch).ptr = clone_bytes((addr), (ch).len = (size), name); \\\n\t} while (0)",
+            2
+        ],
+        [
+            "programs/pluto/state.h",
+            "change_state",
+            "#define change_state(st, new_state) \\ /* <=== programs/pluto/state.h:509:515:change_state:2 */ \n\tdo { \\\n\t\tif ((new_state) != (st)->st_state) { \\\n\t\t\tlog_state((st), (new_state)); \\\n\t\t\t(st)->st_state = (new_state); \\\n\t\t} \\\n\t} while (0)",
+            1
+        ],
+        [
+            "programs/pluto/log.h",
+            "reset_globals",
+            "#define reset_globals() { \\ /* <=== programs/pluto/log.h:105:110:reset_globals:0 */ \n\t\twhack_log_fd = NULL_FD; \\\n\t\tcur_state = NULL; \\\n\t\tcur_from = NULL; \\\n\t\treset_cur_connection(); \\\n}",
+            1
+        ],
+        [
+            "linux/include/libreswan.h",
+            "ultot",
+            "extern size_t ultot(unsigned long src, int format, char *buf, size_t buflen); /* <=== ultot */ ",
+            3
+        ],
+        [
+            "programs/pluto/state.c",
+            "states_use_connection",
+            "bool states_use_connection(struct connection *c) /* <=== states_use_connection */ \n{\n\t/* are there any states still using it? */\n\tstruct state *st = NULL;\n\tint i;\n\n\tfor (i = 0; st == NULL && i < STATE_TABLE_SIZE; i++)\n\t\tfor (st = statetable[i]; st != NULL;\n\t\t     st = st->st_hashchain_next)\n\t\t\tif (st->st_connection == c)\n\t\t\t\treturn TRUE;\n\n\treturn FALSE;\n}",
+            3
+        ],
+        [
+            "include/pluto_constants.h",
+            "IS_IPSEC_SA_ESTABLISHED",
+            "#define IS_IPSEC_SA_ESTABLISHED(s) ((s) == STATE_QUICK_I2 || (s) == \\ /* <=== include/pluto_constants.h:367:368:IS_IPSEC_SA_ESTABLISHED:1 */ \n\t\t\t\t    STATE_QUICK_R2)",
+            2
+        ],
+        [
+            "linux/include/libreswan/passert.h",
+            "bad_case",
+            "# define bad_case(n) lsw_abort() /* <=== linux/include/libreswan/passert.h:72:72:bad_case:1 */ ",
+            3
+        ],
+        [
+            "programs/pluto/packet.c",
+            "out_generic",
+            "bool out_generic(u_int8_t np, struct_desc *sd, /* <=== out_generic */ \n\t\t pb_stream *outs, pb_stream *obj_pbs)\n{\n\tstruct isakmp_generic gen;\n\n\tpassert(sd->fields == isakmp_generic_desc.fields);\n\tgen.isag_np = np;\n\treturn out_struct(&gen, sd, outs, obj_pbs);\n}",
+            3
+        ],
+        [
+            "linux/include/libreswan.h",
+            "IPSEC_SAREF_NULL",
+            "#define IPSEC_SAREF_NULL ((IPsecSAref_t)0u) /* <=== linux/include/libreswan.h:259:259:IPSEC_SAREF_NULL:0 */ ",
+            3
+        ],
+        [
+            "lib/libswan/constants.c",
+            "bitnamesof",
+            "const char *bitnamesof(const char *const table[], lset_t val) /* <=== bitnamesof */ \n{\n\tstatic char bitnamesbuf[200]; /* NOT RE-ENTRANT!  I hope that it is big enough! */\n\n\treturn bitnamesofb(table, val, bitnamesbuf, sizeof(bitnamesbuf));\n}",
+            3
+        ],
+        [
+            "programs/pluto/timer.h",
+            "delete_dpd_event",
+            "#define delete_dpd_event(st) _delete_dpd_event(st, __FILE__, __LINE__) /* <=== programs/pluto/timer.h:40:40:delete_dpd_event:1 */ ",
+            2
+        ],
+        [
+            "include/ietf_constants.h",
+            "IKEv2_MINOR_VERSION",
+            "#define IKEv2_MINOR_VERSION 0x0 /* <=== include/ietf_constants.h:326:326:IKEv2_MINOR_VERSION:0 */ ",
+            3
+        ],
+        [
+            "lib/libswan/lswlog.c",
+            "libreswan_log",
+            "int libreswan_log(const char *message, ...) /* <=== libreswan_log */ \n{\n\tva_list args;\n\tchar m[LOG_WIDTH]; /* longer messages will be truncated */\n\n\tva_start(args, message);\n\tfmt_log(m, sizeof(m), message, args);\n\tva_end(args);\n\n\tif (log_to_stderr)\n\t\tfprintf(stderr, \"%s\\n\", m);\n\tif (log_to_syslog)\n\t\tsyslog(LOG_WARNING, \"%s\", m);\n\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "programs/pluto/connections.h",
+            "CONN_INST_BUF",
+            "#define CONN_INST_BUF \\ /* <=== programs/pluto/connections.h:411:412:CONN_INST_BUF:0 */ \n\t(2 + 10 + 1 + SUBNETTOT_BUF + 7 + ADDRTOT_BUF + 3 + SUBNETTOT_BUF + 1)",
+            3
+        ],
+        [
+            "include/constants.h",
+            "TRUE",
+            "#define TRUE    1 /* <=== include/constants.h:56:56:TRUE:0 */ ",
+            1
+        ],
+        [
+            "include/constants.h",
+            "FALSE",
+            "#define FALSE   0 /* <=== include/constants.h:55:55:FALSE:0 */ ",
+            2
+        ],
+        [
+            "linux/net/ipsec/addrtot.c",
+            "normal4",
+            "static size_t                   /* size of text, including NUL */ /* <=== normal4 */ \nnormal4(srcp, srclen, buf, dstp)\nconst unsigned char *srcp;\nsize_t srclen;\nchar *buf;                      /* guaranteed large enough */\nchar **dstp;                    /* where to put result pointer */\n{\n\tint i;\n\tchar *p;\n\n\tif (srclen != IP4BYTES) /* \"can't happen\" */\n\t\treturn 0;\n\n\tp = buf;\n\tfor (i = 0; i < IP4BYTES; i++) {\n\t\tp += ultot(srcp[i], 10, p, PERBYTE);\n\t\tif (i != IP4BYTES - 1)\n\t\t\t*(p - 1) = '.'; /* overwrites the NUL */\n\t}\n\t*dstp = buf;\n\treturn p - buf;\n}",
+            2
+        ],
+        [
+            "programs/pluto/pluto_crypt.c",
+            "delete_cryptographic_continuation",
+            "void delete_cryptographic_continuation(struct state *st) /* <=== delete_cryptographic_continuation */ \n{\n\tint i;\n\n\tif (backlogqueue_len > 0) {\n\t\tstruct pluto_crypto_req_cont *cn;\n\t\tstruct pluto_crypto_req *r;\n\n\t\tpassert(backlog.tqh_first != NULL);\n\n\t\tfor (cn = backlog.tqh_first;\n\t\t     cn != NULL && st->st_serialno != cn->pcrc_serialno;\n\t\t     cn = cn->pcrc_list.tqe_next) ;\n\n\t\tif (cn != NULL) {\n\t\t\tTAILQ_REMOVE(&backlog, cn, pcrc_list);\n\t\t\tbacklogqueue_len--;\n\t\t\tr = cn->pcrc_pcr;\n\t\t\tDBG(DBG_CONTROL,\n\t\t\t    DBG_log(\n\t\t\t\t    \"removing deleted backlog item id: q#%u from queue: %d left\",\n\t\t\t\t    r->pcr_id, backlogqueue_len));\n\t\t\t/* if it was on the backlog, it was saved, free it */\n\t\t\tpfree(r);\n\t\t\tcn->pcrc_pcr = NULL;\n\t\t\tif (pbs_offset(&cn->pcrc_reply_stream))\n\t\t\t\tpfree(cn->pcrc_reply_buffer);\n\t\t\tcn->pcrc_reply_buffer = NULL;\n\t\t}\n\t}\n\n\tfor (i = 0; i < pc_workers_cnt; i++) {\n\t\tstruct pluto_crypto_worker *w = &pc_workers[i];\n\t\tstruct pluto_crypto_req_cont *cn;\n\n\t\tfor (cn = w->pcw_active.tqh_first;\n\t\t     cn != NULL && st->st_serialno != cn->pcrc_serialno;\n\t\t     cn = cn->pcrc_list.tqe_next) ;\n\n\t\tif (cn == NULL)\n\t\t\tcontinue;\n\n\t\t/* unlink it, and free it */\n\t\tTAILQ_REMOVE(&w->pcw_active, cn, pcrc_list);\n\t\tif (pbs_offset(&cn->pcrc_reply_stream))\n\t\t\tpfree(cn->pcrc_reply_buffer);\n\t\tcn->pcrc_reply_buffer = NULL;\n\n\t\tif (cn->pcrc_free) {\n\t\t\t/*\n\t\t\t * use special free function which can deal with other\n\t\t\t * saved structures.\n\t\t\t */\n\t\t\t(*cn->pcrc_free)(cn, cn->pcrc_pcr, \"state removed\");\n\t\t} else {\n\t\t\tpfree(cn);\n\t\t}\n\t}\n\tDBG(DBG_CRYPT, DBG_log(\"no suspended cryptographic state for %lu\\n\",\n\t\t\t       st->st_serialno));\n}",
+            2
+        ],
+        [
+            "programs/pluto/state.h",
+            "fake_state",
+            "#define fake_state(st, new_state) log_state(st, new_state) /* <=== programs/pluto/state.h:508:508:fake_state:2 */ ",
+            2
+        ],
+        [
+            "programs/pluto/timer.c",
+            "delete_event",
+            "void delete_event(struct state *st) /* <=== delete_event */ \n{\n\tDBG(DBG_CONTROLMORE, DBG_log(\"deleting event for #%ld\",\n\t\t\t\t     st->st_serialno));\n\tif (st->st_event != (struct event *) NULL) {\n\t\tstruct event **ev;\n\n\t\tfor (ev = &evlist;; ev = &(*ev)->ev_next) {\n\t\t\tif (*ev == NULL) {\n\t\t\t\tDBG(DBG_CONTROL,\n\t\t\t\t    DBG_log(\"event %s to be deleted not found\",\n\t\t\t\t\t    enum_show(&\n\t\t\t\t\t\t      timer_event_names,\n\t\t\t\t\t\t      st->st_event->ev_type)));\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif ((*ev) == st->st_event) {\n\t\t\t\t*ev = (*ev)->ev_next;\n\n\t\t\t\tif (st->st_event->ev_type == EVENT_RETRANSMIT)\n\t\t\t\t\tst->st_retransmit = 0;\n\t\t\t\tpfree(st->st_event);\n\t\t\t\tst->st_event = (struct event *) NULL;\n\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t}\n}",
+            2
+        ],
+        [
+            "include/ietf_constants.h",
+            "MINIMUM_NONCE_SIZE",
+            "#define MINIMUM_NONCE_SIZE 8 /* bytes */ /* <=== include/ietf_constants.h:271:271:MINIMUM_NONCE_SIZE:0 */ ",
+            3
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_parent_inI1outR1_tail",
+            "static stf_status ikev2_parent_inI1outR1_tail( /* <=== ikev2_parent_inI1outR1_tail */ \n\tstruct pluto_crypto_req_cont *pcrc,\n\tstruct pluto_crypto_req *r)\n{\n\tstruct ke_continuation *ke = (struct ke_continuation *)pcrc;\n\tstruct msg_digest *md = ke->md;\n\tstruct payload_digest *const sa_pd = md->chain[ISAKMP_NEXT_v2SA];\n\tstruct state *const st = md->st;\n\tstruct connection *c = st->st_connection;\n\tpb_stream *keyex_pbs;\n\tint numvidtosend = 0;\n\n\tif (c->send_vendorid) {\n\t\tnumvidtosend++; /* we send Libreswan VID */\n\t}\n\t/* note that we don't update the state here yet */\n\n\t/* record first packet for later checking of signature */\n\tclonetochunk(st->st_firstpacket_him, md->message_pbs.start,\n\t\t     pbs_offset(\n\t\t\t     &md->message_pbs), \"saved first received packet\");\n\n\t/* make sure HDR is at start of a clean buffer */\n\tzero(reply_buffer);\n\tinit_pbs(&reply_stream, reply_buffer, sizeof(reply_buffer),\n\t\t \"reply packet\");\n\n\t/* HDR out */\n\t{\n\t\tstruct isakmp_hdr r_hdr = md->hdr;\n\n\t\tmemcpy(r_hdr.isa_rcookie, st->st_rcookie, COOKIE_SIZE);\n\t\tr_hdr.isa_np = ISAKMP_NEXT_v2SA;\n\t\t/* major will be same, but their minor might be higher */\n\t\tr_hdr.isa_version = build_ike_version();\n\t\tr_hdr.isa_flags &= ~ISAKMP_FLAGS_I;\n\t\tr_hdr.isa_flags |=  ISAKMP_FLAGS_R;\n\t\t/* PAUL shouldn't we set r_hdr.isa_msgid = [htonl](st->st_msgid);  here? */\n\t\tif (!out_struct(&r_hdr, &isakmp_hdr_desc, &reply_stream,\n\t\t\t\t&md->rbody))\n\t\t\treturn STF_INTERNAL_ERROR;\n\t}\n\n\t/* start of SA out */\n\t{\n\t\tstruct isakmp_sa r_sa = sa_pd->payload.sa;\n\t\tv2_notification_t rn;\n\t\tpb_stream r_sa_pbs;\n\n\t\tr_sa.isasa_np = ISAKMP_NEXT_v2KE; /* XXX */\n\t\tif (!out_struct(&r_sa, &ikev2_sa_desc, &md->rbody, &r_sa_pbs))\n\t\t\treturn STF_INTERNAL_ERROR;\n\n\t\t/* SA body in and out */\n\t\trn = ikev2_parse_parent_sa_body(&sa_pd->pbs,\n\t\t\t\t\t\t&sa_pd->payload.v2sa,\n\t\t\t\t\t\t&r_sa_pbs, st, FALSE);\n\n\t\tif (rn != v2N_NOTHING_WRONG)\n\t\t\treturn STF_FAIL + rn;\n\t}\n\n\t{\n\t\tv2_notification_t rn;\n\t\tchunk_t dc;\n\t\tkeyex_pbs = &md->chain[ISAKMP_NEXT_v2KE]->pbs;\n\t\t/* KE in */\n\t\trn =\n\t\t\taccept_KE(&st->st_gi, \"Gi\", st->st_oakley.group,\n\t\t\t\t  keyex_pbs);\n\t\tif (rn != v2N_NOTHING_WRONG) {\n\t\t\tu_int16_t group_number = htons(\n\t\t\t\tst->st_oakley.group->group);\n\t\t\tdc.ptr = (unsigned char *)&group_number;\n\t\t\tdc.len = 2;\n\t\t\tSEND_NOTIFICATION_AA(v2N_INVALID_KE_PAYLOAD, &dc);\n\t\t\tdelete_state(st);\n\t\t\treturn STF_FAIL + rn;\n\t\t}\n\t}\n\n\t/* Ni in */\n\tRETURN_STF_FAILURE(accept_v2_nonce(md, &st->st_ni, \"Ni\"));\n\n\t/* send KE */\n\tif (!ship_v2KE(st, r, &st->st_gr, &md->rbody, ISAKMP_NEXT_v2Nr))\n\t\treturn STF_INTERNAL_ERROR;\n\n\t/* send NONCE */\n\tunpack_nonce(&st->st_nr, r);\n\t{\n\t\tint np = numvidtosend > 0 ? ISAKMP_NEXT_v2V : ISAKMP_NEXT_v2NONE;\n\t\tstruct ikev2_generic in;\n\t\tpb_stream pb;\n\n\t\tmemset(&in, 0, sizeof(in));\n\t\tin.isag_np = np;\n\t\tin.isag_critical = ISAKMP_PAYLOAD_NONCRITICAL;\n\t\tif (DBGP(IMPAIR_SEND_BOGUS_ISAKMP_FLAG)) {\n\t\t\tlibreswan_log(\n\t\t\t\t\" setting bogus ISAKMP_PAYLOAD_LIBRESWAN_BOGUS flag in ISAKMP payload\");\n\t\t\tin.isag_critical |= ISAKMP_PAYLOAD_LIBRESWAN_BOGUS;\n\t\t}\n\n\t\tif (!out_struct(&in, &ikev2_nonce_desc, &md->rbody, &pb) ||\n\t\t    !out_raw(st->st_nr.ptr, st->st_nr.len, &pb, \"IKEv2 nonce\"))\n\t\t\treturn STF_INTERNAL_ERROR;\n\n\t\tclose_output_pbs(&pb);\n\t}\n\n\t/* Send VendrID if needed VID */\n\tif (c->send_vendorid) {\n\t\tconst char *myvid = ipsec_version_vendorid();\n\t\tint np = --numvidtosend >\n\t\t\t 0 ? ISAKMP_NEXT_v2V : ISAKMP_NEXT_v2NONE;\n\n\t\tif (!out_generic_raw(np, &isakmp_vendor_id_desc, &md->rbody,\n\t\t\t\t     myvid, strlen(myvid),\n\t\t\t\t     \"Vendor ID\"))\n\t\t\treturn STF_INTERNAL_ERROR;\n\t}\n\n\tclose_message(&md->rbody, st);\n\tclose_output_pbs(&reply_stream);\n\n\t/* keep it for a retransmit if necessary */\n\tfreeanychunk(st->st_tpacket);\n\tclonetochunk(st->st_tpacket, reply_stream.start,\n\t\t     pbs_offset(&reply_stream),\n\t\t     \"reply packet for ikev2_parent_inI1outR1_tail\");\n\n\t/* save packet for later signing */\n\tfreeanychunk(st->st_firstpacket_me);\n\tclonetochunk(st->st_firstpacket_me, reply_stream.start,\n\t\t     pbs_offset(&reply_stream), \"saved first packet\");\n\n\t/* note: retransimission is driven by initiator */\n\n\treturn STF_OK;\n}",
+            1
+        ],
+        [
+            "include/lswalloc.h",
+            "alloc_thing",
+            "#define alloc_thing(thing, name) (alloc_bytes(sizeof(thing), (name))) /* <=== include/lswalloc.h:40:40:alloc_thing:2 */ ",
+            1
+        ],
+        [
+            "programs/pluto/log.c",
+            "log_state",
+            "void log_state(struct state *st, enum state_kind new_state) /* <=== log_state */ \n{\n\tchar buf[1024];\n\tstruct log_conn_info lc;\n\tstruct connection *conn;\n\tconst char *tun = NULL, *p1 = NULL, *p2 = NULL;\n\tenum state_kind save_state;\n\n\tif (!pluto_stats_binary)\n\t\treturn;\n\n\tif (!st || !st->st_connection || !st->st_connection->name) {\n\t\tDBG(DBG_CONTROLMORE, DBG_log(\n\t\t\t    \"log_state() called without state\"));\n\t\treturn;\n\t}\n\n\tconn = st->st_connection;\n\tif (!conn) {\n\t\tDBG(DBG_CONTROLMORE,\n\t\t    DBG_log(\n\t\t\t    \"log_state() called without st->st_connection (this line cannot fire)\"));\n\t\treturn;\n\t}\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"log_state called for state update for connection %s \",\n\t\t    conn->name));\n\tmemset(&lc, 0, sizeof(lc));\n\tlc.conn = conn;\n\tsave_state = st->st_state;\n\tst->st_state = new_state;\n\tfor_each_state((void *)connection_state, &lc);\n\tst->st_state = save_state;\n\n\tif (conn->statsval ==\n\t    (IPsecSAref2NFmark(st->st_ref) | LOG_CONN_STATSVAL(&lc))) {\n\t\tDBG(DBG_CONTROLMORE,\n\t\t    DBG_log(\n\t\t\t    \"log_state for connection %s state change signature (%d) matches last one - skip logging\",\n\t\t\t    conn->name, conn->statsval));\n\t\treturn;\n\t}\n\tconn->statsval = IPsecSAref2NFmark(st->st_ref) |\n\t\t\t LOG_CONN_STATSVAL(&lc);\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\n\t\t    \"log_state set state change signature for connection %s to %d\",\n\t\t    conn->name, conn->statsval));\n\n\tswitch (lc.tunnel) {\n\tcase tun_phase1:  tun = \"phase1\";\n\t\tbreak;\n\tcase tun_phase1up: tun = \"phase1up\";\n\t\tbreak;\n\tcase tun_phase15: tun = \"phase15\";\n\t\tbreak;\n\tcase tun_phase2:  tun = \"phase2\";\n\t\tbreak;\n\tcase tun_up:      tun = \"up\";\n\t\tbreak;\n\tcase tun_down:    tun = \"down\";\n\t\tbreak;                            /* not set anywhere, default */\n\tdefault:          tun = \"unchanged\";\n\t\tbreak;\n\t}\n\n\tswitch (lc.phase1) {\n\tcase p1_init:     p1 = \"init\";\n\t\tbreak;\n\tcase p1_encrypt:  p1 = \"encrypt\";\n\t\tbreak;\n\tcase p1_auth:     p1 = \"auth\";\n\t\tbreak;\n\tcase p1_up:       p1 = \"up\";\n\t\tbreak;\n\tcase p1_down:       p1 = \"down\";\n\t\tbreak;\n\tdefault:          p1 = \"unchanged\";\n\t\tbreak;\n\t}\n\n\tswitch (lc.phase2) {\n\tcase p2_neg:      p2 = \"neg\";\n\t\tbreak;\n\tcase p2_up:       p2 = \"up\";\n\t\tbreak;\n\tdefault:          p2 = \"down\";\n\t\tbreak;\n\t}\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\n\t\t    \"log_state calling %s for connection %s with tunnel(%s) phase1(%s) phase2(%s)\",\n\t\t    pluto_stats_binary, conn->name, tun, p1, p2));\n\n\tsnprintf(buf, sizeof(buf), \"%s \"\n\t\t \"%s ipsec-tunnel-%s if_stats /proc/net/dev/%s \\\\; \"\n\t\t \"%s ipsec-tunnel-%s tunnel %s \\\\; \"\n\t\t \"%s ipsec-tunnel-%s phase1 %s \\\\; \"\n\t\t \"%s ipsec-tunnel-%s phase2 %s \\\\; \"\n\t\t \"%s ipsec-tunnel-%s nfmark-me/him 0x%x/0x%x\",\n\n\t\t pluto_stats_binary,\n\t\t conn->interface ? \"push\" : \"drop\", conn->name,\n\t\t conn->interface ? conn->interface->ip_dev->id_vname : \"\",\n\t\t tun ? \"push\" : \"drop\", conn->name, tun ? tun : \"\",\n\t\t p1  ? \"push\" : \"drop\", conn->name, p1  ? p1  : \"\",\n\t\t p2  ? \"push\" : \"drop\", conn->name, p2  ? p2  : \"\",\n\t\t (st->st_ref || st->st_refhim) ? \"push\" : \"drop\", conn->name,\n\t\t st->st_ref == IPSEC_SAREF_NA ? IPSEC_SAREF_NA :\n\t\t st->st_ref == IPSEC_SAREF_NULL ? 0u :\n\t\t IPsecSAref2NFmark(st->st_ref) | IPSEC_NFMARK_IS_SAREF_BIT\n\t\t ,\n\t\t st->st_refhim == IPSEC_SAREF_NA ? IPSEC_SAREF_NA :\n\t\t st->st_refhim == IPSEC_SAREF_NULL ? 0u :\n\t\t IPsecSAref2NFmark(st->st_refhim) | IPSEC_NFMARK_IS_SAREF_BIT\n\t\t );\n\tif (system(buf) == -1) {\n\t\tloglog(RC_LOG_SERIOUS,\"statsbin= failed to send status update notification\");\n\t}\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"log_state for connection %s completed\", conn->name));\n}",
+            2
+        ],
+        [
+            "include/pluto_constants.h",
+            "IS_ONLY_INBOUND_IPSEC_SA_ESTABLISHED",
+            "#define IS_ONLY_INBOUND_IPSEC_SA_ESTABLISHED(s) ((s) == STATE_QUICK_R1) /* <=== include/pluto_constants.h:369:369:IS_ONLY_INBOUND_IPSEC_SA_ESTABLISHED:1 */ ",
+            2
+        ],
+        [
+            "programs/pluto/spdb.c",
+            "free_sa_v2_prop_disj",
+            "static void free_sa_v2_prop_disj(struct db_v2_prop *pc) /* <=== free_sa_v2_prop_disj */ \n{\n\tunsigned int i;\n\n\tfor (i = 0; i < pc->prop_cnt; i++)\n\t\tfree_sa_v2_prop(&pc->props[i]);\n\tif (pc->props)\n\t\tpfree(pc->props);\n}",
+            3
+        ],
+        [
+            "linux/include/libreswan.h",
+            "addrtypeof",
+            "extern int addrtypeof(const ip_address *src); /* <=== addrtypeof */ ",
+            2
+        ],
+        [
+            "programs/pluto/ikev2.h",
+            "RETURN_STF_FAILURE",
+            "#define RETURN_STF_FAILURE(f) RETURN_STF_FAILURE2(f, NULL) /* <=== programs/pluto/ikev2.h:57:57:RETURN_STF_FAILURE:1 */ ",
+            2
+        ],
+        [
+            "include/lswalloc.h",
+            "pfreeany",
+            "#define pfreeany(p) do { if ((p) != NULL) \\ /* <=== include/lswalloc.h:47:48:pfreeany:1 */ \n\t\t\t\t pfree(p); } while (0)",
+            2
+        ],
+        [
+            "linux/include/libreswan.h",
+            "addrbytesptr",
+            "extern size_t addrbytesptr(const ip_address *src, unsigned char **dst); /* <=== addrbytesptr */ ",
+            2
+        ],
+        [
+            "include/ietf_constants.h",
+            "ISAKMP_FLAGS_I",
+            "#define ISAKMP_FLAGS_I (1 << 3) /* bit 3 of flags --- initiator */ /* <=== include/ietf_constants.h:598:598:ISAKMP_FLAGS_I:0 */ ",
+            2
+        ],
+        [
+            "programs/pluto/connections.c",
+            "fmt_conn_instance",
+            "char *fmt_conn_instance(const struct connection *c, char buf[CONN_INST_BUF]) /* <=== fmt_conn_instance */ \n{\n\tchar *p = buf;\n\n\t*p = '\\0';\n\n\tif (c->kind == CK_INSTANCE) {\n\t\tif (c->instance_serial != 0) {\n\t\t\tsnprintf(p, CONN_INST_BUF, \"[%lu]\",\n\t\t\t\tc->instance_serial);\n\t\t\tp += strlen(p);\n\t\t}\n\n\t\tif (c->policy & POLICY_OPPO) {\n\t\t\tsize_t w = fmt_client(&c->spd.this.client,\n\t\t\t\t\t&c->spd.this.host_addr, \" \", p);\n\n\t\t\tp += w;\n\n\t\t\tstrcpy(p, w == 0 ? \" ...\" : \"=== ...\");\n\t\t\tp += strlen(p);\n\n\t\t\taddrtot(&c->spd.that.host_addr, 0, p, ADDRTOT_BUF);\n\t\t\tp += strlen(p);\n\n\t\t\t(void) fmt_client(&c->spd.that.client,\n\t\t\t\t\t&c->spd.that.host_addr, \"===\", p);\n\t\t} else {\n\t\t\t*p++ = ' ';\n\t\t\taddrtot(&c->spd.that.host_addr, 0, p, ADDRTOT_BUF);\n\t\t}\n\t}\n\n\treturn buf;\n}",
+            3
+        ],
+        [
+            "lib/libswan/sameaddr.c",
+            "addrinsubnet",
+            "bool addrinsubnet(a, s) /* <=== addrinsubnet */ \nconst ip_address * a;\nconst ip_subnet *s;\n{\n\tif (addrtypeof(a) != subnettypeof(s))\n\t\treturn 0;\n\n\tif (!samenbits(a, &s->addr, s->maskbits))\n\t\treturn 0;\n\n\treturn 1;\n}",
+            1
+        ],
+        [
+            "programs/pluto/ikev2.c",
+            "send_v2_notification_from_md",
+            "void send_v2_notification_from_md(struct msg_digest *md UNUSED, u_int16_t type, /* <=== send_v2_notification_from_md */ \n\t\t\t\t  chunk_t *data)\n{\n\tstruct state st;\n\tstruct connection cnx;\n\n\t/**\n\t * Create a dummy state to be able to use send_ike_msg in\n\t * send_notification\n\t *\n\t * we need to set:\n\t *   st_connection->that.host_addr\n\t *   st_connection->that.host_port\n\t *   st_connection->interface\n\t */\n\tpassert(md);\n\n\tmemset(&st, 0, sizeof(st));\n\tmemset(&cnx, 0, sizeof(cnx));\n\tst.st_connection = &cnx;\n\tst.st_remoteaddr = md->sender;\n\tst.st_remoteport = md->sender_port;\n\tst.st_localaddr  = md->iface->ip_addr;\n\tst.st_localport  = md->iface->port;\n\tcnx.interface = md->iface;\n\tst.st_interface = md->iface;\n\n\tsend_v2_notification(&st, type, NULL,\n\t\t\t     md->hdr.isa_icookie, md->hdr.isa_rcookie, data);\n}",
+            2
+        ],
+        [
+            "programs/pluto/kernel.c",
+            "teardown_half_ipsec_sa",
+            "static bool teardown_half_ipsec_sa(struct state *st, bool inbound) /* <=== teardown_half_ipsec_sa */ \n{\n\t/* We need to delete AH, ESP, and IP in IP SPIs.\n\t * But if there is more than one, they have been grouped\n\t * so deleting any one will do.  So we just delete the\n\t * first one found.  It may or may not be the only one.\n\t */\n\tstruct connection *c = st->st_connection;\n\n\tstruct {\n\t\tunsigned proto;\n\t\tstruct ipsec_proto_info *info;\n\t} protos[4];\n\tint i;\n\tbool result;\n\n\ti = 0;\n\tif (kernel_ops->inbound_eroute && inbound &&\n\t    c->spd.eroute_owner == SOS_NOBODY) {\n\t\t(void) raw_eroute(&c->spd.that.host_addr, &c->spd.that.client,\n\t\t\t\t  &c->spd.this.host_addr, &c->spd.this.client,\n\t\t\t\t  256,\n\t\t\t\t  c->encapsulation == ENCAPSULATION_MODE_TRANSPORT ? SA_ESP : IPSEC_PROTO_ANY,\n\t\t\t\t  c->spd.this.protocol,\n\t\t\t\t  c->encapsulation == ENCAPSULATION_MODE_TRANSPORT ? ET_ESP : ET_UNSPEC,\n\t\t\t\t  null_proto_info, 0, c->sa_priority, \n\t\t\t\t  ERO_DEL_INBOUND, \"delete inbound\"\n#ifdef HAVE_LABELED_IPSEC\n\t\t\t\t  , c->policy_label\n#endif\n\t\t\t\t  );\n\t}\n\n\tif (!kernel_ops->grp_sa) {\n\t\tif (st->st_ah.present) {\n\t\t\tprotos[i].info = &st->st_ah;\n\t\t\tprotos[i].proto = SA_AH;\n\t\t\ti++;\n\t\t}\n\n\t\tif (st->st_esp.present) {\n\t\t\tprotos[i].info = &st->st_esp;\n\t\t\tprotos[i].proto = SA_ESP;\n\t\t\ti++;\n\t\t}\n\n\t\tif (st->st_ipcomp.present) {\n\t\t\tprotos[i].info = &st->st_ipcomp;\n\t\t\tprotos[i].proto = SA_COMP;\n\t\t\ti++;\n\t\t}\n\t} else if (st->st_ah.present) {\n\t\tprotos[i].info = &st->st_ah;\n\t\tprotos[i].proto = SA_AH;\n\t\ti++;\n\t} else if (st->st_esp.present) {\n\t\tprotos[i].info = &st->st_esp;\n\t\tprotos[i].proto = SA_ESP;\n\t\ti++;\n\t} else {\n\t\treturn TRUE;\n\t}\n\tprotos[i].proto = 0;\n\n\tresult = TRUE;\n\tfor (i = 0; protos[i].proto; i++) {\n\t\tunsigned proto = protos[i].proto;\n\t\tipsec_spi_t spi;\n\t\tconst ip_address *src, *dst;\n\n\t\tif (inbound) {\n\t\t\tspi = protos[i].info->our_spi;\n\t\t\tsrc = &c->spd.that.host_addr;\n\t\t\tdst = &c->spd.this.host_addr;\n\t\t} else {\n\t\t\tspi = protos[i].info->attrs.spi;\n\t\t\tsrc = &c->spd.this.host_addr;\n\t\t\tdst = &c->spd.that.host_addr;\n\t\t}\n\n\t\tresult &= del_spi(spi, proto, src, dst);\n\t}\n\treturn result;\n}",
+            3
+        ],
+        [
+            "programs/pluto/ipsec_doi.c",
+            "send_delete",
+            "void send_delete(struct state *st) /* <=== send_delete */ \n{\n\tif (st->st_ikev2)\n\t\tikev2_delete_out(st);\n\telse\n\t\tikev1_delete_out(st);\n}",
+            2
+        ],
+        [
+            "programs/pluto/crypto.c",
+            "lookup_group",
+            "const struct oakley_group_desc *lookup_group(u_int16_t group) /* <=== lookup_group */ \n{\n\tint i;\n\n\tfor (i = 0; i != elemsof(oakley_group); i++)\n\t\tif (group == oakley_group[i].group)\n\t\t\treturn &oakley_group[i];\n\n\treturn NULL;\n}",
+            1
+        ],
+        [
+            "programs/pluto/pluto_crypt.c",
+            "init_crypto_helper",
+            "static void init_crypto_helper(struct pluto_crypto_worker *w, int n) /* <=== init_crypto_helper */ \n{\n\tint fds[2];\n\n\t/* reset this */\n\tw->pcw_pid = -1;\n\n\tif (socketpair(PF_UNIX, SOCK_STREAM, 0, fds) != 0) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"could not create socketpair for helpers: %s\",\n\t\t       strerror(errno));\n\t\treturn;\n\t}\n\n\tw->pcw_helpernum = n;\n\tw->pcw_pipe = fds[0];\n\tw->pcw_helper_pipe = fds[1];\n\tw->pcw_maxbasicwork  = 2;\n\tw->pcw_maxcritwork   = 4;\n\tw->pcw_work     = 0;\n\tw->pcw_reaped = FALSE;\n\tw->pcw_dead   = FALSE;\n\tTAILQ_INIT(&w->pcw_active);\n\n\t/* set the send/received queue length to be at least maxcritwork\n\t * times sizeof(pluto_crypto_req) in size\n\t */\n\t{\n\t\tint qlen = w->pcw_maxcritwork *\n\t\t\t   sizeof(struct pluto_crypto_req) + 10;\n\n\t\tif (setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &qlen,\n\t\t\t       sizeof(qlen)) == -1 ||\n\t\t    setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &qlen,\n\t\t\t       sizeof(qlen)) == -1 ||\n\t\t    setsockopt(fds[1], SOL_SOCKET, SO_RCVBUF, &qlen,\n\t\t\t       sizeof(qlen)) == -1 ||\n\t\t    setsockopt(fds[1], SOL_SOCKET, SO_RCVBUF, &qlen,\n\t\t\t       sizeof(qlen)) == -1) {\n\t\t\tloglog(RC_LOG_SERIOUS,\n\t\t\t       \"could not set socket queue to %d\", qlen);\n\t\t\treturn;\n\t\t}\n\t}\n\n\t/* set local so that child inheirits it */\n\tpc_helper_num = n;\n\n\tint thread_status;\n\n\tthread_status = pthread_create((pthread_t*)&w->pcw_pid, NULL,\n\t\t\t\t       pluto_helper_thread, (void*)w);\n\tif (thread_status != 0) {\n\t\tloglog(RC_LOG_SERIOUS, \"failed to start child, error = %d\",\n\t\t       thread_status);\n\t\tw->pcw_pid = -1;\n\t\tclose(fds[1]);\n\t\tclose(fds[0]);\n\t\tw->pcw_dead   = TRUE;\n\t\treturn;\n\t} else {\n\t\tlibreswan_log(\"started helper (thread) pid=%ld (fd:%d)\",\n\t\t\t      w->pcw_pid,  w->pcw_pipe);\n\t}\n}",
+            3
+        ],
+        [
+            "programs/pluto/log.c",
+            "LOG_CONN_STATSVAL",
+            "#define LOG_CONN_STATSVAL(lci) \\ /* <=== programs/pluto/log.c:925:926:LOG_CONN_STATSVAL:1 */ \n\t((lci)->tunnel | ((lci)->phase1 << 4) | ((lci)->phase2 << 8))",
+            3
+        ],
+        [
+            "lib/libswan/lswlog.c",
+            "libreswan_DBG_dump",
+            "void libreswan_DBG_dump(const char *label, const void *p, size_t len) /* <=== libreswan_DBG_dump */ \n{\n#   define DUMP_LABEL_WIDTH 20  /* arbitrary modest boundary */\n#   define DUMP_WIDTH   (4 * (1 + 4 * 3) + 1)\n\tchar buf[DUMP_LABEL_WIDTH + DUMP_WIDTH];\n\tchar *bp;\n\tconst unsigned char *cp = p;\n\n\tbp = buf;\n\n\tif (label != NULL && label[0] != '\\0') {\n\t\t/*\n\t\t * Handle the label.\n\t\t * Care must be taken to avoid buffer overrun.\n\t\t */\n\t\tsize_t llen = strlen(label);\n\n\t\tif (llen + 1 > sizeof(buf)) {\n\t\t\tDBG_log(\"%s\", label);\n\t\t} else {\n\t\t\tstrcpy(buf, label);\n\t\t\tif (buf[llen - 1] == '\\n') {\n\t\t\t\tbuf[llen - 1] = '\\0'; /* get rid of newline */\n\t\t\t\tDBG_log(\"%s\", buf);\n\t\t\t} else if (llen < DUMP_LABEL_WIDTH) {\n\t\t\t\tbp = buf + llen;\n\t\t\t} else {\n\t\t\t\tDBG_log(\"%s\", buf);\n\t\t\t}\n\t\t}\n\t}\n\n\tdo {\n\t\tint i, j;\n\n\t\tfor (i = 0; len != 0 && i != 4; i++) {\n\t\t\t*bp++ = ' ';\n\t\t\tfor (j = 0; len != 0 && j != 4; len--, j++) {\n\t\t\t\tstatic const char hexdig[] =\n\t\t\t\t\t\"0123456789abcdef\";\n\n\t\t\t\t*bp++ = ' ';\n\t\t\t\t*bp++ = hexdig[(*cp >> 4) & 0xF];\n\t\t\t\t*bp++ = hexdig[*cp & 0xF];\n\t\t\t\tcp++;\n\t\t\t}\n\t\t}\n\t\t*bp = '\\0';\n\t\tDBG_log(\"%s\", buf);\n\t\tbp = buf;\n\t} while (len != 0);\n#   undef DUMP_LABEL_WIDTH\n#   undef DUMP_WIDTH\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"vendor.h\"",
+        "#include \"crypto.h\"",
+        "#include \"id.h\"",
+        "#include \"connections.h\"",
+        "#include \"log.h\"",
+        "#include \"sysdep.h\"",
+        "#include \"pending.h\"",
+        "#include \"kernel_alg.h\"",
+        "#include \"x509.h\"",
+        "#include \"ipsec_doi.h\"",
+        "#include \"ike_alg.h\"",
+        "#include <string.h>",
+        "#include <libreswan/ipsec_policy.h>",
+        "#include <stdio.h>",
+        "#include \"timer.h\"",
+        "#include \"demux.h\"",
+        "#include \"defs.h\"",
+        "#include \"state.h\"",
+        "#include \"rnd.h\"",
+        "#include \"constants.h\"",
+        "#include <stddef.h>",
+        "#include \"cookie.h\"",
+        "#include <libreswan.h>",
+        "#include \"pluto_crypt.h\"",
+        "#include \"ike_continuations.h\"",
+        "#include <gmp.h>",
+        "#include <unistd.h>",
+        "#include \"kernel.h\"",
+        "#include \"plutoalg.h\"",
+        "#include \"packet.h\"",
+        "#include \"spdb.h\"",
+        "#include \"x509more.h\"",
+        "#include <stdlib.h>",
+        "#include \"ikev2.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct chunk chunk_t;",
+            "chunk_t"
+        ],
+        [
+            "struct dh_continuation {\n\tstruct pluto_crypto_req_cont dh_pcrc;\n\tstruct msg_digest           *md;\n\tso_serial_t serialno;                   /* used for inter state\n\t                                         * calculations on responder */\n}",
+            "dh_continuation"
+        ],
+        [
+            "struct connection",
+            "connection"
+        ],
+        [
+            "typedef uint_fast64_t lset_t;",
+            "lset_t"
+        ],
+        [
+            "struct state",
+            "state"
+        ],
+        [
+            "struct msg_digest {\n\tstruct msg_digest *next;                /* for free list */\n\tchunk_t raw_packet;                     /* if encrypted, received packet before decryption */\n\tconst struct iface_port *iface;         /* interface on which message arrived */\n\tip_address sender;                      /* where message came from (network order) */\n\tu_int16_t sender_port;                  /* host order */\n\tpb_stream packet_pbs;                   /* whole packet */\n\tpb_stream message_pbs;                  /* message to be processed */\n\tpb_stream clr_pbs;                      /* place to store decrypted packet */\n\tstruct isakmp_hdr hdr;                  /* message's header */\n\tbool encrypted;                         /* was it encrypted? */\n\tenum state_kind from_state;             /* state we started in */\n\tconst struct state_microcode *smc;      /* microcode for initial state (v1)*/\n\tconst struct state_v2_microcode *svm;   /* microcode for initial state (v2)*/\n\tbool new_iv_set;\n\tstruct state *st;                       /* current state object */\n\tstruct state *pst;                      /* parent state object (if any) */\n\n\tenum phase1_role role;                  /* (ikev2 only) */\n\tmsgid_t msgid_received;                 /* (ikev2 only) */\n\n\tpb_stream rbody;                        /* room for reply body (after header) */\n\tnotification_t note;                    /* reason for failure */\n\tbool dpd;                               /* Peer supports RFC 3706 DPD */\n\tbool ikev2;                             /* Peer supports IKEv2 */\n\tbool fragvid;                           /* Peer supports FRAGMENTATION */\n\tbool nortel;                            /* Peer requires Nortel specific workaround */\n\tbool event_already_set;                 /* (ikev1 only) */\n\tstf_status result;                      /* temporary stored here for access by Tcl */\n\n#   define PAYLIMIT 30\n\tstruct payload_digest\n\t\tdigest[PAYLIMIT],\n\t\t*digest_roof,\n\t\t*chain[ISAKMP_NEXT_ROOF];\n\tstruct isakmp_quirks quirks;\n}",
+            "msg_digest"
+        ],
+        [
+            "struct ke_continuation {\n\tstruct pluto_crypto_req_cont ke_pcrc;\n\tstruct msg_digest           *md;\n}",
+            "ke_continuation"
+        ],
+        [
+            "struct oakley_group_desc",
+            "oakley_group_desc"
+        ],
+        [
+            "struct pluto_crypto_req_cont",
+            "pluto_crypto_req_cont"
+        ],
+        [
+            "typedef struct packet_byte_stream pb_stream;",
+            "pb_stream"
+        ],
+        [
+            "struct oakley_group_desc {\n\tu_int16_t group;\n/* RFC 5114 defines new modp groups each having different generator */\n\tMP_INT *generator;\n\tMP_INT *modulus;\n\tsize_t bytes;\n}",
+            "oakley_group_desc"
+        ],
+        [
+            "struct state {\n\tso_serial_t st_serialno;                /* serial number (for seniority)*/\n\tso_serial_t st_clonedfrom;              /* serial number of parent */\n\tint st_usage;\n\n#ifdef XAUTH_HAVE_PAM\n\tpthread_mutex_t xauth_mutex;            /* per state xauth_mutex */\n\tpthread_t xauth_tid;                    /* per state XAUTH_RO thread id */\n#endif\n\n\tbool st_ikev2;                          /* is this an IKEv2 state? */\n\tbool st_rekeytov2;                      /* true if this IKEv1 is about\n\t                                        * to be replaced with IKEv2 */\n\n\tstruct connection *st_connection;       /* connection for this SA */\n\tint st_whack_sock;                      /* fd for our Whack TCP socket.\n\t                                         * Single copy: close when\n\t                                         * freeing struct.\n\t                                         */\n\n\tstruct msg_digest *st_suspended_md;     /* suspended state-transition */\n\tconst char        *st_suspended_md_func;\n\tint st_suspended_md_line;\n\n\tstruct ike_frag *ike_frags;                /* collected ike fragments */\n\n\tstruct trans_attrs st_oakley;\n\n\tstruct ipsec_proto_info st_ah;\n\tstruct ipsec_proto_info st_esp;\n\tstruct ipsec_proto_info st_ipcomp;\n\n\tipsec_spi_t st_tunnel_in_spi;                   /* KLUDGE */\n\tipsec_spi_t st_tunnel_out_spi;                  /* KLUDGE */\n\n\tIPsecSAref_t st_ref;                            /* our kernel name for our incoming SA */\n\tIPsecSAref_t st_refhim;                         /* our kernel name for our outgoing SA */\n\tbool st_outbound_done;                          /* if true, then outgoing SA already installed */\n\n\tconst struct oakley_group_desc *st_pfs_group;   /*group for Phase 2 PFS */\n\n\tu_int32_t st_doi;                               /* Domain of Interpretation */\n\tu_int32_t st_situation;\n\n\tlset_t st_policy;                       /* policy for IPsec SA */\n\n\tip_address st_remoteaddr;               /* where to send packets to */\n\tu_int16_t st_remoteport;                /* host byte order */\n\n\tconst struct iface_port *st_interface;  /* where to send from */  /* dhr 2013: why? There was already connection->interface */\n\tip_address st_localaddr;                /* where to send them from */\n\tu_int16_t st_localport;\n\n\tstruct db_sa      *st_sadb;\n\n\t/* IKEv1 things */\n\tmsgid_t st_msgid;                       /* MSG-ID from header.\n\t                                           Network Order! */\n\tbool st_reserve_msgid;                  /* if TRUE, then message id\n\t                                           has been reserved already */\n\n\tmsgid_t st_msgid_phase15;               /* msgid for phase 1.5 */\n\tmsgid_t st_msgid_phase15b;              /* msgid for phase 1.5 */\n\t/* only for a state representing an ISAKMP SA */\n\tstruct msgid_list  *st_used_msgids;     /* used-up msgids */\n\n\t/* IKEv2 things */\n\t/* message ID sequence for things we send (as initiator) */\n\tmsgid_t st_msgid_lastack;               /* last one peer acknowledged */\n\tmsgid_t st_msgid_nextuse;               /* next one to use */\n\n\t/* message ID sequence for things we receive (as responder) */\n\tmsgid_t st_msgid_lastrecv;             /* last one peer sent */\n\n\t/* symmetric stuff */\n\n\t/* initiator stuff */\n\tchunk_t st_gi;                          /* Initiator public value */\n\tu_int8_t st_icookie[COOKIE_SIZE];       /* Initiator Cookie */\n\tchunk_t st_ni;                          /* Ni nonce */\n\n\t/* responder stuff */\n\tchunk_t st_gr;                          /* Responder public value */\n\tu_int8_t st_rcookie[COOKIE_SIZE];       /* Responder Cookie */\n\tchunk_t st_nr;                          /* Nr nonce */\n\tchunk_t st_dcookie;                     /* DOS cookie of responder */\n\n\t/* my stuff */\n\tchunk_t st_tpacket;                     /* Transmitted packet */\n\tchunk_t st_firstpacket_me;              /* copy of my message 1 */\n\tchunk_t st_firstpacket_him;             /* copy of his message 1 */\n\n#ifdef HAVE_LABELED_IPSEC\n\tstruct xfrm_user_sec_ctx_ike *sec_ctx;\n#endif\n\n\t/* Phase 2 ID payload info about my user */\n\tu_int8_t st_myuserprotoid;             /* IDcx.protoid */\n\tu_int16_t st_myuserport;\n\n\t/* his stuff */\n\n\tchunk_t st_rpacket;                    /* Received packet */\n\n\t/* Phase 2 ID payload info about peer's user */\n\tu_int8_t st_peeruserprotoid;           /* IDcx.protoid */\n\tu_int16_t st_peeruserport;\n\n\t/* end of symmetric stuff */\n\n\t/* Support quirky feature of Phase 1 ID payload for peer\n\t * We don't support this wart for ourselves.\n\t * Currently used in Aggressive mode for interop.\n\t */\n\tu_int8_t st_peeridentity_protocol;\n\tu_int16_t st_peeridentity_port;\n\n\tu_int8_t st_sec_in_use;                 /* bool: does st_sec hold a value */\n\tMP_INT st_sec;                          /* Our local secret value */\n\tchunk_t st_sec_chunk;                   /* copy of above */\n\t/*DH public key*/\n\tchunk_t pubk;\n\n\tchunk_t st_shared;                      /* Derived shared secret\n\t                                         * Note: during Quick Mode,\n\t                                         * presence indicates PFS\n\t                                         * selected.\n\t                                         */\n\tenum crypto_importance st_import;       /* relative priority of crypto\n\t                                         * operations\n\t                                         */\n\n\t/* In a Phase 1 state, preserve peer's public key after authentication */\n\tstruct pubkey     *st_peer_pubkey;\n\n\tenum state_kind st_state;               /* State of exchange */\n\tu_int8_t st_retransmit;                 /* Number of retransmits */\n\tunsigned long st_try;                   /* number of times rekeying\n\t                                           attempted */\n\t                                        /* 0 means the only time */\n\ttime_t st_margin;                       /* life after EVENT_SA_REPLACE*/\n\tunsigned long st_outbound_count;        /* traffic through eroute */\n\ttime_t st_outbound_time;                /* time of last change to\n\t                                         * st_outbound_count */\n\n\tbool st_calculating;                    /* set to TRUE, if we are\n\t                                         * performing cryptographic\n\t                                         * operations on this state at\n\t                                         * this time\n\t                                         */\n\n\tchunk_t st_p1isa;                       /* Phase 1 initiator SA\n\t                                           (Payload) for HASH\n\t                                         */\n#define st_skeyid   st_skeyseed\n\tchunk_t st_skeyseed;                    /* Key material */\n#define st_skeyid_d st_skey_d\n\tchunk_t st_skey_d;                      /* KM for non-ISAKMP key derivation */\n#define st_skeyid_a st_skey_ai\n\tchunk_t st_skey_ai;                     /* KM for ISAKMP authentication */\n\tchunk_t st_skey_ar;                     /* KM for ISAKMP authentication */\n#define st_skeyid_e st_skey_ei\n\tchunk_t st_skey_ei;                     /* KM for ISAKMP encryption */\n\tchunk_t st_skey_er;                     /* KM for ISAKMP encryption */\n\tchunk_t st_skey_pi;                     /* KM for ISAKMP encryption */\n\tchunk_t st_skey_pr;                     /* KM for ISAKMP encryption */\n\tstruct connection *st_childsa;          /* connection included in AUTH */\n\tstruct traffic_selector st_ts_this, st_ts_that;\n\n\tu_char st_iv[MAX_DIGEST_LEN];           /* IV for encryption */\n\tu_char st_old_iv[MAX_DIGEST_LEN];       /* IV for encryption */\n\tu_char st_new_iv[MAX_DIGEST_LEN];\n\tu_char st_ph1_iv[MAX_DIGEST_LEN];       /* IV at end if phase 1 */\n\tunsigned int st_iv_len;\n\tunsigned int st_old_iv_len;\n\tunsigned int st_new_iv_len;\n\tunsigned int st_ph1_iv_len;\n\n\tchunk_t st_enc_key;                     /* Oakley Encryption key */\n\n\tstruct event      *st_event;            /* backpointer for certain\n\t                                           events */\n\tstruct state      *st_hashchain_next;   /* Next in list */\n\tstruct state      *st_hashchain_prev;   /* Previous in list */\n\n\tstruct hidden_variables hidden_variables;\n\n\tchar st_xauth_username[XAUTH_USERNAME_LEN];\n\tchunk_t st_xauth_password;\n\n\ttime_t st_last_liveness;\t\t/* Time of last v2 informational */\n\tbool st_pend_liveness;\t\t\t/* Waiting on an informational response */\n\tstruct event *st_liveness_event;\n\n\t/* RFC 3706 Dead Peer Detection */\n\ttime_t st_last_dpd;                     /* Time of last DPD transmit */\n\tu_int32_t st_dpd_seqno;                 /* Next R_U_THERE to send */\n\tu_int32_t st_dpd_expectseqno;           /* Next R_U_THERE_ACK\n\t                                           to receive */\n\tu_int32_t st_dpd_peerseqno;             /* global variables */\n\tstruct event       *st_dpd_event;       /* backpointer for DPD events */\n\n\tbool st_seen_nortel_vid;                /* To work around a nortel bug */\n\tstruct isakmp_quirks quirks;            /* work arounds for faults in other products */\n\tbool st_xauth_soft;                     /* XAUTH failed but policy is to soft fail */\n\tbool st_seen_fragvid;                   /* should really use st_seen_vendorid, but no one else is */\n\tbool st_seen_fragments;                 /* did we receive ike fragments from peer, if so use them in return as well */\n}",
+            "state"
+        ],
+        [
+            "typedef enum {\n\tSTF_IGNORE,             /* don't respond */\n\tSTF_INLINE,             /* set to this on second time through complete_state_trans */\n\tSTF_SUSPEND,            /* unfinished -- don't release resources */\n\tSTF_OK,                 /* success */\n\tSTF_INTERNAL_ERROR,     /* discard everything, we failed */\n\tSTF_TOOMUCHCRYPTO,      /* at this time, we can't do any more crypto,\n\t                         * so just ignore the message, and let them retransmit.\n\t                         */\n\tSTF_FATAL,              /* just stop. we can't continue. */\n\tSTF_STOLEN,             /* only used by TaProoM */\n\tSTF_FAIL,               /* discard everything, something failed.  notification_t added.\n\t                         * values STF_FAIL + x are notifications.\n\t                         */\n}",
+            "stf_status"
+        ],
+        [
+            "struct ikev2_ke {\n\tu_int8_t isak_np;               /* Next payload */\n\tu_int8_t isak_critical;\n\tu_int16_t isak_length;          /* Payload length */\n\tu_int16_t isak_group;           /* transform type */\n\tu_int16_t isak_res2;\n}",
+            "ikev2_ke"
+        ]
+    ],
+    "visitedLines_after": {
+        "programs/pluto/ikev2_parent.c": [
+            267,
+            271,
+            272,
+            273,
+            279,
+            532,
+            534,
+            535,
+            536,
+            560,
+            574,
+            579,
+            580,
+            583,
+            584,
+            586,
+            591,
+            592,
+            594,
+            595,
+            597,
+            599,
+            603,
+            615,
+            623,
+            628,
+            629,
+            632,
+            633,
+            634,
+            635,
+            638,
+            644,
+            645,
+            647,
+            649,
+            650,
+            652,
+            653,
+            654,
+            655,
+            657,
+            658,
+            666,
+            667,
+            669,
+            670,
+            671,
+            675,
+            676,
+            677,
+            678,
+            682,
+            685,
+            686,
+            688,
+            689,
+            690,
+            691,
+            697,
+            730,
+            731,
+            732,
+            733,
+            735,
+            736,
+            737,
+            738,
+            739,
+            741,
+            742,
+            743,
+            744,
+            745,
+            746,
+            747,
+            748,
+            749,
+            750,
+            751,
+            752,
+            753,
+            754,
+            760,
+            765,
+            766,
+            768,
+            769,
+            770,
+            771,
+            772,
+            773,
+            774,
+            775,
+            776,
+            779,
+            780,
+            782,
+            783,
+            786,
+            788,
+            792,
+            796,
+            797,
+            798,
+            804,
+            1116,
+            1120,
+            1121,
+            1122,
+            1128,
+            1706,
+            1708,
+            1722,
+            1724,
+            1753,
+            1757,
+            1758,
+            1759,
+            1765
+        ]
+    },
+    "visitedLines_before": {
+        "programs/pluto/ikev2_parent.c": [
+            267,
+            271,
+            272,
+            273,
+            279,
+            310,
+            534,
+            536,
+            537,
+            538,
+            562,
+            576,
+            581,
+            582,
+            585,
+            586,
+            588,
+            593,
+            594,
+            596,
+            597,
+            599,
+            601,
+            605,
+            617,
+            625,
+            630,
+            631,
+            634,
+            635,
+            636,
+            637,
+            640,
+            646,
+            647,
+            649,
+            651,
+            652,
+            654,
+            655,
+            656,
+            657,
+            659,
+            660,
+            668,
+            669,
+            671,
+            672,
+            673,
+            677,
+            678,
+            679,
+            680,
+            684,
+            687,
+            688,
+            690,
+            691,
+            692,
+            693,
+            699,
+            732,
+            734,
+            735,
+            736,
+            738,
+            739,
+            740,
+            741,
+            742,
+            743,
+            749,
+            754,
+            755,
+            757,
+            758,
+            759,
+            760,
+            761,
+            762,
+            763,
+            764,
+            765,
+            768,
+            769,
+            771,
+            772,
+            775,
+            777,
+            781,
+            785,
+            786,
+            787,
+            793,
+            823,
+            1107,
+            1111,
+            1112,
+            1113,
+            1119,
+            1149,
+            1699,
+            1701,
+            1715,
+            1716,
+            1717,
+            1746,
+            1750,
+            1751,
+            1752,
+            1758,
+            1798
+        ]
+    },
+    "visitedParams": {
+        "programs/pluto/ikev2_parent.c": [
+            [
+                "struct msg_digest *md",
+                "ikev2parent_inI1outR1"
+            ],
+            [
+                "struct msg_digest *md",
+                "ikev2parent_inI2outR2"
+            ],
+            [
+                "struct pluto_crypto_req_cont *pcrc",
+                "ikev2_parent_inI1outR1_continue"
+            ],
+            [
+                "struct pluto_crypto_req_cont *pcrc",
+                "ikev2_parent_inI2outR2_continue"
+            ],
+            [
+                "struct pluto_crypto_req_cont *pcrc",
+                "ikev2_parent_inR1outI2_continue"
+            ],
+            [
+                "struct pluto_crypto_req_cont *pcrc",
+                "ikev2_parent_outI1_continue"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_parent_outI1_continue",
+            "static void ikev2_parent_outI1_continue(struct pluto_crypto_req_cont *pcrc, /* <=== ikev2_parent_outI1_continue */ \n\t\t\t\t\tstruct pluto_crypto_req *r,\n\t\t\t\t\terr_t ugh)\n{\n\tstruct ke_continuation *ke = (struct ke_continuation *)pcrc;\n\tstruct msg_digest *md = ke->md;\n\tstruct state *const st = md->st;\n\tstf_status e;\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"ikev2 parent outI1: calculated ke+nonce, sending I1\"));\n\n\tif (st == NULL) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"%s: Request was disconnected from state\",\n\t\t       __FUNCTION__);\n\t\tif (ke->md)\n\t\t\trelease_md(ke->md);\n\t\treturn;\n\t}\n\n\t/* XXX should check out ugh */\n\tpassert(ugh == NULL);\n\tpassert(cur_state == NULL);\n\tpassert(st != NULL);\n\n\tpassert(st->st_suspended_md == ke->md);\n\tset_suspended(st, NULL); /* no longer connected or suspended */\n\n\tset_cur_state(st);\n\n\tst->st_calculating = FALSE;\n\n\te = ikev2_parent_outI1_tail(pcrc, r);\n\n\tif (ke->md != NULL) {\n\t\tcomplete_v2_state_transition(&ke->md, e);\n\t\tif (ke->md)\n\t\t\trelease_md(ke->md);\n\t}\n\treset_cur_state();\n\treset_globals();\n}",
+            267
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2parent_inI1outR1",
+            "stf_status ikev2parent_inI1outR1(struct msg_digest *md) /* <=== ikev2parent_inI1outR1 */ \n{\n\tstruct state *st = md->st;\n\tlset_t policy = POLICY_IKEV2_ALLOW;\n\tstruct connection *c = find_host_connection(&md->iface->ip_addr,\n\t\t\t\t\t\t    md->iface->port,\n\t\t\t\t\t\t    &md->sender,\n\t\t\t\t\t\t    md->sender_port,\n\t\t\t\t\t\t    POLICY_IKEV2_ALLOW);\n\n\t/* retrieve st->st_gi */\n\n#if 0\n\tif (c == NULL) {\n\t\t/*\n\t\t * make up a policy from the thing that was proposed, and see\n\t\t * if we can find a connection with that policy.\n\t\t */\n\n\t\tpb_stream pre_sa_pbs = sa_pd->pbs;\n\t\tpolicy = preparse_isakmp_sa_body(&pre_sa_pbs);\n\t\tc = find_host_connection(&md->iface->ip_addr, pluto_port,\n\t\t\t\t\t (ip_address*)NULL, md->sender_port,\n\t\t\t\t\t policy);\n\n\t}\n#endif\n\n\tif (c == NULL) {\n\n\t\t/* See if a wildcarded connection can be found.\n\t\t * We cannot pick the right connection, so we're making a guess.\n\t\t * All Road Warrior connections are fair game:\n\t\t * we pick the first we come across (if any).\n\t\t * If we don't find any, we pick the first opportunistic\n\t\t * with the smallest subnet that includes the peer.\n\t\t * There is, of course, no necessary relationship between\n\t\t * an Initiator's address and that of its client,\n\t\t * but Food Groups kind of assumes one.\n\t\t */\n\t\t{\n\t\t\tstruct connection *d;\n\t\t\td = find_host_connection(&md->iface->ip_addr,\n\t\t\t\t\t\t pluto_port,\n\t\t\t\t\t\t (ip_address*)NULL,\n\t\t\t\t\t\t md->sender_port, policy);\n\n\t\t\tfor (; d != NULL; d = d->hp_next) {\n\t\t\t\tif (d->kind == CK_GROUP) {\n\t\t\t\t\t/* ignore */\n\t\t\t\t} else {\n\t\t\t\t\tif (d->kind == CK_TEMPLATE &&\n\t\t\t\t\t    !(d->policy & POLICY_OPPO)) {\n\t\t\t\t\t\t/* must be Road Warrior: we have a winner */\n\t\t\t\t\t\tc = d;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\t}\n\n\t\t\t\t\t/* Opportunistic or Shunt: pick tightest match */\n\t\t\t\t\tif (addrinsubnet(&md->sender,\n\t\t\t\t\t\t\t &d->spd.that.client)\n\t\t\t\t\t    &&\n\t\t\t\t\t    (c == NULL ||\n\t\t\t\t\t     !subnetinsubnet(&c->spd.that.\n\t\t\t\t\t\t\t     client,\n\t\t\t\t\t\t\t     &d->spd.that.\n\t\t\t\t\t\t\t     client)))\n\t\t\t\t\t\tc = d;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif (c == NULL) {\n\t\t\tloglog(RC_LOG_SERIOUS, \"initial parent SA message received on %s:%u\"\n\t\t\t       \" but no connection has been authorized%s%s\",\n\t\t\t       ip_str(\n\t\t\t\t       &md->iface->ip_addr),\n\t\t\t       ntohs(portof(&md->iface->ip_addr)),\n\t\t\t       (policy != LEMPTY) ? \" with policy=\" : \"\",\n\t\t\t       (policy !=\n\t\t\t\tLEMPTY) ? bitnamesof(sa_policy_bit_names,\n\t\t\t\t\t\t     policy) : \"\");\n\t\t\treturn STF_FAIL + v2N_NO_PROPOSAL_CHOSEN;\n\t\t}\n\t\tif (c->kind != CK_TEMPLATE) {\n\t\t\tloglog(RC_LOG_SERIOUS, \"initial parent SA message received on %s:%u\"\n\t\t\t       \" but \\\"%s\\\" forbids connection\",\n\t\t\t       ip_str(\n\t\t\t\t       &md->iface->ip_addr), pluto_port,\n\t\t\t       c->name);\n\t\t\treturn STF_FAIL + v2N_NO_PROPOSAL_CHOSEN;\n\t\t}\n\t\tc = rw_instantiate(c, &md->sender, NULL, NULL);\n\n\t} else {\n\t\t/* we found a non-wildcard conn. double check if it needs instantiation anyway (eg vnet=) */\n\t\t/* vnet=/vhost= should have set CK_TEMPLATE on connection loading */\n\t\tif ((c->kind == CK_TEMPLATE) && c->spd.that.virt) {\n\t\t\tDBG(DBG_CONTROL,\n\t\t\t    DBG_log(\n\t\t\t\t    \"local endpoint has virt (vnet/vhost) set without wildcards - needs instantiation\"));\n\t\t\tc = rw_instantiate(c, &md->sender, NULL, NULL);\n\t\t} else if ((c->kind == CK_TEMPLATE) &&\n\t\t\t   (c->policy & POLICY_IKEV2_ALLOW_NARROWING)) {\n\t\t\tDBG(DBG_CONTROL,\n\t\t\t    DBG_log(\n\t\t\t\t    \"local endpoint has narrowing=yes - needs instantiation\"));\n\t\t\tc = rw_instantiate(c, &md->sender, NULL, NULL);\n\t\t}\n\t}\n\n\tDBG_log(\"found connection: %s\\n\", c ? c->name : \"<none>\");\n\n\tif (!st) {\n\t\tst = new_state();\n\t\t/* set up new state */\n\t\tmemcpy(st->st_icookie, md->hdr.isa_icookie, COOKIE_SIZE);\n\t\t/* initialize_new_state expects valid icookie/rcookie values, so create it now */\n\t\tget_cookie(FALSE, st->st_rcookie, COOKIE_SIZE, &md->sender);\n\t\tinitialize_new_state(st, c, policy, 0, NULL_FD,\n\t\t\t\t     pcim_stranger_crypto);\n\t\tst->st_ikev2 = TRUE;\n\t\tchange_state(st, STATE_PARENT_R1);\n\t\tst->st_msgid_lastack = INVALID_MSGID;\n\t\tst->st_msgid_nextuse = 0;\n\n\t\tmd->st = st;\n\t\tmd->from_state = STATE_IKEv2_BASE;\n\t}\n\n\t/* check,as a responder, are we under dos attack or not\n\t * if yes go to 6 message exchange mode. it is a config option for now.\n\t * TBD set force_busy dynamically\n\t * Paul: Can we check for STF_TOOMUCHCRYPTO ?\n\t */\n\tif (force_busy == TRUE) {\n\t\tu_char dcookie[SHA1_DIGEST_SIZE];\n\t\tchunk_t dc;\n\t\tikev2_get_dcookie( dcookie, st->st_ni, &md->sender,\n\t\t\t\t   st->st_icookie);\n\t\tdc.ptr = dcookie;\n\t\tdc.len = SHA1_DIGEST_SIZE;\n\n\t\t/* check if I1 packet contian KE and a v2N payload with type COOKIE */\n\t\tif ( md->chain[ISAKMP_NEXT_v2KE] &&\n\t\t     md->chain[ISAKMP_NEXT_v2N] &&\n\t\t     (md->chain[ISAKMP_NEXT_v2N]->payload.v2n.isan_type ==\n\t\t      v2N_COOKIE)) {\n\t\t\tu_int8_t spisize;\n\t\t\tconst pb_stream *dc_pbs;\n\t\t\tchunk_t blob;\n\t\t\tDBG(DBG_CONTROLMORE,\n\t\t\t    DBG_log(\"received a DOS cookie in I1 verify it\"));\n\t\t\t/* we received dcookie we send earlier verify it */\n\t\t\tspisize =\n\t\t\t\tmd->chain[ISAKMP_NEXT_v2N]->payload.v2n.\n\t\t\t\tisan_spisize;\n\t\t\tdc_pbs = &md->chain[ISAKMP_NEXT_v2N]->pbs;\n\t\t\tblob.ptr = dc_pbs->cur + spisize;\n\t\t\tblob.len = pbs_left(dc_pbs) - spisize;\n\t\t\tDBG(DBG_CONTROLMORE,\n\t\t\t    DBG_dump_chunk(\"dcookie received in I1 Packet\",\n\t\t\t\t\t   blob);\n\t\t\t    DBG_dump(\"dcookie computed\", dcookie,\n\t\t\t\t     SHA1_DIGEST_SIZE));\n\n\t\t\tif (memcmp(blob.ptr, dcookie, SHA1_DIGEST_SIZE) != 0) {\n\t\t\t\tlibreswan_log(\n\t\t\t\t\t\"mismatch in DOS v2N_COOKIE,send a new one\");\n\t\t\t\tSEND_NOTIFICATION_AA(v2N_COOKIE, &dc);\n\t\t\t\treturn STF_FAIL + v2N_INVALID_IKE_SPI;\n\t\t\t}\n\t\t\tDBG(DBG_CONTROLMORE,\n\t\t\t    DBG_log(\"dcookie received match with computed one\"));\n\t\t} else {\n\t\t\t/* we are under DOS attack I1 contains no DOS COOKIE */\n\t\t\tDBG(DBG_CONTROLMORE,\n\t\t\t    DBG_log(\n\t\t\t\t    \"busy mode on. receieved I1 without a valid dcookie\");\n\t\t\t    DBG_log(\"send a dcookie and forget this state\"));\n\t\t\tSEND_NOTIFICATION_AA(v2N_COOKIE, &dc);\n\t\t\treturn STF_FAIL;\n\t\t}\n\t} else {\n\t\tDBG(DBG_CONTROLMORE,\n\t\t    DBG_log(\"will not send/process a dcookie\"));\n\n\t}\n\n\t/*\n\t * We have to agree to the DH group before we actually know who\n\t * we are talking to.   If we support the group, we use it.\n\t *\n\t * It is really too hard here to go through all the possible policies\n\t * that might permit this group.  If we think we are being DOS'ed\n\t * then we should demand a cookie.\n\t */\n\t{\n\t\tstruct ikev2_ke *ke;\n\t\tchar fromname[ADDRTOT_BUF];\n\t\taddrtot(&md->sender, 0, fromname, ADDRTOT_BUF);\n\n\t\tif (!md->chain[ISAKMP_NEXT_v2KE]) {\n\t\t\t/* is this a notify? If so, log it */\n\t\t\tif(md->chain[ISAKMP_NEXT_v2N]) {\n\t\t\t\tlibreswan_log(\"Received Notify(%d): %s\",\n\t\t\t\t\tmd->chain[ISAKMP_NEXT_v2N]->payload.v2n.isan_type,\n\t\t\t\t\tenum_name(&ikev2_notify_names,\n\t\t\t\t\t\tmd->chain[ISAKMP_NEXT_v2N]->payload.v2n.isan_type));\n\t\t\t}\n\t\t\tlibreswan_log(\n\t\t\t\t\"rejecting I1 from %s:%u, no KE payload present\",\n\t\t\t\tfromname, md->sender_port);\n\t\t\treturn STF_FAIL + v2N_INVALID_KE_PAYLOAD;\n\t\t}\n\t\tke = &md->chain[ISAKMP_NEXT_v2KE]->payload.v2ke;\n\n\t\tst->st_oakley.group = lookup_group(ke->isak_group);\n\t\tif (st->st_oakley.group == NULL) {\n\t\t\tlibreswan_log(\n\t\t\t\t\"rejecting I1 from %s:%u, invalid DH group=%u\",\n\t\t\t\tfromname, md->sender_port,\n\t\t\t\tke->isak_group);\n\t\t\treturn STF_FAIL + v2N_INVALID_KE_PAYLOAD;\n\t\t}\n\t}\n\n\t/* now. we need to go calculate the nonce, and the KE */\n\t{\n\t\tstruct ke_continuation *ke = alloc_thing(\n\t\t\tstruct ke_continuation,\n\t\t\t\"ikev2_inI1outR1 KE\");\n\t\tstf_status e;\n\n\t\tke->md = md;\n\t\tset_suspended(st, ke->md);\n\n\t\tif (!st->st_sec_in_use) {\n\t\t\tpcrc_init(&ke->ke_pcrc);\n\t\t\tke->ke_pcrc.pcrc_func =\n\t\t\t\tikev2_parent_inI1outR1_continue;\n\t\t\te = build_ke(&ke->ke_pcrc, st, st->st_oakley.group,\n\t\t\t\t     pcim_stranger_crypto);\n\t\t\tif (e != STF_SUSPEND && e != STF_INLINE) {\n\t\t\t\tloglog(RC_CRYPTOFAILED, \"system too busy\");\n\t\t\t\tdelete_state(st);\n\t\t\t}\n\t\t} else {\n\t\t\te =\n\t\t\t\tikev2_parent_inI1outR1_tail((struct\n\t\t\t\t\t\t\t     pluto_crypto_req_cont\n\t\t\t\t\t\t\t     *)ke,\n\t\t\t\t\t\t\t    NULL);\n\t\t}\n\n\t\treset_globals();\n\n\t\treturn e;\n\t}\n}",
+            532
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_parent_inI1outR1_continue",
+            "static void ikev2_parent_inI1outR1_continue(struct pluto_crypto_req_cont *pcrc, /* <=== ikev2_parent_inI1outR1_continue */ \n\t\t\t\t\t    struct pluto_crypto_req *r,\n\t\t\t\t\t    err_t ugh)\n{\n\tstruct ke_continuation *ke = (struct ke_continuation *)pcrc;\n\tstruct msg_digest *md = ke->md;\n\tstruct state *const st = md->st;\n\tstf_status e;\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"ikev2 parent inI1outR1: calculated ke+nonce, sending R1\"));\n\n\tif (st == NULL) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"%s: Request was disconnected from state\",\n\t\t       __FUNCTION__);\n\t\tif (ke->md)\n\t\t\trelease_md(ke->md);\n\t\treturn;\n\t}\n\n\t/* XXX should check out ugh */\n\tpassert(ugh == NULL);\n\tpassert(cur_state == NULL);\n\tpassert(st != NULL);\n\n\tpassert(st->st_suspended_md == ke->md);\n\tset_suspended(st, NULL); /* no longer connected or suspended */\n\n\tset_cur_state(st);\n\n\tst->st_calculating = FALSE;\n\n\te = ikev2_parent_inI1outR1_tail(pcrc, r);\n\n\tif (ke->md != NULL) {\n\t\tcomplete_v2_state_transition(&ke->md, e);\n\t\tif (ke->md)\n\t\t\trelease_md(ke->md);\n\t}\n\treset_globals();\n}",
+            792
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_parent_inR1outI2_continue",
+            "static void ikev2_parent_inR1outI2_continue(struct pluto_crypto_req_cont *pcrc, /* <=== ikev2_parent_inR1outI2_continue */ \n\t\t\t\t\t    struct pluto_crypto_req *r,\n\t\t\t\t\t    err_t ugh)\n{\n\tstruct dh_continuation *dh = (struct dh_continuation *)pcrc;\n\tstruct msg_digest *md = dh->md;\n\tstruct state *const st = md->st;\n\tstf_status e;\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"ikev2 parent inR1outI2: calculating g^{xy}, sending I2\"));\n\n\tif (st == NULL) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"%s: Request was disconnected from state\",\n\t\t       __FUNCTION__);\n\t\tif (dh->md)\n\t\t\trelease_md(dh->md);\n\t\treturn;\n\t}\n\n\t/* XXX should check out ugh */\n\tpassert(ugh == NULL);\n\tpassert(cur_state == NULL);\n\tpassert(st != NULL);\n\n\tpassert(st->st_suspended_md == dh->md);\n\tset_suspended(st, NULL); /* no longer connected or suspended */\n\n\tset_cur_state(st);\n\n\tst->st_calculating = FALSE;\n\n\te = ikev2_parent_inR1outI2_tail(pcrc, r);\n\n\tif (dh->md != NULL) {\n\t\tcomplete_v2_state_transition(&dh->md, e);\n\t\tif (dh->md)\n\t\t\trelease_md(dh->md);\n\t}\n\treset_globals();\n}",
+            1116
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2parent_inI2outR2",
+            "stf_status ikev2parent_inI2outR2(struct msg_digest *md) /* <=== ikev2parent_inI2outR2 */ \n{\n\tstruct state *st = md->st;\n\n\t/* struct connection *c = st->st_connection; */\n\n\t/*\n\t * the initiator sent us an encrypted payload. We need to calculate\n\t * our g^xy, and skeyseed values, and then decrypt the payload.\n\t */\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\n\t\t    \"ikev2 parent inI2outR2: calculating g^{xy} in order to decrypt I2\"));\n\n\t/* verify that there is in fact an encrypted payload */\n\tif (!md->chain[ISAKMP_NEXT_v2E]) {\n\t\tlibreswan_log(\"R2 state should receive an encrypted payload\");\n\t\treset_globals(); /* XXX suspicious - why was this deemed neccessary? */\n\t\treturn STF_FATAL;\n\t}\n\n\t/* now. we need to go calculate the g^xy */\n\t{\n\t\tstruct dh_continuation *dh = alloc_thing(\n\t\t\tstruct dh_continuation,\n\t\t\t\"ikev2_inI2outR2 KE\");\n\t\tstf_status e;\n\n\t\tdh->md = md;\n\t\tset_suspended(st, dh->md);\n\n\t\tpcrc_init(&dh->dh_pcrc);\n\t\tdh->dh_pcrc.pcrc_func = ikev2_parent_inI2outR2_continue;\n\t\te = start_dh_v2(&dh->dh_pcrc, st, st->st_import, RESPONDER,\n\t\t\t\tst->st_oakley.groupnum);\n\t\tif (e != STF_SUSPEND && e != STF_INLINE) {\n\t\t\tloglog(RC_CRYPTOFAILED, \"system too busy\");\n\t\t\tdelete_state(st);\n\t\t}\n\n\t\treset_globals();\n\n\t\treturn e;\n\t}\n}",
+            1706
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_parent_inI2outR2_continue",
+            "static void ikev2_parent_inI2outR2_continue(struct pluto_crypto_req_cont *pcrc, /* <=== ikev2_parent_inI2outR2_continue */ \n\t\t\t\t\t    struct pluto_crypto_req *r,\n\t\t\t\t\t    err_t ugh)\n{\n\tstruct dh_continuation *dh = (struct dh_continuation *)pcrc;\n\tstruct msg_digest *md = dh->md;\n\tstruct state *const st = md->st;\n\tstf_status e;\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"ikev2 parent inI2outR2: calculating g^{xy}, sending R2\"));\n\n\tif (st == NULL) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"%s: Request was disconnected from state\",\n\t\t       __FUNCTION__);\n\t\tif (dh->md)\n\t\t\trelease_md(dh->md);\n\t\treturn;\n\t}\n\n\t/* XXX should check out ugh */\n\tpassert(ugh == NULL);\n\tpassert(cur_state == NULL);\n\tpassert(st != NULL);\n\n\tpassert(st->st_suspended_md == dh->md);\n\tset_suspended(st, NULL); /* no longer connected or suspended */\n\n\tset_cur_state(st);\n\n\tst->st_calculating = FALSE;\n\n\te = ikev2_parent_inI2outR2_tail(pcrc, r);\n\tif ( e > STF_FAIL) {\n\t\t/* we do not send a notify because we are the initiator that could be responding to an error notification */\n\t\tint v2_notify_num = e - STF_FAIL;\n\t\tDBG_log(\n\t\t\t\"ikev2_parent_inI2outR2_tail returned STF_FAIL with %s\",\n\t\t\tenum_name(&ikev2_notify_names, v2_notify_num));\n\t} else if ( e != STF_OK) {\n\t\tDBG_log(\"ikev2_parent_inI2outR2_tail returned %s\",\n\t\t\tenum_name(&stfstatus_name, e));\n\t}\n\n\tif (dh->md != NULL) {\n\t\tcomplete_v2_state_transition(&dh->md, e);\n\t\tif (dh->md)\n\t\t\trelease_md(dh->md);\n\t}\n\treset_globals();\n}",
+            1753
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_parent_outI1_continue",
+            "static void ikev2_parent_outI1_continue(struct pluto_crypto_req_cont *pcrc, /* <=== ikev2_parent_outI1_continue */ \n\t\t\t\t\tstruct pluto_crypto_req *r,\n\t\t\t\t\terr_t ugh)\n{\n\tstruct ke_continuation *ke = (struct ke_continuation *)pcrc;\n\tstruct msg_digest *md = ke->md;\n\tstruct state *const st = md->st;\n\tstf_status e;\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"ikev2 parent outI1: calculated ke+nonce, sending I1\"));\n\n\tif (st == NULL) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"%s: Request was disconnected from state\",\n\t\t       __FUNCTION__);\n\t\tif (ke->md)\n\t\t\trelease_md(ke->md);\n\t\treturn;\n\t}\n\n\t/* XXX should check out ugh */\n\tpassert(ugh == NULL);\n\tpassert(cur_state == NULL);\n\tpassert(st != NULL);\n\n\tpassert(st->st_suspended_md == ke->md);\n\tset_suspended(st, NULL); /* no longer connected or suspended */\n\n\tset_cur_state(st);\n\n\tst->st_calculating = FALSE;\n\n\te = ikev2_parent_outI1_tail(pcrc, r);\n\n\tif (ke->md != NULL) {\n\t\tcomplete_v2_state_transition(&ke->md, e);\n\t\tif (ke->md)\n\t\t\trelease_md(ke->md);\n\t}\n\treset_cur_state();\n\treset_globals();\n\n\tpassert(GLOBALS_ARE_RESET());\n}",
+            267
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2parent_inI1outR1",
+            "stf_status ikev2parent_inI1outR1(struct msg_digest *md) /* <=== ikev2parent_inI1outR1 */ \n{\n\tstruct state *st = md->st;\n\tlset_t policy = POLICY_IKEV2_ALLOW;\n\tstruct connection *c = find_host_connection(&md->iface->ip_addr,\n\t\t\t\t\t\t    md->iface->port,\n\t\t\t\t\t\t    &md->sender,\n\t\t\t\t\t\t    md->sender_port,\n\t\t\t\t\t\t    POLICY_IKEV2_ALLOW);\n\n\t/* retrieve st->st_gi */\n\n#if 0\n\tif (c == NULL) {\n\t\t/*\n\t\t * make up a policy from the thing that was proposed, and see\n\t\t * if we can find a connection with that policy.\n\t\t */\n\n\t\tpb_stream pre_sa_pbs = sa_pd->pbs;\n\t\tpolicy = preparse_isakmp_sa_body(&pre_sa_pbs);\n\t\tc = find_host_connection(&md->iface->ip_addr, pluto_port,\n\t\t\t\t\t (ip_address*)NULL, md->sender_port,\n\t\t\t\t\t policy);\n\n\t}\n#endif\n\n\tif (c == NULL) {\n\n\t\t/* See if a wildcarded connection can be found.\n\t\t * We cannot pick the right connection, so we're making a guess.\n\t\t * All Road Warrior connections are fair game:\n\t\t * we pick the first we come across (if any).\n\t\t * If we don't find any, we pick the first opportunistic\n\t\t * with the smallest subnet that includes the peer.\n\t\t * There is, of course, no necessary relationship between\n\t\t * an Initiator's address and that of its client,\n\t\t * but Food Groups kind of assumes one.\n\t\t */\n\t\t{\n\t\t\tstruct connection *d;\n\t\t\td = find_host_connection(&md->iface->ip_addr,\n\t\t\t\t\t\t pluto_port,\n\t\t\t\t\t\t (ip_address*)NULL,\n\t\t\t\t\t\t md->sender_port, policy);\n\n\t\t\tfor (; d != NULL; d = d->hp_next) {\n\t\t\t\tif (d->kind == CK_GROUP) {\n\t\t\t\t\t/* ignore */\n\t\t\t\t} else {\n\t\t\t\t\tif (d->kind == CK_TEMPLATE &&\n\t\t\t\t\t    !(d->policy & POLICY_OPPO)) {\n\t\t\t\t\t\t/* must be Road Warrior: we have a winner */\n\t\t\t\t\t\tc = d;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\t}\n\n\t\t\t\t\t/* Opportunistic or Shunt: pick tightest match */\n\t\t\t\t\tif (addrinsubnet(&md->sender,\n\t\t\t\t\t\t\t &d->spd.that.client)\n\t\t\t\t\t    &&\n\t\t\t\t\t    (c == NULL ||\n\t\t\t\t\t     !subnetinsubnet(&c->spd.that.\n\t\t\t\t\t\t\t     client,\n\t\t\t\t\t\t\t     &d->spd.that.\n\t\t\t\t\t\t\t     client)))\n\t\t\t\t\t\tc = d;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif (c == NULL) {\n\t\t\tloglog(RC_LOG_SERIOUS, \"initial parent SA message received on %s:%u\"\n\t\t\t       \" but no connection has been authorized%s%s\",\n\t\t\t       ip_str(\n\t\t\t\t       &md->iface->ip_addr),\n\t\t\t       ntohs(portof(&md->iface->ip_addr)),\n\t\t\t       (policy != LEMPTY) ? \" with policy=\" : \"\",\n\t\t\t       (policy !=\n\t\t\t\tLEMPTY) ? bitnamesof(sa_policy_bit_names,\n\t\t\t\t\t\t     policy) : \"\");\n\t\t\treturn STF_FAIL + v2N_NO_PROPOSAL_CHOSEN;\n\t\t}\n\t\tif (c->kind != CK_TEMPLATE) {\n\t\t\tloglog(RC_LOG_SERIOUS, \"initial parent SA message received on %s:%u\"\n\t\t\t       \" but \\\"%s\\\" forbids connection\",\n\t\t\t       ip_str(\n\t\t\t\t       &md->iface->ip_addr), pluto_port,\n\t\t\t       c->name);\n\t\t\treturn STF_FAIL + v2N_NO_PROPOSAL_CHOSEN;\n\t\t}\n\t\tc = rw_instantiate(c, &md->sender, NULL, NULL);\n\n\t} else {\n\t\t/* we found a non-wildcard conn. double check if it needs instantiation anyway (eg vnet=) */\n\t\t/* vnet=/vhost= should have set CK_TEMPLATE on connection loading */\n\t\tif ((c->kind == CK_TEMPLATE) && c->spd.that.virt) {\n\t\t\tDBG(DBG_CONTROL,\n\t\t\t    DBG_log(\n\t\t\t\t    \"local endpoint has virt (vnet/vhost) set without wildcards - needs instantiation\"));\n\t\t\tc = rw_instantiate(c, &md->sender, NULL, NULL);\n\t\t} else if ((c->kind == CK_TEMPLATE) &&\n\t\t\t   (c->policy & POLICY_IKEV2_ALLOW_NARROWING)) {\n\t\t\tDBG(DBG_CONTROL,\n\t\t\t    DBG_log(\n\t\t\t\t    \"local endpoint has narrowing=yes - needs instantiation\"));\n\t\t\tc = rw_instantiate(c, &md->sender, NULL, NULL);\n\t\t}\n\t}\n\n\tDBG_log(\"found connection: %s\\n\", c ? c->name : \"<none>\");\n\n\tif (!st) {\n\t\tst = new_state();\n\t\t/* set up new state */\n\t\tmemcpy(st->st_icookie, md->hdr.isa_icookie, COOKIE_SIZE);\n\t\t/* initialize_new_state expects valid icookie/rcookie values, so create it now */\n\t\tget_cookie(FALSE, st->st_rcookie, COOKIE_SIZE, &md->sender);\n\t\tinitialize_new_state(st, c, policy, 0, NULL_FD,\n\t\t\t\t     pcim_stranger_crypto);\n\t\tst->st_ikev2 = TRUE;\n\t\tchange_state(st, STATE_PARENT_R1);\n\t\tst->st_msgid_lastack = INVALID_MSGID;\n\t\tst->st_msgid_nextuse = 0;\n\n\t\tmd->st = st;\n\t\tmd->from_state = STATE_IKEv2_BASE;\n\t}\n\n\t/* check,as a responder, are we under dos attack or not\n\t * if yes go to 6 message exchange mode. it is a config option for now.\n\t * TBD set force_busy dynamically\n\t * Paul: Can we check for STF_TOOMUCHCRYPTO ?\n\t */\n\tif (force_busy == TRUE) {\n\t\tu_char dcookie[SHA1_DIGEST_SIZE];\n\t\tchunk_t dc;\n\t\tikev2_get_dcookie( dcookie, st->st_ni, &md->sender,\n\t\t\t\t   st->st_icookie);\n\t\tdc.ptr = dcookie;\n\t\tdc.len = SHA1_DIGEST_SIZE;\n\n\t\t/* check if I1 packet contian KE and a v2N payload with type COOKIE */\n\t\tif ( md->chain[ISAKMP_NEXT_v2KE] &&\n\t\t     md->chain[ISAKMP_NEXT_v2N] &&\n\t\t     (md->chain[ISAKMP_NEXT_v2N]->payload.v2n.isan_type ==\n\t\t      v2N_COOKIE)) {\n\t\t\tu_int8_t spisize;\n\t\t\tconst pb_stream *dc_pbs;\n\t\t\tchunk_t blob;\n\t\t\tDBG(DBG_CONTROLMORE,\n\t\t\t    DBG_log(\"received a DOS cookie in I1 verify it\"));\n\t\t\t/* we received dcookie we send earlier verify it */\n\t\t\tspisize =\n\t\t\t\tmd->chain[ISAKMP_NEXT_v2N]->payload.v2n.\n\t\t\t\tisan_spisize;\n\t\t\tdc_pbs = &md->chain[ISAKMP_NEXT_v2N]->pbs;\n\t\t\tblob.ptr = dc_pbs->cur + spisize;\n\t\t\tblob.len = pbs_left(dc_pbs) - spisize;\n\t\t\tDBG(DBG_CONTROLMORE,\n\t\t\t    DBG_dump_chunk(\"dcookie received in I1 Packet\",\n\t\t\t\t\t   blob);\n\t\t\t    DBG_dump(\"dcookie computed\", dcookie,\n\t\t\t\t     SHA1_DIGEST_SIZE));\n\n\t\t\tif (memcmp(blob.ptr, dcookie, SHA1_DIGEST_SIZE) != 0) {\n\t\t\t\tlibreswan_log(\n\t\t\t\t\t\"mismatch in DOS v2N_COOKIE,send a new one\");\n\t\t\t\tSEND_NOTIFICATION_AA(v2N_COOKIE, &dc);\n\t\t\t\treturn STF_FAIL + v2N_INVALID_IKE_SPI;\n\t\t\t}\n\t\t\tDBG(DBG_CONTROLMORE,\n\t\t\t    DBG_log(\"dcookie received match with computed one\"));\n\t\t} else {\n\t\t\t/* we are under DOS attack I1 contains no DOS COOKIE */\n\t\t\tDBG(DBG_CONTROLMORE,\n\t\t\t    DBG_log(\n\t\t\t\t    \"busy mode on. receieved I1 without a valid dcookie\");\n\t\t\t    DBG_log(\"send a dcookie and forget this state\"));\n\t\t\tSEND_NOTIFICATION_AA(v2N_COOKIE, &dc);\n\t\t\treturn STF_FAIL;\n\t\t}\n\t} else {\n\t\tDBG(DBG_CONTROLMORE,\n\t\t    DBG_log(\"will not send/process a dcookie\"));\n\n\t}\n\n\t/*\n\t * We have to agree to the DH group before we actually know who\n\t * we are talking to.   If we support the group, we use it.\n\t *\n\t * It is really too hard here to go through all the possible policies\n\t * that might permit this group.  If we think we are being DOS'ed\n\t * then we should demand a cookie.\n\t */\n\t{\n\t\tstruct ikev2_ke *ke;\n\t\tke = &md->chain[ISAKMP_NEXT_v2KE]->payload.v2ke;\n\n\t\tst->st_oakley.group = lookup_group(ke->isak_group);\n\t\tif (st->st_oakley.group == NULL) {\n\t\t\tchar fromname[ADDRTOT_BUF];\n\n\t\t\taddrtot(&md->sender, 0, fromname, ADDRTOT_BUF);\n\t\t\tlibreswan_log(\n\t\t\t\t\"rejecting I1 from %s:%u, invalid DH group=%u\",\n\t\t\t\tfromname, md->sender_port,\n\t\t\t\tke->isak_group);\n\t\t\treturn v2N_INVALID_KE_PAYLOAD;\n\t\t}\n\t}\n\n\t/* now. we need to go calculate the nonce, and the KE */\n\t{\n\t\tstruct ke_continuation *ke = alloc_thing(\n\t\t\tstruct ke_continuation,\n\t\t\t\"ikev2_inI1outR1 KE\");\n\t\tstf_status e;\n\n\t\tke->md = md;\n\t\tset_suspended(st, ke->md);\n\n\t\tif (!st->st_sec_in_use) {\n\t\t\tpcrc_init(&ke->ke_pcrc);\n\t\t\tke->ke_pcrc.pcrc_func =\n\t\t\t\tikev2_parent_inI1outR1_continue;\n\t\t\te = build_ke(&ke->ke_pcrc, st, st->st_oakley.group,\n\t\t\t\t     pcim_stranger_crypto);\n\t\t\tif (e != STF_SUSPEND && e != STF_INLINE) {\n\t\t\t\tloglog(RC_CRYPTOFAILED, \"system too busy\");\n\t\t\t\tdelete_state(st);\n\t\t\t}\n\t\t} else {\n\t\t\te =\n\t\t\t\tikev2_parent_inI1outR1_tail((struct\n\t\t\t\t\t\t\t     pluto_crypto_req_cont\n\t\t\t\t\t\t\t     *)ke,\n\t\t\t\t\t\t\t    NULL);\n\t\t}\n\n\t\treset_globals();\n\n\t\treturn e;\n\t}\n}",
+            534
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_parent_inI1outR1_continue",
+            "static void ikev2_parent_inI1outR1_continue(struct pluto_crypto_req_cont *pcrc, /* <=== ikev2_parent_inI1outR1_continue */ \n\t\t\t\t\t    struct pluto_crypto_req *r,\n\t\t\t\t\t    err_t ugh)\n{\n\tstruct ke_continuation *ke = (struct ke_continuation *)pcrc;\n\tstruct msg_digest *md = ke->md;\n\tstruct state *const st = md->st;\n\tstf_status e;\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"ikev2 parent inI1outR1: calculated ke+nonce, sending R1\"));\n\n\tif (st == NULL) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"%s: Request was disconnected from state\",\n\t\t       __FUNCTION__);\n\t\tif (ke->md)\n\t\t\trelease_md(ke->md);\n\t\treturn;\n\t}\n\n\t/* XXX should check out ugh */\n\tpassert(ugh == NULL);\n\tpassert(cur_state == NULL);\n\tpassert(st != NULL);\n\n\tpassert(st->st_suspended_md == ke->md);\n\tset_suspended(st, NULL); /* no longer connected or suspended */\n\n\tset_cur_state(st);\n\n\tst->st_calculating = FALSE;\n\n\te = ikev2_parent_inI1outR1_tail(pcrc, r);\n\n\tif (ke->md != NULL) {\n\t\tcomplete_v2_state_transition(&ke->md, e);\n\t\tif (ke->md)\n\t\t\trelease_md(ke->md);\n\t}\n\treset_globals();\n\n\tpassert(GLOBALS_ARE_RESET());\n}",
+            781
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_parent_inR1outI2_continue",
+            "static void ikev2_parent_inR1outI2_continue(struct pluto_crypto_req_cont *pcrc, /* <=== ikev2_parent_inR1outI2_continue */ \n\t\t\t\t\t    struct pluto_crypto_req *r,\n\t\t\t\t\t    err_t ugh)\n{\n\tstruct dh_continuation *dh = (struct dh_continuation *)pcrc;\n\tstruct msg_digest *md = dh->md;\n\tstruct state *const st = md->st;\n\tstf_status e;\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"ikev2 parent inR1outI2: calculating g^{xy}, sending I2\"));\n\n\tif (st == NULL) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"%s: Request was disconnected from state\",\n\t\t       __FUNCTION__);\n\t\tif (dh->md)\n\t\t\trelease_md(dh->md);\n\t\treturn;\n\t}\n\n\t/* XXX should check out ugh */\n\tpassert(ugh == NULL);\n\tpassert(cur_state == NULL);\n\tpassert(st != NULL);\n\n\tpassert(st->st_suspended_md == dh->md);\n\tset_suspended(st, NULL); /* no longer connected or suspended */\n\n\tset_cur_state(st);\n\n\tst->st_calculating = FALSE;\n\n\te = ikev2_parent_inR1outI2_tail(pcrc, r);\n\n\tif (dh->md != NULL) {\n\t\tcomplete_v2_state_transition(&dh->md, e);\n\t\tif (dh->md)\n\t\t\trelease_md(dh->md);\n\t}\n\treset_globals();\n\n\tpassert(GLOBALS_ARE_RESET());\n}",
+            1107
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2parent_inI2outR2",
+            "stf_status ikev2parent_inI2outR2(struct msg_digest *md) /* <=== ikev2parent_inI2outR2 */ \n{\n\tstruct state *st = md->st;\n\n\t/* struct connection *c = st->st_connection; */\n\n\t/*\n\t * the initiator sent us an encrypted payload. We need to calculate\n\t * our g^xy, and skeyseed values, and then decrypt the payload.\n\t */\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\n\t\t    \"ikev2 parent inI2outR2: calculating g^{xy} in order to decrypt I2\"));\n\n\t/* verify that there is in fact an encrypted payload */\n\tif (!md->chain[ISAKMP_NEXT_v2E]) {\n\t\tlibreswan_log(\"R2 state should receive an encrypted payload\");\n\t\treset_globals();\n\t\treturn STF_FATAL;\n\t}\n\n\t/* now. we need to go calculate the g^xy */\n\t{\n\t\tstruct dh_continuation *dh = alloc_thing(\n\t\t\tstruct dh_continuation,\n\t\t\t\"ikev2_inI2outR2 KE\");\n\t\tstf_status e;\n\n\t\tdh->md = md;\n\t\tset_suspended(st, dh->md);\n\n\t\tpcrc_init(&dh->dh_pcrc);\n\t\tdh->dh_pcrc.pcrc_func = ikev2_parent_inI2outR2_continue;\n\t\te = start_dh_v2(&dh->dh_pcrc, st, st->st_import, RESPONDER,\n\t\t\t\tst->st_oakley.groupnum);\n\t\tif (e != STF_SUSPEND && e != STF_INLINE) {\n\t\t\tloglog(RC_CRYPTOFAILED, \"system too busy\");\n\t\t\tdelete_state(st);\n\t\t}\n\n\t\treset_globals();\n\n\t\treturn e;\n\t}\n}",
+            1699
+        ],
+        [
+            "programs/pluto/ikev2_parent.c",
+            "ikev2_parent_inI2outR2_continue",
+            "static void ikev2_parent_inI2outR2_continue(struct pluto_crypto_req_cont *pcrc, /* <=== ikev2_parent_inI2outR2_continue */ \n\t\t\t\t\t    struct pluto_crypto_req *r,\n\t\t\t\t\t    err_t ugh)\n{\n\tstruct dh_continuation *dh = (struct dh_continuation *)pcrc;\n\tstruct msg_digest *md = dh->md;\n\tstruct state *const st = md->st;\n\tstf_status e;\n\n\tDBG(DBG_CONTROLMORE,\n\t    DBG_log(\"ikev2 parent inI2outR2: calculating g^{xy}, sending R2\"));\n\n\tif (st == NULL) {\n\t\tloglog(RC_LOG_SERIOUS,\n\t\t       \"%s: Request was disconnected from state\",\n\t\t       __FUNCTION__);\n\t\tif (dh->md)\n\t\t\trelease_md(dh->md);\n\t\treturn;\n\t}\n\n\t/* XXX should check out ugh */\n\tpassert(ugh == NULL);\n\tpassert(cur_state == NULL);\n\tpassert(st != NULL);\n\n\tpassert(st->st_suspended_md == dh->md);\n\tset_suspended(st, NULL); /* no longer connected or suspended */\n\n\tset_cur_state(st);\n\n\tst->st_calculating = FALSE;\n\n\te = ikev2_parent_inI2outR2_tail(pcrc, r);\n\tif ( e > STF_FAIL) {\n\t\t/* we do not send a notify because we are the initiator that could be responding to an error notification */\n\t\tint v2_notify_num = e - STF_FAIL;\n\t\tDBG_log(\n\t\t\t\"ikev2_parent_inI2outR2_tail returned STF_FAIL with %s\",\n\t\t\tenum_name(&ikev2_notify_names, v2_notify_num));\n\t} else if ( e != STF_OK) {\n\t\tDBG_log(\"ikev2_parent_inI2outR2_tail returned %s\",\n\t\t\tenum_name(&stfstatus_name, e));\n\t}\n\n\tif (dh->md != NULL) {\n\t\tcomplete_v2_state_transition(&dh->md, e);\n\t\tif (dh->md)\n\t\t\trelease_md(dh->md);\n\t}\n\treset_globals();\n\n\tpassert(GLOBALS_ARE_RESET());\n}",
+            1746
+        ]
+    ]
+}

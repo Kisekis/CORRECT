@@ -1,0 +1,648 @@
+{
+    "calleeMethods": [
+        [
+            "libavcodec/exr.c",
+            "huf_unpack_enc_table",
+            "static int huf_unpack_enc_table(GetByteContext *gb, /* <=== huf_unpack_enc_table */ \n                                int32_t im, int32_t iM, uint64_t *freq)\n{\n    GetBitContext gbit;\n    int ret = init_get_bits8(&gbit, gb->buffer, bytestream2_get_bytes_left(gb));\n    if (ret < 0)\n        return ret;\n\n    for (; im <= iM; im++) {\n        uint64_t l = freq[im] = get_bits(&gbit, 6);\n\n        if (l == LONG_ZEROCODE_RUN) {\n            int zerun = get_bits(&gbit, 8) + SHORTEST_LONG_RUN;\n\n            if (im + zerun > iM + 1)\n                return AVERROR_INVALIDDATA;\n\n            while (zerun--)\n                freq[im++] = 0;\n\n            im--;\n        } else if (l >= SHORT_ZEROCODE_RUN) {\n            int zerun = l - SHORT_ZEROCODE_RUN + 2;\n\n            if (im + zerun > iM + 1)\n                return AVERROR_INVALIDDATA;\n\n            while (zerun--)\n                freq[im++] = 0;\n\n            im--;\n        }\n    }\n\n    bytestream2_skip(gb, (get_bits_count(&gbit) + 7) / 8);\n    huf_canonical_code_table(freq);\n\n    return 0;\n}",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_vlc2",
+            "static av_always_inline int get_vlc2(GetBitContext *s, VLC_TYPE (*table)[2], /* <=== get_vlc2 */ \n                                     int bits, int max_depth)\n{\n#if CACHED_BITSTREAM_READER\n    int nb_bits;\n    unsigned idx = show_bits(s, bits);\n    int code = table[idx][0];\n    int n    = table[idx][1];\n\n    if (max_depth > 1 && n < 0) {\n        skip_remaining(s, bits);\n        code = set_idx(s, code, &n, &nb_bits, table);\n        if (max_depth > 2 && n < 0) {\n            skip_remaining(s, nb_bits);\n            code = set_idx(s, code, &n, &nb_bits, table);\n        }\n    }\n    skip_remaining(s, n);\n\n    return code;\n#else\n    int code;\n\n    OPEN_READER(re, s);\n    UPDATE_CACHE(re, s);\n\n    GET_VLC(code, re, s, table, bits, max_depth);\n\n    CLOSE_READER(re, s);\n\n    return code;\n#endif\n}",
+            3
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_init",
+            "static av_always_inline void bytestream2_init(GetByteContext *g, /* <=== bytestream2_init */ \n                                              const uint8_t *buf,\n                                              int buf_size)\n{\n    av_assert0(buf_size >= 0);\n    g->buffer       = buf;\n    g->buffer_start = buf;\n    g->buffer_end   = buf + buf_size;\n}",
+            1
+        ],
+        [
+            "libavutil/mem.c",
+            "fast_malloc",
+            "static inline void fast_malloc(void *ptr, unsigned int *size, size_t min_size, int zero_realloc) /* <=== fast_malloc */ \n{\n    size_t max_size;\n    void *val;\n\n    memcpy(&val, ptr, sizeof(val));\n    if (min_size <= *size) {\n        av_assert0(val || !min_size);\n        return;\n    }\n\n    max_size = atomic_load_explicit(&max_alloc_size, memory_order_relaxed);\n\n    if (min_size > max_size) {\n        av_freep(ptr);\n        *size = 0;\n        return;\n    }\n    min_size = FFMIN(max_size, FFMAX(min_size + min_size / 16 + 32, min_size));\n    av_freep(ptr);\n    val = zero_realloc ? av_mallocz(min_size) : av_malloc(min_size);\n    memcpy(ptr, &val, sizeof(val));\n    if (!val)\n        min_size = 0;\n    *size = min_size;\n    return;\n}",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "init_get_bits8",
+            "static inline int init_get_bits8(GetBitContext *s, const uint8_t *buffer, /* <=== init_get_bits8 */ \n                                 int byte_size)\n{\n    if (byte_size > INT_MAX / 8 || byte_size < 0)\n        byte_size = -1;\n    return init_get_bits(s, buffer, byte_size * 8);\n}",
+            3
+        ],
+        [
+            "libavcodec/exr.c",
+            "LONG_ZEROCODE_RUN",
+            "#define LONG_ZEROCODE_RUN   63 /* <=== libavcodec/exr.c:323:323:LONG_ZEROCODE_RUN:0 */ ",
+            3
+        ],
+        [
+            "libavutil/mathematics.h",
+            "M_PI",
+            "#define M_PI           3.14159265358979323846  /* pi */ /* <=== libavutil/mathematics.h:52:52:M_PI:0 */ ",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR",
+            "#define AVERROR(e) (e) /* <=== libavutil/error.h:43:43:AVERROR:1 */ ",
+            1
+        ],
+        [
+            "libavcodec/exr.c",
+            "huf_uncompress",
+            "static int huf_uncompress(EXRContext *s, /* <=== huf_uncompress */ \n                          EXRThreadData *td,\n                          GetByteContext *gb,\n                          uint16_t *dst, int dst_size)\n{\n    int32_t im, iM;\n    uint32_t nBits;\n    int ret;\n\n    im       = bytestream2_get_le32(gb);\n    iM       = bytestream2_get_le32(gb);\n    bytestream2_skip(gb, 4);\n    nBits = bytestream2_get_le32(gb);\n    if (im < 0 || im >= HUF_ENCSIZE ||\n        iM < 0 || iM >= HUF_ENCSIZE)\n        return AVERROR_INVALIDDATA;\n\n    bytestream2_skip(gb, 4);\n\n    if (!td->freq)\n        td->freq = av_malloc_array(HUF_ENCSIZE, sizeof(*td->freq));\n    if (!td->he)\n        td->he = av_calloc(HUF_ENCSIZE, sizeof(*td->he));\n    if (!td->freq || !td->he) {\n        ret = AVERROR(ENOMEM);\n        return ret;\n    }\n\n    memset(td->freq, 0, sizeof(*td->freq) * HUF_ENCSIZE);\n    if ((ret = huf_unpack_enc_table(gb, im, iM, td->freq)) < 0)\n        return ret;\n\n    if (nBits > 8 * bytestream2_get_bytes_left(gb)) {\n        ret = AVERROR_INVALIDDATA;\n        return ret;\n    }\n\n    if ((ret = huf_build_dec_table(s, td, im, iM)) < 0)\n        return ret;\n    return huf_decode(&td->vlc, gb, nBits, td->run_sym, dst_size, dst);\n}",
+            1
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_ne16",
+            "#   define bytestream2_get_ne16  bytestream2_get_le16 /* <=== libavcodec/bytestream.h:119:119:bytestream2_get_ne16:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_bytes_left",
+            "static av_always_inline int bytestream2_get_bytes_left(GetByteContext *g) /* <=== bytestream2_get_bytes_left */ \n{\n    return g->buffer_end - g->buffer;\n}",
+            2
+        ],
+        [
+            "libavcodec/vlc.h",
+            "ff_free_vlc",
+            "void ff_free_vlc(VLC *vlc); /* <=== ff_free_vlc */ ",
+            3
+        ],
+        [
+            "libavutil/intfloat.h",
+            "av_int2float",
+            "static av_always_inline float av_int2float(uint32_t i) /* <=== av_int2float */ \n{\n    union av_intfloat32 v;\n    v.i = i;\n    return v.f;\n}",
+            2
+        ],
+        [
+            "libavutil/log.c",
+            "av_log",
+            "void av_log(void* avcl, int level, const char *fmt, ...) /* <=== av_log */ \n{\n    va_list vl;\n    va_start(vl, fmt);\n    av_vlog(avcl, level, fmt, vl);\n    va_end(vl);\n}",
+            2
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_skip",
+            "static av_always_inline void bytestream2_skip(GetByteContext *g, /* <=== bytestream2_skip */ \n                                              unsigned int size)\n{\n    g->buffer += FFMIN(g->buffer_end - g->buffer, size);\n}",
+            1
+        ],
+        [
+            "libavutil/common.h",
+            "FFSIGN",
+            "#define FFSIGN(a) ((a) > 0 ? 1 : -1) /* <=== libavutil/common.h:73:73:FFSIGN:1 */ ",
+            2
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_le16",
+            "DEF(unsigned int, le16, 2, AV_RL16, AV_WL16) /* <=== bytestream2_get_le16 */ ",
+            1
+        ],
+        [
+            "libavcodec/exr.c",
+            "SHORT_ZEROCODE_RUN",
+            "#define SHORT_ZEROCODE_RUN  59 /* <=== libavcodec/exr.c:322:322:SHORT_ZEROCODE_RUN:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/exr.c",
+            "convert",
+            "static void convert(float y, float u, float v, /* <=== convert */ \n                    float *b, float *g, float *r)\n{\n    *r = y               + 1.5747f * v;\n    *g = y - 0.1873f * u - 0.4682f * v;\n    *b = y + 1.8556f * u;\n}",
+            1
+        ],
+        [
+            "libavcodec/exr.c",
+            "SHORTEST_LONG_RUN",
+            "#define SHORTEST_LONG_RUN   (2 + LONG_ZEROCODE_RUN - SHORT_ZEROCODE_RUN) /* <=== libavcodec/exr.c:324:324:SHORTEST_LONG_RUN:0 */ ",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_freep",
+            "void av_freep(void *arg) /* <=== av_freep */ \n{\n    void *val;\n\n    memcpy(&val, arg, sizeof(val));\n    memcpy(arg, &(void *){ NULL }, sizeof(val));\n    av_free(val);\n}",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits_left",
+            "static inline int get_bits_left(GetBitContext *gb) /* <=== get_bits_left */ \n{\n    return gb->size_in_bits - get_bits_count(gb);\n}",
+            3
+        ],
+        [
+            "libavcodec/exr.c",
+            "idct_1d",
+            "static void idct_1d(float *blk, int step) /* <=== idct_1d */ \n{\n    const float a = .5f * cosf(    M_PI / 4.f);\n    const float b = .5f * cosf(    M_PI / 16.f);\n    const float c = .5f * cosf(    M_PI / 8.f);\n    const float d = .5f * cosf(3.f*M_PI / 16.f);\n    const float e = .5f * cosf(5.f*M_PI / 16.f);\n    const float f = .5f * cosf(3.f*M_PI / 8.f);\n    const float g = .5f * cosf(7.f*M_PI / 16.f);\n\n    float alpha[4], beta[4], theta[4], gamma[4];\n\n    alpha[0] = c * blk[2 * step];\n    alpha[1] = f * blk[2 * step];\n    alpha[2] = c * blk[6 * step];\n    alpha[3] = f * blk[6 * step];\n\n    beta[0] = b * blk[1 * step] + d * blk[3 * step] + e * blk[5 * step] + g * blk[7 * step];\n    beta[1] = d * blk[1 * step] - g * blk[3 * step] - b * blk[5 * step] - e * blk[7 * step];\n    beta[2] = e * blk[1 * step] - b * blk[3 * step] + g * blk[5 * step] + d * blk[7 * step];\n    beta[3] = g * blk[1 * step] - e * blk[3 * step] + d * blk[5 * step] - b * blk[7 * step];\n\n    theta[0] = a * (blk[0 * step] + blk[4 * step]);\n    theta[3] = a * (blk[0 * step] - blk[4 * step]);\n\n    theta[1] = alpha[0] + alpha[3];\n    theta[2] = alpha[1] - alpha[2];\n\n    gamma[0] = theta[0] + theta[1];\n    gamma[1] = theta[3] + theta[2];\n    gamma[2] = theta[3] - theta[2];\n    gamma[3] = theta[0] - theta[1];\n\n    blk[0 * step] = gamma[0] + beta[0];\n    blk[1 * step] = gamma[1] + beta[1];\n    blk[2 * step] = gamma[2] + beta[2];\n    blk[3 * step] = gamma[3] + beta[3];\n\n    blk[4 * step] = gamma[3] - beta[3];\n    blk[5 * step] = gamma[2] - beta[2];\n    blk[6 * step] = gamma[1] - beta[1];\n    blk[7 * step] = gamma[0] - beta[0];\n}",
+            2
+        ],
+        [
+            "libavcodec/utils.c",
+            "av_fast_padded_malloc",
+            "void av_fast_padded_malloc(void *ptr, unsigned int *size, size_t min_size) /* <=== av_fast_padded_malloc */ \n{\n    uint8_t **p = ptr;\n    if (min_size > SIZE_MAX - AV_INPUT_BUFFER_PADDING_SIZE) {\n        av_freep(p);\n        *size = 0;\n        return;\n    }\n    av_fast_mallocz(p, size, min_size + AV_INPUT_BUFFER_PADDING_SIZE);\n    if (*p)\n        memset(*p + min_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);\n}",
+            1
+        ],
+        [
+            "libavcodec/exr.c",
+            "to_linear",
+            "static float to_linear(float x, float scale) /* <=== to_linear */ \n{\n    float ax = fabsf(x);\n\n    if (ax <= 1.f) {\n        return FFSIGN(x) * powf(ax, 2.2f * scale);\n    } else {\n        const float log_base = expf(2.2f * scale);\n\n        return FFSIGN(x) * powf(log_base, ax - 1.f);\n    }\n}",
+            1
+        ],
+        [
+            "libavutil/common.h",
+            "FFMIN",
+            "#define FFMIN(a,b) ((a) > (b) ? (b) : (a)) /* <=== libavutil/common.h:105:105:FFMIN:2 */ ",
+            2
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_le16u",
+            "DEF(unsigned int, le16, 2, AV_RL16, AV_WL16) /* <=== bytestream2_get_le16u */ ",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits_count",
+            "static inline int get_bits_count(const GetBitContext *s) /* <=== get_bits_count */ \n{\n#if CACHED_BITSTREAM_READER\n    return s->index - s->bits_left;\n#else\n    return s->index;\n#endif\n}",
+            3
+        ],
+        [
+            "libavutil/log.c",
+            "av_vlog",
+            "void av_vlog(void* avcl, int level, const char *fmt, va_list vl) /* <=== av_vlog */ \n{\n    AVClass* avc = avcl ? *(AVClass **) avcl : NULL;\n    void (*log_callback)(void*, int, const char*, va_list) = av_log_callback;\n    if (avc && avc->version >= (50 << 16 | 15 << 8 | 2) &&\n        avc->log_level_offset_offset && level >= AV_LOG_FATAL)\n        level += *(int *) (((uint8_t *) avcl) + avc->log_level_offset_offset);\n    if (log_callback)\n        log_callback(avcl, level, fmt, vl);\n}",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits",
+            "static inline unsigned int get_bits(GetBitContext *s, int n) /* <=== get_bits */ \n{\n    register unsigned int tmp;\n#if CACHED_BITSTREAM_READER\n\n    av_assert2(n>0 && n<=32);\n    if (n > s->bits_left) {\n#ifdef BITSTREAM_READER_LE\n        refill_32(s, 1);\n#else\n        refill_32(s, 0);\n#endif\n        if (s->bits_left < 32)\n            s->bits_left = n;\n    }\n\n#ifdef BITSTREAM_READER_LE\n    tmp = get_val(s, n, 1);\n#else\n    tmp = get_val(s, n, 0);\n#endif\n#else\n    OPEN_READER(re, s);\n    av_assert2(n>0 && n<=25);\n    UPDATE_CACHE(re, s);\n    tmp = SHOW_UBITS(re, s, n);\n    LAST_SKIP_BITS(re, s, n);\n    CLOSE_READER(re, s);\n#endif\n    av_assert2(tmp < UINT64_C(1) << n);\n    return tmp;\n}",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_malloc_array",
+            "void *av_malloc_array(size_t nmemb, size_t size) /* <=== av_malloc_array */ \n{\n    size_t result;\n    if (av_size_mult(nmemb, size, &result) < 0)\n        return NULL;\n    return av_malloc(result);\n}",
+            2
+        ],
+        [
+            "libavutil/mem.h",
+            "av_size_mult",
+            "static inline int av_size_mult(size_t a, size_t b, size_t *r) /* <=== av_size_mult */ \n{\n    size_t t = a * b;\n    /* Hack inspired from glibc: don't try the division if nelem and elsize\n     * are both less than sqrt(SIZE_MAX). */\n    if ((a | b) >= ((size_t)1 << (sizeof(size_t) * 4)) && a && t / a != b)\n        return AVERROR(EINVAL);\n    *r = t;\n    return 0;\n}",
+            3
+        ],
+        [
+            "libavcodec/vlc.h",
+            "ff_init_vlc_sparse",
+            "int ff_init_vlc_sparse(VLC *vlc, int nb_bits, int nb_codes, /* <=== ff_init_vlc_sparse */ \n                       const void *bits, int bits_wrap, int bits_size,\n                       const void *codes, int codes_wrap, int codes_size,\n                       const void *symbols, int symbols_wrap, int symbols_size,\n                       int flags);",
+            3
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_le32",
+            "DEF(unsigned int, le32, 4, AV_RL32, AV_WL32) /* <=== bytestream2_get_le32 */ ",
+            2
+        ],
+        [
+            "libavutil/mem.c",
+            "av_mallocz",
+            "void *av_mallocz(size_t size) /* <=== av_mallocz */ \n{\n    void *ptr = av_malloc(size);\n    if (ptr)\n        memset(ptr, 0, size);\n    return ptr;\n}",
+            3
+        ],
+        [
+            "libavutil/mem.c",
+            "av_fast_mallocz",
+            "void av_fast_mallocz(void *ptr, unsigned int *size, size_t min_size) /* <=== av_fast_mallocz */ \n{\n    fast_malloc(ptr, size, min_size, 1);\n}",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "init_get_bits",
+            "static inline int init_get_bits(GetBitContext *s, const uint8_t *buffer, /* <=== init_get_bits */ \n                                int bit_size)\n{\n#ifdef BITSTREAM_READER_LE\n    return init_get_bits_xe(s, buffer, bit_size, 1);\n#else\n    return init_get_bits_xe(s, buffer, bit_size, 0);\n#endif\n}",
+            3
+        ],
+        [
+            "libavutil/intreadwrite.h",
+            "AV_RL64",
+            "#   define AV_RL64(x)                                   \\ /* <=== libavutil/intreadwrite.h:325:333:AV_RL64:1 */ \n    (((uint64_t)((const uint8_t*)(x))[7] << 56) |       \\\n     ((uint64_t)((const uint8_t*)(x))[6] << 48) |       \\\n     ((uint64_t)((const uint8_t*)(x))[5] << 40) |       \\\n     ((uint64_t)((const uint8_t*)(x))[4] << 32) |       \\\n     ((uint64_t)((const uint8_t*)(x))[3] << 24) |       \\\n     ((uint64_t)((const uint8_t*)(x))[2] << 16) |       \\\n     ((uint64_t)((const uint8_t*)(x))[1] <<  8) |       \\\n      (uint64_t)((const uint8_t*)(x))[0])",
+            1
+        ],
+        [
+            "libavutil/mem.c",
+            "av_malloc",
+            "void *av_malloc(size_t size) /* <=== av_malloc */ \n{\n    void *ptr = NULL;\n\n    if (size > atomic_load_explicit(&max_alloc_size, memory_order_relaxed))\n        return NULL;\n\n#if HAVE_POSIX_MEMALIGN\n    if (size) //OS X on SDK 10.6 has a broken posix_memalign implementation\n    if (posix_memalign(&ptr, ALIGN, size))\n        ptr = NULL;\n#elif HAVE_ALIGNED_MALLOC\n    ptr = _aligned_malloc(size, ALIGN);\n#elif HAVE_MEMALIGN\n#ifndef __DJGPP__\n    ptr = memalign(ALIGN, size);\n#else\n    ptr = memalign(size, ALIGN);\n#endif\n    /* Why 64?\n     * Indeed, we should align it:\n     *   on  4 for 386\n     *   on 16 for 486\n     *   on 32 for 586, PPro - K6-III\n     *   on 64 for K7 (maybe for P3 too).\n     * Because L1 and L2 caches are aligned on those values.\n     * But I don't want to code such logic here!\n     */\n    /* Why 32?\n     * For AVX ASM. SSE / NEON needs only 16.\n     * Why not larger? Because I did not see a difference in benchmarks ...\n     */\n    /* benchmarks with P3\n     * memalign(64) + 1          3071, 3051, 3032\n     * memalign(64) + 2          3051, 3032, 3041\n     * memalign(64) + 4          2911, 2896, 2915\n     * memalign(64) + 8          2545, 2554, 2550\n     * memalign(64) + 16         2543, 2572, 2563\n     * memalign(64) + 32         2546, 2545, 2571\n     * memalign(64) + 64         2570, 2533, 2558\n     *\n     * BTW, malloc seems to do 8-byte alignment by default here.\n     */\n#else\n    ptr = malloc(size);\n#endif\n    if(!ptr && !size) {\n        size = 1;\n        ptr= av_malloc(1);\n    }\n#if CONFIG_MEMORY_POISONING\n    if (ptr)\n        memset(ptr, FF_MEMORY_POISON, size);\n#endif\n    return ptr;\n}",
+            3
+        ],
+        [
+            "libavcodec/exr.c",
+            "dct_inverse",
+            "static void dct_inverse(float *block) /* <=== dct_inverse */ \n{\n    for (int i = 0; i < 8; i++)\n        idct_1d(block + i, 8);\n\n    for (int i = 0; i < 8; i++) {\n        idct_1d(block, 1);\n        block += 8;\n    }\n}",
+            1
+        ],
+        [
+            "libavcodec/exr.c",
+            "huf_build_dec_table",
+            "static int huf_build_dec_table(EXRContext *s, /* <=== huf_build_dec_table */ \n                               EXRThreadData *td, int im, int iM)\n{\n    int j = 0;\n\n    td->run_sym = -1;\n    for (int i = im; i < iM; i++) {\n        td->he[j].sym = i;\n        td->he[j].len = td->freq[i] & 63;\n        td->he[j].code = td->freq[i] >> 6;\n        if (td->he[j].len > 32) {\n            avpriv_request_sample(s->avctx, \"Too big code length\");\n            return AVERROR_PATCHWELCOME;\n        }\n        if (td->he[j].len > 0)\n            j++;\n        else\n            td->run_sym = i;\n    }\n\n    if (im > 0)\n        td->run_sym = 0;\n    else if (iM < 65535)\n        td->run_sym = 65535;\n\n    if (td->run_sym == -1) {\n        avpriv_request_sample(s->avctx, \"No place for run symbol\");\n        return AVERROR_PATCHWELCOME;\n    }\n\n    td->he[j].sym = td->run_sym;\n    td->he[j].len = td->freq[iM] & 63;\n    if (td->he[j].len > 32) {\n        avpriv_request_sample(s->avctx, \"Too big code length\");\n        return AVERROR_PATCHWELCOME;\n    }\n    td->he[j].code = td->freq[iM] >> 6;\n    j++;\n\n    ff_free_vlc(&td->vlc);\n    return ff_init_vlc_sparse(&td->vlc, 12, j,\n                              &td->he[0].len, sizeof(td->he[0]), sizeof(td->he[0].len),\n                              &td->he[0].code, sizeof(td->he[0]), sizeof(td->he[0].code),\n                              &td->he[0].sym, sizeof(td->he[0]), sizeof(td->he[0].sym), 0);\n}",
+            2
+        ],
+        [
+            "libavcodec/exr.c",
+            "HUF_ENCSIZE",
+            "#define HUF_ENCSIZE ((1 << HUF_ENCBITS) + 1)  // encoding table size /* <=== libavcodec/exr.c:297:297:HUF_ENCSIZE:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/exr.c",
+            "ac_uncompress",
+            "static int ac_uncompress(EXRContext *s, GetByteContext *gb, float *block) /* <=== ac_uncompress */ \n{\n    int ret = 0, n = 1;\n\n    while (n < 64) {\n        uint16_t val = bytestream2_get_ne16(gb);\n\n        if (val == 0xff00) {\n            n = 64;\n        } else if ((val >> 8) == 0xff) {\n            n += val & 0xff;\n        } else {\n            ret = n;\n            block[ff_zigzag_direct[n]] = av_int2float(half2float(val,\n                                                      s->mantissatable,\n                                                      s->exponenttable,\n                                                      s->offsettable));\n            n++;\n        }\n    }\n\n    return ret;\n}",
+            1
+        ],
+        [
+            "libavcodec/exr.c",
+            "huf_decode",
+            "static int huf_decode(VLC *vlc, GetByteContext *gb, int nbits, int run_sym, /* <=== huf_decode */ \n                      int no, uint16_t *out)\n{\n    GetBitContext gbit;\n    int oe = 0;\n\n    init_get_bits(&gbit, gb->buffer, nbits);\n    while (get_bits_left(&gbit) > 0 && oe < no) {\n        uint16_t x = get_vlc2(&gbit, vlc->table, 12, 3);\n\n        if (x == run_sym) {\n            int run = get_bits(&gbit, 8);\n            uint16_t fill;\n\n            if (oe == 0 || oe + run > no)\n                return AVERROR_INVALIDDATA;\n\n            fill = out[oe - 1];\n\n            while (run-- > 0)\n                out[oe++] = fill;\n        } else {\n            out[oe++] = x;\n        }\n    }\n\n    return 0;\n}",
+            2
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_PATCHWELCOME",
+            "#define AVERROR_PATCHWELCOME       FFERRTAG( 'P','A','W','E') ///< Not yet implemented in FFmpeg, patches welcome /* <=== libavutil/error.h:62:62:AVERROR_PATCHWELCOME:0 */ ",
+            3
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert0",
+            "#define av_assert0(cond) do {                                           \\ /* <=== libavutil/avassert.h:37:43:av_assert0:1 */ \n    if (!(cond)) {                                                      \\\n        av_log(NULL, AV_LOG_PANIC, \"Assertion %s failed at %s:%d\\n\",    \\\n               AV_STRINGIFY(cond), __FILE__, __LINE__);                 \\\n        abort();                                                        \\\n    }                                                                   \\\n} while (0)",
+            2
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_le32u",
+            "DEF(unsigned int, le32, 4, AV_RL32, AV_WL32) /* <=== bytestream2_get_le32u */ ",
+            3
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream_get_le16",
+            "DEF(unsigned int, le16, 2, AV_RL16, AV_WL16) /* <=== bytestream_get_le16 */ ",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_INVALIDDATA",
+            "#define AVERROR_INVALIDDATA        FFERRTAG( 'I','N','D','A') ///< Invalid data found when processing input /* <=== libavutil/error.h:59:59:AVERROR_INVALIDDATA:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/exr.c",
+            "rle",
+            "static int rle(uint8_t *dst, const uint8_t *src, /* <=== rle */ \n               int compressed_size, int uncompressed_size)\n{\n    uint8_t *d      = dst;\n    const int8_t *s = src;\n    int ssize       = compressed_size;\n    int dsize       = uncompressed_size;\n    uint8_t *dend   = d + dsize;\n    int count;\n\n    while (ssize > 0) {\n        count = *s++;\n\n        if (count < 0) {\n            count = -count;\n\n            if ((dsize -= count) < 0 ||\n                (ssize -= count + 1) < 0)\n                return AVERROR_INVALIDDATA;\n\n            while (count--)\n                *d++ = *s++;\n        } else {\n            count++;\n\n            if ((dsize -= count) < 0 ||\n                (ssize -= 2) < 0)\n                return AVERROR_INVALIDDATA;\n\n            while (count--)\n                *d++ = *s;\n\n            s++;\n        }\n    }\n\n    if (dend != d)\n        return AVERROR_INVALIDDATA;\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavutil/log.c",
+            "avpriv_request_sample",
+            "void avpriv_request_sample(void *avc, const char *msg, ...) /* <=== avpriv_request_sample */ \n{\n    va_list argument_list;\n\n    va_start(argument_list, msg);\n    missing_feature_sample(1, avc, msg, argument_list);\n    va_end(argument_list);\n}",
+            3
+        ],
+        [
+            "libavcodec/half2float.h",
+            "half2float",
+            "static uint32_t half2float(uint16_t h, uint32_t *mantissatable, uint32_t *exponenttable, /* <=== half2float */ \n                           uint16_t *offsettable)\n{\n    uint32_t f;\n\n    f = mantissatable[offsettable[h >> 10] + (h & 0x3ff)] + exponenttable[h >> 10];\n\n    return f;\n}",
+            1
+        ],
+        [
+            "libavutil/mem.c",
+            "av_free",
+            "void av_free(void *ptr) /* <=== av_free */ \n{\n#if HAVE_ALIGNED_MALLOC\n    _aligned_free(ptr);\n#else\n    free(ptr);\n#endif\n}",
+            3
+        ],
+        [
+            "libavutil/macros.h",
+            "FFALIGN",
+            "#define FFALIGN(x, a) (((x)+(a)-1)&~((a)-1)) /* <=== libavutil/macros.h:48:48:FFALIGN:2 */ ",
+            1
+        ],
+        [
+            "libavutil/mem.c",
+            "av_calloc",
+            "void *av_calloc(size_t nmemb, size_t size) /* <=== av_calloc */ \n{\n    size_t result;\n    if (av_size_mult(nmemb, size, &result) < 0)\n        return NULL;\n    return av_mallocz(result);\n}",
+            2
+        ],
+        [
+            "libavcodec/exr.c",
+            "huf_canonical_code_table",
+            "static void huf_canonical_code_table(uint64_t *freq) /* <=== huf_canonical_code_table */ \n{\n    uint64_t c, n[59] = { 0 };\n    int i;\n\n    for (i = 0; i < HUF_ENCSIZE; i++)\n        n[freq[i]] += 1;\n\n    c = 0;\n    for (i = 58; i > 0; --i) {\n        uint64_t nc = ((c + n[i]) >> 1);\n        n[i] = c;\n        c    = nc;\n    }\n\n    for (i = 0; i < HUF_ENCSIZE; ++i) {\n        int l = freq[i];\n\n        if (l > 0)\n            freq[i] = l | (n[l]++ << 6);\n    }\n}",
+            3
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "AV_INPUT_BUFFER_PADDING_SIZE",
+            "#define AV_INPUT_BUFFER_PADDING_SIZE 64 /* <=== libavcodec/avcodec.h:192:192:AV_INPUT_BUFFER_PADDING_SIZE:0 */ ",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"avcodec.h\"",
+        "#include \"libavutil/opt.h\"",
+        "#include \"bswapdsp.h\"",
+        "#include \"exrdsp.h\"",
+        "#include \"half2float.h\"",
+        "#include \"libavutil/common.h\"",
+        "#include <float.h>",
+        "#include \"libavutil/intfloat.h\"",
+        "#include \"libavutil/color_utils.h\"",
+        "#include \"mathops.h\"",
+        "#include \"bytestream.h\"",
+        "#include \"get_bits.h\"",
+        "#include \"libavutil/avstring.h\"",
+        "#include \"internal.h\"",
+        "#include \"thread.h\"",
+        "#include \"libavutil/avassert.h\"",
+        "#include <zlib.h>",
+        "#include \"libavutil/imgutils.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct EXRThreadData {\n    uint8_t *uncompressed_data;\n    int uncompressed_size;\n\n    uint8_t *tmp;\n    int tmp_size;\n\n    uint8_t *bitmap;\n    uint16_t *lut;\n\n    uint8_t *ac_data;\n    unsigned ac_size;\n\n    uint8_t *dc_data;\n    unsigned dc_size;\n\n    uint8_t *rle_data;\n    unsigned rle_size;\n\n    uint8_t *rle_raw_data;\n    unsigned rle_raw_size;\n\n    float block[3][64];\n\n    int ysize, xsize;\n\n    int channel_line_size;\n\n    int run_sym;\n    HuffEntry *he;\n    uint64_t *freq;\n    VLC vlc;\n}",
+            "EXRThreadData"
+        ],
+        [
+            "typedef struct EXRThreadData {\n    uint8_t *uncompressed_data;\n    int uncompressed_size;\n\n    uint8_t *tmp;\n    int tmp_size;\n\n    uint8_t *bitmap;\n    uint16_t *lut;\n\n    uint8_t *ac_data;\n    unsigned ac_size;\n\n    uint8_t *dc_data;\n    unsigned dc_size;\n\n    uint8_t *rle_data;\n    unsigned rle_size;\n\n    uint8_t *rle_raw_data;\n    unsigned rle_raw_size;\n\n    float block[3][64];\n\n    int ysize, xsize;\n\n    int channel_line_size;\n\n    int run_sym;\n    HuffEntry *he;\n    uint64_t *freq;\n    VLC vlc;\n} EXRThreadData;",
+            "EXRThreadData"
+        ],
+        [
+            "typedef struct {\n    int start;          ///< timecode frame start (first base frame number)\n    uint32_t flags;     ///< flags such as drop frame, +24 hours support, ...\n    AVRational rate;    ///< frame rate in rational form\n    unsigned fps;       ///< frame per second; must be consistent with the rate field\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct EXRContext {\n    AVClass *class;\n    AVFrame *picture;\n    AVCodecContext *avctx;\n    ExrDSPContext dsp;\n\n#if HAVE_BIGENDIAN\n    BswapDSPContext bbdsp;\n#endif\n\n    enum ExrCompr compression;\n    enum ExrPixelType pixel_type;\n    int channel_offsets[4]; // 0 = red, 1 = green, 2 = blue and 3 = alpha\n    const AVPixFmtDescriptor *desc;\n\n    int w, h;\n    uint32_t sar;\n    int32_t xmax, xmin;\n    int32_t ymax, ymin;\n    uint32_t xdelta, ydelta;\n\n    int scan_lines_per_block;\n\n    EXRTileAttribute tile_attr; /* header data attribute of tile */\n    int is_tile; /* 0 if scanline, 1 if tile */\n    int is_multipart;\n    int current_part;\n\n    int is_luma;/* 1 if there is an Y plane */\n\n    GetByteContext gb;\n    const uint8_t *buf;\n    int buf_size;\n\n    EXRChannel *channels;\n    int nb_channels;\n    int current_channel_offset;\n    uint32_t chunk_count;\n\n    EXRThreadData *thread_data;\n\n    const char *layer;\n    int selected_part;\n\n    enum AVColorTransferCharacteristic apply_trc_type;\n    float gamma;\n    union av_intfloat32 gamma_table[65536];\n\n    uint32_t mantissatable[2048];\n    uint32_t exponenttable[64];\n    uint16_t offsettable[64];\n}",
+            "EXRContext"
+        ],
+        [
+            "typedef struct GetByteContext {\n    const uint8_t *buffer, *buffer_end, *buffer_start;\n} GetByteContext;",
+            "GetByteContext"
+        ],
+        [
+            "typedef struct GetByteContext {\n    const uint8_t *buffer, *buffer_end, *buffer_start;\n}",
+            "GetByteContext"
+        ]
+    ],
+    "visitedLines_after": {
+        "libavcodec/exr.c": [
+            988,
+            989,
+            994,
+            995,
+            999,
+            1002,
+            1003,
+            1006,
+            1007,
+            1008,
+            1009,
+            1010,
+            1013,
+            1014,
+            1017,
+            1020,
+            1021,
+            1022,
+            1025,
+            1027,
+            1028,
+            1030,
+            1033,
+            1034,
+            1035,
+            1037,
+            1040,
+            1041,
+            1044,
+            1046,
+            1047,
+            1051,
+            1052,
+            1063,
+            1064,
+            1066,
+            1067,
+            1069,
+            1070,
+            1071,
+            1073,
+            1074,
+            1075,
+            1077,
+            1078,
+            1080,
+            1083,
+            1084,
+            1086,
+            1087,
+            1088,
+            1090,
+            1091,
+            1092,
+            1094,
+            1095,
+            1096,
+            1098,
+            1099,
+            1100,
+            1101,
+            1104,
+            1106,
+            1107,
+            1108,
+            1110,
+            1111,
+            1112,
+            1113,
+            1116,
+            1117,
+            1119,
+            1120,
+            1121,
+            1125,
+            1126,
+            1127,
+            1128,
+            1129,
+            1130,
+            1131,
+            1132,
+            1133,
+            1134,
+            1135,
+            1137,
+            1138,
+            1139,
+            1141,
+            1143,
+            1144,
+            1145,
+            1148,
+            1149,
+            1150,
+            1156,
+            1157,
+            1159,
+            1160,
+            1161,
+            1162,
+            1164,
+            1165,
+            1167,
+            1171
+        ]
+    },
+    "visitedLines_before": {
+        "libavcodec/exr.c": [
+            988,
+            989,
+            994,
+            995,
+            999,
+            1002,
+            1003,
+            1006,
+            1007,
+            1008,
+            1009,
+            1010,
+            1013,
+            1014,
+            1017,
+            1020,
+            1021,
+            1022,
+            1025,
+            1027,
+            1028,
+            1030,
+            1033,
+            1034,
+            1035,
+            1037,
+            1040,
+            1041,
+            1044,
+            1046,
+            1047,
+            1051,
+            1052,
+            1062,
+            1063,
+            1064,
+            1066,
+            1067,
+            1069,
+            1070,
+            1071,
+            1073,
+            1074,
+            1075,
+            1077,
+            1078,
+            1080,
+            1083,
+            1084,
+            1086,
+            1087,
+            1088,
+            1090,
+            1091,
+            1092,
+            1094,
+            1095,
+            1096,
+            1098,
+            1099,
+            1100,
+            1101,
+            1104,
+            1106,
+            1107,
+            1108,
+            1110,
+            1111,
+            1112,
+            1113,
+            1116,
+            1117,
+            1119,
+            1120,
+            1121,
+            1125,
+            1126,
+            1127,
+            1128,
+            1129,
+            1130,
+            1131,
+            1132,
+            1133,
+            1134,
+            1135,
+            1137,
+            1138,
+            1139,
+            1141,
+            1143,
+            1144,
+            1145,
+            1148,
+            1149,
+            1150,
+            1156,
+            1157,
+            1159,
+            1160,
+            1161,
+            1162,
+            1164,
+            1165,
+            1167,
+            1171
+        ]
+    },
+    "visitedParams": {
+        "libavcodec/exr.c": [
+            [
+                "EXRContext *s",
+                "dwa_uncompress"
+            ],
+            [
+                "EXRThreadData *td",
+                "dwa_uncompress"
+            ],
+            [
+                "int compressed_size",
+                "dwa_uncompress"
+            ],
+            [
+                "int uncompressed_size",
+                "dwa_uncompress"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libavcodec/exr.c",
+            "dwa_uncompress",
+            "static int dwa_uncompress(EXRContext *s, const uint8_t *src, int compressed_size, /* <=== dwa_uncompress */ \n                          int uncompressed_size, EXRThreadData *td)\n{\n    int64_t version, lo_usize, lo_size;\n    int64_t ac_size, dc_size, rle_usize, rle_csize, rle_raw_size;\n    int64_t ac_count, dc_count, ac_compression;\n    const int dc_w = td->xsize >> 3;\n    const int dc_h = td->ysize >> 3;\n    GetByteContext gb, agb;\n    int skip, ret;\n\n    if (compressed_size <= 88)\n        return AVERROR_INVALIDDATA;\n\n    version = AV_RL64(src + 0);\n    if (version != 2)\n        return AVERROR_INVALIDDATA;\n\n    lo_usize = AV_RL64(src + 8);\n    lo_size = AV_RL64(src + 16);\n    ac_size = AV_RL64(src + 24);\n    dc_size = AV_RL64(src + 32);\n    rle_csize = AV_RL64(src + 40);\n    rle_usize = AV_RL64(src + 48);\n    rle_raw_size = AV_RL64(src + 56);\n    ac_count = AV_RL64(src + 64);\n    dc_count = AV_RL64(src + 72);\n    ac_compression = AV_RL64(src + 80);\n\n    if (compressed_size < 88LL + lo_size + ac_size + dc_size + rle_csize)\n        return AVERROR_INVALIDDATA;\n\n    bytestream2_init(&gb, src + 88, compressed_size - 88);\n    skip = bytestream2_get_le16(&gb);\n    if (skip < 2)\n        return AVERROR_INVALIDDATA;\n\n    bytestream2_skip(&gb, skip - 2);\n\n    if (lo_size > 0) {\n        if (lo_usize > uncompressed_size)\n            return AVERROR_INVALIDDATA;\n        bytestream2_skip(&gb, lo_size);\n    }\n\n    if (ac_size > 0) {\n        unsigned long dest_len = ac_count * 2LL;\n        GetByteContext agb = gb;\n\n        if (ac_count > 3LL * td->xsize * s->scan_lines_per_block)\n            return AVERROR_INVALIDDATA;\n\n        av_fast_padded_malloc(&td->ac_data, &td->ac_size, dest_len);\n        if (!td->ac_data)\n            return AVERROR(ENOMEM);\n\n        switch (ac_compression) {\n        case 0:\n            ret = huf_uncompress(s, td, &agb, (int16_t *)td->ac_data, ac_count);\n            if (ret < 0)\n                return ret;\n            break;\n        case 1:\n            if (uncompress(td->ac_data, &dest_len, agb.buffer, ac_size) != Z_OK ||\n                dest_len != ac_count * 2LL)\n                return AVERROR_INVALIDDATA;\n            break;\n        default:\n            return AVERROR_INVALIDDATA;\n        }\n\n        bytestream2_skip(&gb, ac_size);\n    }\n\n    {\n        unsigned long dest_len = dc_count * 2LL;\n        GetByteContext agb = gb;\n\n        if (dc_count != dc_w * dc_h * 3)\n            return AVERROR_INVALIDDATA;\n\n        av_fast_padded_malloc(&td->dc_data, &td->dc_size, FFALIGN(dest_len, 64) * 2);\n        if (!td->dc_data)\n            return AVERROR(ENOMEM);\n\n        if (uncompress(td->dc_data + FFALIGN(dest_len, 64), &dest_len, agb.buffer, dc_size) != Z_OK ||\n            (dest_len != dc_count * 2LL))\n            return AVERROR_INVALIDDATA;\n\n        s->dsp.predictor(td->dc_data + FFALIGN(dest_len, 64), dest_len);\n        s->dsp.reorder_pixels(td->dc_data, td->dc_data + FFALIGN(dest_len, 64), dest_len);\n\n        bytestream2_skip(&gb, dc_size);\n    }\n\n    if (rle_raw_size > 0 && rle_csize > 0 && rle_usize > 0) {\n        unsigned long dest_len = rle_usize;\n\n        av_fast_padded_malloc(&td->rle_data, &td->rle_size, rle_usize);\n        if (!td->rle_data)\n            return AVERROR(ENOMEM);\n\n        av_fast_padded_malloc(&td->rle_raw_data, &td->rle_raw_size, rle_raw_size);\n        if (!td->rle_raw_data)\n            return AVERROR(ENOMEM);\n\n        if (uncompress(td->rle_data, &dest_len, gb.buffer, rle_csize) != Z_OK ||\n            (dest_len != rle_usize))\n            return AVERROR_INVALIDDATA;\n\n        ret = rle(td->rle_raw_data, td->rle_data, rle_usize, rle_raw_size);\n        if (ret < 0)\n            return ret;\n        bytestream2_skip(&gb, rle_csize);\n    }\n\n    bytestream2_init(&agb, td->ac_data, ac_count * 2);\n\n    for (int y = 0; y < td->ysize; y += 8) {\n        for (int x = 0; x < td->xsize; x += 8) {\n            memset(td->block, 0, sizeof(td->block));\n\n            for (int j = 0; j < 3; j++) {\n                float *block = td->block[j];\n                const int idx = (x >> 3) + (y >> 3) * dc_w + dc_w * dc_h * j;\n                uint16_t *dc = (uint16_t *)td->dc_data;\n                union av_intfloat32 dc_val;\n\n                dc_val.i = half2float(dc[idx], s->mantissatable,\n                                      s->exponenttable, s->offsettable);\n\n                block[0] = dc_val.f;\n                ac_uncompress(s, &agb, block);\n                dct_inverse(block);\n            }\n\n            {\n                const float scale = s->pixel_type == EXR_FLOAT ? 2.f : 1.f;\n                const int o = s->nb_channels == 4;\n                float *bo = ((float *)td->uncompressed_data) +\n                    y * td->xsize * s->nb_channels + td->xsize * (o + 0) + x;\n                float *go = ((float *)td->uncompressed_data) +\n                    y * td->xsize * s->nb_channels + td->xsize * (o + 1) + x;\n                float *ro = ((float *)td->uncompressed_data) +\n                    y * td->xsize * s->nb_channels + td->xsize * (o + 2) + x;\n                float *yb = td->block[0];\n                float *ub = td->block[1];\n                float *vb = td->block[2];\n\n                for (int yy = 0; yy < 8; yy++) {\n                    for (int xx = 0; xx < 8; xx++) {\n                        const int idx = xx + yy * 8;\n\n                        convert(yb[idx], ub[idx], vb[idx], &bo[xx], &go[xx], &ro[xx]);\n\n                        bo[xx] = to_linear(bo[xx], scale);\n                        go[xx] = to_linear(go[xx], scale);\n                        ro[xx] = to_linear(ro[xx], scale);\n                    }\n\n                    bo += td->xsize * s->nb_channels;\n                    go += td->xsize * s->nb_channels;\n                    ro += td->xsize * s->nb_channels;\n                }\n            }\n        }\n    }\n\n    if (s->nb_channels < 4)\n        return 0;\n\n    for (int y = 0; y < td->ysize && td->rle_raw_data; y++) {\n        uint32_t *ao = ((uint32_t *)td->uncompressed_data) + y * td->xsize * s->nb_channels;\n        uint8_t *ai0 = td->rle_raw_data + y * td->xsize;\n        uint8_t *ai1 = td->rle_raw_data + y * td->xsize + rle_raw_size / 2;\n\n        for (int x = 0; x < td->xsize; x++) {\n            uint16_t ha = ai0[x] | (ai1[x] << 8);\n\n            ao[x] = half2float(ha, s->mantissatable, s->exponenttable, s->offsettable);\n        }\n    }\n\n    return 0;\n}",
+            988
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libavcodec/exr.c",
+            "dwa_uncompress",
+            "static int dwa_uncompress(EXRContext *s, const uint8_t *src, int compressed_size, /* <=== dwa_uncompress */ \n                          int uncompressed_size, EXRThreadData *td)\n{\n    int64_t version, lo_usize, lo_size;\n    int64_t ac_size, dc_size, rle_usize, rle_csize, rle_raw_size;\n    int64_t ac_count, dc_count, ac_compression;\n    const int dc_w = td->xsize >> 3;\n    const int dc_h = td->ysize >> 3;\n    GetByteContext gb, agb;\n    int skip, ret;\n\n    if (compressed_size <= 88)\n        return AVERROR_INVALIDDATA;\n\n    version = AV_RL64(src + 0);\n    if (version != 2)\n        return AVERROR_INVALIDDATA;\n\n    lo_usize = AV_RL64(src + 8);\n    lo_size = AV_RL64(src + 16);\n    ac_size = AV_RL64(src + 24);\n    dc_size = AV_RL64(src + 32);\n    rle_csize = AV_RL64(src + 40);\n    rle_usize = AV_RL64(src + 48);\n    rle_raw_size = AV_RL64(src + 56);\n    ac_count = AV_RL64(src + 64);\n    dc_count = AV_RL64(src + 72);\n    ac_compression = AV_RL64(src + 80);\n\n    if (compressed_size < 88LL + lo_size + ac_size + dc_size + rle_csize)\n        return AVERROR_INVALIDDATA;\n\n    bytestream2_init(&gb, src + 88, compressed_size - 88);\n    skip = bytestream2_get_le16(&gb);\n    if (skip < 2)\n        return AVERROR_INVALIDDATA;\n\n    bytestream2_skip(&gb, skip - 2);\n\n    if (lo_size > 0) {\n        if (lo_usize > uncompressed_size)\n            return AVERROR_INVALIDDATA;\n        bytestream2_skip(&gb, lo_size);\n    }\n\n    if (ac_size > 0) {\n        unsigned long dest_len = ac_count * 2LL;\n        GetByteContext agb = gb;\n\n        if (ac_count > 3LL * td->xsize * s->scan_lines_per_block)\n            return AVERROR_INVALIDDATA;\n\n        av_fast_padded_malloc(&td->ac_data, &td->ac_size, dest_len);\n        if (!td->ac_data)\n            return AVERROR(ENOMEM);\n\n        switch (ac_compression) {\n        case 0:\n            ret = huf_uncompress(s, td, &agb, (int16_t *)td->ac_data, ac_count);\n            if (ret < 0)\n                return ret;\n            break;\n        case 1:\n            if (uncompress(td->ac_data, &dest_len, agb.buffer, ac_size) != Z_OK ||\n                dest_len != ac_count * 2LL)\n                return AVERROR_INVALIDDATA;\n            break;\n        default:\n            return AVERROR_INVALIDDATA;\n        }\n\n        bytestream2_skip(&gb, ac_size);\n    }\n\n    if (dc_size > 0) {\n        unsigned long dest_len = dc_count * 2LL;\n        GetByteContext agb = gb;\n\n        if (dc_count > (6LL * td->xsize * td->ysize + 63) / 64)\n            return AVERROR_INVALIDDATA;\n\n        av_fast_padded_malloc(&td->dc_data, &td->dc_size, FFALIGN(dest_len, 64) * 2);\n        if (!td->dc_data)\n            return AVERROR(ENOMEM);\n\n        if (uncompress(td->dc_data + FFALIGN(dest_len, 64), &dest_len, agb.buffer, dc_size) != Z_OK ||\n            (dest_len != dc_count * 2LL))\n            return AVERROR_INVALIDDATA;\n\n        s->dsp.predictor(td->dc_data + FFALIGN(dest_len, 64), dest_len);\n        s->dsp.reorder_pixels(td->dc_data, td->dc_data + FFALIGN(dest_len, 64), dest_len);\n\n        bytestream2_skip(&gb, dc_size);\n    }\n\n    if (rle_raw_size > 0 && rle_csize > 0 && rle_usize > 0) {\n        unsigned long dest_len = rle_usize;\n\n        av_fast_padded_malloc(&td->rle_data, &td->rle_size, rle_usize);\n        if (!td->rle_data)\n            return AVERROR(ENOMEM);\n\n        av_fast_padded_malloc(&td->rle_raw_data, &td->rle_raw_size, rle_raw_size);\n        if (!td->rle_raw_data)\n            return AVERROR(ENOMEM);\n\n        if (uncompress(td->rle_data, &dest_len, gb.buffer, rle_csize) != Z_OK ||\n            (dest_len != rle_usize))\n            return AVERROR_INVALIDDATA;\n\n        ret = rle(td->rle_raw_data, td->rle_data, rle_usize, rle_raw_size);\n        if (ret < 0)\n            return ret;\n        bytestream2_skip(&gb, rle_csize);\n    }\n\n    bytestream2_init(&agb, td->ac_data, ac_count * 2);\n\n    for (int y = 0; y < td->ysize; y += 8) {\n        for (int x = 0; x < td->xsize; x += 8) {\n            memset(td->block, 0, sizeof(td->block));\n\n            for (int j = 0; j < 3; j++) {\n                float *block = td->block[j];\n                const int idx = (x >> 3) + (y >> 3) * dc_w + dc_w * dc_h * j;\n                uint16_t *dc = (uint16_t *)td->dc_data;\n                union av_intfloat32 dc_val;\n\n                dc_val.i = half2float(dc[idx], s->mantissatable,\n                                      s->exponenttable, s->offsettable);\n\n                block[0] = dc_val.f;\n                ac_uncompress(s, &agb, block);\n                dct_inverse(block);\n            }\n\n            {\n                const float scale = s->pixel_type == EXR_FLOAT ? 2.f : 1.f;\n                const int o = s->nb_channels == 4;\n                float *bo = ((float *)td->uncompressed_data) +\n                    y * td->xsize * s->nb_channels + td->xsize * (o + 0) + x;\n                float *go = ((float *)td->uncompressed_data) +\n                    y * td->xsize * s->nb_channels + td->xsize * (o + 1) + x;\n                float *ro = ((float *)td->uncompressed_data) +\n                    y * td->xsize * s->nb_channels + td->xsize * (o + 2) + x;\n                float *yb = td->block[0];\n                float *ub = td->block[1];\n                float *vb = td->block[2];\n\n                for (int yy = 0; yy < 8; yy++) {\n                    for (int xx = 0; xx < 8; xx++) {\n                        const int idx = xx + yy * 8;\n\n                        convert(yb[idx], ub[idx], vb[idx], &bo[xx], &go[xx], &ro[xx]);\n\n                        bo[xx] = to_linear(bo[xx], scale);\n                        go[xx] = to_linear(go[xx], scale);\n                        ro[xx] = to_linear(ro[xx], scale);\n                    }\n\n                    bo += td->xsize * s->nb_channels;\n                    go += td->xsize * s->nb_channels;\n                    ro += td->xsize * s->nb_channels;\n                }\n            }\n        }\n    }\n\n    if (s->nb_channels < 4)\n        return 0;\n\n    for (int y = 0; y < td->ysize && td->rle_raw_data; y++) {\n        uint32_t *ao = ((uint32_t *)td->uncompressed_data) + y * td->xsize * s->nb_channels;\n        uint8_t *ai0 = td->rle_raw_data + y * td->xsize;\n        uint8_t *ai1 = td->rle_raw_data + y * td->xsize + rle_raw_size / 2;\n\n        for (int x = 0; x < td->xsize; x++) {\n            uint16_t ha = ai0[x] | (ai1[x] << 8);\n\n            ao[x] = half2float(ha, s->mantissatable, s->exponenttable, s->offsettable);\n        }\n    }\n\n    return 0;\n}",
+            988
+        ]
+    ]
+}

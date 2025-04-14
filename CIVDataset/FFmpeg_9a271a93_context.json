@@ -1,0 +1,465 @@
+{
+    "calleeMethods": [
+        [
+            "libavcodec/jpeg2000.h",
+            "ff_jpeg2000_getsigctxno",
+            "static inline int ff_jpeg2000_getsigctxno(int flag, int bandno) /* <=== ff_jpeg2000_getsigctxno */ \n{\n    return ff_jpeg2000_sigctxno_lut[flag & 255][bandno];\n}",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SGN_N",
+            "#define JPEG2000_T1_SGN_N  0x0100 /* <=== libavcodec/jpeg2000.h:89:89:JPEG2000_T1_SGN_N:0 */ ",
+            3
+        ],
+        [
+            "libavutil/log.c",
+            "av_vlog",
+            "void av_vlog(void* avcl, int level, const char *fmt, va_list vl) /* <=== av_vlog */ \n{\n    if(av_log_callback)\n        av_log_callback(avcl, level, fmt, vl);\n}",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000.c",
+            "ff_jpeg2000_set_significance",
+            "void ff_jpeg2000_set_significance(Jpeg2000T1Context *t1, int x, int y, /* <=== ff_jpeg2000_set_significance */ \n                                  int negative)\n{\n    x++;\n    y++;\n    t1->flags[y][x] |= JPEG2000_T1_SIG;\n    if (negative) {\n        t1->flags[y][x + 1] |= JPEG2000_T1_SIG_W | JPEG2000_T1_SGN_W;\n        t1->flags[y][x - 1] |= JPEG2000_T1_SIG_E | JPEG2000_T1_SGN_E;\n        t1->flags[y + 1][x] |= JPEG2000_T1_SIG_N | JPEG2000_T1_SGN_N;\n        t1->flags[y - 1][x] |= JPEG2000_T1_SIG_S | JPEG2000_T1_SGN_S;\n    } else {\n        t1->flags[y][x + 1] |= JPEG2000_T1_SIG_W;\n        t1->flags[y][x - 1] |= JPEG2000_T1_SIG_E;\n        t1->flags[y + 1][x] |= JPEG2000_T1_SIG_N;\n        t1->flags[y - 1][x] |= JPEG2000_T1_SIG_S;\n    }\n    t1->flags[y + 1][x + 1] |= JPEG2000_T1_SIG_NW;\n    t1->flags[y + 1][x - 1] |= JPEG2000_T1_SIG_NE;\n    t1->flags[y - 1][x + 1] |= JPEG2000_T1_SIG_SW;\n    t1->flags[y - 1][x - 1] |= JPEG2000_T1_SIG_SE;\n}",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000dec.c",
+            "decode_clnpass",
+            "static void decode_clnpass(Jpeg2000DecoderContext *s, Jpeg2000T1Context *t1, /* <=== decode_clnpass */ \n                           int width, int height, int bpno, int bandno,\n                           int seg_symbols, int vert_causal_ctx_csty_symbol)\n{\n    int mask = 3 << (bpno - 1), y0, x, y, runlen, dec;\n\n    for (y0 = 0; y0 < height; y0 += 4) {\n        for (x = 0; x < width; x++) {\n            if (y0 + 3 < height &&\n                !((t1->flags[y0 + 1][x + 1] & (JPEG2000_T1_SIG_NB | JPEG2000_T1_VIS | JPEG2000_T1_SIG)) ||\n                  (t1->flags[y0 + 2][x + 1] & (JPEG2000_T1_SIG_NB | JPEG2000_T1_VIS | JPEG2000_T1_SIG)) ||\n                  (t1->flags[y0 + 3][x + 1] & (JPEG2000_T1_SIG_NB | JPEG2000_T1_VIS | JPEG2000_T1_SIG)) ||\n                  (t1->flags[y0 + 4][x + 1] & (JPEG2000_T1_SIG_NB | JPEG2000_T1_VIS | JPEG2000_T1_SIG)))) {\n                if (!ff_mqc_decode(&t1->mqc, t1->mqc.cx_states + MQC_CX_RL))\n                    continue;\n                runlen = ff_mqc_decode(&t1->mqc,\n                                       t1->mqc.cx_states + MQC_CX_UNI);\n                runlen = (runlen << 1) | ff_mqc_decode(&t1->mqc,\n                                                       t1->mqc.cx_states +\n                                                       MQC_CX_UNI);\n                dec = 1;\n            } else {\n                runlen = 0;\n                dec    = 0;\n            }\n\n            for (y = y0 + runlen; y < y0 + 4 && y < height; y++) {\n                if (!dec) {\n                    if (!(t1->flags[y+1][x+1] & (JPEG2000_T1_SIG | JPEG2000_T1_VIS))) {\n                        int flags_mask = -1;\n                        if (vert_causal_ctx_csty_symbol && y == y0 + 3)\n                            flags_mask &= ~(JPEG2000_T1_SIG_S | JPEG2000_T1_SIG_SW | JPEG2000_T1_SIG_SE);\n                        dec = ff_mqc_decode(&t1->mqc, t1->mqc.cx_states + ff_jpeg2000_getsigctxno(t1->flags[y+1][x+1] & flags_mask,\n                                                                                             bandno));\n                    }\n                }\n                if (dec) {\n                    int xorbit;\n                    int ctxno = ff_jpeg2000_getsgnctxno(t1->flags[y + 1][x + 1],\n                                                        &xorbit);\n                    t1->data[y][x] = (ff_mqc_decode(&t1->mqc,\n                                                    t1->mqc.cx_states + ctxno) ^\n                                      xorbit)\n                                     ? -mask : mask;\n                    ff_jpeg2000_set_significance(t1, x, y, t1->data[y][x] < 0);\n                }\n                dec = 0;\n                t1->flags[y + 1][x + 1] &= ~JPEG2000_T1_VIS;\n            }\n        }\n    }\n    if (seg_symbols) {\n        int val;\n        val = ff_mqc_decode(&t1->mqc, t1->mqc.cx_states + MQC_CX_UNI);\n        val = (val << 1) + ff_mqc_decode(&t1->mqc, t1->mqc.cx_states + MQC_CX_UNI);\n        val = (val << 1) + ff_mqc_decode(&t1->mqc, t1->mqc.cx_states + MQC_CX_UNI);\n        val = (val << 1) + ff_mqc_decode(&t1->mqc, t1->mqc.cx_states + MQC_CX_UNI);\n        if (val != 0xa)\n            av_log(s->avctx, AV_LOG_ERROR,\n                   \"Segmentation symbol value incorrect\\n\");\n    }\n}",
+            1
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG_NW",
+            "#define JPEG2000_T1_SIG_NW 0x0020 /* <=== libavcodec/jpeg2000.h:81:81:JPEG2000_T1_SIG_NW:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "CODEC_FLAG_BITEXACT",
+            "#define CODEC_FLAG_BITEXACT       0x00800000 ///< Use only bitexact stuff (except (I)DCT). /* <=== libavcodec/avcodec.h:707:707:CODEC_FLAG_BITEXACT:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_byteu",
+            "DEF(unsigned int, byte, 1, AV_RB8 , AV_WB8) /* <=== bytestream2_get_byteu */ ",
+            1
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_VIS",
+            "#define JPEG2000_T1_VIS    0x1000 /* <=== libavcodec/jpeg2000.h:94:94:JPEG2000_T1_VIS:0 */ ",
+            2
+        ],
+        [
+            "libavutil/log.c",
+            "missing_feature_sample",
+            "static void missing_feature_sample(int sample, void *avc, const char *msg, /* <=== missing_feature_sample */ \n                                   va_list argument_list)\n{\n    av_vlog(avc, AV_LOG_WARNING, msg, argument_list);\n    av_log(avc, AV_LOG_WARNING, \" is not implemented. Update your FFmpeg \"\n           \"version to the newest one from Git. If the problem still \"\n           \"occurs, it means that your file has a feature which has not \"\n           \"been implemented.\\n\");\n    if (sample)\n        av_log(avc, AV_LOG_WARNING, \"If you want to help, upload a sample \"\n               \"of this file to ftp://upload.ffmpeg.org/MPlayer/incoming/ \"\n               \"and contact the ffmpeg-devel mailing list.\\n\");\n}",
+            2
+        ],
+        [
+            "libavutil/log.c",
+            "avpriv_request_sample",
+            "void avpriv_request_sample(void *avc, const char *msg, ...) /* <=== avpriv_request_sample */ \n{\n    va_list argument_list;\n\n    va_start(argument_list, msg);\n    missing_feature_sample(1, avc, msg, argument_list);\n    va_end(argument_list);\n}",
+            1
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_MAX_RESLEVELS",
+            "#define JPEG2000_MAX_RESLEVELS (JPEG2000_MAX_DECLEVELS + 1) /* <=== libavcodec/jpeg2000.h:72:72:JPEG2000_MAX_RESLEVELS:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG_E",
+            "#define JPEG2000_T1_SIG_E  0x0002 /* <=== libavcodec/jpeg2000.h:77:77:JPEG2000_T1_SIG_E:0 */ ",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_PATCHWELCOME",
+            "#define AVERROR_PATCHWELCOME       FFERRTAG( 'P','A','W','E') ///< Not yet implemented in FFmpeg, patches welcome /* <=== libavutil/error.h:62:62:AVERROR_PATCHWELCOME:0 */ ",
+            1
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert0",
+            "#define av_assert0(cond) do {                                           \\ /* <=== libavutil/avassert.h:37:43:av_assert0:1 */ \n    if (!(cond)) {                                                      \\\n        av_log(NULL, AV_LOG_PANIC, \"Assertion %s failed at %s:%d\\n\",    \\\n               AV_STRINGIFY(cond), __FILE__, __LINE__);                 \\\n        abort();                                                        \\\n    }                                                                   \\\n} while (0)",
+            1
+        ],
+        [
+            "libavcodec/mqcdec.c",
+            "bytein",
+            "static void bytein(MqcState *mqc) /* <=== bytein */ \n{\n    if (*mqc->bp == 0xff) {\n        if (*(mqc->bp + 1) > 0x8f)\n            mqc->c++;\n        else {\n            mqc->bp++;\n            mqc->c += 2 + 0xfe00 - (*mqc->bp << 9);\n        }\n    } else {\n        mqc->bp++;\n        mqc->c += 1 + 0xff00 - (*mqc->bp << 8);\n    }\n}",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG_SW",
+            "#define JPEG2000_T1_SIG_SW 0x0080 /* <=== libavcodec/jpeg2000.h:83:83:JPEG2000_T1_SIG_SW:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "ff_jpeg2000_getsgnctxno",
+            "static inline int ff_jpeg2000_getsgnctxno(int flag, int *xorbit) /* <=== ff_jpeg2000_getsgnctxno */ \n{\n    *xorbit = ff_jpeg2000_xorbit_lut[flag & 15][(flag >> 8) & 15];\n    return ff_jpeg2000_sgnctxno_lut[flag & 15][(flag >> 8) & 15];\n}",
+            2
+        ],
+        [
+            "libavcodec/mqcdec.c",
+            "exchange",
+            "static int exchange(MqcState *mqc, uint8_t *cxstate, int lps) /* <=== exchange */ \n{\n    int d;\n    if ((mqc->a < ff_mqc_qe[*cxstate]) ^ (!lps)) {\n        if (lps)\n            mqc->a = ff_mqc_qe[*cxstate];\n        d = *cxstate & 1;\n        *cxstate = ff_mqc_nmps[*cxstate];\n    } else {\n        if (lps)\n            mqc->a = ff_mqc_qe[*cxstate];\n        d = 1 - (*cxstate & 1);\n        *cxstate = ff_mqc_nlps[*cxstate];\n    }\n    // do RENORMD: see ISO/IEC 15444-1:2002 §C.3.3\n    do {\n        if (!(mqc->c & 0xff)) {\n            mqc->c -= 0x100;\n            bytein(mqc);\n        }\n        mqc->a += mqc->a;\n        mqc->c += mqc->c;\n    } while (!(mqc->a & 0x8000));\n    return d;\n}",
+            3
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG_N",
+            "#define JPEG2000_T1_SIG_N  0x0001 /* <=== libavcodec/jpeg2000.h:76:76:JPEG2000_T1_SIG_N:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG_S",
+            "#define JPEG2000_T1_SIG_S  0x0008 /* <=== libavcodec/jpeg2000.h:79:79:JPEG2000_T1_SIG_S:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG_SE",
+            "#define JPEG2000_T1_SIG_SE 0x0040 /* <=== libavcodec/jpeg2000.h:82:82:JPEG2000_T1_SIG_SE:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream_get_byte",
+            "DEF(unsigned int, byte, 1, AV_RB8 , AV_WB8) /* <=== bytestream_get_byte */ ",
+            2
+        ],
+        [
+            "libavcodec/mqc.h",
+            "MQC_CX_UNI",
+            "#define MQC_CX_UNI 17 /* <=== libavcodec/mqc.h:33:33:MQC_CX_UNI:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000dec.c",
+            "decode_sigpass",
+            "static void decode_sigpass(Jpeg2000T1Context *t1, int width, int height, /* <=== decode_sigpass */ \n                           int bpno, int bandno, int bpass_csty_symbol,\n                           int vert_causal_ctx_csty_symbol)\n{\n    int mask = 3 << (bpno - 1), y0, x, y;\n\n    for (y0 = 0; y0 < height; y0 += 4)\n        for (x = 0; x < width; x++)\n            for (y = y0; y < height && y < y0 + 4; y++) {\n                if ((t1->flags[y+1][x+1] & JPEG2000_T1_SIG_NB)\n                && !(t1->flags[y+1][x+1] & (JPEG2000_T1_SIG | JPEG2000_T1_VIS))) {\n                    int flags_mask = -1;\n                    if (vert_causal_ctx_csty_symbol && y == y0 + 3)\n                        flags_mask &= ~(JPEG2000_T1_SIG_S | JPEG2000_T1_SIG_SW | JPEG2000_T1_SIG_SE);\n                    if (ff_mqc_decode(&t1->mqc, t1->mqc.cx_states + ff_jpeg2000_getsigctxno(t1->flags[y+1][x+1] & flags_mask, bandno))) {\n                        int xorbit, ctxno = ff_jpeg2000_getsgnctxno(t1->flags[y+1][x+1], &xorbit);\n                        if (bpass_csty_symbol)\n                             t1->data[y][x] = ff_mqc_decode(&t1->mqc, t1->mqc.cx_states + ctxno) ? -mask : mask;\n                        else\n                             t1->data[y][x] = (ff_mqc_decode(&t1->mqc, t1->mqc.cx_states + ctxno) ^ xorbit) ?\n                                               -mask : mask;\n\n                        ff_jpeg2000_set_significance(t1, x, y,\n                                                     t1->data[y][x] < 0);\n                    }\n                    t1->flags[y + 1][x + 1] |= JPEG2000_T1_VIS;\n                }\n            }\n}",
+            1
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_byte",
+            "DEF(unsigned int, byte, 1, AV_RB8 , AV_WB8) /* <=== bytestream2_get_byte */ ",
+            1
+        ],
+        [
+            "libavcodec/mqc.h",
+            "MQC_CX_RL",
+            "#define MQC_CX_RL  18 /* <=== libavcodec/mqc.h:34:34:MQC_CX_RL:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_CBLK_SEGSYM",
+            "#define JPEG2000_CBLK_SEGSYM    0x20 // Segmentation symbols present /* <=== libavcodec/jpeg2000.h:106:106:JPEG2000_CBLK_SEGSYM:0 */ ",
+            1
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_ERROR",
+            "#define AV_LOG_ERROR    16 /* <=== libavutil/log.h:148:148:AV_LOG_ERROR:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_CSTY_PREC",
+            "#define JPEG2000_CSTY_PREC      0x01 // Precincts defined in coding style /* <=== libavcodec/jpeg2000.h:109:109:JPEG2000_CSTY_PREC:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG",
+            "#define JPEG2000_T1_SIG    0x2000 /* <=== libavcodec/jpeg2000.h:95:95:JPEG2000_T1_SIG:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000dec.c",
+            "decode_refpass",
+            "static void decode_refpass(Jpeg2000T1Context *t1, int width, int height, /* <=== decode_refpass */ \n                           int bpno)\n{\n    int phalf, nhalf;\n    int y0, x, y;\n\n    phalf = 1 << (bpno - 1);\n    nhalf = -phalf;\n\n    for (y0 = 0; y0 < height; y0 += 4)\n        for (x = 0; x < width; x++)\n            for (y = y0; y < height && y < y0 + 4; y++)\n                if ((t1->flags[y + 1][x + 1] & (JPEG2000_T1_SIG | JPEG2000_T1_VIS)) == JPEG2000_T1_SIG) {\n                    int ctxno = ff_jpeg2000_getrefctxno(t1->flags[y + 1][x + 1]);\n                    int r     = ff_mqc_decode(&t1->mqc,\n                                              t1->mqc.cx_states + ctxno)\n                                ? phalf : nhalf;\n                    t1->data[y][x]          += t1->data[y][x] < 0 ? -r : r;\n                    t1->flags[y + 1][x + 1] |= JPEG2000_T1_REF;\n                }\n}",
+            1
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_WARNING",
+            "#define AV_LOG_WARNING  24 /* <=== libavutil/log.h:154:154:AV_LOG_WARNING:0 */ ",
+            1
+        ],
+        [
+            "libavutil/log.h",
+            "AV_LOG_FATAL",
+            "#define AV_LOG_FATAL     8 /* <=== libavutil/log.h:142:142:AV_LOG_FATAL:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/mqc.c",
+            "ff_mqc_init_contexts",
+            "void ff_mqc_init_contexts(MqcState *mqc) /* <=== ff_mqc_init_contexts */ \n{\n    memset(mqc->cx_states, 0, sizeof(mqc->cx_states));\n    mqc->cx_states[MQC_CX_UNI] = 2 * 46;\n    mqc->cx_states[MQC_CX_RL]  = 2 * 3;\n    mqc->cx_states[0]          = 2 * 4;\n}",
+            2
+        ],
+        [
+            "libavcodec/bytestream.h",
+            "bytestream2_get_bytes_left",
+            "static av_always_inline unsigned int bytestream2_get_bytes_left(GetByteContext *g) /* <=== bytestream2_get_bytes_left */ \n{\n    return g->buffer_end - g->buffer;\n}",
+            1
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG_NE",
+            "#define JPEG2000_T1_SIG_NE 0x0010 /* <=== libavcodec/jpeg2000.h:80:80:JPEG2000_T1_SIG_NE:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SGN_E",
+            "#define JPEG2000_T1_SGN_E  0x0800 /* <=== libavcodec/jpeg2000.h:92:92:JPEG2000_T1_SGN_E:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "ff_jpeg2000_getrefctxno",
+            "static inline int ff_jpeg2000_getrefctxno(int flag) /* <=== ff_jpeg2000_getrefctxno */ \n{\n    return refctxno_lut[(flag >> 14) & 1][(flag & 255) != 0];\n}",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG_W",
+            "#define JPEG2000_T1_SIG_W  0x0004 /* <=== libavcodec/jpeg2000.h:78:78:JPEG2000_T1_SIG_W:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_REF",
+            "#define JPEG2000_T1_REF    0x4000 /* <=== libavcodec/jpeg2000.h:96:96:JPEG2000_T1_REF:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/mqcdec.c",
+            "ff_mqc_initdec",
+            "void ff_mqc_initdec(MqcState *mqc, uint8_t *bp) /* <=== ff_mqc_initdec */ \n{\n    ff_mqc_init_contexts(mqc);\n    mqc->bp = bp;\n    mqc->c  = (*mqc->bp ^ 0xff) << 16;\n    bytein(mqc);\n    mqc->c = mqc->c << 7;\n    mqc->a = 0x8000;\n}",
+            1
+        ],
+        [
+            "libavcodec/mqcdec.c",
+            "ff_mqc_decode",
+            "int ff_mqc_decode(MqcState *mqc, uint8_t *cxstate) /* <=== ff_mqc_decode */ \n{\n    mqc->a -= ff_mqc_qe[*cxstate];\n    if ((mqc->c >> 16) < mqc->a) {\n        if (mqc->a & 0x8000)\n            return *cxstate & 1;\n        else\n            return exchange(mqc, cxstate, 0);\n    } else {\n        mqc->c -= mqc->a << 16;\n        return exchange(mqc, cxstate, 1);\n    }\n}",
+            2
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SGN_W",
+            "#define JPEG2000_T1_SGN_W  0x0400 /* <=== libavcodec/jpeg2000.h:91:91:JPEG2000_T1_SGN_W:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SGN_S",
+            "#define JPEG2000_T1_SGN_S  0x0200 /* <=== libavcodec/jpeg2000.h:90:90:JPEG2000_T1_SGN_S:0 */ ",
+            3
+        ],
+        [
+            "libavutil/log.c",
+            "av_log",
+            "void av_log(void* avcl, int level, const char *fmt, ...) /* <=== av_log */ \n{\n    AVClass* avc = avcl ? *(AVClass **) avcl : NULL;\n    va_list vl;\n    va_start(vl, fmt);\n    if (avc && avc->version >= (50 << 16 | 15 << 8 | 2) &&\n        avc->log_level_offset_offset && level >= AV_LOG_FATAL)\n        level += *(int *) (((uint8_t *) avcl) + avc->log_level_offset_offset);\n    av_vlog(avcl, level, fmt, vl);\n    va_end(vl);\n}",
+            1
+        ],
+        [
+            "libavcodec/jpeg2000.h",
+            "JPEG2000_T1_SIG_NB",
+            "#define JPEG2000_T1_SIG_NB (JPEG2000_T1_SIG_N  | JPEG2000_T1_SIG_E  |   \\ /* <=== libavcodec/jpeg2000.h:84:87:JPEG2000_T1_SIG_NB:0 */ \n                            JPEG2000_T1_SIG_S  | JPEG2000_T1_SIG_W  |   \\\n                            JPEG2000_T1_SIG_NE | JPEG2000_T1_SIG_NW |   \\\n                            JPEG2000_T1_SIG_SE | JPEG2000_T1_SIG_SW)",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"jpeg2000.h\"",
+        "#include \"libavutil/opt.h\"",
+        "#include \"libavutil/pixdesc.h\"",
+        "#include \"libavutil/avassert.h\"",
+        "#include \"libavutil/common.h\"",
+        "#include \"thread.h\"",
+        "#include \"internal.h\"",
+        "#include \"bytestream.h\"",
+        "#include \"avcodec.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct Jpeg2000Cblk {\n    uint8_t npasses;\n    uint8_t ninclpasses; // number coding of passes included in codestream\n    uint8_t nonzerobits;\n    uint16_t length;\n    uint16_t lengthinc;\n    uint8_t lblock;\n    uint8_t zero;\n    uint8_t data[8192];\n    Jpeg2000Pass passes[100];\n    uint16_t coord[2][2]; // border coordinates {{x0, x1}, {y0, y1}}\n} Jpeg2000Cblk;",
+            "Jpeg2000Cblk"
+        ],
+        [
+            "typedef struct Jpeg2000CodingStyle {\n    int nreslevels;           // number of resolution levels\n    int nreslevels2decode;    // number of resolution levels to decode\n    uint8_t log2_cblk_width,\n            log2_cblk_height; // exponent of codeblock size\n    uint8_t transform;        // DWT type\n    uint8_t csty;             // coding style\n    uint8_t nlayers;          // number of layers\n    uint8_t mct;              // multiple component transformation\n    uint8_t cblk_style;       // codeblock coding style\n    uint8_t prog_order;       // progression order\n    uint8_t log2_prec_widths[JPEG2000_MAX_RESLEVELS];  // precincts size according resolution levels\n    uint8_t log2_prec_heights[JPEG2000_MAX_RESLEVELS]; // TODO: initialize prec_size array with 0?\n} Jpeg2000CodingStyle;",
+            "Jpeg2000CodingStyle"
+        ],
+        [
+            "typedef struct Jpeg2000DecoderContext {\n    AVClass         *class;\n    AVCodecContext  *avctx;\n    GetByteContext  g;\n\n    int             width, height;\n    int             image_offset_x, image_offset_y;\n    int             tile_offset_x, tile_offset_y;\n    uint8_t         cbps[4];    // bits per sample in particular components\n    uint8_t         sgnd[4];    // if a component is signed\n    uint8_t         properties[4];\n    int             cdx[4], cdy[4];\n    int             precision;\n    int             ncomponents;\n    int             colour_space;\n    uint32_t        palette[256];\n    int8_t          pal8;\n    int             cdef[4];\n    int             tile_width, tile_height;\n    unsigned        numXtiles, numYtiles;\n    int             maxtilelen;\n\n    Jpeg2000CodingStyle codsty[4];\n    Jpeg2000QuantStyle  qntsty[4];\n\n    int             bit_index;\n\n    int             curtileno;\n\n    Jpeg2000Tile    *tile;\n\n    /*options parameters*/\n    int             reduction_factor;\n}",
+            "Jpeg2000DecoderContext"
+        ],
+        [
+            "typedef struct Jpeg2000T1Context {\n    int data[JPEG2000_MAX_CBLKW][JPEG2000_MAX_CBLKH];\n    int flags[JPEG2000_MAX_CBLKW + 2][JPEG2000_MAX_CBLKH + 2];\n    MqcState mqc;\n} Jpeg2000T1Context;",
+            "Jpeg2000T1Context"
+        ]
+    ],
+    "visitedLines_after": {
+        "libavcodec/jpeg2000dec.c": [
+            357,
+            361,
+            366,
+            367,
+            373,
+            374,
+            376,
+            378,
+            379,
+            381,
+            382,
+            387,
+            388,
+            389,
+            392,
+            393,
+            394,
+            396,
+            398,
+            399,
+            401,
+            403,
+            404,
+            405,
+            406,
+            409,
+            410,
+            412,
+            1024,
+            1026,
+            1033,
+            1034,
+            1036,
+            1037,
+            1043,
+            1044,
+            1053,
+            1054,
+            1055,
+            1058,
+            1059,
+            1060,
+            1063,
+            1064,
+            1065,
+            1066,
+            1067,
+            1068,
+            1074
+        ]
+    },
+    "visitedLines_before": {
+        "libavcodec/jpeg2000dec.c": [
+            357,
+            361,
+            366,
+            367,
+            373,
+            374,
+            376,
+            378,
+            379,
+            381,
+            382,
+            387,
+            388,
+            389,
+            391,
+            393,
+            394,
+            396,
+            398,
+            399,
+            400,
+            401,
+            404,
+            405,
+            407,
+            1019,
+            1021,
+            1028,
+            1029,
+            1035,
+            1036,
+            1045,
+            1046,
+            1047,
+            1050,
+            1051,
+            1052,
+            1055,
+            1056,
+            1057,
+            1058,
+            1059,
+            1060,
+            1066
+        ]
+    },
+    "visitedParams": {
+        "libavcodec/jpeg2000dec.c": [
+            [
+                "Jpeg2000CodingStyle *c",
+                "get_cox"
+            ],
+            [
+                "Jpeg2000DecoderContext *s",
+                "get_cox"
+            ],
+            [
+                "int height",
+                "decode_cblk"
+            ],
+            [
+                "int width",
+                "decode_cblk"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libavcodec/jpeg2000dec.c",
+            "get_cox",
+            "static int get_cox(Jpeg2000DecoderContext *s, Jpeg2000CodingStyle *c) /* <=== get_cox */ \n{\n    uint8_t byte;\n\n    if (bytestream2_get_bytes_left(&s->g) < 5)\n        return AVERROR_INVALIDDATA;\n\n    /*  nreslevels = number of resolution levels\n                   = number of decomposition level +1 */\n    c->nreslevels = bytestream2_get_byteu(&s->g) + 1;\n    if (c->nreslevels >= JPEG2000_MAX_RESLEVELS) {\n        av_log(s->avctx, AV_LOG_ERROR, \"nreslevels %d is invalid\\n\", c->nreslevels);\n        return AVERROR_INVALIDDATA;\n    }\n\n    /* compute number of resolution levels to decode */\n    if (c->nreslevels < s->reduction_factor)\n        c->nreslevels2decode = 1;\n    else\n        c->nreslevels2decode = c->nreslevels - s->reduction_factor;\n\n    c->log2_cblk_width  = (bytestream2_get_byteu(&s->g) & 15) + 2; // cblk width\n    c->log2_cblk_height = (bytestream2_get_byteu(&s->g) & 15) + 2; // cblk height\n\n    if (c->log2_cblk_width > 10 || c->log2_cblk_height > 10 ||\n        c->log2_cblk_width + c->log2_cblk_height > 12) {\n        av_log(s->avctx, AV_LOG_ERROR, \"cblk size invalid\\n\");\n        return AVERROR_INVALIDDATA;\n    }\n\n    if (c->log2_cblk_width > 6 || c->log2_cblk_height > 6) {\n        avpriv_request_sample(s->avctx, \"cblk size > 64\");\n        return AVERROR_PATCHWELCOME;\n    }\n\n    c->cblk_style = bytestream2_get_byteu(&s->g);\n    if (c->cblk_style != 0) { // cblk style\n        av_log(s->avctx, AV_LOG_WARNING, \"extra cblk styles %X\\n\", c->cblk_style);\n    }\n    c->transform = bytestream2_get_byteu(&s->g); // DWT transformation type\n    /* set integer 9/7 DWT in case of BITEXACT flag */\n    if ((s->avctx->flags & CODEC_FLAG_BITEXACT) && (c->transform == FF_DWT97))\n        c->transform = FF_DWT97_INT;\n\n    if (c->csty & JPEG2000_CSTY_PREC) {\n        int i;\n        for (i = 0; i < c->nreslevels; i++) {\n            byte = bytestream2_get_byte(&s->g);\n            c->log2_prec_widths[i]  =  byte       & 0x0F;    // precinct PPx\n            c->log2_prec_heights[i] = (byte >> 4) & 0x0F;    // precinct PPy\n        }\n    } else {\n        memset(c->log2_prec_widths , 15, sizeof(c->log2_prec_widths ));\n        memset(c->log2_prec_heights, 15, sizeof(c->log2_prec_heights));\n    }\n    return 0;\n}",
+            357
+        ],
+        [
+            "libavcodec/jpeg2000dec.c",
+            "decode_cblk",
+            "static int decode_cblk(Jpeg2000DecoderContext *s, Jpeg2000CodingStyle *codsty, /* <=== decode_cblk */ \n                       Jpeg2000T1Context *t1, Jpeg2000Cblk *cblk,\n                       int width, int height, int bandpos)\n{\n    int passno = cblk->npasses, pass_t = 2, bpno = cblk->nonzerobits - 1, y;\n    int clnpass_cnt = 0;\n    int bpass_csty_symbol           = codsty->cblk_style & JPEG2000_CBLK_BYPASS;\n    int vert_causal_ctx_csty_symbol = codsty->cblk_style & JPEG2000_CBLK_VSC;\n\n    av_assert0(width  <= JPEG2000_MAX_CBLKW);\n    av_assert0(height <= JPEG2000_MAX_CBLKH);\n\n    for (y = 0; y < height; y++)\n        memset(t1->data[y], 0, width * sizeof(**t1->data));\n\n    /* If code-block contains no compressed data: nothing to do. */\n    if (!cblk->length)\n        return 0;\n\n    for (y = 0; y < height + 2; y++)\n        memset(t1->flags[y], 0, (width + 2) * sizeof(**t1->flags));\n\n    cblk->data[cblk->length] = 0xff;\n    cblk->data[cblk->length+1] = 0xff;\n    ff_mqc_initdec(&t1->mqc, cblk->data);\n\n    while (passno--) {\n        switch(pass_t) {\n        case 0:\n            decode_sigpass(t1, width, height, bpno + 1, bandpos,\n                           bpass_csty_symbol && (clnpass_cnt >= 4),\n                           vert_causal_ctx_csty_symbol);\n            break;\n        case 1:\n            decode_refpass(t1, width, height, bpno + 1);\n            if (bpass_csty_symbol && clnpass_cnt >= 4)\n                ff_mqc_initdec(&t1->mqc, cblk->data);\n            break;\n        case 2:\n            decode_clnpass(s, t1, width, height, bpno + 1, bandpos,\n                           codsty->cblk_style & JPEG2000_CBLK_SEGSYM,\n                           vert_causal_ctx_csty_symbol);\n            clnpass_cnt = clnpass_cnt + 1;\n            if (bpass_csty_symbol && clnpass_cnt >= 4)\n                ff_mqc_initdec(&t1->mqc, cblk->data);\n            break;\n        }\n\n        pass_t++;\n        if (pass_t == 3) {\n            bpno--;\n            pass_t = 0;\n        }\n    }\n    return 0;\n}",
+            1024
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libavcodec/jpeg2000dec.c",
+            "get_cox",
+            "static int get_cox(Jpeg2000DecoderContext *s, Jpeg2000CodingStyle *c) /* <=== get_cox */ \n{\n    uint8_t byte;\n\n    if (bytestream2_get_bytes_left(&s->g) < 5)\n        return AVERROR_INVALIDDATA;\n\n    /*  nreslevels = number of resolution levels\n                   = number of decomposition level +1 */\n    c->nreslevels = bytestream2_get_byteu(&s->g) + 1;\n    if (c->nreslevels >= JPEG2000_MAX_RESLEVELS) {\n        av_log(s->avctx, AV_LOG_ERROR, \"nreslevels %d is invalid\\n\", c->nreslevels);\n        return AVERROR_INVALIDDATA;\n    }\n\n    /* compute number of resolution levels to decode */\n    if (c->nreslevels < s->reduction_factor)\n        c->nreslevels2decode = 1;\n    else\n        c->nreslevels2decode = c->nreslevels - s->reduction_factor;\n\n    c->log2_cblk_width  = (bytestream2_get_byteu(&s->g) & 15) + 2; // cblk width\n    c->log2_cblk_height = (bytestream2_get_byteu(&s->g) & 15) + 2; // cblk height\n\n    if (c->log2_cblk_width > 10 || c->log2_cblk_height > 10 ||\n        c->log2_cblk_width + c->log2_cblk_height > 12) {\n        av_log(s->avctx, AV_LOG_ERROR, \"cblk size invalid\\n\");\n        return AVERROR_INVALIDDATA;\n    }\n\n    c->cblk_style = bytestream2_get_byteu(&s->g);\n    if (c->cblk_style != 0) { // cblk style\n        av_log(s->avctx, AV_LOG_WARNING, \"extra cblk styles %X\\n\", c->cblk_style);\n    }\n    c->transform = bytestream2_get_byteu(&s->g); // DWT transformation type\n    /* set integer 9/7 DWT in case of BITEXACT flag */\n    if ((s->avctx->flags & CODEC_FLAG_BITEXACT) && (c->transform == FF_DWT97))\n        c->transform = FF_DWT97_INT;\n\n    if (c->csty & JPEG2000_CSTY_PREC) {\n        int i;\n        for (i = 0; i < c->nreslevels; i++) {\n            byte = bytestream2_get_byte(&s->g);\n            c->log2_prec_widths[i]  =  byte       & 0x0F;    // precinct PPx\n            c->log2_prec_heights[i] = (byte >> 4) & 0x0F;    // precinct PPy\n        }\n    } else {\n        memset(c->log2_prec_widths , 15, sizeof(c->log2_prec_widths ));\n        memset(c->log2_prec_heights, 15, sizeof(c->log2_prec_heights));\n    }\n    return 0;\n}",
+            357
+        ],
+        [
+            "libavcodec/jpeg2000dec.c",
+            "decode_cblk",
+            "static int decode_cblk(Jpeg2000DecoderContext *s, Jpeg2000CodingStyle *codsty, /* <=== decode_cblk */ \n                       Jpeg2000T1Context *t1, Jpeg2000Cblk *cblk,\n                       int width, int height, int bandpos)\n{\n    int passno = cblk->npasses, pass_t = 2, bpno = cblk->nonzerobits - 1, y;\n    int clnpass_cnt = 0;\n    int bpass_csty_symbol           = codsty->cblk_style & JPEG2000_CBLK_BYPASS;\n    int vert_causal_ctx_csty_symbol = codsty->cblk_style & JPEG2000_CBLK_VSC;\n\n    for (y = 0; y < height; y++)\n        memset(t1->data[y], 0, width * sizeof(**t1->data));\n\n    /* If code-block contains no compressed data: nothing to do. */\n    if (!cblk->length)\n        return 0;\n\n    for (y = 0; y < height + 2; y++)\n        memset(t1->flags[y], 0, (width + 2) * sizeof(**t1->flags));\n\n    cblk->data[cblk->length] = 0xff;\n    cblk->data[cblk->length+1] = 0xff;\n    ff_mqc_initdec(&t1->mqc, cblk->data);\n\n    while (passno--) {\n        switch(pass_t) {\n        case 0:\n            decode_sigpass(t1, width, height, bpno + 1, bandpos,\n                           bpass_csty_symbol && (clnpass_cnt >= 4),\n                           vert_causal_ctx_csty_symbol);\n            break;\n        case 1:\n            decode_refpass(t1, width, height, bpno + 1);\n            if (bpass_csty_symbol && clnpass_cnt >= 4)\n                ff_mqc_initdec(&t1->mqc, cblk->data);\n            break;\n        case 2:\n            decode_clnpass(s, t1, width, height, bpno + 1, bandpos,\n                           codsty->cblk_style & JPEG2000_CBLK_SEGSYM,\n                           vert_causal_ctx_csty_symbol);\n            clnpass_cnt = clnpass_cnt + 1;\n            if (bpass_csty_symbol && clnpass_cnt >= 4)\n                ff_mqc_initdec(&t1->mqc, cblk->data);\n            break;\n        }\n\n        pass_t++;\n        if (pass_t == 3) {\n            bpno--;\n            pass_t = 0;\n        }\n    }\n    return 0;\n}",
+            1019
+        ]
+    ]
+}

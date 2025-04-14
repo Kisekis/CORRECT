@@ -1,0 +1,223 @@
+{
+    "calleeMethods": [
+        [
+            "arch/tile/lib/memset_32.c",
+            "BYTE_CUTOFF",
+            "#define BYTE_CUTOFF 20 /* <=== arch/tile/lib/memset_32.c:31:31:BYTE_CUTOFF:0 */ ",
+            2
+        ],
+        [
+            "arch/tile/lib/memset_32.c",
+            "CACHE_LINE_SIZE_IN_WORDS",
+            "#define CACHE_LINE_SIZE_IN_WORDS (CHIP_L2_LINE_SIZE() / 4) /* <=== arch/tile/lib/memset_32.c:75:75:CACHE_LINE_SIZE_IN_WORDS:0 */ ",
+            2
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "_wordcopy_fwd_aligned",
+            "static void _wordcopy_fwd_aligned(long int dstp, long int srcp, size_t len) /* <=== _wordcopy_fwd_aligned */ \n{\n\twhile (len > 7) {\n\t\tregister op_t a0, a1, a2, a3, a4, a5, a6, a7;\n\n\t\ta0 = ((op_t *) srcp)[0];\n\t\ta1 = ((op_t *) srcp)[1];\n\t\ta2 = ((op_t *) srcp)[2];\n\t\ta3 = ((op_t *) srcp)[3];\n\t\ta4 = ((op_t *) srcp)[4];\n\t\ta5 = ((op_t *) srcp)[5];\n\t\ta6 = ((op_t *) srcp)[6];\n\t\ta7 = ((op_t *) srcp)[7];\n\t\t((op_t *) dstp)[0] = a0;\n\t\t((op_t *) dstp)[1] = a1;\n\t\t((op_t *) dstp)[2] = a2;\n\t\t((op_t *) dstp)[3] = a3;\n\t\t((op_t *) dstp)[4] = a4;\n\t\t((op_t *) dstp)[5] = a5;\n\t\t((op_t *) dstp)[6] = a6;\n\t\t((op_t *) dstp)[7] = a7;\n\n\t\tsrcp += 8 * OPSIZ;\n\t\tdstp += 8 * OPSIZ;\n\t\tlen -= 8;\n\t}\n\twhile (len > 0) {\n\t\t*(op_t *)dstp = *(op_t *)srcp;\n\n\t\tsrcp += OPSIZ;\n\t\tdstp += OPSIZ;\n\t\tlen -= 1;\n\t}\n}",
+            3
+        ],
+        [
+            "arch/tile/lib/memset_32.c",
+            "memset",
+            "void *memset(void *s, int c, size_t n) /* <=== memset */ \n{\n\tuint32_t *out32;\n\tint n32;\n\tuint32_t v16, v32;\n\tuint8_t *out8 = s;\n\tint to_align32;\n\n\t/* Experimentation shows that a trivial tight loop is a win up until\n\t * around a size of 20, where writing a word at a time starts to win.\n\t */\n#define BYTE_CUTOFF 20\n\n#if BYTE_CUTOFF < 3\n\t/* This must be at least at least this big, or some code later\n\t * on doesn't work.\n\t */\n#error \"BYTE_CUTOFF is too small\"\n#endif\n\n\tif (n < BYTE_CUTOFF) {\n\t\t/* Strangely, this turns out to be the tightest way to\n\t\t * write this loop.\n\t\t */\n\t\tif (n != 0) {\n\t\t\tdo {\n\t\t\t\t/* Strangely, combining these into one line\n\t\t\t\t * performs worse.\n\t\t\t\t */\n\t\t\t\t*out8 = c;\n\t\t\t\tout8++;\n\t\t\t} while (--n != 0);\n\t\t}\n\n\t\treturn s;\n\t}\n\n\t/* Align 'out8'. We know n >= 3 so this won't write past the end. */\n\twhile (((uintptr_t) out8 & 3) != 0) {\n\t\t*out8++ = c;\n\t\t--n;\n\t}\n\n\t/* Align 'n'. */\n\twhile (n & 3)\n\t\tout8[--n] = c;\n\n\tout32 = (uint32_t *) out8;\n\tn32 = n >> 2;\n\n\t/* Tile input byte out to 32 bits. */\n\tv16 = __insn_intlb(c, c);\n\tv32 = __insn_intlh(v16, v16);\n\n\t/* This must be at least 8 or the following loop doesn't work. */\n#define CACHE_LINE_SIZE_IN_WORDS (CHIP_L2_LINE_SIZE() / 4)\n\n\t/* Determine how many words we need to emit before the 'out32'\n\t * pointer becomes aligned modulo the cache line size.\n\t */\n\tto_align32 =\n\t\t(-((uintptr_t)out32 >> 2)) & (CACHE_LINE_SIZE_IN_WORDS - 1);\n\n\t/* Only bother aligning and using wh64 if there is at least\n\t * one full cache line to process.  This check also prevents\n\t * overrunning the end of the buffer with alignment words.\n\t */\n\tif (to_align32 <= n32 - CACHE_LINE_SIZE_IN_WORDS) {\n\t\tint lines_left;\n\n\t\t/* Align out32 mod the cache line size so we can use wh64. */\n\t\tn32 -= to_align32;\n\t\tfor (; to_align32 != 0; to_align32--) {\n\t\t\t*out32 = v32;\n\t\t\tout32++;\n\t\t}\n\n\t\t/* Use unsigned divide to turn this into a right shift. */\n\t\tlines_left = (unsigned)n32 / CACHE_LINE_SIZE_IN_WORDS;\n\n\t\tdo {\n\t\t\t/* Only wh64 a few lines at a time, so we don't\n\t\t\t * exceed the maximum number of victim lines.\n\t\t\t */\n\t\t\tint x = ((lines_left < CHIP_MAX_OUTSTANDING_VICTIMS())\n\t\t\t\t  ? lines_left\n\t\t\t\t  : CHIP_MAX_OUTSTANDING_VICTIMS());\n\t\t\tuint32_t *wh = out32;\n\t\t\tint i = x;\n\t\t\tint j;\n\n\t\t\tlines_left -= x;\n\n\t\t\tdo {\n\t\t\t\t__insn_wh64(wh);\n\t\t\t\twh += CACHE_LINE_SIZE_IN_WORDS;\n\t\t\t} while (--i);\n\n\t\t\tfor (j = x * (CACHE_LINE_SIZE_IN_WORDS / 4);\n\t\t\t     j != 0; j--) {\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t\t*out32++ = v32;\n\t\t\t}\n\t\t} while (lines_left != 0);\n\n\t\t/* We processed all full lines above, so only this many\n\t\t * words remain to be processed.\n\t\t */\n\t\tn32 &= CACHE_LINE_SIZE_IN_WORDS - 1;\n\t}\n\n\t/* Now handle any leftover values. */\n\tif (n32 != 0) {\n\t\tdo {\n\t\t\t*out32 = v32;\n\t\t\tout32++;\n\t\t} while (--n32 != 0);\n\t}\n\n\treturn s;\n}",
+            1
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "BYTE_CUTOFF",
+            "#define BYTE_CUTOFF 20 /* <=== arch/tile/lib/memset_64.c:31:31:BYTE_CUTOFF:0 */ ",
+            2
+        ],
+        [
+            "net/x25/x25_facilities.c",
+            "x25_parse_facilities",
+            "int x25_parse_facilities(struct sk_buff *skb, struct x25_facilities *facilities, /* <=== x25_parse_facilities */ \n\t\tstruct x25_dte_facilities *dte_facs, unsigned long *vc_fac_mask)\n{\n\tunsigned char *p;\n\tunsigned int len;\n\n\t*vc_fac_mask = 0;\n\n\t/*\n\t * The kernel knows which facilities were set on an incoming call but\n\t * currently this information is not available to userspace.  Here we\n\t * give userspace who read incoming call facilities 0 length to indicate\n\t * it wasn't set.\n\t */\n\tdte_facs->calling_len = 0;\n\tdte_facs->called_len = 0;\n\tmemset(dte_facs->called_ae, '\\0', sizeof(dte_facs->called_ae));\n\tmemset(dte_facs->calling_ae, '\\0', sizeof(dte_facs->calling_ae));\n\n\tif (!pskb_may_pull(skb, 1))\n\t\treturn 0;\n\n\tlen = skb->data[0];\n\n\tif (!pskb_may_pull(skb, 1 + len))\n\t\treturn -1;\n\n\tp = skb->data + 1;\n\n\twhile (len > 0) {\n\t\tswitch (*p & X25_FAC_CLASS_MASK) {\n\t\tcase X25_FAC_CLASS_A:\n\t\t\tif (len < 2)\n\t\t\t\treturn -1;\n\t\t\tswitch (*p) {\n\t\t\tcase X25_FAC_REVERSE:\n\t\t\t\tif((p[1] & 0x81) == 0x81) {\n\t\t\t\t\tfacilities->reverse = p[1] & 0x81;\n\t\t\t\t\t*vc_fac_mask |= X25_MASK_REVERSE;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\n\t\t\t\tif((p[1] & 0x01) == 0x01) {\n\t\t\t\t\tfacilities->reverse = p[1] & 0x01;\n\t\t\t\t\t*vc_fac_mask |= X25_MASK_REVERSE;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\n\t\t\t\tif((p[1] & 0x80) == 0x80) {\n\t\t\t\t\tfacilities->reverse = p[1] & 0x80;\n\t\t\t\t\t*vc_fac_mask |= X25_MASK_REVERSE;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\n\t\t\t\tif(p[1] == 0x00) {\n\t\t\t\t\tfacilities->reverse\n\t\t\t\t\t\t= X25_DEFAULT_REVERSE;\n\t\t\t\t\t*vc_fac_mask |= X25_MASK_REVERSE;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\n\t\t\tcase X25_FAC_THROUGHPUT:\n\t\t\t\tfacilities->throughput = p[1];\n\t\t\t\t*vc_fac_mask |= X25_MASK_THROUGHPUT;\n\t\t\t\tbreak;\n\t\t\tcase X25_MARKER:\n\t\t\t\tbreak;\n\t\t\tdefault:\n\t\t\t\tpr_debug(\"unknown facility \"\n\t\t\t\t       \"%02X, value %02X\\n\",\n\t\t\t\t       p[0], p[1]);\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tp   += 2;\n\t\t\tlen -= 2;\n\t\t\tbreak;\n\t\tcase X25_FAC_CLASS_B:\n\t\t\tif (len < 3)\n\t\t\t\treturn -1;\n\t\t\tswitch (*p) {\n\t\t\tcase X25_FAC_PACKET_SIZE:\n\t\t\t\tfacilities->pacsize_in  = p[1];\n\t\t\t\tfacilities->pacsize_out = p[2];\n\t\t\t\t*vc_fac_mask |= X25_MASK_PACKET_SIZE;\n\t\t\t\tbreak;\n\t\t\tcase X25_FAC_WINDOW_SIZE:\n\t\t\t\tfacilities->winsize_in  = p[1];\n\t\t\t\tfacilities->winsize_out = p[2];\n\t\t\t\t*vc_fac_mask |= X25_MASK_WINDOW_SIZE;\n\t\t\t\tbreak;\n\t\t\tdefault:\n\t\t\t\tpr_debug(\"unknown facility \"\n\t\t\t\t       \"%02X, values %02X, %02X\\n\",\n\t\t\t\t       p[0], p[1], p[2]);\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tp   += 3;\n\t\t\tlen -= 3;\n\t\t\tbreak;\n\t\tcase X25_FAC_CLASS_C:\n\t\t\tif (len < 4)\n\t\t\t\treturn -1;\n\t\t\tpr_debug(\"unknown facility %02X, \"\n\t\t\t       \"values %02X, %02X, %02X\\n\",\n\t\t\t       p[0], p[1], p[2], p[3]);\n\t\t\tp   += 4;\n\t\t\tlen -= 4;\n\t\t\tbreak;\n\t\tcase X25_FAC_CLASS_D:\n\t\t\tif (len < p[1] + 2)\n\t\t\t\treturn -1;\n\t\t\tswitch (*p) {\n\t\t\tcase X25_FAC_CALLING_AE:\n\t\t\t\tif (p[1] > X25_MAX_DTE_FACIL_LEN || p[1] <= 1)\n\t\t\t\t\treturn -1;\n\t\t\t\tif (p[2] > X25_MAX_AE_LEN)\n\t\t\t\t\treturn -1;\n\t\t\t\tdte_facs->calling_len = p[2];\n\t\t\t\tmemcpy(dte_facs->calling_ae, &p[3], p[1] - 1);\n\t\t\t\t*vc_fac_mask |= X25_MASK_CALLING_AE;\n\t\t\t\tbreak;\n\t\t\tcase X25_FAC_CALLED_AE:\n\t\t\t\tif (p[1] > X25_MAX_DTE_FACIL_LEN || p[1] <= 1)\n\t\t\t\t\treturn -1;\n\t\t\t\tif (p[2] > X25_MAX_AE_LEN)\n\t\t\t\t\treturn -1;\n\t\t\t\tdte_facs->called_len = p[2];\n\t\t\t\tmemcpy(dte_facs->called_ae, &p[3], p[1] - 1);\n\t\t\t\t*vc_fac_mask |= X25_MASK_CALLED_AE;\n\t\t\t\tbreak;\n\t\t\tdefault:\n\t\t\t\tpr_debug(\"unknown facility %02X,\"\n\t\t\t\t\t\"length %d\\n\", p[0], p[1]);\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tlen -= p[1] + 2;\n\t\t\tp += p[1] + 2;\n\t\t\tbreak;\n\t\t}\n\t}\n\n\treturn p - skb->data;\n}",
+            1
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "WORD_COPY_FWD",
+            "#define WORD_COPY_FWD(dst_bp, src_bp, nbytes_left, nbytes)\t\t\\ /* <=== arch/nios2/lib/memcpy.c:53:62:WORD_COPY_FWD:4 */ \ndo {\t\t\t\t\t\t\t\t\t\\\n\tif (src_bp % OPSIZ == 0)\t\t\t\t\t\\\n\t\t_wordcopy_fwd_aligned(dst_bp, src_bp, (nbytes) / OPSIZ);\\\n\telse\t\t\t\t\t\t\t\t\\\n\t\t_wordcopy_fwd_dest_aligned(dst_bp, src_bp, (nbytes) / OPSIZ);\\\n\tsrc_bp += (nbytes) & -OPSIZ;\t\t\t\t\t\\\n\tdst_bp += (nbytes) & -OPSIZ;\t\t\t\t\t\\\n\t(nbytes_left) = (nbytes) % OPSIZ;\t\t\t\t\\\n} while (0)",
+            3
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "BYTE_COPY_FWD",
+            "#define BYTE_COPY_FWD(dst_bp, src_bp, nbytes)\t\t\t\t\\ /* <=== arch/nios2/lib/memcpy.c:35:45:BYTE_COPY_FWD:3 */ \ndo {\t\t\t\t\t\t\t\t\t\\\n\tsize_t __nbytes = (nbytes);\t\t\t\t\t\\\n\twhile (__nbytes > 0) {\t\t\t\t\t\t\\\n\t\tunsigned char __x = ((unsigned char *) src_bp)[0];\t\\\n\t\tsrc_bp += 1;\t\t\t\t\t\t\\\n\t\t__nbytes -= 1;\t\t\t\t\t\t\\\n\t\t((unsigned char *) dst_bp)[0] = __x;\t\t\t\\\n\t\tdst_bp += 1;\t\t\t\t\t\t\\\n\t}\t\t\t\t\t\t\t\t\\\n} while (0)",
+            3
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "_wordcopy_fwd_dest_aligned",
+            "static void _wordcopy_fwd_dest_aligned(long int dstp, long int srcp, /* <=== _wordcopy_fwd_dest_aligned */ \n\t\t\t\t\tsize_t len)\n{\n\top_t ap;\n\tint sh_1, sh_2;\n\n\t/* Calculate how to shift a word read at the memory operation\n\taligned srcp to make it aligned for copy. */\n\n\tsh_1 = 8 * (srcp % OPSIZ);\n\tsh_2 = 8 * OPSIZ - sh_1;\n\n\t/* Make SRCP aligned by rounding it down to the beginning of the `op_t'\n\tit points in the middle of. */\n\tsrcp &= -OPSIZ;\n\tap = ((op_t *) srcp)[0];\n\tsrcp += OPSIZ;\n\n\twhile (len > 3) {\n\t\top_t a0, a1, a2, a3;\n\n\t\ta0 = ((op_t *) srcp)[0];\n\t\ta1 = ((op_t *) srcp)[1];\n\t\ta2 = ((op_t *) srcp)[2];\n\t\ta3 = ((op_t *) srcp)[3];\n\t\t((op_t *) dstp)[0] = MERGE(ap, sh_1, a0, sh_2);\n\t\t((op_t *) dstp)[1] = MERGE(a0, sh_1, a1, sh_2);\n\t\t((op_t *) dstp)[2] = MERGE(a1, sh_1, a2, sh_2);\n\t\t((op_t *) dstp)[3] = MERGE(a2, sh_1, a3, sh_2);\n\n\t\tap = a3;\n\t\tsrcp += 4 * OPSIZ;\n\t\tdstp += 4 * OPSIZ;\n\t\tlen -= 4;\n\t}\n\twhile (len > 0) {\n\t\tregister op_t a0;\n\n\t\ta0 = ((op_t *) srcp)[0];\n\t\t((op_t *) dstp)[0] = MERGE(ap, sh_1, a0, sh_2);\n\n\t\tap = a0;\n\t\tsrcp += OPSIZ;\n\t\tdstp += OPSIZ;\n\t\tlen -= 1;\n\t}\n}",
+            3
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "OPSIZ",
+            "#define OPSIZ\t(sizeof(op_t)) /* <=== arch/nios2/lib/memcpy.c:26:26:OPSIZ:0 */ ",
+            3
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "CACHE_LINE_SIZE_IN_DOUBLEWORDS",
+            "#define CACHE_LINE_SIZE_IN_DOUBLEWORDS (CHIP_L2_LINE_SIZE() / 8) /* <=== arch/tile/lib/memset_64.c:74:74:CACHE_LINE_SIZE_IN_DOUBLEWORDS:0 */ ",
+            2
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "memcpy",
+            "void *memcpy(void *dstpp, const void *srcpp, size_t len) /* <=== memcpy */ \n{\n\tunsigned long int dstp = (long int) dstpp;\n\tunsigned long int srcp = (long int) srcpp;\n\n\t/* Copy from the beginning to the end.  */\n\n\t/* If there not too few bytes to copy, use word copy.  */\n\tif (len >= OP_T_THRES) {\n\t\t/* Copy just a few bytes to make DSTP aligned.  */\n\t\tlen -= (-dstp) % OPSIZ;\n\t\tBYTE_COPY_FWD(dstp, srcp, (-dstp) % OPSIZ);\n\n\t\t/* Copy whole pages from SRCP to DSTP by virtual address\n\t\t   manipulation, as much as possible.  */\n\n\t\t/* PAGE_COPY_FWD_MAYBE (dstp, srcp, len, len); */\n\n\t\t/* Copy from SRCP to DSTP taking advantage of the known\n\t\t   alignment of DSTP. Number of bytes remaining is put in the\n\t\t   third argument, i.e. in LEN.  This number may vary from\n\t\t   machine to machine. */\n\n\t\tWORD_COPY_FWD(dstp, srcp, len, len);\n\n\t\t/* Fall out and copy the tail. */\n\t}\n\n\t/* There are just a few bytes to copy.  Use byte memory operations. */\n\tBYTE_COPY_FWD(dstp, srcp, len);\n\n\treturn dstpp;\n}",
+            2
+        ],
+        [
+            "arch/nios2/lib/memcpy.c",
+            "OP_T_THRES",
+            "#define\tOP_T_THRES\t16 /* <=== arch/nios2/lib/memcpy.c:66:66:OP_T_THRES:0 */ ",
+            3
+        ],
+        [
+            "arch/tile/lib/memset_64.c",
+            "memset",
+            "void *memset(void *s, int c, size_t n) /* <=== memset */ \n{\n\tuint64_t *out64;\n\tint n64, to_align64;\n\tuint64_t v64;\n\tuint8_t *out8 = s;\n\n\t/* Experimentation shows that a trivial tight loop is a win up until\n\t * around a size of 20, where writing a word at a time starts to win.\n\t */\n#define BYTE_CUTOFF 20\n\n#if BYTE_CUTOFF < 7\n\t/* This must be at least at least this big, or some code later\n\t * on doesn't work.\n\t */\n#error \"BYTE_CUTOFF is too small\"\n#endif\n\n\tif (n < BYTE_CUTOFF) {\n\t\t/* Strangely, this turns out to be the tightest way to\n\t\t * write this loop.\n\t\t */\n\t\tif (n != 0) {\n\t\t\tdo {\n\t\t\t\t/* Strangely, combining these into one line\n\t\t\t\t * performs worse.\n\t\t\t\t */\n\t\t\t\t*out8 = c;\n\t\t\t\tout8++;\n\t\t\t} while (--n != 0);\n\t\t}\n\n\t\treturn s;\n\t}\n\n\t/* Align 'out8'. We know n >= 7 so this won't write past the end. */\n\twhile (((uintptr_t) out8 & 7) != 0) {\n\t\t*out8++ = c;\n\t\t--n;\n\t}\n\n\t/* Align 'n'. */\n\twhile (n & 7)\n\t\tout8[--n] = c;\n\n\tout64 = (uint64_t *) out8;\n\tn64 = n >> 3;\n\n\t/* Tile input byte out to 64 bits. */\n\tv64 = copy_byte(c);\n\n\t/* This must be at least 8 or the following loop doesn't work. */\n#define CACHE_LINE_SIZE_IN_DOUBLEWORDS (CHIP_L2_LINE_SIZE() / 8)\n\n\t/* Determine how many words we need to emit before the 'out32'\n\t * pointer becomes aligned modulo the cache line size.\n\t */\n\tto_align64 = (-((uintptr_t)out64 >> 3)) &\n\t\t(CACHE_LINE_SIZE_IN_DOUBLEWORDS - 1);\n\n\t/* Only bother aligning and using wh64 if there is at least\n\t * one full cache line to process.  This check also prevents\n\t * overrunning the end of the buffer with alignment words.\n\t */\n\tif (to_align64 <= n64 - CACHE_LINE_SIZE_IN_DOUBLEWORDS) {\n\t\tint lines_left;\n\n\t\t/* Align out64 mod the cache line size so we can use wh64. */\n\t\tn64 -= to_align64;\n\t\tfor (; to_align64 != 0; to_align64--) {\n\t\t\t*out64 = v64;\n\t\t\tout64++;\n\t\t}\n\n\t\t/* Use unsigned divide to turn this into a right shift. */\n\t\tlines_left = (unsigned)n64 / CACHE_LINE_SIZE_IN_DOUBLEWORDS;\n\n\t\tdo {\n\t\t\t/* Only wh64 a few lines at a time, so we don't\n\t\t\t * exceed the maximum number of victim lines.\n\t\t\t */\n\t\t\tint x = ((lines_left < CHIP_MAX_OUTSTANDING_VICTIMS())\n\t\t\t\t  ? lines_left\n\t\t\t\t  : CHIP_MAX_OUTSTANDING_VICTIMS());\n\t\t\tuint64_t *wh = out64;\n\t\t\tint i = x;\n\t\t\tint j;\n\n\t\t\tlines_left -= x;\n\n\t\t\tdo {\n\t\t\t\t__insn_wh64(wh);\n\t\t\t\twh += CACHE_LINE_SIZE_IN_DOUBLEWORDS;\n\t\t\t} while (--i);\n\n\t\t\tfor (j = x * (CACHE_LINE_SIZE_IN_DOUBLEWORDS / 4);\n\t\t\t     j != 0; j--) {\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t\t*out64++ = v64;\n\t\t\t}\n\t\t} while (lines_left != 0);\n\n\t\t/* We processed all full lines above, so only this many\n\t\t * words remain to be processed.\n\t\t */\n\t\tn64 &= CACHE_LINE_SIZE_IN_DOUBLEWORDS - 1;\n\t}\n\n\t/* Now handle any leftover values. */\n\tif (n64 != 0) {\n\t\tdo {\n\t\t\t*out64 = v64;\n\t\t\tout64++;\n\t\t} while (--n64 != 0);\n\t}\n\n\treturn s;\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <net/x25.h>",
+        "#include <linux/skbuff.h>",
+        "#include <linux/kernel.h>",
+        "#include <net/sock.h>",
+        "#include <linux/string.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct x25_dte_facilities {\n\t__u16 delay_cumul;\n\t__u16 delay_target;\n\t__u16 delay_max;\n\t__u8 min_throughput;\n\t__u8 expedited;\n\t__u8 calling_len;\n\t__u8 called_len;\n\t__u8 calling_ae[20];\n\t__u8 called_ae[20];\n}",
+            "x25_dte_facilities"
+        ],
+        [
+            "struct x25_sock {\n\tstruct sock\t\tsk;\n\tstruct x25_address\tsource_addr, dest_addr;\n\tstruct x25_neigh\t*neighbour;\n\tunsigned int\t\tlci, cudmatchlength;\n\tunsigned char\t\tstate, condition;\n\tunsigned short\t\tvs, vr, va, vl;\n\tunsigned long\t\tt2, t21, t22, t23;\n\tunsigned short\t\tfraglen;\n\tunsigned long\t\tflags;\n\tstruct sk_buff_head\tack_queue;\n\tstruct sk_buff_head\tfragment_queue;\n\tstruct sk_buff_head\tinterrupt_in_queue;\n\tstruct sk_buff_head\tinterrupt_out_queue;\n\tstruct timer_list\ttimer;\n\tstruct x25_causediag\tcausediag;\n\tstruct x25_facilities\tfacilities;\n\tstruct x25_dte_facilities dte_facilities;\n\tstruct x25_calluserdata\tcalluserdata;\n\tunsigned long \t\tvc_facil_mask;\t/* inc_call facilities mask */\n}",
+            "x25_sock"
+        ],
+        [
+            "struct sk_buff {\n\tunion {\n\t\tstruct {\n\t\t\t/* These two members must be first. */\n\t\t\tstruct sk_buff\t\t*next;\n\t\t\tstruct sk_buff\t\t*prev;\n\n\t\t\tunion {\n\t\t\t\tktime_t\t\ttstamp;\n\t\t\t\tstruct skb_mstamp skb_mstamp;\n\t\t\t};\n\t\t};\n\t\tstruct rb_node\trbnode; /* used in netem & tcp stack */\n\t};\n\tstruct sock\t\t*sk;\n\tstruct net_device\t*dev;\n\n\t/*\n\t * This is the control buffer. It is free to use for every\n\t * layer. Please put your private variables there. If you\n\t * want to keep them across layers you have to do a skb_clone()\n\t * first. This is owned by whoever has the skb queued ATM.\n\t */\n\tchar\t\t\tcb[48] __aligned(8);\n\n\tunsigned long\t\t_skb_refdst;\n\tvoid\t\t\t(*destructor)(struct sk_buff *skb);\n#ifdef CONFIG_XFRM\n\tstruct\tsec_path\t*sp;\n#endif\n#if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)\n\tstruct nf_conntrack\t*nfct;\n#endif\n#if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)\n\tstruct nf_bridge_info\t*nf_bridge;\n#endif\n\tunsigned int\t\tlen,\n\t\t\t\tdata_len;\n\t__u16\t\t\tmac_len,\n\t\t\t\thdr_len;\n\n\t/* Following fields are _not_ copied in __copy_skb_header()\n\t * Note that queue_mapping is here mostly to fill a hole.\n\t */\n\tkmemcheck_bitfield_begin(flags1);\n\t__u16\t\t\tqueue_mapping;\n\t__u8\t\t\tcloned:1,\n\t\t\t\tnohdr:1,\n\t\t\t\tfclone:2,\n\t\t\t\tpeeked:1,\n\t\t\t\thead_frag:1,\n\t\t\t\txmit_more:1;\n\t/* one bit hole */\n\tkmemcheck_bitfield_end(flags1);\n\n\t/* fields enclosed in headers_start/headers_end are copied\n\t * using a single memcpy() in __copy_skb_header()\n\t */\n\t/* private: */\n\t__u32\t\t\theaders_start[0];\n\t/* public: */\n\n/* if you move pkt_type around you also must adapt those constants */\n#ifdef __BIG_ENDIAN_BITFIELD\n#define PKT_TYPE_MAX\t(7 << 5)\n#else\n#define PKT_TYPE_MAX\t7\n#endif\n#define PKT_TYPE_OFFSET()\toffsetof(struct sk_buff, __pkt_type_offset)\n\n\t__u8\t\t\t__pkt_type_offset[0];\n\t__u8\t\t\tpkt_type:3;\n\t__u8\t\t\tpfmemalloc:1;\n\t__u8\t\t\tignore_df:1;\n\t__u8\t\t\tnfctinfo:3;\n\n\t__u8\t\t\tnf_trace:1;\n\t__u8\t\t\tip_summed:2;\n\t__u8\t\t\tooo_okay:1;\n\t__u8\t\t\tl4_hash:1;\n\t__u8\t\t\tsw_hash:1;\n\t__u8\t\t\twifi_acked_valid:1;\n\t__u8\t\t\twifi_acked:1;\n\n\t__u8\t\t\tno_fcs:1;\n\t/* Indicates the inner headers are valid in the skbuff. */\n\t__u8\t\t\tencapsulation:1;\n\t__u8\t\t\tencap_hdr_csum:1;\n\t__u8\t\t\tcsum_valid:1;\n\t__u8\t\t\tcsum_complete_sw:1;\n\t__u8\t\t\tcsum_level:2;\n\t__u8\t\t\tcsum_bad:1;\n\n#ifdef CONFIG_IPV6_NDISC_NODETYPE\n\t__u8\t\t\tndisc_nodetype:2;\n#endif\n\t__u8\t\t\tipvs_property:1;\n\t__u8\t\t\tinner_protocol_type:1;\n\t__u8\t\t\tremcsum_offload:1;\n\t/* 3 or 5 bit hole */\n\n#ifdef CONFIG_NET_SCHED\n\t__u16\t\t\ttc_index;\t/* traffic control index */\n#ifdef CONFIG_NET_CLS_ACT\n\t__u16\t\t\ttc_verd;\t/* traffic control verdict */\n#endif\n#endif\n\n\tunion {\n\t\t__wsum\t\tcsum;\n\t\tstruct {\n\t\t\t__u16\tcsum_start;\n\t\t\t__u16\tcsum_offset;\n\t\t};\n\t};\n\t__u32\t\t\tpriority;\n\tint\t\t\tskb_iif;\n\t__u32\t\t\thash;\n\t__be16\t\t\tvlan_proto;\n\t__u16\t\t\tvlan_tci;\n#if defined(CONFIG_NET_RX_BUSY_POLL) || defined(CONFIG_XPS)\n\tunion {\n\t\tunsigned int\tnapi_id;\n\t\tunsigned int\tsender_cpu;\n\t};\n#endif\n\tunion {\n#ifdef CONFIG_NETWORK_SECMARK\n\t\t__u32\t\tsecmark;\n#endif\n#ifdef CONFIG_NET_SWITCHDEV\n\t\t__u32\t\toffload_fwd_mark;\n#endif\n\t};\n\n\tunion {\n\t\t__u32\t\tmark;\n\t\t__u32\t\treserved_tailroom;\n\t};\n\n\tunion {\n\t\t__be16\t\tinner_protocol;\n\t\t__u8\t\tinner_ipproto;\n\t};\n\n\t__u16\t\t\tinner_transport_header;\n\t__u16\t\t\tinner_network_header;\n\t__u16\t\t\tinner_mac_header;\n\n\t__be16\t\t\tprotocol;\n\t__u16\t\t\ttransport_header;\n\t__u16\t\t\tnetwork_header;\n\t__u16\t\t\tmac_header;\n\n\t/* private: */\n\t__u32\t\t\theaders_end[0];\n\t/* public: */\n\n\t/* These elements must be at the end, see alloc_skb() for details.  */\n\tsk_buff_data_t\t\ttail;\n\tsk_buff_data_t\t\tend;\n\tunsigned char\t\t*head,\n\t\t\t\t*data;\n\tunsigned int\t\ttruesize;\n\tatomic_t\t\tusers;\n}",
+            "sk_buff"
+        ],
+        [
+            "struct x25_facilities {\n\tunsigned int\twinsize_in, winsize_out;\n\tunsigned int\tpacsize_in, pacsize_out;\n\tunsigned int\tthroughput;\n\tunsigned int\treverse;\n}",
+            "x25_facilities"
+        ],
+        [
+            "struct sock {\n\t/*\n\t * Now struct inet_timewait_sock also uses sock_common, so please just\n\t * don't add nothing before this first member (__sk_common) --acme\n\t */\n\tstruct sock_common\t__sk_common;\n#define sk_node\t\t\t__sk_common.skc_node\n#define sk_nulls_node\t\t__sk_common.skc_nulls_node\n#define sk_refcnt\t\t__sk_common.skc_refcnt\n#define sk_tx_queue_mapping\t__sk_common.skc_tx_queue_mapping\n\n#define sk_dontcopy_begin\t__sk_common.skc_dontcopy_begin\n#define sk_dontcopy_end\t\t__sk_common.skc_dontcopy_end\n#define sk_hash\t\t\t__sk_common.skc_hash\n#define sk_portpair\t\t__sk_common.skc_portpair\n#define sk_num\t\t\t__sk_common.skc_num\n#define sk_dport\t\t__sk_common.skc_dport\n#define sk_addrpair\t\t__sk_common.skc_addrpair\n#define sk_daddr\t\t__sk_common.skc_daddr\n#define sk_rcv_saddr\t\t__sk_common.skc_rcv_saddr\n#define sk_family\t\t__sk_common.skc_family\n#define sk_state\t\t__sk_common.skc_state\n#define sk_reuse\t\t__sk_common.skc_reuse\n#define sk_reuseport\t\t__sk_common.skc_reuseport\n#define sk_ipv6only\t\t__sk_common.skc_ipv6only\n#define sk_net_refcnt\t\t__sk_common.skc_net_refcnt\n#define sk_bound_dev_if\t\t__sk_common.skc_bound_dev_if\n#define sk_bind_node\t\t__sk_common.skc_bind_node\n#define sk_prot\t\t\t__sk_common.skc_prot\n#define sk_net\t\t\t__sk_common.skc_net\n#define sk_v6_daddr\t\t__sk_common.skc_v6_daddr\n#define sk_v6_rcv_saddr\t__sk_common.skc_v6_rcv_saddr\n#define sk_cookie\t\t__sk_common.skc_cookie\n#define sk_incoming_cpu\t\t__sk_common.skc_incoming_cpu\n#define sk_flags\t\t__sk_common.skc_flags\n#define sk_rxhash\t\t__sk_common.skc_rxhash\n\n\tsocket_lock_t\t\tsk_lock;\n\tstruct sk_buff_head\tsk_receive_queue;\n\t/*\n\t * The backlog queue is special, it is always used with\n\t * the per-socket spinlock held and requires low latency\n\t * access. Therefore we special case it's implementation.\n\t * Note : rmem_alloc is in this structure to fill a hole\n\t * on 64bit arches, not because its logically part of\n\t * backlog.\n\t */\n\tstruct {\n\t\tatomic_t\trmem_alloc;\n\t\tint\t\tlen;\n\t\tstruct sk_buff\t*head;\n\t\tstruct sk_buff\t*tail;\n\t} sk_backlog;\n#define sk_rmem_alloc sk_backlog.rmem_alloc\n\tint\t\t\tsk_forward_alloc;\n\n\t__u32\t\t\tsk_txhash;\n#ifdef CONFIG_NET_RX_BUSY_POLL\n\tunsigned int\t\tsk_napi_id;\n\tunsigned int\t\tsk_ll_usec;\n#endif\n\tatomic_t\t\tsk_drops;\n\tint\t\t\tsk_rcvbuf;\n\n\tstruct sk_filter __rcu\t*sk_filter;\n\tunion {\n\t\tstruct socket_wq __rcu\t*sk_wq;\n\t\tstruct socket_wq\t*sk_wq_raw;\n\t};\n#ifdef CONFIG_XFRM\n\tstruct xfrm_policy __rcu *sk_policy[2];\n#endif\n\tstruct dst_entry\t*sk_rx_dst;\n\tstruct dst_entry __rcu\t*sk_dst_cache;\n\t/* Note: 32bit hole on 64bit arches */\n\tatomic_t\t\tsk_wmem_alloc;\n\tatomic_t\t\tsk_omem_alloc;\n\tint\t\t\tsk_sndbuf;\n\tstruct sk_buff_head\tsk_write_queue;\n\tkmemcheck_bitfield_begin(flags);\n\tunsigned int\t\tsk_shutdown  : 2,\n\t\t\t\tsk_no_check_tx : 1,\n\t\t\t\tsk_no_check_rx : 1,\n\t\t\t\tsk_userlocks : 4,\n\t\t\t\tsk_protocol  : 8,\n\t\t\t\tsk_type      : 16;\n#define SK_PROTOCOL_MAX U8_MAX\n\tkmemcheck_bitfield_end(flags);\n\tint\t\t\tsk_wmem_queued;\n\tgfp_t\t\t\tsk_allocation;\n\tu32\t\t\tsk_pacing_rate; /* bytes per second */\n\tu32\t\t\tsk_max_pacing_rate;\n\tnetdev_features_t\tsk_route_caps;\n\tnetdev_features_t\tsk_route_nocaps;\n\tint\t\t\tsk_gso_type;\n\tunsigned int\t\tsk_gso_max_size;\n\tu16\t\t\tsk_gso_max_segs;\n\tint\t\t\tsk_rcvlowat;\n\tunsigned long\t        sk_lingertime;\n\tstruct sk_buff_head\tsk_error_queue;\n\tstruct proto\t\t*sk_prot_creator;\n\trwlock_t\t\tsk_callback_lock;\n\tint\t\t\tsk_err,\n\t\t\t\tsk_err_soft;\n\tu32\t\t\tsk_ack_backlog;\n\tu32\t\t\tsk_max_ack_backlog;\n\t__u32\t\t\tsk_priority;\n\t__u32\t\t\tsk_mark;\n\tstruct pid\t\t*sk_peer_pid;\n\tconst struct cred\t*sk_peer_cred;\n\tlong\t\t\tsk_rcvtimeo;\n\tlong\t\t\tsk_sndtimeo;\n\tstruct timer_list\tsk_timer;\n\tktime_t\t\t\tsk_stamp;\n\tu16\t\t\tsk_tsflags;\n\tu32\t\t\tsk_tskey;\n\tstruct socket\t\t*sk_socket;\n\tvoid\t\t\t*sk_user_data;\n\tstruct page_frag\tsk_frag;\n\tstruct sk_buff\t\t*sk_send_head;\n\t__s32\t\t\tsk_peek_off;\n\tint\t\t\tsk_write_pending;\n#ifdef CONFIG_SECURITY\n\tvoid\t\t\t*sk_security;\n#endif\n\tstruct sock_cgroup_data\tsk_cgrp_data;\n\tstruct mem_cgroup\t*sk_memcg;\n\tvoid\t\t\t(*sk_state_change)(struct sock *sk);\n\tvoid\t\t\t(*sk_data_ready)(struct sock *sk);\n\tvoid\t\t\t(*sk_write_space)(struct sock *sk);\n\tvoid\t\t\t(*sk_error_report)(struct sock *sk);\n\tint\t\t\t(*sk_backlog_rcv)(struct sock *sk,\n\t\t\t\t\t\t  struct sk_buff *skb);\n\tvoid                    (*sk_destruct)(struct sock *sk);\n\tstruct sock_reuseport __rcu\t*sk_reuseport_cb;\n}",
+            "sock"
+        ]
+    ],
+    "visitedLines_after": {
+        "net/x25/x25_facilities.c": [
+            270,
+            271,
+            280,
+            282,
+            283,
+            284,
+            289,
+            290,
+            291,
+            294,
+            296,
+            297,
+            298,
+            299,
+            300,
+            301,
+            302,
+            303,
+            305,
+            306,
+            307,
+            308,
+            312,
+            313,
+            314,
+            315,
+            317,
+            318,
+            319,
+            323,
+            324,
+            325,
+            326,
+            328,
+            329,
+            330,
+            334
+        ]
+    },
+    "visitedLines_before": {
+        "net/x25/x25_facilities.c": [
+            270,
+            271,
+            281,
+            282,
+            283,
+            288,
+            289,
+            290,
+            293,
+            295,
+            296,
+            297,
+            298,
+            299,
+            300,
+            301,
+            302,
+            304,
+            305,
+            306,
+            307,
+            311,
+            312,
+            313,
+            314,
+            316,
+            317,
+            318,
+            322,
+            323,
+            324,
+            325,
+            327,
+            328,
+            329,
+            333
+        ]
+    },
+    "visitedParams": {
+        "net/x25/x25_facilities.c": [
+            [
+                "struct x25_dte_facilities *dte",
+                "x25_negotiate_facilities"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "net/x25/x25_facilities.c",
+            "x25_negotiate_facilities",
+            "int x25_negotiate_facilities(struct sk_buff *skb, struct sock *sk, /* <=== x25_negotiate_facilities */ \n\t\tstruct x25_facilities *new, struct x25_dte_facilities *dte)\n{\n\tstruct x25_sock *x25 = x25_sk(sk);\n\tstruct x25_facilities *ours = &x25->facilities;\n\tstruct x25_facilities theirs;\n\tint len;\n\n\tmemset(&theirs, 0, sizeof(theirs));\n\tmemcpy(new, ours, sizeof(*new));\n\tmemset(dte, 0, sizeof(*dte));\n\n\tlen = x25_parse_facilities(skb, &theirs, dte, &x25->vc_facil_mask);\n\tif (len < 0)\n\t\treturn len;\n\n\t/*\n\t *\tThey want reverse charging, we won't accept it.\n\t */\n\tif ((theirs.reverse & 0x01 ) && (ours->reverse & 0x01)) {\n\t\tSOCK_DEBUG(sk, \"X.25: rejecting reverse charging request\\n\");\n\t\treturn -1;\n\t}\n\n\tnew->reverse = theirs.reverse;\n\n\tif (theirs.throughput) {\n\t\tint theirs_in =  theirs.throughput & 0x0f;\n\t\tint theirs_out = theirs.throughput & 0xf0;\n\t\tint ours_in  = ours->throughput & 0x0f;\n\t\tint ours_out = ours->throughput & 0xf0;\n\t\tif (!ours_in || theirs_in < ours_in) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: inbound throughput negotiated\\n\");\n\t\t\tnew->throughput = (new->throughput & 0xf0) | theirs_in;\n\t\t}\n\t\tif (!ours_out || theirs_out < ours_out) {\n\t\t\tSOCK_DEBUG(sk,\n\t\t\t\t\"X.25: outbound throughput negotiated\\n\");\n\t\t\tnew->throughput = (new->throughput & 0x0f) | theirs_out;\n\t\t}\n\t}\n\n\tif (theirs.pacsize_in && theirs.pacsize_out) {\n\t\tif (theirs.pacsize_in < ours->pacsize_in) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: packet size inwards negotiated down\\n\");\n\t\t\tnew->pacsize_in = theirs.pacsize_in;\n\t\t}\n\t\tif (theirs.pacsize_out < ours->pacsize_out) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: packet size outwards negotiated down\\n\");\n\t\t\tnew->pacsize_out = theirs.pacsize_out;\n\t\t}\n\t}\n\n\tif (theirs.winsize_in && theirs.winsize_out) {\n\t\tif (theirs.winsize_in < ours->winsize_in) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: window size inwards negotiated down\\n\");\n\t\t\tnew->winsize_in = theirs.winsize_in;\n\t\t}\n\t\tif (theirs.winsize_out < ours->winsize_out) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: window size outwards negotiated down\\n\");\n\t\t\tnew->winsize_out = theirs.winsize_out;\n\t\t}\n\t}\n\n\treturn len;\n}",
+            270
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "net/x25/x25_facilities.c",
+            "x25_negotiate_facilities",
+            "int x25_negotiate_facilities(struct sk_buff *skb, struct sock *sk, /* <=== x25_negotiate_facilities */ \n\t\tstruct x25_facilities *new, struct x25_dte_facilities *dte)\n{\n\tstruct x25_sock *x25 = x25_sk(sk);\n\tstruct x25_facilities *ours = &x25->facilities;\n\tstruct x25_facilities theirs;\n\tint len;\n\n\tmemset(&theirs, 0, sizeof(theirs));\n\tmemcpy(new, ours, sizeof(*new));\n\n\tlen = x25_parse_facilities(skb, &theirs, dte, &x25->vc_facil_mask);\n\tif (len < 0)\n\t\treturn len;\n\n\t/*\n\t *\tThey want reverse charging, we won't accept it.\n\t */\n\tif ((theirs.reverse & 0x01 ) && (ours->reverse & 0x01)) {\n\t\tSOCK_DEBUG(sk, \"X.25: rejecting reverse charging request\\n\");\n\t\treturn -1;\n\t}\n\n\tnew->reverse = theirs.reverse;\n\n\tif (theirs.throughput) {\n\t\tint theirs_in =  theirs.throughput & 0x0f;\n\t\tint theirs_out = theirs.throughput & 0xf0;\n\t\tint ours_in  = ours->throughput & 0x0f;\n\t\tint ours_out = ours->throughput & 0xf0;\n\t\tif (!ours_in || theirs_in < ours_in) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: inbound throughput negotiated\\n\");\n\t\t\tnew->throughput = (new->throughput & 0xf0) | theirs_in;\n\t\t}\n\t\tif (!ours_out || theirs_out < ours_out) {\n\t\t\tSOCK_DEBUG(sk,\n\t\t\t\t\"X.25: outbound throughput negotiated\\n\");\n\t\t\tnew->throughput = (new->throughput & 0x0f) | theirs_out;\n\t\t}\n\t}\n\n\tif (theirs.pacsize_in && theirs.pacsize_out) {\n\t\tif (theirs.pacsize_in < ours->pacsize_in) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: packet size inwards negotiated down\\n\");\n\t\t\tnew->pacsize_in = theirs.pacsize_in;\n\t\t}\n\t\tif (theirs.pacsize_out < ours->pacsize_out) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: packet size outwards negotiated down\\n\");\n\t\t\tnew->pacsize_out = theirs.pacsize_out;\n\t\t}\n\t}\n\n\tif (theirs.winsize_in && theirs.winsize_out) {\n\t\tif (theirs.winsize_in < ours->winsize_in) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: window size inwards negotiated down\\n\");\n\t\t\tnew->winsize_in = theirs.winsize_in;\n\t\t}\n\t\tif (theirs.winsize_out < ours->winsize_out) {\n\t\t\tSOCK_DEBUG(sk, \"X.25: window size outwards negotiated down\\n\");\n\t\t\tnew->winsize_out = theirs.winsize_out;\n\t\t}\n\t}\n\n\treturn len;\n}",
+            270
+        ]
+    ]
+}

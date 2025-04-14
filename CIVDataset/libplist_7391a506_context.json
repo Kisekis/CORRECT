@@ -1,0 +1,645 @@
+{
+    "calleeMethods": [
+        [
+            "src/xplist.c",
+            "plist_to_xml",
+            "PLIST_API void plist_to_xml(plist_t plist, char **plist_xml, uint32_t * length) /* <=== plist_to_xml */ \n{\n    strbuf_t *outbuf = str_buf_new();\n\n    str_buf_append(outbuf, XML_PLIST_PROLOG, sizeof(XML_PLIST_PROLOG)-1);\n\n    node_to_xml(plist, &outbuf, 0);\n\n    str_buf_append(outbuf, XML_PLIST_EPILOG, sizeof(XML_PLIST_EPILOG));\n\n    *plist_xml = outbuf->data;\n    *length = outbuf->len - 1;\n\n    outbuf->data = NULL;\n    str_buf_free(outbuf);\n}",
+            1
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_MAGIC_SIZE",
+            "#define BPLIST_MAGIC_SIZE\t6 /* <=== src/bplist.c:44:44:BPLIST_MAGIC_SIZE:0 */ ",
+            2
+        ],
+        [
+            "src/plist.c",
+            "plist_array_append_item",
+            "PLIST_API void plist_array_append_item(plist_t node, plist_t item) /* <=== plist_array_append_item */ \n{\n    if (node && PLIST_ARRAY == plist_get_node_type(node))\n    {\n        node_attach(node, item);\n    }\n    return;\n}",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "get_text_parts",
+            "static text_part_t* get_text_parts(parse_ctx ctx, const char* tag, size_t tag_len, int skip_ws, text_part_t *parts) /* <=== get_text_parts */ \n{\n    const char *p = NULL;\n    const char *q = NULL;\n    text_part_t *last = NULL;\n\n    if (skip_ws) {\n        parse_skip_ws(ctx);\n    }\n    do {\n        p = ctx->pos;\n        find_char(ctx, '<', 0);\n        if (*ctx->pos != '<') {\n            PLIST_XML_ERR(\"EOF while looking for closing tag\\n\");\n            ctx->err++;\n            return NULL;\n        }\n        q = ctx->pos;\n        ctx->pos++;\n        if (ctx->pos >= ctx->end) {\n            PLIST_XML_ERR(\"EOF while parsing '%s'\\n\", p);\n            ctx->err++;\n            return NULL;\n        }\n        if (*ctx->pos == '!') {\n            ctx->pos++;\n            if (*ctx->pos == '-' && *(ctx->pos+1) == '-') {\n                if (last) {\n                    last = text_part_append(last, p, q-p, 0);\n                } else if (parts) {\n                    last = text_part_init(parts, p, q-p, 0);\n                }\n                ctx->pos += 2;\n                find_str(ctx, \"-->\", 3, 0);\n                if (ctx->pos >= ctx->end || strncmp(ctx->pos, \"-->\", 3) != 0) {\n                    PLIST_XML_ERR(\"EOF while looking for end of comment\\n\");\n                    ctx->err++;\n                    return NULL;\n                }\n                ctx->pos += 3;\n            } else if (*ctx->pos == '[') {\n                ctx->pos++;\n                if (ctx->pos >= ctx->end - 8) {\n                    PLIST_XML_ERR(\"EOF while parsing <[ tag\\n\");\n                    ctx->err++;\n                    return NULL;\n                }\n                if (strncmp(ctx->pos, \"CDATA[\", 6) == 0) {\n                    if (q-p > 0) {\n                        if (last) {\n                            last = text_part_append(last, p, q-p, 0);\n                        } else if (parts) {\n                            last = text_part_init(parts, p, q-p, 0);\n                        }\n                    }\n                    ctx->pos+=6;\n                    p = ctx->pos;\n                    find_str(ctx, \"]]>\", 3, 0);\n                    if (ctx->pos >= ctx->end || strncmp(ctx->pos, \"]]>\", 3) != 0) {\n                        PLIST_XML_ERR(\"EOF while looking for end of CDATA block\\n\");\n                        ctx->err++;\n                        return NULL;\n                    }\n                    q = ctx->pos;\n                    if (last) {\n                        last = text_part_append(last, p, q-p, 1);\n                    } else if (parts) {\n                        last = text_part_init(parts, p, q-p, 1);\n                    }\n                    ctx->pos += 3;\n                } else {\n                    p = ctx->pos;\n                    find_next(ctx, \" \\r\\n\\t>\", 5, 1);\n                    PLIST_XML_ERR(\"Invalid special tag <[%.*s> encountered inside <%s> tag\\n\", (int)(ctx->pos - p), p, tag);\n                    ctx->err++;\n                    return NULL;\n                }\n            } else {\n                p = ctx->pos;\n                find_next(ctx, \" \\r\\n\\t>\", 5, 1);\n                PLIST_XML_ERR(\"Invalid special tag <!%.*s> encountered inside <%s> tag\\n\", (int)(ctx->pos - p), p, tag);\n                ctx->err++;\n                return NULL;\n            }\n        } else if (*ctx->pos == '/') {\n            break;\n        } else {\n            p = ctx->pos;\n            find_next(ctx, \" \\r\\n\\t>\", 5, 1);\n            PLIST_XML_ERR(\"Invalid tag <%.*s> encountered inside <%s> tag\\n\", (int)(ctx->pos - p), p, tag);\n            ctx->err++;\n            return NULL;\n        }\n    } while (1);\n    ctx->pos++;\n    if (ctx->pos >= ctx->end-tag_len || strncmp(ctx->pos, tag, tag_len)) {\n        PLIST_XML_ERR(\"EOF or end tag mismatch\\n\");\n        ctx->err++;\n        return NULL;\n    }\n    ctx->pos+=tag_len;\n    parse_skip_ws(ctx);\n    if (ctx->pos >= ctx->end) {\n        PLIST_XML_ERR(\"EOF while parsing closing tag\\n\");\n        ctx->err++;\n        return NULL;\n    } else if (*ctx->pos != '>') {\n        PLIST_XML_ERR(\"Invalid closing tag; expected '>', found '%c'\\n\", *ctx->pos);\n        ctx->err++;\n        return NULL;\n    }\n    ctx->pos++;\n\n    if (q-p > 0) {\n        if (last) {\n            last = text_part_append(last, p, q-p, 0);\n        } else if (parts) {\n            last = text_part_init(parts, p, q-p, 0);\n        }\n    }\n    return parts;\n}",
+            3
+        ],
+        [
+            "src/plist.c",
+            "plist_free",
+            "PLIST_API void plist_free(plist_t plist) /* <=== plist_free */ \n{\n    if (plist)\n    {\n        plist_free_node(plist);\n    }\n}",
+            1
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_TRUE",
+            "#define XPLIST_TRUE\t\"true\" /* <=== src/xplist.c:54:54:XPLIST_TRUE:0 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "is_ascii_string",
+            "static int is_ascii_string(char* s, int len) /* <=== is_ascii_string */ \n{\n  int ret = 1, i = 0;\n  for(i = 0; i < len; i++)\n  {\n      if ( !isascii( s[i] ) )\n      {\n          ret = 0;\n          break;\n      }\n  }\n  return ret;\n}",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "write_dict",
+            "static void write_dict(bytearray_t * bplist, node_t* node, hashtable_t* ref_table, uint8_t dict_param_size) /* <=== write_dict */ \n{\n    uint64_t idx1 = 0;\n    uint64_t idx2 = 0;\n    uint8_t *buff = NULL;\n\n    node_t* cur = NULL;\n    uint64_t i = 0;\n\n    uint64_t size = node_n_children(node) / 2;\n    uint8_t marker = BPLIST_DICT | (size < 15 ? size : 0xf);\n    byte_array_append(bplist, &marker, sizeof(uint8_t));\n    if (size >= 15)\n    {\n        bytearray_t *int_buff = byte_array_new();\n        write_int(int_buff, size);\n        byte_array_append(bplist, int_buff->data, int_buff->len);\n        byte_array_free(int_buff);\n    }\n\n    buff = (uint8_t *) malloc(size * 2 * dict_param_size);\n    for (i = 0, cur = node_first_child(node); cur && i < size; cur = node_next_sibling(node_next_sibling(cur)), i++)\n    {\n        idx1 = *(uint64_t *) (hash_table_lookup(ref_table, cur));\n#ifdef __BIG_ENDIAN__\n\tidx1 = idx1 << ((sizeof(uint64_t) - dict_param_size) * 8);\n#endif\n        memcpy(buff + i * dict_param_size, &idx1, dict_param_size);\n        byte_convert(buff + i * dict_param_size, dict_param_size);\n\n        idx2 = *(uint64_t *) (hash_table_lookup(ref_table, cur->next));\n#ifdef __BIG_ENDIAN__\n\tidx2 = idx2 << ((sizeof(uint64_t) - dict_param_size) * 8);\n#endif\n        memcpy(buff + (i + size) * dict_param_size, &idx2, dict_param_size);\n        byte_convert(buff + (i + size) * dict_param_size, dict_param_size);\n    }\n\n    //now append to bplist\n    byte_array_append(bplist, buff, size * 2 * dict_param_size);\n    free(buff);\n\n}",
+            2
+        ],
+        [
+            "src/plist.c",
+            "plist_dict_remove_item",
+            "PLIST_API void plist_dict_remove_item(plist_t node, const char* key) /* <=== plist_dict_remove_item */ \n{\n    if (node && PLIST_DICT == plist_get_node_type(node))\n    {\n        plist_t old_item = plist_dict_get_item(node, key);\n        if (old_item)\n        {\n            plist_t key_node = node_prev_sibling(old_item);\n            hashtable_t* ht = ((plist_data_t)((node_t*)node)->data)->hashtable;\n            if (ht) {\n                hash_table_remove(ht, ((node_t*)key_node)->data);\n            }\n            plist_free(key_node);\n            plist_free(old_item);\n        }\n    }\n    return;\n}",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_DATA_LEN",
+            "#define XPLIST_DATA_LEN 4 /* <=== src/xplist.c:63:63:XPLIST_DATA_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "node_from_xml",
+            "static void node_from_xml(parse_ctx ctx, plist_t *plist, uint32_t depth) /* <=== node_from_xml */ \n{\n    char *keyname = NULL;\n    const char *p = NULL;\n    while (ctx->pos < ctx->end && !ctx->err) {\n        parse_skip_ws(ctx);\n        if (ctx->pos >= ctx->end) {\n            break;\n        }\n        if (*ctx->pos != '<') {\n            p = ctx->pos;\n            find_next(ctx, \" \\t\\r\\n\", 4, 0);\n            PLIST_XML_ERR(\"Expected: opening tag, found: %.*s\\n\", (int)(ctx->pos - p), p);\n            ctx->pos = ctx->end;\n            ctx->err++;\n            break;\n        }\n        ctx->pos++;\n        if (ctx->pos >= ctx->end) {\n            break;\n        }\n\n        if (*(ctx->pos) == '?') {\n            find_str(ctx, \"?>\", 2, 1);\n            if (ctx->pos >= ctx->end) {\n                break;\n            }\n            if (strncmp(ctx->pos, \"?>\", 2)) {\n                PLIST_XML_ERR(\"Couldn't find <? tag closing marker\\n\");\n                ctx->pos = ctx->end;\n                return;\n            }\n            ctx->pos += 2;\n            continue;\n        } else if (*(ctx->pos) == '!') {\n            /* comment or DTD */\n            if (((ctx->end - ctx->pos) > 3) && !strncmp(ctx->pos, \"!--\", 3)) {\n                ctx->pos += 3;\n                find_str(ctx,\"-->\", 3, 0);\n                if (strncmp(ctx->pos, \"-->\", 3)) {\n                    PLIST_XML_ERR(\"Couldn't find end of comment\\n\");\n                    ctx->pos = ctx->end;\n                    return;\n                }\n                ctx->pos+=3;\n            } else if (((ctx->end - ctx->pos) > 8) && !strncmp(ctx->pos, \"!DOCTYPE\", 8)) {\n                int embedded_dtd = 0;\n                ctx->pos+=8;\n                while (ctx->pos < ctx->end) {\n                    find_next(ctx, \" \\t\\r\\n[>\", 6, 1);\n                    if (*ctx->pos == '[') {\n                        embedded_dtd = 1;\n                        break;\n                    } else if (*ctx->pos == '>') {\n                        /* end of DOCTYPE found already */\n                        ctx->pos++;\n                        break;\n                    } else {\n                        parse_skip_ws(ctx);\n                    }\n                }\n                if (embedded_dtd) {\n                    find_str(ctx, \"]>\", 2, 1);\n                    if (strncmp(ctx->pos, \"]>\", 2)) {\n                        PLIST_XML_ERR(\"Couldn't find end of DOCTYPE\\n\");\n                        ctx->pos = ctx->end;\n                        return;\n                    }\n                    ctx->pos += 2;\n                }\n            } else {\n                p = ctx->pos;\n                find_next(ctx, \" \\r\\n\\t>\", 5, 1);\n                PLIST_XML_ERR(\"Invalid special tag <%.*s> encountered\\n\", (int)(ctx->pos - p), p);\n                ctx->err++;\n            }\n            continue;\n        } else {\n            int is_empty = 0;\n            int closing_tag = 0;\n            p = ctx->pos;\n            find_next(ctx,\" \\r\\n\\t<>\", 6, 0);\n            if (ctx->pos >= ctx->end) {\n                PLIST_XML_ERR(\"Unexpected EOF while parsing XML\\n\");\n                ctx->pos = ctx->end;\n                ctx->err++;\n                free(keyname);\n                return;\n            }\n            int taglen = ctx->pos - p;\n            char *tag = malloc(taglen + 1);\n            strncpy(tag, p, taglen);\n            tag[taglen] = '\\0';\n            if (*ctx->pos != '>') {\n                find_next(ctx, \"<>\", 2, 1);\n            }\n            if (ctx->pos >= ctx->end) {\n                PLIST_XML_ERR(\"Unexpected EOF while parsing XML\\n\");\n                ctx->pos = ctx->end;\n                ctx->err++;\n                free(tag);\n                free(keyname);\n                return;\n            }\n            if (*ctx->pos != '>') {\n                PLIST_XML_ERR(\"Missing '>' for tag <%s\\n\", tag);\n                ctx->pos = ctx->end;\n                ctx->err++;\n                free(tag);\n                free(keyname);\n                return;\n            }\n            if (*(ctx->pos-1) == '/') {\n                int idx = ctx->pos - p - 1;\n                if (idx < taglen)\n                    tag[idx] = '\\0';\n                is_empty = 1;\n            }\n            ctx->pos++;\n            if (!strcmp(tag, \"plist\")) {\n                free(tag);\n                if (is_empty) {\n                    PLIST_XML_ERR(\"Empty plist tag\\n\");\n                    return;\n                }\n                if (!*plist) {\n                    /* only process first plist node found */\n                    node_from_xml(ctx, plist, depth+1);\n                }\n                continue;\n            } else if (depth == 1 && !strcmp(tag, \"/plist\")) {\n                if (!*plist) {\n                    PLIST_XML_ERR(\"Empty plist tag\\n\");\n                }\n                free(tag);\n                free(keyname);\n                return;\n            } else if (depth == 1 && *plist) {\n                PLIST_XML_ERR(\"Unexpected tag <%s> found while </plist> is expected\\n\", tag);\n                ctx->err++;\n                free(tag);\n                free(keyname);\n                return;\n            }\n\n            plist_data_t data = plist_new_plist_data();\n            plist_t subnode = plist_new_node(data);\n\n            if (!strcmp(tag, XPLIST_DICT)) {\n                data->type = PLIST_DICT;\n            } else if (!strcmp(tag, XPLIST_ARRAY)) {\n                data->type = PLIST_ARRAY;\n            } else if (!strcmp(tag, XPLIST_INT)) {\n                if (!is_empty) {\n                    text_part_t first_part = { NULL, 0, 0, NULL };\n                    text_part_t *tp = get_text_parts(ctx, tag, taglen, 1, &first_part);\n                    if (!tp) {\n                        PLIST_XML_ERR(\"Could not parse text content for '%s' node\\n\", tag);\n                        text_parts_free(first_part.next);\n                        free(tag);\n                        free(keyname);\n                        break;\n                    }\n                    if (tp->begin) {\n                        int requires_free = 0;\n                        char *str_content = text_parts_get_content(tp, 0, NULL, &requires_free);\n                        if (!str_content) {\n                            PLIST_XML_ERR(\"Could not get text content for '%s' node\\n\", tag);\n                            text_parts_free(first_part.next);\n                            ctx->err++;\n                            free(tag);\n                            free(keyname);\n                            break;\n                        }\n                        char *str = str_content;\n                        int is_negative = 0;\n                        if ((str[0] == '-') || (str[0] == '+')) {\n                            if (str[0] == '-') {\n                                is_negative = 1;\n                            }\n                            str++;\n                        }\n                        data->intval = strtoull((char*)str, NULL, 0);\n                        if (is_negative || (data->intval <= INT64_MAX)) {\n                            int64_t v = data->intval;\n                            if (is_negative) {\n                                v = -v;\n                            }\n                            data->intval = (uint64_t)v;\n                            data->length = 8;\n                        } else {\n                            data->length = 16;\n                        }\n                        if (requires_free) {\n                            free(str_content);\n                        }\n                    } else {\n                        is_empty = 1;\n                    }\n                    text_parts_free(tp->next);\n                }\n                if (is_empty) {\n                    data->intval = 0;\n                    data->length = 8;\n                }\n                data->type = PLIST_UINT;\n            } else if (!strcmp(tag, XPLIST_REAL)) {\n                if (!is_empty) {\n                    text_part_t first_part = { NULL, 0, 0, NULL };\n                    text_part_t *tp = get_text_parts(ctx, tag, taglen, 1, &first_part);\n                    if (!tp) {\n                        PLIST_XML_ERR(\"Could not parse text content for '%s' node\\n\", tag);\n                        text_parts_free(first_part.next);\n                        free(tag);\n                        free(keyname);\n                        break;\n                    }\n                    if (tp->begin) {\n                        int requires_free = 0;\n                        char *str_content = text_parts_get_content(tp, 0, NULL, &requires_free);\n                        if (!str_content) {\n                            PLIST_XML_ERR(\"Could not get text content for '%s' node\\n\", tag);\n                            text_parts_free(first_part.next);\n                            ctx->err++;\n                            free(tag);\n                            free(keyname);\n                            break;\n                        }\n                        data->realval = atof(str_content);\n                        if (requires_free) {\n                            free(str_content);\n                        }\n                    }\n                    text_parts_free(tp->next);\n                }\n                data->type = PLIST_REAL;\n                data->length = 8;\n            } else if (!strcmp(tag, XPLIST_TRUE)) {\n                if (!is_empty) {\n                    get_text_parts(ctx, tag, taglen, 1, NULL);\n                }\n                data->type = PLIST_BOOLEAN;\n                data->boolval = 1;\n                data->length = 1;\n            } else if (!strcmp(tag, XPLIST_FALSE)) {\n                if (!is_empty) {\n                    get_text_parts(ctx, tag, taglen, 1, NULL);\n                }\n                data->type = PLIST_BOOLEAN;\n                data->boolval = 0;\n                data->length = 1;\n            } else if (!strcmp(tag, XPLIST_STRING) || !strcmp(tag, XPLIST_KEY)) {\n                if (!is_empty) {\n                    text_part_t first_part = { NULL, 0, 0, NULL };\n                    text_part_t *tp = get_text_parts(ctx, tag, taglen, 0, &first_part);\n                    char *str = NULL;\n                    size_t length = 0;\n                    if (!tp) {\n                        PLIST_XML_ERR(\"Could not parse text content for '%s' node\\n\", tag);\n                        text_parts_free(first_part.next);\n                        free(tag);\n                        free(keyname);\n                        break;\n                    }\n                    str = text_parts_get_content(tp, 1, &length, NULL);\n                    text_parts_free(first_part.next);\n                    if (!str) {\n                        PLIST_XML_ERR(\"Could not get text content for '%s' node\\n\", tag);\n                        ctx->err++;\n                        free(tag);\n                        free(keyname);\n                        return;\n                    }\n                    if (!strcmp(tag, \"key\") && !keyname && *plist && (plist_get_node_type(*plist) == PLIST_DICT)) {\n                        keyname = str;\n                        free(tag);\n                        plist_free(subnode);\n                        subnode = NULL;\n                        continue;\n                    } else {\n                        data->strval = str;\n                        data->length = length;\n                    }\n                } else {\n                    data->strval = strdup(\"\");\n                    data->length = 0;\n                }\n                data->type = PLIST_STRING;\n            } else if (!strcmp(tag, XPLIST_DATA)) {\n                if (!is_empty) {\n                    text_part_t first_part = { NULL, 0, 0, NULL };\n                    text_part_t *tp = get_text_parts(ctx, tag, taglen, 1, &first_part);\n                    if (!tp) {\n                        PLIST_XML_ERR(\"Could not parse text content for '%s' node\\n\", tag);\n                        text_parts_free(first_part.next);\n                        free(tag);\n                        free(keyname);\n                        break;\n                    }\n                    if (tp->begin) {\n                        int requires_free = 0;\n                        char *str_content = text_parts_get_content(tp, 0, NULL, &requires_free);\n                        if (!str_content) {\n                            PLIST_XML_ERR(\"Could not get text content for '%s' node\\n\", tag);\n                            text_parts_free(first_part.next);\n                            ctx->err++;\n                            free(tag);\n                            free(keyname);\n                            break;\n                        }\n                        size_t size = tp->length;\n                        data->buff = base64decode(str_content, &size);\n                        data->length = size;\n\n                        if (requires_free) {\n                            free(str_content);\n                        }\n                    }\n                    text_parts_free(tp->next);\n                }\n                data->type = PLIST_DATA;\n            } else if (!strcmp(tag, XPLIST_DATE)) {\n                if (!is_empty) {\n                    text_part_t first_part = { NULL, 0, 0, NULL };\n                    text_part_t *tp = get_text_parts(ctx, tag, taglen, 1, &first_part);\n                    if (!tp) {\n                        PLIST_XML_ERR(\"Could not parse text content for '%s' node\\n\", tag);\n                        text_parts_free(first_part.next);\n                        free(tag);\n                        free(keyname);\n                        break;\n                    }\n                    Time64_T timev = 0;\n                    if (tp->begin) {\n                        int requires_free = 0;\n                        size_t length = 0;\n                        char *str_content = text_parts_get_content(tp, 0, &length, &requires_free);\n                        if (!str_content) {\n                            PLIST_XML_ERR(\"Could not get text content for '%s' node\\n\", tag);\n                            text_parts_free(first_part.next);\n                            ctx->err++;\n                            free(tag);\n                            free(keyname);\n                            break;\n                        }\n\n                        if ((length >= 11) && (length < 32)) {\n                            /* we need to copy here and 0-terminate because sscanf will read the entire string (whole rest of XML data) which can be huge */\n                            char strval[32];\n                            struct TM btime;\n                            strncpy(strval, str_content, length);\n                            strval[tp->length] = '\\0';\n                            parse_date(strval, &btime);\n                            timev = timegm64(&btime);\n                        } else {\n                            PLIST_XML_ERR(\"Invalid text content in date node\\n\");\n                        }\n                        if (requires_free) {\n                            free(str_content);\n                        }\n                    }\n                    text_parts_free(tp->next);\n                    data->realval = (double)(timev - MAC_EPOCH);\n                }\n                data->length = sizeof(double);\n                data->type = PLIST_DATE;\n            } else if (tag[0] == '/') {\n                 closing_tag = 1;\n            } else {\n                PLIST_XML_ERR(\"Unexpected tag <%s%s> encountered\\n\", tag, (is_empty) ? \"/\" : \"\");\n                ctx->pos = ctx->end;\n                ctx->err++;\n                free(tag);\n                free(keyname);\n                return;\n            }\n            if (subnode && !closing_tag) {\n                /* parse sub nodes for structured types */\n                if (data->type == PLIST_DICT || data->type == PLIST_ARRAY) {\n                    if (!is_empty) {\n                        /* only if not empty */\n                        node_from_xml(ctx, &subnode, depth+1);\n                        if (ctx->err) {\n                            /* make sure to bail out if parsing failed */\n                            free(tag);\n                            free(keyname);\n                            return;\n                        }\n                        if ((data->type == PLIST_DICT) && (plist_dict_get_size(subnode) == 1)) {\n                            /* convert XML CF$UID dictionaries to PLIST_UID nodes */\n                            plist_t uid = plist_dict_get_item(subnode, \"CF$UID\");\n                            if (uid) {\n                                uint64_t val = 0;\n                                plist_get_uint_val(uid, &val);\n                                plist_dict_remove_item(subnode, \"CF$UID\");\n                                plist_data_t nodedata = plist_get_data((node_t*)subnode);\n                                free(nodedata->buff);\n                                nodedata->type = PLIST_UID;\n                                nodedata->length = sizeof(uint64_t);\n                                nodedata->intval = val;\n                            }\n                        }\n                    }\n                }\n                if (!*plist) {\n                    /* no parent? make this node the new parent node */\n                    *plist = subnode;\n                    subnode = NULL;\n                } else {\n                    switch (plist_get_node_type(*plist)) {\n                    case PLIST_DICT:\n                        if (!keyname) {\n                            PLIST_XML_ERR(\"missing key name while adding dict item\\n\");\n                            ctx->err++;\n                            break;\n                        }\n                        plist_dict_set_item(*plist, keyname, subnode);\n                        subnode = NULL;\n                        break;\n                    case PLIST_ARRAY:\n                        plist_array_append_item(*plist, subnode);\n                        subnode = NULL;\n                        break;\n                    default:\n                        /* should not happen */\n                        PLIST_XML_ERR(\"while parsing XML plist: parent is not a structered node.\\n\");\n                        ctx->err++;\n                        break;\n                    }\n                }\n            } else if (closing_tag && *plist) {\n                switch (plist_get_node_type(*plist)) {\n                case PLIST_DICT:\n                    if (keyname) {\n                        PLIST_XML_ERR(\"missing value node in dict\\n\");\n                        ctx->err++;\n                    } else if (strcmp(tag+1, XPLIST_DICT) != 0) {\n                        PLIST_XML_ERR(\"closing tag mismatch, expected: </%s> found: <%s>\\n\", XPLIST_DICT, tag);\n                        ctx->err++;\n                    }\n                    break;\n                case PLIST_ARRAY:\n                    if (strcmp(tag+1, XPLIST_ARRAY) != 0) {\n                        PLIST_XML_ERR(\"closing tag mismatch, expected: </%s> found: <%s>\\n\", XPLIST_ARRAY, tag);\n                        ctx->err++;\n                    }\n                    break;\n                default:\n                    /* should not happen */\n                    PLIST_XML_ERR(\"expected structered node but got type %d\\n\", plist_get_node_type(*plist));\n                    ctx->err++;\n                    break;\n                }\n            }\n            free(tag);\n            free(keyname);\n            keyname = NULL;\n            plist_free(subnode);\n            if (closing_tag) {\n                break;\n            }\n        }\n    }\n    if (depth == 1) {\n        PLIST_XML_ERR(\"EOF while </plist> tag is expected\\n\");\n        ctx->err++;\n    }\n    if (ctx->err) {\n        plist_free(*plist);\n        *plist = NULL;\n    }\n}",
+            2
+        ],
+        [
+            "src/strbuf.h",
+            "str_buf_free",
+            "#define str_buf_free(__ba) byte_array_free(__ba) /* <=== src/strbuf.h:30:30:str_buf_free:1 */ ",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "find_next",
+            "static void find_next(parse_ctx ctx, const char *nextchars, int numchars, int skip_quotes) /* <=== find_next */ \n{\n    int i = 0;\n    while (ctx->pos < ctx->end) {\n        if (skip_quotes && (*(ctx->pos) == '\"')) {\n            ctx->pos++;\n            find_char(ctx, '\"', 0);\n            if (*(ctx->pos) != '\"') {\n                PLIST_XML_ERR(\"Unmatched double quote\\n\");\n                return;\n            }\n        }\n        for (i = 0; i < numchars; i++) {\n            if (*(ctx->pos) == nextchars[i]) {\n                return;\n            }\n        }\n        ctx->pos++;\n    }\n}",
+            3
+        ],
+        [
+            "src/plist.c",
+            "plist_free_data",
+            "void plist_free_data(plist_data_t data) /* <=== plist_free_data */ \n{\n    if (data)\n    {\n        switch (data->type)\n        {\n        case PLIST_KEY:\n        case PLIST_STRING:\n            free(data->strval);\n            break;\n        case PLIST_DATA:\n            free(data->buff);\n            break;\n        case PLIST_DICT:\n            hash_table_destroy(data->hashtable);\n            break;\n        default:\n            break;\n        }\n        free(data);\n    }\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "write_raw_data",
+            "static void write_raw_data(bytearray_t * bplist, uint8_t mark, uint8_t * val, uint64_t size) /* <=== write_raw_data */ \n{\n    uint8_t *buff = NULL;\n    uint8_t marker = mark | (size < 15 ? size : 0xf);\n    byte_array_append(bplist, &marker, sizeof(uint8_t));\n    if (size >= 15)\n    {\n        bytearray_t *int_buff = byte_array_new();\n        write_int(int_buff, size);\n        byte_array_append(bplist, int_buff->data, int_buff->len);\n        byte_array_free(int_buff);\n    }\n    //stupid unicode buffer length\n    if (BPLIST_UNICODE==mark) size *= 2;\n    buff = (uint8_t *) malloc(size);\n    memcpy(buff, val, size);\n    byte_array_append(bplist, buff, size);\n    free(buff);\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_TRL_OFFTAB_IDX",
+            "#define BPLIST_TRL_OFFTAB_IDX \t18 /* <=== src/bplist.c:55:55:BPLIST_TRL_OFFTAB_IDX:0 */ ",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "find_str",
+            "static void find_str(parse_ctx ctx, const char *str, size_t len, int skip_quotes) /* <=== find_str */ \n{\n    while (ctx->pos < (ctx->end - len)) {\n        if (!strncmp(ctx->pos, str, len)) {\n            break;\n        }\n        if (skip_quotes && (*(ctx->pos) == '\"')) {\n            ctx->pos++;\n            find_char(ctx, '\"', 0);\n            if (*(ctx->pos) != '\"') {\n                PLIST_XML_ERR(\"Unmatched double quote\\n\");\n                return;\n            }\n        }\n        ctx->pos++;\n    }\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_VERSION_SIZE",
+            "#define BPLIST_VERSION_SIZE\t2 /* <=== src/bplist.c:47:47:BPLIST_VERSION_SIZE:0 */ ",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "plist_utf8_to_utf16",
+            "static uint16_t *plist_utf8_to_utf16(char *unistr, long size, long *items_read, long *items_written) /* <=== plist_utf8_to_utf16 */ \n{\n\tuint16_t *outbuf = (uint16_t*)malloc(((size*2)+1)*sizeof(uint16_t));\n\tint p = 0;\n\tint i = 0;\n\n\tunsigned char c0;\n\tunsigned char c1;\n\tunsigned char c2;\n\tunsigned char c3;\n\n\tuint32_t w;\n\n\twhile (i < size) {\n\t\tc0 = unistr[i];\n\t\tc1 = (i < size-1) ? unistr[i+1] : 0;\n\t\tc2 = (i < size-2) ? unistr[i+2] : 0;\n\t\tc3 = (i < size-3) ? unistr[i+3] : 0;\n\t\tif ((c0 >= 0xF0) && (i < size-3) && (c1 >= 0x80) && (c2 >= 0x80) && (c3 >= 0x80)) {\n\t\t\t// 4 byte sequence.  Need to generate UTF-16 surrogate pair\n\t\t\tw = ((((c0 & 7) << 18) + ((c1 & 0x3F) << 12) + ((c2 & 0x3F) << 6) + (c3 & 0x3F)) & 0x1FFFFF) - 0x010000;\n\t\t\toutbuf[p++] = 0xD800 + (w >> 10);\n\t\t\toutbuf[p++] = 0xDC00 + (w & 0x3FF);\n\t\t\ti+=4;\n\t\t} else if ((c0 >= 0xE0) && (i < size-2) && (c1 >= 0x80) && (c2 >= 0x80)) {\n\t\t\t// 3 byte sequence\n\t\t\toutbuf[p++] = ((c2 & 0x3F) + ((c1 & 3) << 6)) + (((c1 >> 2) & 15) << 8) + ((c0 & 15) << 12);\n\t\t\ti+=3;\n\t\t} else if ((c0 >= 0xC0) && (i < size-1) && (c1 >= 0x80)) {\n\t\t\t// 2 byte sequence\n\t\t\toutbuf[p++] = ((c1 & 0x3F) + ((c0 & 3) << 6)) + (((c0 >> 2) & 7) << 8);\n\t\t\ti+=2;\n\t\t} else if (c0 < 0x80) {\n\t\t\t// 1 byte sequence\n\t\t\toutbuf[p++] = c0;\n\t\t\ti+=1;\n\t\t} else {\n\t\t\t// invalid character\n\t\t\tfprintf(stderr, \"invalid utf8 sequence in string at index %d\\n\", i);\n\t\t\tbreak;\n\t\t}\n\t}\n\tif (items_read) {\n\t\t*items_read = i;\n\t}\n\tif (items_written) {\n\t\t*items_written = p;\n\t}\n\toutbuf[p] = 0;\n\n\treturn outbuf;\n\n}",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_REAL",
+            "#define XPLIST_REAL\t\"real\" /* <=== src/xplist.c:58:58:XPLIST_REAL:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_FALSE_LEN",
+            "#define XPLIST_FALSE_LEN 5 /* <=== src/xplist.c:53:53:XPLIST_FALSE_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_TRL_NUMOBJ_IDX",
+            "#define BPLIST_TRL_NUMOBJ_IDX \t2 /* <=== src/bplist.c:53:53:BPLIST_TRL_NUMOBJ_IDX:0 */ ",
+            2
+        ],
+        [
+            "src/plist.c",
+            "plist_get_uint_val",
+            "PLIST_API void plist_get_uint_val(plist_t node, uint64_t * val) /* <=== plist_get_uint_val */ \n{\n    plist_type type = plist_get_node_type(node);\n    uint64_t length = 0;\n    if (PLIST_UINT == type)\n        plist_get_type_and_value(node, &type, (void *) val, &length);\n    assert(length == sizeof(uint64_t));\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "get_real_bytes",
+            "#define get_real_bytes(x) (x == (float) x ? 4 : 8) /* <=== src/bplist.c:201:201:get_real_bytes:1 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "write_uint",
+            "static void write_uint(bytearray_t * bplist, uint64_t val) /* <=== write_uint */ \n{\n    uint64_t size = 16;\n    uint8_t *buff = NULL;\n\n    buff = (uint8_t *) malloc(sizeof(uint8_t) + size);\n    buff[0] = BPLIST_UINT | 4;\n    memset(buff + 1, '\\0', 8);\n    memcpy(buff + 9, &val, 8);\n    byte_convert(buff + 9, 8);\n    byte_array_append(bplist, buff, sizeof(uint8_t) + size);\n    free(buff);\n}",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_VERSION",
+            "#define BPLIST_VERSION\t\t((uint8_t*)\"00\") /* <=== src/bplist.c:46:46:BPLIST_VERSION:0 */ ",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_MAGIC",
+            "#define BPLIST_MAGIC\t\t((uint8_t*)\"bplist\") /* <=== src/bplist.c:43:43:BPLIST_MAGIC:0 */ ",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_DATA",
+            "#define XPLIST_DATA\t\"data\" /* <=== src/xplist.c:62:62:XPLIST_DATA:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_STRING",
+            "#define XPLIST_STRING\t\"string\" /* <=== src/xplist.c:64:64:XPLIST_STRING:0 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "parse_bin_node",
+            "static plist_t parse_bin_node(struct bplist_data *bplist, const char** object) /* <=== parse_bin_node */ \n{\n    uint16_t type = 0;\n    uint64_t size = 0;\n\n    if (!object)\n        return NULL;\n\n    type = (**object) & BPLIST_MASK;\n    size = (**object) & BPLIST_FILL;\n    (*object)++;\n\n    switch (type)\n    {\n\n    case BPLIST_NULL:\n        switch (size)\n        {\n\n        case BPLIST_TRUE:\n        {\n            plist_data_t data = plist_new_plist_data();\n            data->type = PLIST_BOOLEAN;\n            data->boolval = TRUE;\n            data->length = 1;\n            return node_create(NULL, data);\n        }\n\n        case BPLIST_FALSE:\n        {\n            plist_data_t data = plist_new_plist_data();\n            data->type = PLIST_BOOLEAN;\n            data->boolval = FALSE;\n            data->length = 1;\n            return node_create(NULL, data);\n        }\n\n        case BPLIST_NULL:\n        default:\n            return NULL;\n        }\n\n    case BPLIST_UINT:\n        if (*object - bplist->data + (uint64_t)(1 << size) >= bplist->size)\n            return NULL;\n        return parse_uint_node(object, size);\n\n    case BPLIST_REAL:\n        if (*object - bplist->data + (uint64_t)(1 << size) >= bplist->size)\n            return NULL;\n        return parse_real_node(object, size);\n\n    case BPLIST_DATE:\n        if (3 != size)\n            return NULL;\n        if (*object - bplist->data + (uint64_t)(1 << size) >= bplist->size)\n            return NULL;\n        return parse_date_node(object, size);\n\n    case BPLIST_DATA:\n        if (BPLIST_FILL == size) {\n            plist_t size_node = parse_bin_node(bplist, object);\n            if (plist_get_node_type(size_node) != PLIST_UINT)\n                return NULL;\n            plist_get_uint_val(size_node, &size);\n            plist_free(size_node);\n        }\n\n        if (*object - bplist->data + size >= bplist->size)\n            return NULL;\n        return parse_data_node(object, size);\n\n    case BPLIST_STRING:\n        if (BPLIST_FILL == size) {\n            plist_t size_node = parse_bin_node(bplist, object);\n            if (plist_get_node_type(size_node) != PLIST_UINT)\n                return NULL;\n            plist_get_uint_val(size_node, &size);\n            plist_free(size_node);\n        }\n\n        if (*object - bplist->data + size >= bplist->size)\n            return NULL;\n        return parse_string_node(object, size);\n\n    case BPLIST_UNICODE:\n        if (BPLIST_FILL == size) {\n            plist_t size_node = parse_bin_node(bplist, object);\n            if (plist_get_node_type(size_node) != PLIST_UINT)\n                return NULL;\n            plist_get_uint_val(size_node, &size);\n            plist_free(size_node);\n        }\n\n        if (*object - bplist->data + size * 2 >= bplist->size)\n            return NULL;\n        return parse_unicode_node(object, size);\n\n    case BPLIST_SET:\n    case BPLIST_ARRAY:\n        if (BPLIST_FILL == size) {\n            plist_t size_node = parse_bin_node(bplist, object);\n            if (plist_get_node_type(size_node) != PLIST_UINT)\n                return NULL;\n            plist_get_uint_val(size_node, &size);\n            plist_free(size_node);\n        }\n\n        if (*object - bplist->data + size >= bplist->size)\n            return NULL;\n        return parse_array_node(bplist, object, size);\n\n    case BPLIST_UID:\n        return parse_uid_node(object, size);\n\n    case BPLIST_DICT:\n        if (BPLIST_FILL == size) {\n            plist_t size_node = parse_bin_node(bplist, object);\n            if (plist_get_node_type(size_node) != PLIST_UINT)\n                return NULL;\n            plist_get_uint_val(size_node, &size);\n            plist_free(size_node);\n        }\n\n        if (*object - bplist->data + size >= bplist->size)\n            return NULL;\n        return parse_dict_node(bplist, object, size);\n    default:\n        return NULL;\n    }\n    return NULL;\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "be64dec",
+            "#define be64dec(x) \\ /* <=== src/bplist.c:188:193:be64dec:1 */ \n\t({ \\\n\t\tunion plist_uint_ptr __up; \\\n\t\t__up.src = x; \\\n\t\tbe64toh( get_unaligned(__up.u64ptr) ); \\\n\t})",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_KEY",
+            "#define XPLIST_KEY\t\"key\" /* <=== src/xplist.c:50:50:XPLIST_KEY:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_ARRAY_LEN",
+            "#define XPLIST_ARRAY_LEN 5 /* <=== src/xplist.c:67:67:XPLIST_ARRAY_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "parse_skip_ws",
+            "static void parse_skip_ws(parse_ctx ctx) /* <=== parse_skip_ws */ \n{\n    while (ctx->pos < ctx->end && ((*(ctx->pos) == ' ') || (*(ctx->pos) == '\\t') || (*(ctx->pos) == '\\r') || (*(ctx->pos) == '\\n'))) {\n        ctx->pos++;\n    }\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "parse_bin_node_at_index",
+            "static plist_t parse_bin_node_at_index(struct bplist_data *bplist, uint32_t node_index) /* <=== parse_bin_node_at_index */ \n{\n    int i = 0;\n    const char* ptr = NULL;\n    plist_t plist = NULL;\n    const char* idx_ptr = NULL;\n\n    if (node_index > bplist->num_objects)\n        return NULL;\n\n    idx_ptr = bplist->offset_table + node_index * bplist->offset_size;\n    if (idx_ptr < bplist->offset_table ||\n        idx_ptr >= bplist->offset_table + bplist->num_objects * bplist->offset_size)\n        return NULL;\n\n    ptr = bplist->data + UINT_TO_HOST(idx_ptr, bplist->offset_size);\n    /* make sure the node offset is in a sane range */\n    if ((ptr < bplist->data) || (ptr >= bplist->offset_table)) {\n        return NULL;\n    }\n\n    /* store node_index for current recursion level */\n    bplist->used_indexes[bplist->level] = node_index;\n    /* recursion check */\n    if (bplist->level > 0) {\n        for (i = bplist->level-1; i >= 0; i--) {\n            if (bplist->used_indexes[i] == bplist->used_indexes[bplist->level]) {\n                fprintf(stderr, \"Recursion detected in binary plist. Aborting.\\n\");\n                return NULL;\n            }\n        }\n    }\n\n    /* finally parse node */\n    bplist->level++;\n    plist = parse_bin_node(bplist, &ptr);\n    bplist->level--;\n    return plist;\n}",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "write_string",
+            "static void write_string(bytearray_t * bplist, char *val) /* <=== write_string */ \n{\n    uint64_t size = strlen(val);\n    write_raw_data(bplist, BPLIST_STRING, (uint8_t *) val, size);\n}",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_REAL_LEN",
+            "#define XPLIST_REAL_LEN 4 /* <=== src/xplist.c:59:59:XPLIST_REAL_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_STRING_LEN",
+            "#define XPLIST_STRING_LEN 6 /* <=== src/xplist.c:65:65:XPLIST_STRING_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_DICT_LEN",
+            "#define XPLIST_DICT_LEN 4 /* <=== src/xplist.c:69:69:XPLIST_DICT_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_ARRAY",
+            "#define XPLIST_ARRAY\t\"array\" /* <=== src/xplist.c:66:66:XPLIST_ARRAY:0 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "write_int",
+            "static void write_int(bytearray_t * bplist, uint64_t val) /* <=== write_int */ \n{\n    uint64_t size = get_needed_bytes(val);\n    uint8_t *buff = NULL;\n    //do not write 3bytes int node\n    if (size == 3)\n        size++;\n\n#ifdef __BIG_ENDIAN__\n    val = val << ((sizeof(uint64_t) - size) * 8);\n#endif\n\n    buff = (uint8_t *) malloc(sizeof(uint8_t) + size);\n    buff[0] = BPLIST_UINT | Log2(size);\n    memcpy(buff + 1, &val, size);\n    byte_convert(buff + 1, size);\n    byte_array_append(bplist, buff, sizeof(uint8_t) + size);\n    free(buff);\n}",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "text_parts_get_content",
+            "static char* text_parts_get_content(text_part_t *tp, int unesc_entities, size_t *length, int *requires_free) /* <=== text_parts_get_content */ \n{\n    char *str = NULL;\n    size_t total_length = 0;\n\n    if (!tp) {\n        return NULL;\n    }\n    char *p;\n    if (requires_free && !tp->next) {\n        if (tp->is_cdata || !unesc_entities) {\n            *requires_free = 0;\n            if (length) {\n                *length = tp->length;\n            }\n            return (char*)tp->begin;\n        }\n    }\n    text_part_t *tmp = tp;\n    while (tp && tp->begin) {\n        total_length += tp->length;\n        tp = tp->next;\n    }\n    str = malloc(total_length + 1);\n    assert(str);\n    p = str;\n    tp = tmp;\n    while (tp && tp->begin) {\n        size_t len = tp->length;\n        strncpy(p, tp->begin, len);\n        if (!tp->is_cdata && unesc_entities) {\n            if (unescape_entities(p, &len) < 0) {\n                free(str);\n                return NULL;\n            }\n        }\n        p += len;\n        tp = tp->next;\n    }\n    *p = '\\0';\n    if (length) {\n        *length = p - str;\n    }\n    if (requires_free) {\n        *requires_free = 1;\n    }\n    return str;\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "float_byte_convert",
+            "static void float_byte_convert(uint8_t * address, size_t size) /* <=== float_byte_convert */ \n{\n#if (defined(__LITTLE_ENDIAN__) \\\n\t\t&& !defined(__FLOAT_WORD_ORDER__)) \\\n\t|| (defined(__FLOAT_WORD_ORDER__) \\\n\t\t&& __FLOAT_WORD_ORDER__ == __ORDER_LITTLE_ENDIAN__)\n    uint8_t i = 0, j = 0;\n    uint8_t tmp = 0;\n\n    for (i = 0; i < (size / 2); i++)\n    {\n        tmp = address[i];\n        j = ((size - 1) + 0) - i;\n        address[i] = address[j];\n        address[j] = tmp;\n    }\n#endif\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_TRL_ROOTOBJ_IDX",
+            "#define BPLIST_TRL_ROOTOBJ_IDX \t10 /* <=== src/bplist.c:54:54:BPLIST_TRL_ROOTOBJ_IDX:0 */ ",
+            2
+        ],
+        [
+            "src/strbuf.h",
+            "str_buf_new",
+            "#define str_buf_new() byte_array_new() /* <=== src/strbuf.h:29:29:str_buf_new:0 */ ",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_TRL_PARMSIZE_IDX",
+            "#define BPLIST_TRL_PARMSIZE_IDX 1 /* <=== src/bplist.c:52:52:BPLIST_TRL_PARMSIZE_IDX:0 */ ",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "UINT_TO_HOST",
+            "#define UINT_TO_HOST(x, n) \\ /* <=== src/bplist.c:177:186:UINT_TO_HOST:2 */ \n\t({ \\\n\t\tunion plist_uint_ptr __up; \\\n\t\t__up.src = x; \\\n\t\t(n == 8 ? be64toh( get_unaligned(__up.u64ptr) ) : \\\n\t\t(n == 4 ? be32toh( get_unaligned(__up.u32ptr) ) : \\\n\t\t(n == 3 ? uint24_from_be( __up ) : \\\n\t\t(n == 2 ? be16toh( get_unaligned(__up.u16ptr) ) : \\\n\t\t*__up.u8ptr )))); \\\n\t})",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "write_array",
+            "static void write_array(bytearray_t * bplist, node_t* node, hashtable_t* ref_table, uint8_t dict_param_size) /* <=== write_array */ \n{\n    uint64_t idx = 0;\n    uint8_t *buff = NULL;\n\n    node_t* cur = NULL;\n    uint64_t i = 0;\n\n    uint64_t size = node_n_children(node);\n    uint8_t marker = BPLIST_ARRAY | (size < 15 ? size : 0xf);\n    byte_array_append(bplist, &marker, sizeof(uint8_t));\n    if (size >= 15)\n    {\n        bytearray_t *int_buff = byte_array_new();\n        write_int(int_buff, size);\n        byte_array_append(bplist, int_buff->data, int_buff->len);\n        byte_array_free(int_buff);\n    }\n\n    buff = (uint8_t *) malloc(size * dict_param_size);\n\n    for (i = 0, cur = node_first_child(node); cur && i < size; cur = node_next_sibling(cur), i++)\n    {\n        idx = *(uint64_t *) (hash_table_lookup(ref_table, cur));\n#ifdef __BIG_ENDIAN__\n\tidx = idx << ((sizeof(uint64_t) - dict_param_size) * 8);\n#endif\n        memcpy(buff + i * dict_param_size, &idx, dict_param_size);\n        byte_convert(buff + i * dict_param_size, dict_param_size);\n    }\n\n    //now append to bplist\n    byte_array_append(bplist, buff, size * dict_param_size);\n    free(buff);\n\n}",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "plist_from_bin",
+            "PLIST_API void plist_from_bin(const char *plist_bin, uint32_t length, plist_t * plist) /* <=== plist_from_bin */ \n{\n    char *trailer = NULL;\n\n    uint8_t offset_size = 0;\n    uint8_t dict_size = 0;\n    uint64_t num_objects = 0;\n    uint64_t root_object = 0;\n    uint64_t offset_table_index = 0;\n    char *offset_table = NULL;\n\n    //first check we have enough data\n    if (!(length >= BPLIST_MAGIC_SIZE + BPLIST_VERSION_SIZE + BPLIST_TRL_SIZE))\n        return;\n    //check that plist_bin in actually a plist\n    if (memcmp(plist_bin, BPLIST_MAGIC, BPLIST_MAGIC_SIZE) != 0)\n        return;\n    //check for known version\n    if (memcmp(plist_bin + BPLIST_MAGIC_SIZE, BPLIST_VERSION, BPLIST_VERSION_SIZE) != 0)\n        return;\n\n    //now parse trailer\n    trailer = (char *) (plist_bin + (length - BPLIST_TRL_SIZE));\n\n    offset_size = trailer[BPLIST_TRL_OFFSIZE_IDX];\n    dict_size = trailer[BPLIST_TRL_PARMSIZE_IDX];\n    num_objects = be64dec(trailer + BPLIST_TRL_NUMOBJ_IDX);\n    root_object = be64dec(trailer + BPLIST_TRL_ROOTOBJ_IDX);\n    offset_table_index = be64dec(trailer + BPLIST_TRL_OFFTAB_IDX);\n    offset_table = (char *) (plist_bin + offset_table_index);\n\n    if (num_objects == 0)\n        return;\n\n    if (root_object >= num_objects)\n        return;\n\n    if (offset_table < plist_bin || offset_table >= plist_bin + length)\n        return;\n\n    if (offset_table + num_objects * offset_size >= plist_bin + length)\n        return;\n\n    if (sizeof(uint32_t) * num_objects < num_objects)\n        return;\n\n    struct bplist_data bplist;\n    bplist.data = plist_bin;\n    bplist.size = length;\n    bplist.num_objects = num_objects;\n    bplist.dict_size = dict_size;\n    bplist.offset_size = offset_size;\n    bplist.offset_table = offset_table;\n    bplist.level = 0;\n    bplist.used_indexes = (uint32_t*)malloc(sizeof(uint32_t) * num_objects);\n\n    if (!bplist.used_indexes)\n        return;\n\n    *plist = parse_bin_node_at_index(&bplist, root_object);\n\n    free(bplist.used_indexes);\n}",
+            1
+        ],
+        [
+            "src/xplist.c",
+            "dtostr",
+            "static size_t dtostr(char *buf, size_t bufsize, double realval) /* <=== dtostr */ \n{\n    double f = realval;\n    double ip = 0.0;\n    int64_t v;\n    size_t len;\n    size_t p;\n\n    f = modf(f, &ip);\n    len = snprintf(buf, bufsize, \"%s%\"PRIi64, ((f < 0) && (ip >= 0)) ? \"-\" : \"\", (int64_t)ip);\n    if (len >= bufsize) {\n        return 0;\n    }\n\n    if (f < 0) {\n        f *= -1;\n    }\n    f += 0.0000004;\n\n    p = len;\n    buf[p++] = '.';\n\n    while (p < bufsize && (p <= len+6)) {\n        f = modf(f*10, &ip);\n        v = (int)ip;\n        buf[p++] = (v + 0x30);\n    }\n    buf[p] = '\\0';\n    return p;\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_TRL_SIZE",
+            "#define BPLIST_TRL_SIZE \t26 /* <=== src/bplist.c:50:50:BPLIST_TRL_SIZE:0 */ ",
+            2
+        ],
+        [
+            "src/plist.c",
+            "plist_get_data",
+            "plist_data_t plist_get_data(const plist_t node) /* <=== plist_get_data */ \n{\n    if (!node)\n        return NULL;\n    return ((node_t*)node)->data;\n}",
+            2
+        ],
+        [
+            "src/plist.c",
+            "plist_free_node",
+            "static int plist_free_node(node_t* node) /* <=== plist_free_node */ \n{\n    plist_data_t data = NULL;\n    int node_index = node_detach(node->parent, node);\n    data = plist_get_data(node);\n    plist_free_data(data);\n    node->data = NULL;\n\n    node_iterator_t *ni = node_iterator_create(node->children);\n    node_t *ch;\n    while ((ch = node_iterator_next(ni))) {\n        plist_free_node(ch);\n    }\n    node_iterator_destroy(ni);\n\n    node_destroy(node);\n\n    return node_index;\n}",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "byte_convert",
+            "static void byte_convert(uint8_t * address, size_t size) /* <=== byte_convert */ \n{\n#ifdef __LITTLE_ENDIAN__\n    uint8_t i = 0, j = 0;\n    uint8_t tmp = 0;\n\n    for (i = 0; i < (size / 2); i++)\n    {\n        tmp = address[i];\n        j = ((size - 1) + 0) - i;\n        address[i] = address[j];\n        address[j] = tmp;\n    }\n#endif\n}",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "parse_date",
+            "static void parse_date(const char *strval, struct TM *btime) /* <=== parse_date */ \n{\n    if (!btime) return;\n    memset(btime, 0, sizeof(struct tm));\n    if (!strval) return;\n#ifdef HAVE_STRPTIME\n    strptime((char*)strval, \"%Y-%m-%dT%H:%M:%SZ\", btime);\n#else\n#ifdef USE_TM64\n    #define PLIST_SSCANF_FORMAT \"%lld-%d-%dT%d:%d:%dZ\"\n#else\n    #define PLIST_SSCANF_FORMAT \"%d-%d-%dT%d:%d:%dZ\"\n#endif\n    sscanf(strval, PLIST_SSCANF_FORMAT, &btime->tm_year, &btime->tm_mon, &btime->tm_mday, &btime->tm_hour, &btime->tm_min, &btime->tm_sec);\n    btime->tm_year-=1900;\n    btime->tm_mon--;\n#endif\n    btime->tm_isdst=0;\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "plist_to_bin",
+            "PLIST_API void plist_to_bin(plist_t plist, char **plist_bin, uint32_t * length) /* <=== plist_to_bin */ \n{\n    ptrarray_t* objects = NULL;\n    hashtable_t* ref_table = NULL;\n    struct serialize_s ser_s;\n    uint8_t offset_size = 0;\n    uint8_t dict_param_size = 0;\n    uint64_t num_objects = 0;\n    uint64_t root_object = 0;\n    uint64_t offset_table_index = 0;\n    bytearray_t *bplist_buff = NULL;\n    uint64_t i = 0;\n    uint8_t *buff = NULL;\n    uint64_t *offsets = NULL;\n    uint8_t pad[6] = { 0, 0, 0, 0, 0, 0 };\n    uint8_t trailer[BPLIST_TRL_SIZE];\n    //for string\n    long len = 0;\n    long items_read = 0;\n    long items_written = 0;\n    uint16_t *unicodestr = NULL;\n    uint64_t objects_len = 0;\n    uint64_t buff_len = 0;\n\n    //check for valid input\n    if (!plist || !plist_bin || *plist_bin || !length)\n        return;\n\n    //list of objects\n    objects = ptr_array_new(256);\n    //hashtable to write only once same nodes\n    ref_table = hash_table_new(plist_data_hash, plist_data_compare, free);\n\n    //serialize plist\n    ser_s.objects = objects;\n    ser_s.ref_table = ref_table;\n    serialize_plist(plist, &ser_s);\n\n    //now stream to output buffer\n    offset_size = 0;\t\t\t//unknown yet\n    objects_len = objects->len;\n    dict_param_size = get_needed_bytes(objects_len);\n    num_objects = objects->len;\n    root_object = 0;\t\t\t//root is first in list\n    offset_table_index = 0;\t\t//unknown yet\n\n    //setup a dynamic bytes array to store bplist in\n    bplist_buff = byte_array_new();\n\n    //set magic number and version\n    byte_array_append(bplist_buff, BPLIST_MAGIC, BPLIST_MAGIC_SIZE);\n    byte_array_append(bplist_buff, BPLIST_VERSION, BPLIST_VERSION_SIZE);\n\n    //write objects and table\n    offsets = (uint64_t *) malloc(num_objects * sizeof(uint64_t));\n    for (i = 0; i < num_objects; i++)\n    {\n\n        plist_data_t data = plist_get_data(ptr_array_index(objects, i));\n        offsets[i] = bplist_buff->len;\n\n        switch (data->type)\n        {\n        case PLIST_BOOLEAN:\n            buff = (uint8_t *) malloc(sizeof(uint8_t));\n            buff[0] = data->boolval ? BPLIST_TRUE : BPLIST_FALSE;\n            byte_array_append(bplist_buff, buff, sizeof(uint8_t));\n            free(buff);\n            break;\n\n        case PLIST_UINT:\n            if (data->length == 16) {\n                write_uint(bplist_buff, data->intval);\n            } else {\n                write_int(bplist_buff, data->intval);\n            }\n            break;\n\n        case PLIST_REAL:\n            write_real(bplist_buff, data->realval);\n            break;\n\n        case PLIST_KEY:\n        case PLIST_STRING:\n            len = strlen(data->strval);\n            if ( is_ascii_string(data->strval, len) )\n            {\n                write_string(bplist_buff, data->strval);\n            }\n            else\n            {\n                unicodestr = plist_utf8_to_utf16(data->strval, len, &items_read, &items_written);\n                write_unicode(bplist_buff, unicodestr, items_written);\n                free(unicodestr);\n            }\n            break;\n        case PLIST_DATA:\n            write_data(bplist_buff, data->buff, data->length);\n        case PLIST_ARRAY:\n            write_array(bplist_buff, ptr_array_index(objects, i), ref_table, dict_param_size);\n            break;\n        case PLIST_DICT:\n            write_dict(bplist_buff, ptr_array_index(objects, i), ref_table, dict_param_size);\n            break;\n        case PLIST_DATE:\n            write_date(bplist_buff, data->realval);\n            break;\n        case PLIST_UID:\n            write_uid(bplist_buff, data->intval);\n            break;\n        default:\n            break;\n        }\n    }\n\n    //free intermediate objects\n    ptr_array_free(objects);\n    hash_table_destroy(ref_table);\n\n    //write offsets\n    buff_len = bplist_buff->len;\n    offset_size = get_needed_bytes(buff_len);\n    offset_table_index = bplist_buff->len;\n    for (i = 0; i < num_objects; i++)\n    {\n        uint8_t *offsetbuff = (uint8_t *) malloc(offset_size);\n\n#ifdef __BIG_ENDIAN__\n\toffsets[i] = offsets[i] << ((sizeof(uint64_t) - offset_size) * 8);\n#endif\n\n        memcpy(offsetbuff, &offsets[i], offset_size);\n        byte_convert(offsetbuff, offset_size);\n        byte_array_append(bplist_buff, offsetbuff, offset_size);\n        free(offsetbuff);\n    }\n\n    //experimental pad to reflect apple's files\n    byte_array_append(bplist_buff, pad, 6);\n\n    //setup trailer\n    num_objects = be64toh(num_objects);\n    root_object = be64toh(root_object);\n    offset_table_index = be64toh(offset_table_index);\n\n    memcpy(trailer + BPLIST_TRL_OFFSIZE_IDX, &offset_size, sizeof(uint8_t));\n    memcpy(trailer + BPLIST_TRL_PARMSIZE_IDX, &dict_param_size, sizeof(uint8_t));\n    memcpy(trailer + BPLIST_TRL_NUMOBJ_IDX, &num_objects, sizeof(uint64_t));\n    memcpy(trailer + BPLIST_TRL_ROOTOBJ_IDX, &root_object, sizeof(uint64_t));\n    memcpy(trailer + BPLIST_TRL_OFFTAB_IDX, &offset_table_index, sizeof(uint64_t));\n\n    byte_array_append(bplist_buff, trailer, BPLIST_TRL_SIZE);\n\n    //duplicate buffer\n    *plist_bin = (char *) malloc(bplist_buff->len);\n    memcpy(*plist_bin, bplist_buff->data, bplist_buff->len);\n    *length = bplist_buff->len;\n\n    byte_array_free(bplist_buff);\n    free(offsets);\n}",
+            1
+        ],
+        [
+            "src/bplist.c",
+            "BPLIST_TRL_OFFSIZE_IDX",
+            "#define BPLIST_TRL_OFFSIZE_IDX \t0 /* <=== src/bplist.c:51:51:BPLIST_TRL_OFFSIZE_IDX:0 */ ",
+            2
+        ],
+        [
+            "src/plist.c",
+            "plist_dict_set_item",
+            "PLIST_API void plist_dict_set_item(plist_t node, const char* key, plist_t item) /* <=== plist_dict_set_item */ \n{\n    if (node && PLIST_DICT == plist_get_node_type(node)) {\n        node_t* old_item = plist_dict_get_item(node, key);\n        plist_t key_node = NULL;\n        if (old_item) {\n            int idx = plist_free_node(old_item);\n            if (idx < 0) {\n                node_attach(node, item);\n            } else {\n                node_insert(node, idx, item);\n            }\n            key_node = node_prev_sibling(item);\n        } else {\n            key_node = plist_new_key(key);\n            node_attach(node, key_node);\n            node_attach(node, item);\n        }\n\n        hashtable_t *ht = ((plist_data_t)((node_t*)node)->data)->hashtable;\n        if (ht) {\n            /* store pointer to item in hash table */\n            hash_table_insert(ht, (plist_data_t)((node_t*)key_node)->data, item);\n        } else {\n            if (((node_t*)node)->count > 500) {\n                /* make new hash table */\n                ht = hash_table_new(dict_key_hash, dict_key_compare, NULL);\n                /* calculate the hashes for all entries we have so far */\n                plist_t current = NULL;\n                for (current = (plist_t)node_first_child(node);\n                     ht && current;\n                     current = (plist_t)node_next_sibling(node_next_sibling(current)))\n                {\n                    hash_table_insert(ht, ((node_t*)current)->data, node_next_sibling(current));\n                }\n                ((plist_data_t)((node_t*)node)->data)->hashtable = ht;\n            }\n        }\n    }\n    return;\n}",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_INT",
+            "#define XPLIST_INT\t\"integer\" /* <=== src/xplist.c:56:56:XPLIST_INT:0 */ ",
+            3
+        ],
+        [
+            "tools/plistutil.c",
+            "parse_arguments",
+            "static options_t *parse_arguments(int argc, char *argv[]) /* <=== parse_arguments */ \n{\n    int i = 0;\n\n    options_t *options = (options_t *) malloc(sizeof(options_t));\n    memset(options, 0, sizeof(options_t));\n\n    for (i = 1; i < argc; i++)\n    {\n        if (!strcmp(argv[i], \"--infile\") || !strcmp(argv[i], \"-i\"))\n        {\n            if ((i + 1) == argc)\n            {\n                free(options);\n                return NULL;\n            }\n            options->in_file = argv[i + 1];\n            i++;\n            continue;\n        }\n\n        if (!strcmp(argv[i], \"--outfile\") || !strcmp(argv[i], \"-o\"))\n        {\n            if ((i + 1) == argc)\n            {\n                free(options);\n                return NULL;\n            }\n            options->out_file = argv[i + 1];\n            i++;\n            continue;\n        }\n\n        if (!strcmp(argv[i], \"--debug\") || !strcmp(argv[i], \"-d\"))\n        {\n            options->debug = 1;\n        }\n\n        if (!strcmp(argv[i], \"--help\") || !strcmp(argv[i], \"-h\"))\n        {\n            free(options);\n            return NULL;\n        }\n    }\n\n    if (!options->in_file)\n    {\n        free(options);\n        return NULL;\n    }\n\n    return options;\n}",
+            1
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_TRUE_LEN",
+            "#define XPLIST_TRUE_LEN 4 /* <=== src/xplist.c:55:55:XPLIST_TRUE_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "uint24_from_be",
+            "static uint32_t uint24_from_be(union plist_uint_ptr buf) /* <=== uint24_from_be */ \n{\n    union plist_uint_ptr tmp;\n    uint32_t ret = 0;\n\n    tmp.src = &ret;\n\n    memcpy(tmp.u8ptr + 1, buf.u8ptr, 3 * sizeof(char));\n\n    byte_convert(tmp.u8ptr, sizeof(uint32_t));\n    return ret;\n}",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_KEY_LEN",
+            "#define XPLIST_KEY_LEN 3 /* <=== src/xplist.c:51:51:XPLIST_KEY_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "write_unicode",
+            "static void write_unicode(bytearray_t * bplist, uint16_t * val, uint64_t size) /* <=== write_unicode */ \n{\n    uint64_t i = 0;\n    uint64_t size2 = size * sizeof(uint16_t);\n    uint8_t *buff = (uint8_t *) malloc(size2);\n    memcpy(buff, val, size2);\n    for (i = 0; i < size; i++)\n        byte_convert(buff + i * sizeof(uint16_t), sizeof(uint16_t));\n    write_raw_data(bplist, BPLIST_UNICODE, buff, size);\n    free(buff);\n}",
+            2
+        ],
+        [
+            "src/plist.c",
+            "plist_dict_get_item",
+            "PLIST_API plist_t plist_dict_get_item(plist_t node, const char* key) /* <=== plist_dict_get_item */ \n{\n    plist_t ret = NULL;\n\n    if (node && PLIST_DICT == plist_get_node_type(node))\n    {\n        plist_data_t data = plist_get_data(node);\n        hashtable_t *ht = (hashtable_t*)data->hashtable;\n        if (ht) {\n            struct plist_data_s sdata;\n            sdata.strval = (char*)key;\n            sdata.length = strlen(key);\n            ret = (plist_t)hash_table_lookup(ht, &sdata);\n        } else {\n            plist_t current = NULL;\n            for (current = (plist_t)node_first_child(node);\n                current;\n                current = (plist_t)node_next_sibling(node_next_sibling(current)))\n            {\n                data = plist_get_data(current);\n                assert( PLIST_KEY == plist_get_node_type(current) );\n\n                if (data && !strcmp(key, data->strval))\n                {\n                    ret = (plist_t)node_next_sibling(current);\n                    break;\n                }\n            }\n        }\n    }\n    return ret;\n}",
+            3
+        ],
+        [
+            "src/strbuf.h",
+            "str_buf_append",
+            "#define str_buf_append(__ba, __str, __len) byte_array_append(__ba, (void*)(__str), __len) /* <=== src/strbuf.h:31:31:str_buf_append:3 */ ",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "Log2",
+            "#define Log2(x) (x == 8 ? 3 : (x == 4 ? 2 : (x == 2 ? 1 : 0))) /* <=== src/bplist.c:856:856:Log2:1 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "be64toh",
+            "#define be64toh(x) ((((x) & 0xFF00000000000000ull) >> 56) \\ /* <=== src/bplist.c:166:173:be64toh:1 */ \n                    | (((x) & 0x00FF000000000000ull) >> 40) \\\n                    | (((x) & 0x0000FF0000000000ull) >> 24) \\\n                    | (((x) & 0x000000FF00000000ull) >> 8) \\\n                    | (((x) & 0x00000000FF000000ull) << 8) \\\n                    | (((x) & 0x0000000000FF0000ull) << 24) \\\n                    | (((x) & 0x000000000000FF00ull) << 40) \\\n                    | (((x) & 0x00000000000000FFull) << 56)) ",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_DATE_LEN",
+            "#define XPLIST_DATE_LEN 4 /* <=== src/xplist.c:61:61:XPLIST_DATE_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "write_real",
+            "static void write_real(bytearray_t * bplist, double val) /* <=== write_real */ \n{\n    uint64_t size = get_real_bytes(val);\t//cheat to know used space\n    uint8_t *buff = (uint8_t *) malloc(sizeof(uint8_t) + size);\n    buff[0] = BPLIST_REAL | Log2(size);\n    if (size == sizeof(double))\n    {\n        memcpy(buff + 1, &val, size);\n    }\n    else if (size == sizeof(float))\n    {\n        float tmpval = (float) val;\n        memcpy(buff + 1, &tmpval, size);\n    }\n    float_byte_convert(buff + 1, size);\n    byte_array_append(bplist, buff, sizeof(uint8_t) + size);\n    free(buff);\n}",
+            2
+        ],
+        [
+            "src/plist.c",
+            "plist_new_plist_data",
+            "plist_data_t plist_new_plist_data(void) /* <=== plist_new_plist_data */ \n{\n    plist_data_t data = (plist_data_t) calloc(sizeof(struct plist_data_s), 1);\n    return data;\n}",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "text_parts_free",
+            "static void text_parts_free(text_part_t *tp) /* <=== text_parts_free */ \n{\n    while (tp) {\n        text_part_t *tmp = tp;\n        tp = tp->next;\n        free(tmp);\n    }\n}",
+            3
+        ],
+        [
+            "src/plist.c",
+            "plist_dict_get_size",
+            "PLIST_API uint32_t plist_dict_get_size(plist_t node) /* <=== plist_dict_get_size */ \n{\n    uint32_t ret = 0;\n    if (node && PLIST_DICT == plist_get_node_type(node))\n    {\n        ret = node_n_children(node) / 2;\n    }\n    return ret;\n}",
+            3
+        ],
+        [
+            "src/plist.c",
+            "plist_new_node",
+            "plist_t plist_new_node(plist_data_t data) /* <=== plist_new_node */ \n{\n    return (plist_t) node_create(NULL, data);\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "serialize_plist",
+            "static void serialize_plist(node_t* node, void* data) /* <=== serialize_plist */ \n{\n    uint64_t *index_val = NULL;\n    struct serialize_s *ser = (struct serialize_s *) data;\n    uint64_t current_index = ser->objects->len;\n\n    //first check that node is not yet in objects\n    void* val = hash_table_lookup(ser->ref_table, node);\n    if (val)\n    {\n        //data is already in table\n        return;\n    }\n    //insert new ref\n    index_val = (uint64_t *) malloc(sizeof(uint64_t));\n    *index_val = current_index;\n    hash_table_insert(ser->ref_table, node, index_val);\n\n    //now append current node to object array\n    ptr_array_add(ser->objects, node);\n\n    //now recurse on children\n    node_iterator_t *ni = node_iterator_create(node->children);\n    node_t *ch;\n    while ((ch = node_iterator_next(ni))) {\n        serialize_plist(ch, data);\n    }\n    node_iterator_destroy(ni);\n\n    return;\n}",
+            2
+        ],
+        [
+            "src/bplist.c",
+            "write_uid",
+            "static void write_uid(bytearray_t * bplist, uint64_t val) /* <=== write_uid */ \n{\n    uint64_t size = get_needed_bytes(val);\n    uint8_t *buff = NULL;\n    //do not write 3bytes int node\n    if (size == 3)\n        size++;\n\n#ifdef __BIG_ENDIAN__\n    val = val << ((sizeof(uint64_t) - size) * 8);\n#endif\n\n    buff = (uint8_t *) malloc(sizeof(uint8_t) + size);\n    buff[0] = BPLIST_UID | Log2(size);\n    memcpy(buff + 1, &val, size);\n    byte_convert(buff + 1, size);\n    byte_array_append(bplist, buff, sizeof(uint8_t) + size);\n    free(buff);\n}",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "node_to_xml",
+            "static void node_to_xml(node_t* node, bytearray_t **outbuf, uint32_t depth) /* <=== node_to_xml */ \n{\n    plist_data_t node_data = NULL;\n\n    char isStruct = FALSE;\n    char tagOpen = FALSE;\n\n    const char *tag = NULL;\n    size_t tag_len = 0;\n    char *val = NULL;\n    size_t val_len = 0;\n\n    uint32_t i = 0;\n\n    if (!node)\n        return;\n\n    node_data = plist_get_data(node);\n\n    switch (node_data->type)\n    {\n    case PLIST_BOOLEAN:\n    {\n        if (node_data->boolval) {\n            tag = XPLIST_TRUE;\n            tag_len = XPLIST_TRUE_LEN;\n        } else {\n            tag = XPLIST_FALSE;\n            tag_len = XPLIST_FALSE_LEN;\n        }\n    }\n    break;\n\n    case PLIST_UINT:\n        tag = XPLIST_INT;\n        tag_len = XPLIST_INT_LEN;\n        val = (char*)malloc(64);\n        if (node_data->length == 16) {\n            val_len = snprintf(val, 64, \"%\"PRIu64, node_data->intval);\n        } else {\n            val_len = snprintf(val, 64, \"%\"PRIi64, node_data->intval);\n        }\n        break;\n\n    case PLIST_REAL:\n        tag = XPLIST_REAL;\n        tag_len = XPLIST_REAL_LEN;\n        val = (char*)malloc(64);\n        val_len = dtostr(val, 64, node_data->realval);\n        break;\n\n    case PLIST_STRING:\n        tag = XPLIST_STRING;\n        tag_len = XPLIST_STRING_LEN;\n        /* contents processed directly below */\n        break;\n\n    case PLIST_KEY:\n        tag = XPLIST_KEY;\n        tag_len = XPLIST_KEY_LEN;\n        /* contents processed directly below */\n        break;\n\n    case PLIST_DATA:\n        tag = XPLIST_DATA;\n        tag_len = XPLIST_DATA_LEN;\n        /* contents processed directly below */\n        break;\n    case PLIST_ARRAY:\n        tag = XPLIST_ARRAY;\n        tag_len = XPLIST_ARRAY_LEN;\n        isStruct = TRUE;\n        break;\n    case PLIST_DICT:\n        tag = XPLIST_DICT;\n        tag_len = XPLIST_DICT_LEN;\n        isStruct = TRUE;\n        break;\n    case PLIST_DATE:\n        tag = XPLIST_DATE;\n        tag_len = XPLIST_DATE_LEN;\n        {\n            Time64_T timev = (Time64_T)node_data->realval + MAC_EPOCH;\n            struct TM _btime;\n            struct TM *btime = gmtime64_r(&timev, &_btime);\n            if (btime) {\n                val = (char*)malloc(24);\n                memset(val, 0, 24);\n                struct tm _tmcopy;\n                copy_TM64_to_tm(btime, &_tmcopy);\n                val_len = strftime(val, 24, \"%Y-%m-%dT%H:%M:%SZ\", &_tmcopy);\n                if (val_len <= 0) {\n                    free (val);\n                    val = NULL;\n                }\n            }\n        }\n        break;\n    case PLIST_UID:\n        tag = XPLIST_DICT;\n        tag_len = XPLIST_DICT_LEN;\n        val = (char*)malloc(64);\n        if (node_data->length == 16) {\n            val_len = snprintf(val, 64, \"%\"PRIu64, node_data->intval);\n        } else {\n            val_len = snprintf(val, 64, \"%\"PRIi64, node_data->intval);\n        }\n        break;\n    default:\n        break;\n    }\n\n    for (i = 0; i < depth; i++) {\n        str_buf_append(*outbuf, \"\\t\", 1);\n    }\n\n    /* append tag */\n    str_buf_append(*outbuf, \"<\", 1);\n    str_buf_append(*outbuf, tag, tag_len);\n    if (node_data->type == PLIST_STRING || node_data->type == PLIST_KEY) {\n        size_t j;\n        size_t len;\n        off_t start = 0;\n        off_t cur = 0;\n\n        str_buf_append(*outbuf, \">\", 1);\n        tagOpen = TRUE;\n\n        /* make sure we convert the following predefined xml entities */\n        /* < = &lt; > = &gt; & = &amp; */\n        len = node_data->length;\n        for (j = 0; j < len; j++) {\n            switch (node_data->strval[j]) {\n            case '<':\n                str_buf_append(*outbuf, node_data->strval + start, cur - start);\n                str_buf_append(*outbuf, \"&lt;\", 4);\n                start = cur+1;\n                break;\n            case '>':\n                str_buf_append(*outbuf, node_data->strval + start, cur - start);\n                str_buf_append(*outbuf, \"&gt;\", 4);\n                start = cur+1;\n                break;\n            case '&':\n                str_buf_append(*outbuf, node_data->strval + start, cur - start);\n                str_buf_append(*outbuf, \"&amp;\", 5);\n                start = cur+1;\n                break;\n            default:\n                break;\n            }\n            cur++;\n        }\n        str_buf_append(*outbuf, node_data->strval + start, cur - start);\n    } else if (node_data->type == PLIST_DATA) {\n        str_buf_append(*outbuf, \">\", 1);\n        tagOpen = TRUE;\n        str_buf_append(*outbuf, \"\\n\", 1);\n        if (node_data->length > 0) {\n            char *buf = malloc(80);\n            uint32_t j = 0;\n            uint32_t indent = (depth > 8) ? 8 : depth;\n            uint32_t maxread = ((76 - indent*8) / 4) * 3;\n            size_t count = 0;\n            size_t b64count = 0;\n            while (j < node_data->length) {\n                for (i = 0; i < indent; i++) {\n                    str_buf_append(*outbuf, \"\\t\", 1);\n                }\n                count = (node_data->length-j < maxread) ? node_data->length-j : maxread;\n                b64count = base64encode(buf, node_data->buff + j, count);\n                str_buf_append(*outbuf, buf, b64count);\n                str_buf_append(*outbuf, \"\\n\", 1);\n                j+=count;\n            }\n            free(buf);\n        }\n        for (i = 0; i < depth; i++) {\n            str_buf_append(*outbuf, \"\\t\", 1);\n        }\n    } else if (node_data->type == PLIST_UID) {\n        /* special case for UID nodes: create a DICT */\n        str_buf_append(*outbuf, \">\", 1);\n        tagOpen = TRUE;\n        str_buf_append(*outbuf, \"\\n\", 1);\n\n        /* add CF$UID key */\n        for (i = 0; i < depth+1; i++) {\n            str_buf_append(*outbuf, \"\\t\", 1);\n        }\n        str_buf_append(*outbuf, \"<key>CF$UID</key>\", 17);\n        str_buf_append(*outbuf, \"\\n\", 1);\n\n        /* add UID value */\n        for (i = 0; i < depth+1; i++) {\n            str_buf_append(*outbuf, \"\\t\", 1);\n        }\n        str_buf_append(*outbuf, \"<integer>\", 9);\n        str_buf_append(*outbuf, val, val_len);\n        str_buf_append(*outbuf, \"</integer>\", 10);\n        str_buf_append(*outbuf, \"\\n\", 1);\n\n        for (i = 0; i < depth; i++) {\n            str_buf_append(*outbuf, \"\\t\", 1);\n        }\n    } else if (val) {\n        str_buf_append(*outbuf, \">\", 1);\n        tagOpen = TRUE;\n        str_buf_append(*outbuf, val, val_len);\n    } else if (isStruct) {\n        tagOpen = TRUE;\n        str_buf_append(*outbuf, \">\", 1);\n    } else {\n        tagOpen = FALSE;\n        str_buf_append(*outbuf, \"/>\", 2);\n    }\n    free(val);\n\n    /* add return for structured types */\n    if (node_data->type == PLIST_ARRAY || node_data->type == PLIST_DICT)\n        str_buf_append(*outbuf, \"\\n\", 1);\n\n    if (isStruct) {\n        node_iterator_t *ni = node_iterator_create(node->children);\n        node_t *ch;\n        while ((ch = node_iterator_next(ni))) {\n            node_to_xml(ch, outbuf, depth+1);\n        }\n        node_iterator_destroy(ni);\n    }\n\n    /* fix indent for structured types */\n    if (node_data->type == PLIST_ARRAY || node_data->type == PLIST_DICT) {\n        for (i = 0; i < depth; i++) {\n            str_buf_append(*outbuf, \"\\t\", 1);\n        }\n    }\n\n    if (tagOpen) {\n        /* add closing tag */\n        str_buf_append(*outbuf, \"</\", 2);\n        str_buf_append(*outbuf, tag, tag_len);\n        str_buf_append(*outbuf, \">\", 1);\n    }\n    str_buf_append(*outbuf, \"\\n\", 1);\n\n    return;\n}",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_DATE",
+            "#define XPLIST_DATE\t\"date\" /* <=== src/xplist.c:60:60:XPLIST_DATE:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "plist_from_xml",
+            "PLIST_API void plist_from_xml(const char *plist_xml, uint32_t length, plist_t * plist) /* <=== plist_from_xml */ \n{\n    if (!plist_xml || (length == 0)) {\n        *plist = NULL;\n        return;\n    }\n\n    struct _parse_ctx ctx = { plist_xml, plist_xml + length, 0 };\n\n    node_from_xml(&ctx, plist, 0);\n}",
+            1
+        ],
+        [
+            "src/bplist.c",
+            "write_date",
+            "static void write_date(bytearray_t * bplist, double val) /* <=== write_date */ \n{\n    uint64_t size = 8;\t\t\t//dates always use 8 bytes\n    uint8_t *buff = (uint8_t *) malloc(sizeof(uint8_t) + size);\n    buff[0] = BPLIST_DATE | Log2(size);\n    memcpy(buff + 1, &val, size);\n    float_byte_convert(buff + 1, size);\n    byte_array_append(bplist, buff, sizeof(uint8_t) + size);\n    free(buff);\n}",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_FALSE",
+            "#define XPLIST_FALSE\t\"false\" /* <=== src/xplist.c:52:52:XPLIST_FALSE:0 */ ",
+            3
+        ],
+        [
+            "src/plist.c",
+            "plist_get_node_type",
+            "PLIST_API plist_type plist_get_node_type(plist_t node) /* <=== plist_get_node_type */ \n{\n    if (node)\n    {\n        plist_data_t data = plist_get_data(node);\n        if (data)\n            return data->type;\n    }\n    return PLIST_NONE;\n}",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "write_data",
+            "static void write_data(bytearray_t * bplist, uint8_t * val, uint64_t size) /* <=== write_data */ \n{\n    write_raw_data(bplist, BPLIST_DATA, val, size);\n}",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_DICT",
+            "#define XPLIST_DICT\t\"dict\" /* <=== src/xplist.c:68:68:XPLIST_DICT:0 */ ",
+            3
+        ],
+        [
+            "src/xplist.c",
+            "XPLIST_INT_LEN",
+            "#define XPLIST_INT_LEN 7 /* <=== src/xplist.c:57:57:XPLIST_INT_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/bplist.c",
+            "get_needed_bytes",
+            "#define get_needed_bytes(x) \\ /* <=== src/bplist.c:195:199:get_needed_bytes:1 */ \n\t\t( ((uint64_t)x) < (1ULL << 8) ? 1 : \\\n\t\t( ((uint64_t)x) < (1ULL << 16) ? 2 : \\\n\t\t( ((uint64_t)x) < (1ULL << 24) ? 3 : \\\n\t\t( ((uint64_t)x) < (1ULL << 32) ? 4 : 8))))",
+            2
+        ],
+        [
+            "src/xplist.c",
+            "MAC_EPOCH",
+            "#define MAC_EPOCH 978307200 /* <=== src/xplist.c:71:71:MAC_EPOCH:0 */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <sys/stat.h>",
+        "#include <string.h>",
+        "#include <stdio.h>",
+        "#include <stdlib.h>",
+        "#include \"plist/plist.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct _options\n{\n    char *in_file, *out_file;\n    uint8_t debug, in_fmt, out_fmt;\n} options_t;",
+            "options_t"
+        ],
+        [
+            "typedef struct _options\n{\n    char *in_file, *out_file;\n    uint8_t debug, in_fmt, out_fmt;\n}",
+            "_options"
+        ],
+        [
+            "typedef void *plist_t;",
+            "plist_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "tools/plistutil.c": [
+            107,
+            116,
+            118,
+            125,
+            126,
+            131,
+            133,
+            134,
+            135,
+            138,
+            139,
+            140,
+            143,
+            145,
+            146,
+            150,
+            151,
+            153,
+            154,
+            156,
+            158,
+            160,
+            161,
+            162,
+            163,
+            165,
+            166,
+            170,
+            172,
+            175,
+            177,
+            178
+        ]
+    },
+    "visitedLines_before": {
+        "tools/plistutil.c": [
+            107,
+            116,
+            118,
+            125,
+            126,
+            131,
+            132,
+            133,
+            134,
+            137,
+            139,
+            140,
+            144,
+            145,
+            147,
+            148,
+            150,
+            152,
+            154,
+            155,
+            156,
+            157,
+            159,
+            160,
+            164,
+            166,
+            169,
+            171,
+            172
+        ]
+    },
+    "visitedParams": {
+        "tools/plistutil.c": [
+            [
+                "char *argv[]",
+                "main"
+            ],
+            [
+                "int argc",
+                "main"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "tools/plistutil.c",
+            "main",
+            "int main(int argc, char *argv[]) /* <=== main */ \n{\n    FILE *iplist = NULL;\n    plist_t root_node = NULL;\n    char *plist_out = NULL;\n    uint32_t size = 0;\n    int read_size = 0;\n    char *plist_entire = NULL;\n    struct stat filestats;\n    options_t *options = parse_arguments(argc, argv);\n\n    if (!options)\n    {\n        print_usage(argc, argv);\n        return 0;\n    }\n\n    // read input file\n    iplist = fopen(options->in_file, \"rb\");\n    if (!iplist) {\n        free(options);\n        return 1;\n    }\n\n    stat(options->in_file, &filestats);\n\n    if (filestats.st_size < 8) {\n        printf(\"ERROR: Input file is too small to contain valid plist data.\\n\");\n        return -1;\n    }\n\n    plist_entire = (char *) malloc(sizeof(char) * (filestats.st_size + 1));\n    read_size = fread(plist_entire, sizeof(char), filestats.st_size, iplist);\n    fclose(iplist);\n\n    // convert from binary to xml or vice-versa\n    if (memcmp(plist_entire, \"bplist00\", 8) == 0)\n    {\n        plist_from_bin(plist_entire, read_size, &root_node);\n        plist_to_xml(root_node, &plist_out, &size);\n    }\n    else\n    {\n        plist_from_xml(plist_entire, read_size, &root_node);\n        plist_to_bin(root_node, &plist_out, &size);\n    }\n    plist_free(root_node);\n    free(plist_entire);\n\n    if (plist_out)\n    {\n        if (options->out_file != NULL)\n        {\n            FILE *oplist = fopen(options->out_file, \"wb\");\n            if (!oplist) {\n                free(options);\n                return 1;\n            }\n            fwrite(plist_out, size, sizeof(char), oplist);\n            fclose(oplist);\n        }\n        // if no output file specified, write to stdout\n        else\n            fwrite(plist_out, size, sizeof(char), stdout);\n\n        free(plist_out);\n    }\n    else\n        printf(\"ERROR: Failed to convert input file.\\n\");\n\n    free(options);\n    return 0;\n}",
+            107
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "tools/plistutil.c",
+            "main",
+            "int main(int argc, char *argv[]) /* <=== main */ \n{\n    FILE *iplist = NULL;\n    plist_t root_node = NULL;\n    char *plist_out = NULL;\n    uint32_t size = 0;\n    int read_size = 0;\n    char *plist_entire = NULL;\n    struct stat filestats;\n    options_t *options = parse_arguments(argc, argv);\n\n    if (!options)\n    {\n        print_usage(argc, argv);\n        return 0;\n    }\n\n    // read input file\n    iplist = fopen(options->in_file, \"rb\");\n    if (!iplist) {\n        free(options);\n        return 1;\n    }\n\n    stat(options->in_file, &filestats);\n    plist_entire = (char *) malloc(sizeof(char) * (filestats.st_size + 1));\n    read_size = fread(plist_entire, sizeof(char), filestats.st_size, iplist);\n    fclose(iplist);\n\n    // convert from binary to xml or vice-versa\n    if (memcmp(plist_entire, \"bplist00\", 8) == 0)\n    {\n        plist_from_bin(plist_entire, read_size, &root_node);\n        plist_to_xml(root_node, &plist_out, &size);\n    }\n    else\n    {\n        plist_from_xml(plist_entire, read_size, &root_node);\n        plist_to_bin(root_node, &plist_out, &size);\n    }\n    plist_free(root_node);\n    free(plist_entire);\n\n    if (plist_out)\n    {\n        if (options->out_file != NULL)\n        {\n            FILE *oplist = fopen(options->out_file, \"wb\");\n            if (!oplist) {\n                free(options);\n                return 1;\n            }\n            fwrite(plist_out, size, sizeof(char), oplist);\n            fclose(oplist);\n        }\n        // if no output file specified, write to stdout\n        else\n            fwrite(plist_out, size, sizeof(char), stdout);\n\n        free(plist_out);\n    }\n    else\n        printf(\"ERROR: Failed to convert input file.\\n\");\n\n    free(options);\n    return 0;\n}",
+            107
+        ]
+    ]
+}

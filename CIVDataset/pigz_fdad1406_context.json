@@ -1,0 +1,678 @@
+{
+    "calleeMethods": [
+        [
+            "pigz.c",
+            "writen",
+            "local void writen(int desc, unsigned char *buf, size_t len) /* <=== writen */ \n{\n    ssize_t ret;\n\n    while (len) {\n        ret = write(desc, buf, len);\n        if (ret < 1) {\n            complain(\"write error code %d\", errno);\n            bail(\"write error on \", g.outf);\n        }\n        buf += ret;\n        len -= ret;\n    }\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "time2dos",
+            "local unsigned long time2dos(time_t t) /* <=== time2dos */ \n{\n    struct tm *tm;\n    unsigned long dos;\n\n    if (t == 0)\n        t = time(NULL);\n    tm = localtime(&t);\n    if (tm->tm_year < 80 || tm->tm_year > 207)\n        return 0;\n    dos = (tm->tm_year - 80) << 25;\n    dos += (tm->tm_mon + 1) << 21;\n    dos += tm->tm_mday << 16;\n    dos += tm->tm_hour << 11;\n    dos += tm->tm_min << 5;\n    dos += (tm->tm_sec + 1) >> 1;   /* round to double-seconds */\n    return dos;\n}",
+            3
+        ],
+        [
+            "pigz.c",
+            "ZALLOC",
+            "#define ZALLOC Z_NULL /* <=== pigz.c:796:796:ZALLOC:0 */ ",
+            2
+        ],
+        [
+            "zopfli/src/zopfli/deflate.c",
+            "ZopfliDeflatePart",
+            "void ZopfliDeflatePart(const ZopfliOptions* options, int btype, int final, /* <=== ZopfliDeflatePart */ \n                       const unsigned char* in, size_t instart, size_t inend,\n                       unsigned char* bp, unsigned char** out,\n                       size_t* outsize) {\n  if (options->blocksplitting) {\n    if (options->blocksplittinglast) {\n      DeflateSplittingLast(options, btype, final, in, instart, inend,\n                           bp, out, outsize);\n    } else {\n      DeflateSplittingFirst(options, btype, final, in, instart, inend,\n                            bp, out, outsize);\n    }\n  } else {\n    DeflateBlock(options, btype, final, in, instart, inend, bp, out, outsize);\n  }\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "REALLOC",
+            "#define REALLOC realloc /* <=== pigz.c:793:793:REALLOC:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "GET",
+            "#define GET() (g.in_left == 0 && (g.in_eof || load() == 0) ? 0 : \\ /* <=== pigz.c:2282:2283:GET:0 */ \n               (g.in_left--, *g.in_next++))",
+            2
+        ],
+        [
+            "pigz.c",
+            "parallel_compress",
+            "local void parallel_compress(void) /* <=== parallel_compress */ \n{\n    long seq;                       /* sequence number */\n    struct space *curr;             /* input data to compress */\n    struct space *next;             /* input data that follows curr */\n    struct space *hold;             /* input data that follows next */\n    struct space *dict;             /* dictionary for next compression */\n    struct job *job;                /* job for compress, then write */\n    int more;                       /* true if more input to read */\n    unsigned hash;                  /* hash for rsyncable */\n    unsigned char *scan;            /* next byte to compute hash on */\n    unsigned char *end;             /* after end of data to compute hash on */\n    unsigned char *last;            /* position after last hit */\n    size_t left;                    /* last hit in curr to end of curr */\n    size_t len;                     /* for various length computations */\n\n    /* if first time or after an option change, setup the job lists */\n    setup_jobs();\n\n    /* start write thread */\n    writeth = launch(write_thread, NULL);\n\n    /* read from input and start compress threads (write thread will pick up\n       the output of the compress threads) */\n    seq = 0;\n    next = get_space(&in_pool);\n    next->len = readn(g.ind, next->buf, next->size);\n    hold = NULL;\n    dict = NULL;\n    scan = next->buf;\n    hash = RSYNCHIT;\n    left = 0;\n    do {\n        /* create a new job */\n        job = MALLOC(sizeof(struct job));\n        if (job == NULL)\n            bail(\"not enough memory\", \"\");\n        job->calc = new_lock(0);\n\n        /* update input spaces */\n        curr = next;\n        next = hold;\n        hold = NULL;\n\n        /* get more input if we don't already have some */\n        if (next == NULL) {\n            next = get_space(&in_pool);\n            next->len = readn(g.ind, next->buf, next->size);\n        }\n\n        /* if rsyncable, generate block lengths and prepare curr for job to\n           likely have less than size bytes (up to the last hash hit) */\n        job->lens = NULL;\n        if (g.rsync && curr->len) {\n            /* compute the hash function starting where we last left off to\n               cover either size bytes or to EOF, whichever is less, through\n               the data in curr (and in the next loop, through next) -- save\n               the block lengths resulting from the hash hits in the job->lens\n               list */\n            if (left == 0) {\n                /* scan is in curr */\n                last = curr->buf;\n                end = curr->buf + curr->len;\n                while (scan < end) {\n                    hash = ((hash << 1) ^ *scan++) & RSYNCMASK;\n                    if (hash == RSYNCHIT) {\n                        len = scan - last;\n                        append_len(job, len);\n                        last = scan;\n                    }\n                }\n\n                /* continue scan in next */\n                left = scan - last;\n                scan = next->buf;\n            }\n\n            /* scan in next for enough bytes to fill curr, or what is available\n               in next, whichever is less (if next isn't full, then we're at\n               the end of the file) -- the bytes in curr since the last hit,\n               stored in left, counts towards the size of the first block */\n            last = next->buf;\n            len = curr->size - curr->len;\n            if (len > next->len)\n                len = next->len;\n            end = next->buf + len;\n            while (scan < end) {\n                hash = ((hash << 1) ^ *scan++) & RSYNCMASK;\n                if (hash == RSYNCHIT) {\n                    len = (scan - last) + left;\n                    left = 0;\n                    append_len(job, len);\n                    last = scan;\n                }\n            }\n            append_len(job, 0);\n\n            /* create input in curr for job up to last hit or entire buffer if\n               no hits at all -- save remainder in next and possibly hold */\n            len = (job->lens->len == 1 ? scan : last) - next->buf;\n            if (len) {\n                /* got hits in next, or no hits in either -- copy to curr */\n                memcpy(curr->buf + curr->len, next->buf, len);\n                curr->len += len;\n                memmove(next->buf, next->buf + len, next->len - len);\n                next->len -= len;\n                scan -= len;\n                left = 0;\n            }\n            else if (job->lens->len != 1 && left && next->len) {\n                /* had hits in curr, but none in next, and last hit in curr\n                   wasn't right at the end, so we have input there to save --\n                   use curr up to the last hit, save the rest, moving next to\n                   hold */\n                hold = next;\n                next = get_space(&in_pool);\n                memcpy(next->buf, curr->buf + (curr->len - left), left);\n                next->len = left;\n                curr->len -= left;\n            }\n            else {\n                /* else, last match happened to be right at the end of curr,\n                   or we're at the end of the input compressing the rest */\n                left = 0;\n            }\n        }\n\n        /* compress curr->buf to curr->len -- compress thread will drop curr */\n        job->in = curr;\n\n        /* set job->more if there is more to compress after curr */\n        more = next->len != 0;\n        job->more = more;\n\n        /* provide dictionary for this job, prepare dictionary for next job */\n        job->out = dict;\n        if (more && g.setdict) {\n            if (curr->len >= DICT || job->out == NULL) {\n                dict = curr;\n                use_space(dict);\n            }\n            else {\n                dict = get_space(&dict_pool);\n                len = DICT - curr->len;\n                memcpy(dict->buf, job->out->buf + (job->out->len - len), len);\n                memcpy(dict->buf + len, curr->buf, curr->len);\n                dict->len = DICT;\n            }\n        }\n\n        /* preparation of job is complete */\n        job->seq = seq;\n        Trace((\"-- read #%ld%s\", seq, more ? \"\" : \" (last)\"));\n        if (++seq < 1)\n            bail(\"input too long: \", g.inf);\n\n        /* start another compress thread if needed */\n        if (cthreads < seq && cthreads < g.procs) {\n            (void)launch(compress_thread, NULL);\n            cthreads++;\n        }\n\n        /* put job at end of compress list, let all the compressors know */\n        possess(compress_have);\n        job->next = NULL;\n        *compress_tail = job;\n        compress_tail = &(job->next);\n        twist(compress_have, BY, +1);\n    } while (more);\n    drop_space(next);\n\n    /* wait for the write thread to complete (we leave the compress threads out\n       there and waiting in case there is another stream to compress) */\n    join(writeth);\n    writeth = NULL;\n    Trace((\"-- write thread joined\"));\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "GET4",
+            "#define GET4() (tmp4 = GET2(), tmp4 + ((unsigned long)(GET2()) << 16)) /* <=== pigz.c:2285:2285:GET4:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "PUT2L",
+            "#define PUT2L(a,b) (*(a)=(b)&0xff,(a)[1]=(b)>>8) /* <=== pigz.c:862:862:PUT2L:2 */ ",
+            3
+        ],
+        [
+            "pigz.c",
+            "readn",
+            "local size_t readn(int desc, unsigned char *buf, size_t len) /* <=== readn */ \n{\n    ssize_t ret;\n    size_t got;\n\n    got = 0;\n    while (len) {\n        ret = read(desc, buf, len);\n        if (ret < 0)\n            bail(\"read error on \", g.inf);\n        if (ret == 0)\n            break;\n        buf += ret;\n        len -= ret;\n        got += ret;\n    }\n    return got;\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "RSYNCBITS",
+            "#define RSYNCBITS 12 /* <=== pigz.c:440:440:RSYNCBITS:0 */ ",
+            3
+        ],
+        [
+            "pigz.c",
+            "NAMEMAX2",
+            "#define NAMEMAX2 16     /* name display limit at verbosity 2 */ /* <=== pigz.c:2579:2579:NAMEMAX2:0 */ ",
+            3
+        ],
+        [
+            "pigz.c",
+            "append_len",
+            "local void append_len(struct job *job, size_t len) /* <=== append_len */ \n{\n    struct space *lens;\n\n    assert(len < 539000896UL);\n    if (job->lens == NULL)\n        job->lens = get_space(&lens_pool);\n    lens = job->lens;\n    if (lens->size < lens->len + 3)\n        grow_space(lens);\n    if (len < 64)\n        lens->buf[lens->len++] = len + 128;\n    else if (len < 32832U) {\n        len -= 64;\n        lens->buf[lens->len++] = len >> 8;\n        lens->buf[lens->len++] = len;\n    }\n    else if (len < 2129984UL) {\n        len -= 32832U;\n        lens->buf[lens->len++] = (len >> 16) + 192;\n        lens->buf[lens->len++] = len >> 8;\n        lens->buf[lens->len++] = len;\n    }\n    else {\n        len -= 2129984UL;\n        lens->buf[lens->len++] = (len >> 24) + 224;\n        lens->buf[lens->len++] = len >> 16;\n        lens->buf[lens->len++] = len >> 8;\n        lens->buf[lens->len++] = len;\n    }\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "NOMORE",
+            "#define NOMORE() (g.in_left == 0 && (g.in_eof || load() == 0)) /* <=== pigz.c:3055:3055:NOMORE:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "NAMEMAX1",
+            "#define NAMEMAX1 48     /* name display limit at verbosity 1 */ /* <=== pigz.c:2578:2578:NAMEMAX1:0 */ ",
+            3
+        ],
+        [
+            "pigz.c",
+            "BUF",
+            "#define BUF 32768U /* <=== pigz.c:453:453:BUF:0 */ ",
+            3
+        ],
+        [
+            "pigz.c",
+            "touch",
+            "local void touch(char *path, time_t t) /* <=== touch */ \n{\n    struct timeval times[2];\n\n    times[0].tv_sec = t;\n    times[0].tv_usec = 0;\n    times[1].tv_sec = t;\n    times[1].tv_usec = 0;\n    (void)utimes(path, times);\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "NEXT",
+            "#define NEXT() (g.in_left--, *g.in_next++) /* <=== pigz.c:3056:3056:NEXT:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "use_space",
+            "local void use_space(struct space *space) /* <=== use_space */ \n{\n    possess(space->use);\n    twist(space->use, BY, +1);\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "single_compress",
+            "local void single_compress(int reset) /* <=== single_compress */ \n{\n    size_t got;                     /* amount of data in in[] */\n    size_t more;                    /* amount of data in next[] (0 if eof) */\n    size_t start;                   /* start of data in next[] */\n    size_t have;                    /* bytes in current block for -i */\n    size_t hist;                    /* offset of permitted history */\n    int fresh;                      /* if true, reset compression history */\n    unsigned hash;                  /* hash for rsyncable */\n    unsigned char *scan;            /* pointer for hash computation */\n    size_t left;                    /* bytes left to compress after hash hit */\n    unsigned long head;             /* header length */\n    unsigned long ulen;             /* total uncompressed size (overflow ok) */\n    unsigned long clen;             /* total compressed size (overflow ok) */\n    unsigned long check;            /* check value of uncompressed data */\n    static unsigned out_size;       /* size of output buffer */\n    static unsigned char *in, *next, *out;  /* reused i/o buffers */\n    static z_stream *strm = NULL;   /* reused deflate structure */\n\n    /* if requested, just release the allocations and return */\n    if (reset) {\n        if (strm != NULL) {\n            (void)deflateEnd(strm);\n            FREE(strm);\n            FREE(out);\n            FREE(next);\n            FREE(in);\n            strm = NULL;\n        }\n        return;\n    }\n\n    /* initialize the deflate structure if this is the first time */\n    if (strm == NULL) {\n        out_size = g.block > MAXP2 ? MAXP2 : (unsigned)g.block;\n        if ((in = MALLOC(g.block + DICT)) == NULL ||\n            (next = MALLOC(g.block + DICT)) == NULL ||\n            (out = MALLOC(out_size)) == NULL ||\n            (strm = MALLOC(sizeof(z_stream))) == NULL)\n            bail(\"not enough memory\", \"\");\n        strm->zfree = ZFREE;\n        strm->zalloc = ZALLOC;\n        strm->opaque = OPAQUE;\n        if (deflateInit2(strm, 6, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) !=\n                         Z_OK)\n            bail(\"not enough memory\", \"\");\n    }\n\n    /* write header */\n    head = put_header();\n\n    /* set compression level in case it changed */\n    if (g.level <= 9) {\n        (void)deflateReset(strm);\n        (void)deflateParams(strm, g.level, Z_DEFAULT_STRATEGY);\n    }\n\n    /* do raw deflate and calculate check value */\n    got = 0;\n    more = readn(g.ind, next, g.block);\n    ulen = (unsigned long)more;\n    start = 0;\n    hist = 0;\n    clen = 0;\n    have = 0;\n    check = CHECK(0L, Z_NULL, 0);\n    hash = RSYNCHIT;\n    do {\n        /* get data to compress, see if there is any more input */\n        if (got == 0) {\n            scan = in;  in = next;  next = scan;\n            strm->next_in = in + start;\n            got = more;\n            if (g.level > 9) {\n                left = start + more - hist;\n                if (left > DICT)\n                    left = DICT;\n                memcpy(next, in + ((start + more) - left), left);\n                start = left;\n                hist = 0;\n            }\n            else\n                start = 0;\n            more = readn(g.ind, next + start, g.block);\n            ulen += (unsigned long)more;\n        }\n\n        /* if rsyncable, compute hash until a hit or the end of the block */\n        left = 0;\n        if (g.rsync && got) {\n            scan = strm->next_in;\n            left = got;\n            do {\n                if (left == 0) {\n                    /* went to the end -- if no more or no hit in size bytes,\n                       then proceed to do a flush or finish with got bytes */\n                    if (more == 0 || got == g.block)\n                        break;\n\n                    /* fill in[] with what's left there and as much as possible\n                       from next[] -- set up to continue hash hit search */\n                    if (g.level > 9) {\n                        left = (strm->next_in - in) - hist;\n                        if (left > DICT)\n                            left = DICT;\n                    }\n                    memmove(in, strm->next_in - left, left + got);\n                    hist = 0;\n                    strm->next_in = in + left;\n                    scan = in + left + got;\n                    left = more > g.block - got ? g.block - got : more;\n                    memcpy(scan, next + start, left);\n                    got += left;\n                    more -= left;\n                    start += left;\n\n                    /* if that emptied the next buffer, try to refill it */\n                    if (more == 0) {\n                        more = readn(g.ind, next, g.block);\n                        ulen += (unsigned long)more;\n                        start = 0;\n                    }\n                }\n                left--;\n                hash = ((hash << 1) ^ *scan++) & RSYNCMASK;\n            } while (hash != RSYNCHIT);\n            got -= left;\n        }\n\n        /* clear history for --independent option */\n        fresh = 0;\n        if (!g.setdict) {\n            have += got;\n            if (have > g.block) {\n                fresh = 1;\n                have = got;\n            }\n        }\n\n        if (g.level <= 9) {\n            /* clear history if requested */\n            if (fresh)\n                (void)deflateReset(strm);\n\n            /* compress MAXP2-size chunks in case unsigned type is small */\n            while (got > MAXP2) {\n                strm->avail_in = MAXP2;\n                check = CHECK(check, strm->next_in, strm->avail_in);\n                DEFLATE_WRITE(Z_NO_FLUSH);\n                got -= MAXP2;\n            }\n\n            /* compress the remainder, emit a block, finish if end of input */\n            strm->avail_in = (unsigned)got;\n            got = left;\n            check = CHECK(check, strm->next_in, strm->avail_in);\n            if (more || got) {\n#if ZLIB_VERNUM >= 0x1260\n                int bits;\n\n                DEFLATE_WRITE(Z_BLOCK);\n                (void)deflatePending(strm, Z_NULL, &bits);\n                if (bits & 1)\n                    DEFLATE_WRITE(Z_SYNC_FLUSH);\n                else if (bits & 7) {\n                    do {\n                        bits = deflatePrime(strm, 10, 2);\n                        assert(bits == Z_OK);\n                        (void)deflatePending(strm, Z_NULL, &bits);\n                    } while (bits & 7);\n                    DEFLATE_WRITE(Z_NO_FLUSH);\n                }\n#else\n                DEFLATE_WRITE(Z_SYNC_FLUSH);\n#endif\n            }\n            else\n                DEFLATE_WRITE(Z_FINISH);\n        }\n        else {\n            /* compress got bytes using zopfli, bring to byte boundary */\n            unsigned char bits, *out;\n            size_t outsize, off;\n\n            /* discard history if requested */\n            off = strm->next_in - in;\n            if (fresh)\n                hist = off;\n\n            out = NULL;\n            outsize = 0;\n            bits = 0;\n            ZopfliDeflatePart(&g.zopts, 2, !(more || left),\n                              in + hist, off - hist, (off - hist) + got,\n                              &bits, &out, &outsize);\n            bits &= 7;\n            if ((more || left) && bits) {\n                if (bits & 1) {\n                    writen(g.outd, out, outsize);\n                    if (bits == 7)\n                        writen(g.outd, (unsigned char *)\"\\0\", 1);\n                    writen(g.outd, (unsigned char *)\"\\0\\0\\xff\\xff\", 4);\n                }\n                else {\n                    assert(outsize > 0);\n                    writen(g.outd, out, outsize - 1);\n                    do {\n                        out[outsize - 1] += 2 << bits;\n                        writen(g.outd, out + outsize - 1, 1);\n                        out[outsize - 1] = 0;\n                        bits += 2;\n                    } while (bits < 8);\n                    writen(g.outd, out + outsize - 1, 1);\n                }\n            }\n            else\n                writen(g.outd, out, outsize);\n            free(out);\n            while (got > MAXP2) {\n                check = CHECK(check, strm->next_in, MAXP2);\n                strm->next_in += MAXP2;\n                got -= MAXP2;\n            }\n            check = CHECK(check, strm->next_in, (unsigned)got);\n            strm->next_in += got;\n            got = left;\n        }\n\n        /* do until no more input */\n    } while (more || got);\n\n    /* write trailer */\n    put_trailer(ulen, clen, check, head);\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "cat",
+            "local void cat(void) /* <=== cat */ \n{\n    /* write first magic byte (if we're here, there's at least one byte) */\n    writen(g.outd, &g.magic1, 1);\n    g.out_tot = 1;\n\n    /* copy the remainder of the input to the output (if there were any more\n       bytes of input, then g.in_left is non-zero and g.in_next is pointing to\n       the second magic byte) */\n    while (g.in_left) {\n        writen(g.outd, g.in_next, g.in_left);\n        g.out_tot += g.in_left;\n        g.in_left = 0;\n        load();\n    }\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "SKIP",
+            "#define SKIP(dist) \\ /* <=== pigz.c:2286:2296:SKIP:1 */ \n    do { \\\n        size_t togo = (dist); \\\n        while (togo > g.in_left) { \\\n            togo -= g.in_left; \\\n            if (load() == 0) \\\n                return -1; \\\n        } \\\n        g.in_left -= togo; \\\n        g.in_next += togo; \\\n    } while (0)",
+            2
+        ],
+        [
+            "pigz.c",
+            "INBUFS",
+            "#define INBUFS(p) (((p)<<1)+3) /* <=== pigz.c:449:449:INBUFS:1 */ ",
+            3
+        ],
+        [
+            "pigz.c",
+            "PUT4L",
+            "#define PUT4L(a,b) (PUT2L(a,(b)&0xffff),PUT2L((a)+2,(b)>>16)) /* <=== pigz.c:863:863:PUT4L:2 */ ",
+            3
+        ],
+        [
+            "pigz.c",
+            "justname",
+            "local char *justname(char *path) /* <=== justname */ \n{\n    char *p;\n\n    p = strrchr(path, '/');\n    return p == NULL ? path : p + 1;\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "OPAQUE",
+            "#define OPAQUE Z_NULL /* <=== pigz.c:795:795:OPAQUE:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "LOW32",
+            "#define LOW32 0xffffffffUL /* <=== pigz.c:2328:2328:LOW32:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "get_header",
+            "local int get_header(int save) /* <=== get_header */ \n{\n    unsigned magic;             /* magic header */\n    int method;                 /* compression method */\n    int flags;                  /* header flags */\n    unsigned fname, extra;      /* name and extra field lengths */\n    unsigned tmp2;              /* for macro */\n    unsigned long tmp4;         /* for macro */\n\n    /* clear return information */\n    if (save) {\n        g.stamp = 0;\n        RELEASE(g.hname);\n    }\n\n    /* see if it's a gzip, zlib, or lzw file */\n    g.form = -1;\n    g.magic1 = GET();\n    if (g.in_eof)\n        return -1;\n    magic = g.magic1 << 8;\n    magic += GET();\n    if (g.in_eof)\n        return -2;\n    if (magic % 31 == 0) {          /* it's zlib */\n        g.form = 1;\n        return (int)((magic >> 8) & 0xf);\n    }\n    if (magic == 0x1f9d)            /* it's lzw */\n        return 257;\n    if (magic == 0x504b) {          /* it's zip */\n        magic = GET2();             /* the rest of the signature */\n        if (g.in_eof)\n            return -3;\n        if (magic == 0x0201 || magic == 0x0806)\n            return -5;              /* central header or archive extra */\n        if (magic != 0x0403)\n            return -4;              /* not a local header */\n        SKIP(2);\n        flags = GET2();\n        if (g.in_eof)\n            return -3;\n        if (flags & 0xfff0)\n            return -4;\n        method = GET();             /* return low byte of method or 256 */\n        if (GET() != 0 || flags & 1)\n            method = 256;           /* unknown or encrypted */\n        if (g.in_eof)\n            return -3;\n        if (save)\n            g.stamp = dos2time(GET4());\n        else\n            SKIP(4);\n        g.zip_crc = GET4();\n        g.zip_clen = GET4();\n        g.zip_ulen = GET4();\n        fname = GET2();\n        extra = GET2();\n        if (save) {\n            char *next = g.hname = MALLOC(fname + 1);\n            if (g.hname == NULL)\n                bail(\"not enough memory\", \"\");\n            while (fname > g.in_left) {\n                memcpy(next, g.in_next, g.in_left);\n                fname -= g.in_left;\n                next += g.in_left;\n                if (load() == 0)\n                    return -3;\n            }\n            memcpy(next, g.in_next, fname);\n            g.in_left -= fname;\n            g.in_next += fname;\n            next += fname;\n            *next = 0;\n        }\n        else\n            SKIP(fname);\n        read_extra(extra, save);\n        g.form = 2 + ((flags & 8) >> 3);\n        return g.in_eof ? -3 : method;\n    }\n    if (magic != 0x1f8b) {          /* not gzip */\n        g.in_left++;    /* unget second magic byte */\n        g.in_next--;\n        return -2;\n    }\n\n    /* it's gzip -- get method and flags */\n    method = GET();\n    flags = GET();\n    if (g.in_eof)\n        return -1;\n    if (flags & 0xe0)\n        return -4;\n\n    /* get time stamp */\n    if (save)\n        g.stamp = tolong(GET4());\n    else\n        SKIP(4);\n\n    /* skip extra field and OS */\n    SKIP(2);\n\n    /* skip extra field, if present */\n    if (flags & 4) {\n        extra = GET2();\n        if (g.in_eof)\n            return -3;\n        SKIP(extra);\n    }\n\n    /* read file name, if present, into allocated memory */\n    if ((flags & 8) && save) {\n        unsigned char *end;\n        size_t copy, have, size = 128;\n        g.hname = MALLOC(size);\n        if (g.hname == NULL)\n            bail(\"not enough memory\", \"\");\n        have = 0;\n        do {\n            if (g.in_left == 0 && load() == 0)\n                return -3;\n            end = memchr(g.in_next, 0, g.in_left);\n            copy = end == NULL ? g.in_left : (size_t)(end - g.in_next) + 1;\n            if (have + copy > size) {\n                while (have + copy > (size <<= 1))\n                    ;\n                g.hname = REALLOC(g.hname, size);\n                if (g.hname == NULL)\n                    bail(\"not enough memory\", \"\");\n            }\n            memcpy(g.hname + have, g.in_next, copy);\n            have += copy;\n            g.in_left -= copy;\n            g.in_next += copy;\n        } while (end == NULL);\n    }\n    else if (flags & 8)\n        while (GET() != 0)\n            if (g.in_eof)\n                return -3;\n\n    /* skip comment */\n    if (flags & 16)\n        while (GET() != 0)\n            if (g.in_eof)\n                return -3;\n\n    /* skip header crc */\n    if (flags & 2)\n        SKIP(2);\n\n    /* return gzip compression method */\n    g.form = 0;\n    return method;\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "new_pool",
+            "local void new_pool(struct pool *pool, size_t size, int limit) /* <=== new_pool */ \n{\n    pool->have = new_lock(0);\n    pool->head = NULL;\n    pool->size = size;\n    pool->limit = limit;\n    pool->made = 0;\n}",
+            3
+        ],
+        [
+            "pigz.c",
+            "MALLOC",
+            "#define MALLOC malloc /* <=== pigz.c:792:792:MALLOC:0 */ ",
+            1
+        ],
+        [
+            "zopfli/src/zopfli/deflate.c",
+            "DeflateSplittingFirst",
+            "static void DeflateSplittingFirst(const ZopfliOptions* options, /* <=== DeflateSplittingFirst */ \n                                  int btype, int final,\n                                  const unsigned char* in,\n                                  size_t instart, size_t inend,\n                                  unsigned char* bp,\n                                  unsigned char** out, size_t* outsize) {\n  size_t i;\n  size_t* splitpoints = 0;\n  size_t npoints = 0;\n  if (btype == 0) {\n    ZopfliBlockSplitSimple(in, instart, inend, 65535, &splitpoints, &npoints);\n  } else if (btype == 1) {\n    /* If all blocks are fixed tree, splitting into separate blocks only\n    increases the total size. Leave npoints at 0, this represents 1 block. */\n  } else {\n    ZopfliBlockSplit(options, in, instart, inend,\n                     options->blocksplittingmax, &splitpoints, &npoints);\n  }\n\n  for (i = 0; i <= npoints; i++) {\n    size_t start = i == 0 ? instart : splitpoints[i - 1];\n    size_t end = i == npoints ? inend : splitpoints[i];\n    DeflateBlock(options, btype, i == npoints && final, in, start, end,\n                 bp, out, outsize);\n  }\n\n  free(splitpoints);\n}",
+            3
+        ],
+        [
+            "pigz.c",
+            "DICT",
+            "#define DICT 32768U /* <=== pigz.c:391:391:DICT:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "PUT4M",
+            "#define PUT4M(a,b) (*(a)=(b)>>24,(a)[1]=(b)>>16,(a)[2]=(b)>>8,(a)[3]=(b)) /* <=== pigz.c:864:864:PUT4M:2 */ ",
+            3
+        ],
+        [
+            "pigz.c",
+            "drop_space",
+            "local void drop_space(struct space *space) /* <=== drop_space */ \n{\n    int use;\n    struct pool *pool;\n\n    possess(space->use);\n    use = peek_lock(space->use);\n    assert(use != 0);\n    if (use == 1) {\n        pool = space->pool;\n        possess(pool->have);\n        space->next = pool->head;\n        pool->head = space;\n        twist(pool->have, BY, +1);\n    }\n    twist(space->use, BY, -1);\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "FREE",
+            "#define FREE free /* <=== pigz.c:794:794:FREE:0 */ ",
+            2
+        ],
+        [
+            "zopfli/src/zopfli/deflate.c",
+            "DeflateBlock",
+            "static void DeflateBlock(const ZopfliOptions* options, /* <=== DeflateBlock */ \n                         int btype, int final,\n                         const unsigned char* in, size_t instart, size_t inend,\n                         unsigned char* bp,\n                         unsigned char** out, size_t* outsize) {\n  if (btype == 0) {\n    DeflateNonCompressedBlock(\n        options, final, in, instart, inend, bp, out, outsize);\n  } else if (btype == 1) {\n     DeflateFixedBlock(options, final, in, instart, inend, bp, out, outsize);\n  } else {\n    assert (btype == 2);\n    DeflateDynamicBlock(options, final, in, instart, inend, bp, out, outsize);\n  }\n}",
+            3
+        ],
+        [
+            "pigz.c",
+            "tolong",
+            "local long tolong(unsigned long val) /* <=== tolong */ \n{\n    return (long)(val & 0x7fffffffUL) - (long)(val & 0x80000000UL);\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "show_info",
+            "local void show_info(int method, unsigned long check, off_t len, int cont) /* <=== show_info */ \n{\n    size_t max;             /* maximum name length for current verbosity */\n    size_t n;               /* name length without suffix */\n    time_t now;             /* for getting current year */\n    char mod[26];           /* modification time in text */\n    char tag[NAMEMAX1+1];   /* header or file name, possibly truncated */\n\n    /* create abbreviated name from header file name or actual file name */\n    max = g.verbosity > 1 ? NAMEMAX2 : NAMEMAX1;\n    memset(tag, 0, max + 1);\n    if (cont)\n        strncpy(tag, \"<...>\", max + 1);\n    else if (g.hname == NULL) {\n        n = strlen(g.inf) - compressed_suffix(g.inf);\n        strncpy(tag, g.inf, n > max + 1 ? max + 1 : n);\n        if (strcmp(g.inf + n, \".tgz\") == 0 && n < max + 1)\n            strncpy(tag + n, \".tar\", max + 1 - n);\n    }\n    else\n        strncpy(tag, g.hname, max + 1);\n    if (tag[max])\n        strcpy(tag + max - 3, \"...\");\n\n    /* convert time stamp to text */\n    if (g.stamp) {\n        strcpy(mod, ctime(&g.stamp));\n        now = time(NULL);\n        if (strcmp(mod + 20, ctime(&now) + 20) != 0)\n            strcpy(mod + 11, mod + 19);\n    }\n    else\n        strcpy(mod + 4, \"------ -----\");\n    mod[16] = 0;\n\n    /* if first time, print header */\n    if (g.first) {\n        if (g.verbosity > 1)\n            fputs(\"method    check    timestamp    \", stdout);\n        if (g.verbosity > 0)\n            puts(\"compressed   original reduced  name\");\n        g.first = 0;\n    }\n\n    /* print information */\n    if (g.verbosity > 1) {\n        if (g.form == 3 && !g.decode)\n            printf(\"zip%3d  --------  %s  \", method, mod + 4);\n        else if (g.form > 1)\n            printf(\"zip%3d  %08lx  %s  \", method, check, mod + 4);\n        else if (g.form == 1)\n            printf(\"zlib%2d  %08lx  %s  \", method, check, mod + 4);\n        else if (method == 257)\n            printf(\"lzw     --------  %s  \", mod + 4);\n        else\n            printf(\"gzip%2d  %08lx  %s  \", method, check, mod + 4);\n    }\n    if (g.verbosity > 0) {\n        if ((g.form == 3 && !g.decode) ||\n            (method == 8 && g.in_tot > (len + (len >> 10) + 12)) ||\n            (method == 257 && g.in_tot > len + (len >> 1) + 3))\n#if __STDC_VERSION__-0 >= 199901L || __GNUC__-0 >= 3\n            printf(\"%10jd %10jd?  unk    %s\\n\",\n                   (intmax_t)g.in_tot, (intmax_t)len, tag);\n        else\n            printf(\"%10jd %10jd %6.1f%%  %s\\n\",\n                   (intmax_t)g.in_tot, (intmax_t)len,\n                   len == 0 ? 0 : 100 * (len - g.in_tot)/(double)len,\n                   tag);\n#else\n            printf(sizeof(off_t) == sizeof(long) ?\n                   \"%10ld %10ld?  unk    %s\\n\" : \"%10lld %10lld?  unk    %s\\n\",\n                   g.in_tot, len, tag);\n        else\n            printf(sizeof(off_t) == sizeof(long) ?\n                   \"%10ld %10ld %6.1f%%  %s\\n\" : \"%10lld %10lld %6.1f%%  %s\\n\",\n                   g.in_tot, len,\n                   len == 0 ? 0 : 100 * (len - g.in_tot)/(double)len,\n                   tag);\n#endif\n    }\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "load",
+            "local size_t load(void) /* <=== load */ \n{\n    /* if already detected end of file, do nothing */\n    if (g.in_short) {\n        g.in_eof = 1;\n        g.in_left = 0;\n        return 0;\n    }\n\n#ifndef NOTHREAD\n    /* if first time in or procs == 1, read a buffer to have something to\n       return, otherwise wait for the previous read job to complete */\n    if (g.procs > 1) {\n        /* if first time, fire up the read thread, ask for a read */\n        if (g.in_which == -1) {\n            g.in_which = 1;\n            g.load_state = new_lock(1);\n            g.load_thread = launch(load_read, NULL);\n        }\n\n        /* wait for the previously requested read to complete */\n        possess(g.load_state);\n        wait_for(g.load_state, TO_BE, 0);\n        release(g.load_state);\n\n        /* set up input buffer with the data just read */\n        g.in_next = g.in_which ? g.in_buf : g.in_buf2;\n        g.in_left = g.in_len;\n\n        /* if not at end of file, alert read thread to load next buffer,\n           alternate between g.in_buf and g.in_buf2 */\n        if (g.in_len == BUF) {\n            g.in_which = 1 - g.in_which;\n            possess(g.load_state);\n            twist(g.load_state, TO, 1);\n        }\n\n        /* at end of file -- join read thread (already exited), clean up */\n        else {\n            join(g.load_thread);\n            free_lock(g.load_state);\n            g.in_which = -1;\n        }\n    }\n    else\n#endif\n    {\n        /* don't use threads -- simply read a buffer into g.in_buf */\n        g.in_left = readn(g.ind, g.in_next = g.in_buf, BUF);\n    }\n\n    /* note end of file */\n    if (g.in_left < BUF) {\n        g.in_short = 1;\n\n        /* if we got bupkis, now is the time to mark eof */\n        if (g.in_left == 0)\n            g.in_eof = 1;\n    }\n\n    /* update the total and return the available bytes */\n    g.in_tot += g.in_left;\n    return g.in_left;\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "ZFREE",
+            "#define ZFREE Z_NULL /* <=== pigz.c:797:797:ZFREE:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "CHECK",
+            "#define CHECK(a,b,c) (g.form == 1 ? adler32(a,b,c) : crc32(a,b,c)) /* <=== pigz.c:1007:1007:CHECK:3 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "DEFLATE_WRITE",
+            "#define DEFLATE_WRITE(flush) \\ /* <=== pigz.c:1927:1937:DEFLATE_WRITE:1 */ \n    do { \\\n        do { \\\n            strm->avail_out = out_size; \\\n            strm->next_out = out; \\\n            (void)deflate(strm, flush); \\\n            writen(g.outd, out, out_size - strm->avail_out); \\\n            clen += out_size - strm->avail_out; \\\n        } while (strm->avail_out == 0); \\\n        assert(strm->avail_in == 0); \\\n    } while (0)",
+            2
+        ],
+        [
+            "pigz.c",
+            "setup_jobs",
+            "local void setup_jobs(void) /* <=== setup_jobs */ \n{\n    /* set up only if not already set up*/\n    if (compress_have != NULL)\n        return;\n\n    /* allocate locks and initialize lists */\n    compress_have = new_lock(0);\n    compress_head = NULL;\n    compress_tail = &compress_head;\n    write_first = new_lock(-1);\n    write_head = NULL;\n\n    /* initialize buffer pools (initial size for out_pool not critical, since\n       buffers will be grown in size if needed -- initial size chosen to make\n       this unlikely -- same for lens_pool) */\n    new_pool(&in_pool, g.block, INBUFS(g.procs));\n    new_pool(&out_pool, OUTPOOL(g.block), -1);\n    new_pool(&dict_pool, DICT, -1);\n    new_pool(&lens_pool, g.block >> (RSYNCBITS - 1), -1);\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "copymeta",
+            "local void copymeta(char *from, char *to) /* <=== copymeta */ \n{\n    struct stat st;\n    struct timeval times[2];\n\n    /* get all of from's Unix meta data, return if not a regular file */\n    if (stat(from, &st) != 0 || (st.st_mode & S_IFMT) != S_IFREG)\n        return;\n\n    /* set to's mode bits, ignore errors */\n    (void)chmod(to, st.st_mode & 07777);\n\n    /* copy owner's user and group, ignore errors */\n    (void)chown(to, st.st_uid, st.st_gid);\n\n    /* copy access and modify times, ignore errors */\n    times[0].tv_sec = st.st_atime;\n    times[0].tv_usec = 0;\n    times[1].tv_sec = st.st_mtime;\n    times[1].tv_usec = 0;\n    (void)utimes(to, times);\n}",
+            1
+        ],
+        [
+            "zopfli/src/zopfli/deflate.c",
+            "DeflateSplittingLast",
+            "static void DeflateSplittingLast(const ZopfliOptions* options, /* <=== DeflateSplittingLast */ \n                                 int btype, int final,\n                                 const unsigned char* in,\n                                 size_t instart, size_t inend,\n                                 unsigned char* bp,\n                                 unsigned char** out, size_t* outsize) {\n  size_t i;\n  ZopfliBlockState s;\n  ZopfliLZ77Store store;\n  size_t* splitpoints = 0;\n  size_t npoints = 0;\n\n  if (btype == 0) {\n    /* This function only supports LZ77 compression. DeflateSplittingFirst\n       supports the special case of noncompressed data. Punt it to that one. */\n    DeflateSplittingFirst(options, btype, final,\n                          in, instart, inend,\n                          bp, out, outsize);\n  }\n  assert(btype == 1 || btype == 2);\n\n  ZopfliInitLZ77Store(&store);\n\n  s.options = options;\n  s.blockstart = instart;\n  s.blockend = inend;\n#ifdef ZOPFLI_LONGEST_MATCH_CACHE\n  s.lmc = (ZopfliLongestMatchCache*)malloc(sizeof(ZopfliLongestMatchCache));\n  ZopfliInitCache(inend - instart, s.lmc);\n#endif\n\n  if (btype == 2) {\n    ZopfliLZ77Optimal(&s, in, instart, inend, &store);\n  } else {\n    assert (btype == 1);\n    ZopfliLZ77OptimalFixed(&s, in, instart, inend, &store);\n  }\n\n  if (btype == 1) {\n    /* If all blocks are fixed tree, splitting into separate blocks only\n    increases the total size. Leave npoints at 0, this represents 1 block. */\n  } else {\n    ZopfliBlockSplitLZ77(options, store.litlens, store.dists, store.size,\n                         options->blocksplittingmax, &splitpoints, &npoints);\n  }\n\n  for (i = 0; i <= npoints; i++) {\n    size_t start = i == 0 ? 0 : splitpoints[i - 1];\n    size_t end = i == npoints ? store.size : splitpoints[i];\n    AddLZ77Block(options, btype, i == npoints && final,\n                 store.litlens, store.dists, start, end, 0,\n                 bp, out, outsize);\n  }\n\n#ifdef ZOPFLI_LONGEST_MATCH_CACHE\n  ZopfliCleanCache(s.lmc);\n  free(s.lmc);\n#endif\n\n  ZopfliCleanLZ77Store(&store);\n  free(splitpoints);\n}",
+            3
+        ],
+        [
+            "pigz.c",
+            "dos2time",
+            "local time_t dos2time(unsigned long dos) /* <=== dos2time */ \n{\n    struct tm tm;\n\n    if (dos == 0)\n        return time(NULL);\n    tm.tm_year = ((int)(dos >> 25) & 0x7f) + 80;\n    tm.tm_mon  = ((int)(dos >> 21) & 0xf) - 1;\n    tm.tm_mday = (int)(dos >> 16) & 0x1f;\n    tm.tm_hour = (int)(dos >> 11) & 0x1f;\n    tm.tm_min  = (int)(dos >> 5) & 0x3f;\n    tm.tm_sec  = (int)(dos << 1) & 0x3e;\n    tm.tm_isdst = -1;           /* figure out if DST or not */\n    return mktime(&tm);\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "OUTSIZE",
+            "#define OUTSIZE 32768U      /* must be at least 32K for inflateBack() window */ /* <=== pigz.c:2812:2812:OUTSIZE:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "put_trailer",
+            "local void put_trailer(unsigned long ulen, unsigned long clen, /* <=== put_trailer */ \n                       unsigned long check, unsigned long head)\n{\n    unsigned char tail[46];\n\n    if (g.form > 1) {               /* zip */\n        unsigned long cent;\n\n        /* write data descriptor (as promised in local header) */\n        PUT4L(tail, 0x08074b50UL);\n        PUT4L(tail + 4, check);\n        PUT4L(tail + 8, clen);\n        PUT4L(tail + 12, ulen);\n        writen(g.outd, tail, 16);\n\n        /* write central file header */\n        PUT4L(tail, 0x02014b50UL);  /* central header signature */\n        tail[4] = 63;               /* obeyed version 6.3 of the zip spec */\n        tail[5] = 255;              /* ignore external attributes */\n        PUT2L(tail + 6, 20);        /* version needed to extract (2.0) */\n        PUT2L(tail + 8, 8);         /* data descriptor is present */\n        PUT2L(tail + 10, 8);        /* deflate */\n        PUT4L(tail + 12, time2dos(g.mtime));\n        PUT4L(tail + 16, check);    /* crc */\n        PUT4L(tail + 20, clen);     /* compressed length */\n        PUT4L(tail + 24, ulen);     /* uncompressed length */\n        PUT2L(tail + 28, g.name == NULL ? 1 :   /* length of name */\n                                          strlen(g.name));\n        PUT2L(tail + 30, 9);        /* length of extra field (see below) */\n        PUT2L(tail + 32, 0);        /* no file comment */\n        PUT2L(tail + 34, 0);        /* disk number 0 */\n        PUT2L(tail + 36, 0);        /* internal file attributes */\n        PUT4L(tail + 38, 0);        /* external file attributes (ignored) */\n        PUT4L(tail + 42, 0);        /* offset of local header */\n        writen(g.outd, tail, 46);   /* write central file header */\n        cent = 46;\n\n        /* write file name (use \"-\" for stdin) */\n        if (g.name == NULL)\n            writen(g.outd, (unsigned char *)\"-\", 1);\n        else\n            writen(g.outd, (unsigned char *)g.name, strlen(g.name));\n        cent += g.name == NULL ? 1 : strlen(g.name);\n\n        /* write extended timestamp extra field block (9 bytes) */\n        PUT2L(tail, 0x5455);        /* extended timestamp signature */\n        PUT2L(tail + 2, 5);         /* number of data bytes in this block */\n        tail[4] = 1;                /* flag presence of mod time */\n        PUT4L(tail + 5, g.mtime);   /* mod time */\n        writen(g.outd, tail, 9);    /* write extra field block */\n        cent += 9;\n\n        /* write end of central directory record */\n        PUT4L(tail, 0x06054b50UL);  /* end of central directory signature */\n        PUT2L(tail + 4, 0);         /* number of this disk */\n        PUT2L(tail + 6, 0);         /* disk with start of central directory */\n        PUT2L(tail + 8, 1);         /* number of entries on this disk */\n        PUT2L(tail + 10, 1);        /* total number of entries */\n        PUT4L(tail + 12, cent);     /* size of central directory */\n        PUT4L(tail + 16, head + clen + 16); /* offset of central directory */\n        PUT2L(tail + 20, 0);        /* no zip file comment */\n        writen(g.outd, tail, 22);   /* write end of central directory record */\n    }\n    else if (g.form) {              /* zlib */\n        PUT4M(tail, check);\n        writen(g.outd, tail, 4);\n    }\n    else {                          /* gzip */\n        PUT4L(tail, check);\n        PUT4L(tail + 4, ulen);\n        writen(g.outd, tail, 8);\n    }\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "put_header",
+            "local unsigned long put_header(void) /* <=== put_header */ \n{\n    unsigned long len;\n    unsigned char head[30];\n\n    if (g.form > 1) {               /* zip */\n        /* write local header */\n        PUT4L(head, 0x04034b50UL);  /* local header signature */\n        PUT2L(head + 4, 20);        /* version needed to extract (2.0) */\n        PUT2L(head + 6, 8);         /* flags: data descriptor follows data */\n        PUT2L(head + 8, 8);         /* deflate */\n        PUT4L(head + 10, time2dos(g.mtime));\n        PUT4L(head + 14, 0);        /* crc (not here) */\n        PUT4L(head + 18, 0);        /* compressed length (not here) */\n        PUT4L(head + 22, 0);        /* uncompressed length (not here) */\n        PUT2L(head + 26, g.name == NULL ? 1 :   /* length of name */\n                                          strlen(g.name));\n        PUT2L(head + 28, 9);        /* length of extra field (see below) */\n        writen(g.outd, head, 30);   /* write local header */\n        len = 30;\n\n        /* write file name (use \"-\" for stdin) */\n        if (g.name == NULL)\n            writen(g.outd, (unsigned char *)\"-\", 1);\n        else\n            writen(g.outd, (unsigned char *)g.name, strlen(g.name));\n        len += g.name == NULL ? 1 : strlen(g.name);\n\n        /* write extended timestamp extra field block (9 bytes) */\n        PUT2L(head, 0x5455);        /* extended timestamp signature */\n        PUT2L(head + 2, 5);         /* number of data bytes in this block */\n        head[4] = 1;                /* flag presence of mod time */\n        PUT4L(head + 5, g.mtime);   /* mod time */\n        writen(g.outd, head, 9);    /* write extra field block */\n        len += 9;\n    }\n    else if (g.form) {              /* zlib */\n        head[0] = 0x78;             /* deflate, 32K window */\n        head[1] = (g.level >= 9 ? 3 :\n                   (g.level == 1 ? 0 :\n                    (g.level >= 6 || g.level == Z_DEFAULT_COMPRESSION ?\n                        1 : 2))) << 6;\n        head[1] += 31 - (((head[0] << 8) + head[1]) % 31);\n        writen(g.outd, head, 2);\n        len = 2;\n    }\n    else {                          /* gzip */\n        head[0] = 31;\n        head[1] = 139;\n        head[2] = 8;                /* deflate */\n        head[3] = g.name != NULL ? 8 : 0;\n        PUT4L(head + 4, g.mtime);\n        head[8] = g.level >= 9 ? 2 : (g.level == 1 ? 4 : 0);\n        head[9] = 3;                /* unix */\n        writen(g.outd, head, 10);\n        len = 10;\n        if (g.name != NULL)\n            writen(g.outd, (unsigned char *)g.name, strlen(g.name) + 1);\n        if (g.name != NULL)\n            len += strlen(g.name) + 1;\n    }\n    return len;\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "OUTPOOL",
+            "#define OUTPOOL(s) ((s)+((s)>>4)+DICT) /* <=== pigz.c:450:450:OUTPOOL:1 */ ",
+            3
+        ],
+        [
+            "pigz.c",
+            "RSYNCMASK",
+            "#define RSYNCMASK ((1U << RSYNCBITS) - 1) /* <=== pigz.c:441:441:RSYNCMASK:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "RSYNCHIT",
+            "#define RSYNCHIT (RSYNCMASK >> 1) /* <=== pigz.c:442:442:RSYNCHIT:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "outb",
+            "local int outb(void *desc, unsigned char *buf, unsigned len) /* <=== outb */ \n{\n#ifndef NOTHREAD\n    static thread *wr, *ch;\n\n    if (g.procs > 1) {\n        /* if first time, initialize state and launch threads */\n        if (outb_write_more == NULL) {\n            outb_write_more = new_lock(0);\n            outb_check_more = new_lock(0);\n            wr = launch(outb_write, NULL);\n            ch = launch(outb_check, NULL);\n        }\n\n        /* wait for previous write and check threads to complete */\n        possess(outb_check_more);\n        wait_for(outb_check_more, TO_BE, 0);\n        possess(outb_write_more);\n        wait_for(outb_write_more, TO_BE, 0);\n\n        /* copy the output and alert the worker bees */\n        out_len = len;\n        g.out_tot += len;\n        memcpy(out_copy, buf, len);\n        twist(outb_write_more, TO, 1);\n        twist(outb_check_more, TO, 1);\n\n        /* if requested with len == 0, clean up -- terminate and join write and\n           check threads, free lock */\n        if (len == 0) {\n            join(ch);\n            join(wr);\n            free_lock(outb_check_more);\n            free_lock(outb_write_more);\n            outb_write_more = NULL;\n        }\n\n        /* return for more decompression while last buffer is being written\n           and having its check value calculated -- we wait for those to finish\n           the next time this function is called */\n        return 0;\n    }\n#endif\n\n    (void)desc;\n\n    /* if just one process or no threads, then do it without threads */\n    if (len) {\n        if (g.decode == 1)\n            writen(g.outd, buf, len);\n        g.out_check = CHECK(g.out_check, buf, len);\n        g.out_tot += len;\n    }\n    return 0;\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "grow_space",
+            "local void grow_space(struct space *space) /* <=== grow_space */ \n{\n    size_t more;\n\n    /* compute next size up */\n    more = grow(space->size);\n    if (more == space->size)\n        bail(\"not enough memory\", \"\");\n\n    /* reallocate the buffer */\n    space->buf = REALLOC(space->buf, more);\n    if (space->buf == NULL)\n        bail(\"not enough memory\", \"\");\n    space->size = more;\n}",
+            3
+        ],
+        [
+            "pigz.c",
+            "unlzw",
+            "local void unlzw(void) /* <=== unlzw */ \n{\n    unsigned bits;              /* current bits per code (9..16) */\n    unsigned mask;              /* mask for current bits codes = (1<<bits)-1 */\n    bits_t buf;                 /* bit buffer (need 23 bits) */\n    unsigned left;              /* bits left in buf (0..7 after code pulled) */\n    off_t mark;                 /* offset where last change in bits began */\n    unsigned code;              /* code, table traversal index */\n    unsigned max;               /* maximum bits per code for this stream */\n    unsigned flags;             /* compress flags, then block compress flag */\n    unsigned end;               /* last valid entry in prefix/suffix tables */\n    unsigned prev;              /* previous code */\n    unsigned final;             /* last character written for previous code */\n    unsigned stack;             /* next position for reversed string */\n    unsigned outcnt;            /* bytes in output buffer */\n    /* memory for unlzw() -- the first 256 entries of prefix[] and suffix[] are\n       never used, so could have offset the index but it's faster to waste a\n       little memory */\n    uint_least16_t prefix[65536];       /* index to LZW prefix string */\n    unsigned char suffix[65536];        /* one-character LZW suffix */\n    unsigned char match[65280 + 2];     /* buffer for reversed match */\n\n    /* process remainder of compress header -- a flags byte */\n    g.out_tot = 0;\n    if (NOMORE())\n        bail(\"lzw premature end: \", g.inf);\n    flags = NEXT();\n    if (flags & 0x60)\n        bail(\"unknown lzw flags set: \", g.inf);\n    max = flags & 0x1f;\n    if (max < 9 || max > 16)\n        bail(\"lzw bits out of range: \", g.inf);\n    if (max == 9)                           /* 9 doesn't really mean 9 */\n        max = 10;\n    flags &= 0x80;                          /* true if block compress */\n\n    /* mark the start of the compressed data for computing the first flush */\n    mark = g.in_tot - g.in_left;\n\n    /* clear table, start at nine bits per symbol */\n    bits = 9;\n    mask = 0x1ff;\n    end = flags ? 256 : 255;\n\n    /* set up: get first 9-bit code, which is the first decompressed byte, but\n       don't create a table entry until the next code */\n    if (NOMORE())                           /* no compressed data is ok */\n        return;\n    buf = NEXT();\n    if (NOMORE())\n        bail(\"lzw premature end: \", g.inf); /* need at least nine bits */\n    buf += NEXT() << 8;\n    final = prev = buf & mask;              /* code */\n    buf >>= bits;\n    left = 16 - bits;\n    if (prev > 255)\n        bail(\"invalid lzw code: \", g.inf);\n    out_buf[0] = final;                     /* write first decompressed byte */\n    outcnt = 1;\n\n    /* decode codes */\n    stack = 0;\n    for (;;) {\n        /* if the table will be full after this, increment the code size */\n        if (end >= mask && bits < max) {\n            /* flush unused input bits and bytes to next 8*bits bit boundary\n               (this is a vestigial aspect of the compressed data format\n               derived from an implementation that made use of a special VAX\n               machine instruction!) */\n            {\n                unsigned rem = ((g.in_tot - g.in_left) - mark) % bits;\n                if (rem)\n                    rem = bits - rem;\n                while (rem > g.in_left) {\n                    rem -= g.in_left;\n                    if (load() == 0)\n                        break;\n                }\n                g.in_left -= rem;\n                g.in_next += rem;\n            }\n            buf = 0;\n            left = 0;\n\n            /* mark this new location for computing the next flush */\n            mark = g.in_tot - g.in_left;\n\n            /* go to the next number of bits per symbol */\n            bits++;\n            mask <<= 1;\n            mask++;\n        }\n\n        /* get a code of bits bits */\n        if (NOMORE())\n            break;                          /* end of compressed data */\n        buf += (bits_t)(NEXT()) << left;\n        left += 8;\n        if (left < bits) {\n            if (NOMORE())\n                bail(\"lzw premature end: \", g.inf);\n            buf += (bits_t)(NEXT()) << left;\n            left += 8;\n        }\n        code = buf & mask;\n        buf >>= bits;\n        left -= bits;\n\n        /* process clear code (256) */\n        if (code == 256 && flags) {\n            /* flush unused input bits and bytes to next 8*bits bit boundary */\n            {\n                unsigned rem = ((g.in_tot - g.in_left) - mark) % bits;\n                if (rem)\n                    rem = bits - rem;\n                while (rem > g.in_left) {\n                    rem -= g.in_left;\n                    if (load() == 0)\n                        break;\n                }\n                g.in_left -= rem;\n                g.in_next += rem;\n            }\n            buf = 0;\n            left = 0;\n\n            /* mark this new location for computing the next flush */\n            mark = g.in_tot - g.in_left;\n\n            /* go back to nine bits per symbol */\n            bits = 9;                       /* initialize bits and mask */\n            mask = 0x1ff;\n            end = 255;                      /* empty table */\n            continue;                       /* get next code */\n        }\n\n        /* special code to reuse last match */\n        {\n            unsigned temp = code;           /* save the current code */\n            if (code > end) {\n                /* Be picky on the allowed code here, and make sure that the\n                   code we drop through (prev) will be a valid index so that\n                   random input does not cause an exception. */\n                if (code != end + 1 || prev > end)\n                    bail(\"invalid lzw code: \", g.inf);\n                match[stack++] = final;\n                code = prev;\n            }\n\n            /* walk through linked list to generate output in reverse order */\n            while (code >= 256) {\n                match[stack++] = suffix[code];\n                code = prefix[code];\n            }\n            match[stack++] = code;\n            final = code;\n\n            /* link new table entry */\n            if (end < mask) {\n                end++;\n                prefix[end] = prev;\n                suffix[end] = final;\n            }\n\n            /* set previous code for next iteration */\n            prev = temp;\n        }\n\n        /* write output in forward order */\n        while (stack > OUTSIZE - outcnt) {\n            while (outcnt < OUTSIZE)\n                out_buf[outcnt++] = match[--stack];\n            g.out_tot += outcnt;\n            if (g.decode == 1)\n                writen(g.outd, out_buf, outcnt);\n            outcnt = 0;\n        }\n        do {\n            out_buf[outcnt++] = match[--stack];\n        } while (stack);\n    }\n\n    /* write any remaining buffered output */\n    g.out_tot += outcnt;\n    if (outcnt && g.decode == 1)\n        writen(g.outd, out_buf, outcnt);\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "compressed_suffix",
+            "local size_t compressed_suffix(char *nm) /* <=== compressed_suffix */ \n{\n    size_t len;\n\n    len = strlen(nm);\n    if (len > 4) {\n        nm += len - 4;\n        len = 4;\n        if (strcmp(nm, \".zip\") == 0 || strcmp(nm, \".ZIP\") == 0 ||\n            strcmp(nm, \".tgz\") == 0)\n            return 4;\n    }\n    if (len > 3) {\n        nm += len - 3;\n        len = 3;\n        if (strcmp(nm, \".gz\") == 0 || strcmp(nm, \"-gz\") == 0 ||\n            strcmp(nm, \".zz\") == 0 || strcmp(nm, \"-zz\") == 0)\n            return 3;\n    }\n    if (len > 2) {\n        nm += len - 2;\n        if (strcmp(nm, \".z\") == 0 || strcmp(nm, \"-z\") == 0 ||\n            strcmp(nm, \"_z\") == 0 || strcmp(nm, \".Z\") == 0)\n            return 2;\n    }\n    return 0;\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "get_space",
+            "local struct space *get_space(struct pool *pool) /* <=== get_space */ \n{\n    struct space *space;\n\n    /* if can't create any more, wait for a space to show up */\n    possess(pool->have);\n    if (pool->limit == 0)\n        wait_for(pool->have, NOT_TO_BE, 0);\n\n    /* if a space is available, pull it from the list and return it */\n    if (pool->head != NULL) {\n        space = pool->head;\n        possess(space->use);\n        pool->head = space->next;\n        twist(pool->have, BY, -1);      /* one less in pool */\n        twist(space->use, TO, 1);       /* initially one user */\n        space->len = 0;\n        return space;\n    }\n\n    /* nothing available, don't want to wait, make a new space */\n    assert(pool->limit != 0);\n    if (pool->limit > 0)\n        pool->limit--;\n    pool->made++;\n    release(pool->have);\n    space = MALLOC(sizeof(struct space));\n    if (space == NULL)\n        bail(\"not enough memory\", \"\");\n    space->use = new_lock(1);           /* initially one user */\n    space->buf = MALLOC(pool->size);\n    if (space->buf == NULL)\n        bail(\"not enough memory\", \"\");\n    space->size = pool->size;\n    space->len = 0;\n    space->pool = pool;                 /* remember the pool this belongs to */\n    return space;\n}",
+            2
+        ],
+        [
+            "pigz.c",
+            "complain",
+            "local int complain(char *fmt, ...) /* <=== complain */ \n{\n    va_list ap;\n\n    if (g.verbosity > 0) {\n        fprintf(stderr, \"%s: \", g.prog);\n        va_start(ap, fmt);\n        vfprintf(stderr, fmt, ap);\n        va_end(ap);\n        putc('\\n', stderr);\n        fflush(stderr);\n    }\n    return 0;\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "infchk",
+            "local void infchk(void) /* <=== infchk */ \n{\n    int ret, cont, was;\n    unsigned long check, len;\n    z_stream strm;\n    unsigned tmp2;\n    unsigned long tmp4;\n    off_t clen;\n\n    cont = 0;\n    do {\n        /* header already read -- set up for decompression */\n        g.in_tot = g.in_left;       /* track compressed data length */\n        g.out_tot = 0;\n        g.out_check = CHECK(0L, Z_NULL, 0);\n        strm.zalloc = ZALLOC;\n        strm.zfree = ZFREE;\n        strm.opaque = OPAQUE;\n        ret = inflateBackInit(&strm, 15, out_buf);\n        if (ret != Z_OK)\n            bail(\"not enough memory\", \"\");\n\n        /* decompress, compute lengths and check value */\n        strm.avail_in = g.in_left;\n        strm.next_in = g.in_next;\n        ret = inflateBack(&strm, inb, NULL, outb, NULL);\n        if (ret != Z_STREAM_END)\n            bail(\"corrupted input -- invalid deflate data: \", g.inf);\n        g.in_left = strm.avail_in;\n        g.in_next = strm.next_in;\n        inflateBackEnd(&strm);\n        outb(NULL, NULL, 0);        /* finish off final write and check */\n\n        /* compute compressed data length */\n        clen = g.in_tot - g.in_left;\n\n        /* read and check trailer */\n        if (g.form > 1) {           /* zip local trailer (if any) */\n            if (g.form == 3) {      /* data descriptor follows */\n                /* read original version of data descriptor */\n                g.zip_crc = GET4();\n                g.zip_clen = GET4();\n                g.zip_ulen = GET4();\n                if (g.in_eof)\n                    bail(\"corrupted zip entry -- missing trailer: \", g.inf);\n\n                /* if crc doesn't match, try info-zip variant with sig */\n                if (g.zip_crc != g.out_check) {\n                    if (g.zip_crc != 0x08074b50UL || g.zip_clen != g.out_check)\n                        bail(\"corrupted zip entry -- crc32 mismatch: \", g.inf);\n                    g.zip_crc = g.zip_clen;\n                    g.zip_clen = g.zip_ulen;\n                    g.zip_ulen = GET4();\n                }\n\n                /* handle incredibly rare cases where crc equals signature */\n                else if (g.zip_crc == 0x08074b50UL &&\n                         g.zip_clen == g.zip_crc &&\n                         ((clen & LOW32) != g.zip_crc ||\n                          g.zip_ulen == g.zip_crc)) {\n                    g.zip_crc = g.zip_clen;\n                    g.zip_clen = g.zip_ulen;\n                    g.zip_ulen = GET4();\n                }\n\n                /* if second length doesn't match, try 64-bit lengths */\n                if (g.zip_ulen != (g.out_tot & LOW32)) {\n                    g.zip_ulen = GET4();\n                    (void)GET4();\n                }\n                if (g.in_eof)\n                    bail(\"corrupted zip entry -- missing trailer: \", g.inf);\n            }\n            if (g.zip_clen != (clen & LOW32) ||\n                g.zip_ulen != (g.out_tot & LOW32))\n                bail(\"corrupted zip entry -- length mismatch: \", g.inf);\n            check = g.zip_crc;\n        }\n        else if (g.form == 1) {     /* zlib (big-endian) trailer */\n            check = (unsigned long)(GET()) << 24;\n            check += (unsigned long)(GET()) << 16;\n            check += (unsigned)(GET()) << 8;\n            check += GET();\n            if (g.in_eof)\n                bail(\"corrupted zlib stream -- missing trailer: \", g.inf);\n            if (check != g.out_check)\n                bail(\"corrupted zlib stream -- adler32 mismatch: \", g.inf);\n        }\n        else {                      /* gzip trailer */\n            check = GET4();\n            len = GET4();\n            if (g.in_eof)\n                bail(\"corrupted gzip stream -- missing trailer: \", g.inf);\n            if (check != g.out_check)\n                bail(\"corrupted gzip stream -- crc32 mismatch: \", g.inf);\n            if (len != (g.out_tot & LOW32))\n                bail(\"corrupted gzip stream -- length mismatch: \", g.inf);\n        }\n\n        /* show file information if requested */\n        if (g.list) {\n            g.in_tot = clen;\n            show_info(8, check, g.out_tot, cont);\n            cont = 1;\n        }\n\n        /* if a gzip entry follows a gzip entry, decompress it (don't replace\n           saved header information from first entry) */\n        was = g.form;\n    } while (was == 0 && (ret = get_header(0)) == 8 && g.form == 0);\n\n    /* gzip -cdf copies junk after gzip stream directly to output */\n    if (was == 0 && ret == -2 && g.force && g.pipeout && g.decode != 2 &&\n        !g.list)\n        cat();\n    else if (was > 1 && get_header(0) != -5)\n        complain(\"entries after the first in %s were ignored\", g.inf);\n    else if ((was == 0 && ret != -1) || (was == 1 && (GET(), !g.in_eof)))\n        complain(\"%s OK, has trailing junk which was ignored\", g.inf);\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "MAXP2",
+            "#define MAXP2 (UINT_MAX - (UINT_MAX >> 1)) /* <=== pigz.c:395:395:MAXP2:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "RELEASE",
+            "#define RELEASE(ptr) \\ /* <=== pigz.c:382:388:RELEASE:1 */ \n    do { \\\n        if ((ptr) != NULL) { \\\n            FREE(ptr); \\\n            ptr = NULL; \\\n        } \\\n    } while (0)",
+            1
+        ],
+        [
+            "pigz.c",
+            "bail",
+            "local int bail(char *why, char *what) /* <=== bail */ \n{\n    if (g.outd != -1 && g.outf != NULL)\n        unlink(g.outf);\n    complain(\"abort: %s%s\", why, what);\n    exit(1);\n    return 0;\n}",
+            1
+        ],
+        [
+            "pigz.c",
+            "GET2",
+            "#define GET2() (tmp2 = GET(), tmp2 + ((unsigned)(GET()) << 8)) /* <=== pigz.c:2284:2284:GET2:0 */ ",
+            2
+        ],
+        [
+            "pigz.c",
+            "read_extra",
+            "local int read_extra(unsigned len, int save) /* <=== read_extra */ \n{\n    unsigned id, size, tmp2;\n    unsigned long tmp4;\n\n    /* process extra blocks */\n    while (len >= 4) {\n        id = GET2();\n        size = GET2();\n        if (g.in_eof)\n            return -1;\n        len -= 4;\n        if (size > len)\n            break;\n        len -= size;\n        if (id == 0x0001) {\n            /* Zip64 Extended Information Extra Field */\n            if (g.zip_ulen == LOW32 && size >= 8) {\n                g.zip_ulen = GET4();\n                SKIP(4);\n                size -= 8;\n            }\n            if (g.zip_clen == LOW32 && size >= 8) {\n                g.zip_clen = GET4();\n                SKIP(4);\n                size -= 8;\n            }\n        }\n        if (save) {\n            if ((id == 0x000d || id == 0x5855) && size >= 8) {\n                /* PKWare Unix or Info-ZIP Type 1 Unix block */\n                SKIP(4);\n                g.stamp = tolong(GET4());\n                size -= 8;\n            }\n            if (id == 0x5455 && size >= 5) {\n                /* Extended Timestamp block */\n                size--;\n                if (GET() & 1) {\n                    g.stamp = tolong(GET4());\n                    size -= 4;\n                }\n            }\n        }\n        SKIP(size);\n    }\n    SKIP(len);\n    return 0;\n}",
+            2
+        ]
+    ],
+    "globalVars": [
+        "struct g"
+    ],
+    "importContext": [
+        "#include <string.h>",
+        "#  include <inttypes.h>",
+        "#  include <sys/pstat.h>",
+        "#include \"zopfli/src/zopfli/deflate.h\"",
+        "#include <sys/stat.h>",
+        "#include <dirent.h>",
+        "#include <limits.h>",
+        "#  include \"yarn.h\"",
+        "#include <sys/time.h>",
+        "#include <stdio.h>",
+        "#include <fcntl.h>",
+        "#include <time.h>",
+        "#include <errno.h>",
+        "#  include <sys/param.h>",
+        "#  include <io.h>",
+        "#include <assert.h>",
+        "#include <stdlib.h>",
+        "#    include <malloc/malloc.h>",
+        "#include <unistd.h>",
+        "#    include <malloc.h>",
+        "#include <stdarg.h>",
+        "#include <sys/types.h>",
+        "#include <signal.h>",
+        "#include \"zlib.h\""
+    ],
+    "typeDefs": [],
+    "visitedLines_after": {
+        "pigz.c": [
+            3300,
+            3306,
+            3307,
+            3310,
+            3311,
+            3312,
+            3313,
+            3314,
+            3315,
+            3316,
+            3320,
+            3321,
+            3322,
+            3323,
+            3325,
+            3329,
+            3330,
+            3331,
+            3333,
+            3335,
+            3336,
+            3337,
+            3344,
+            3349,
+            3354,
+            3355,
+            3356,
+            3360,
+            3364,
+            3370,
+            3436,
+            3437,
+            3443,
+            3444,
+            3445,
+            3450,
+            3454,
+            3455,
+            3456,
+            3459,
+            3460,
+            3465,
+            3466,
+            3468,
+            3469,
+            3471,
+            3472,
+            3484,
+            3502,
+            3511,
+            3523,
+            3524,
+            3527,
+            3530,
+            3531,
+            3532,
+            3533,
+            3536,
+            3537,
+            3540,
+            3541,
+            3542,
+            3544,
+            3545,
+            3546,
+            3547,
+            3548,
+            3549,
+            3550,
+            3551,
+            3554,
+            3556,
+            3557,
+            3558,
+            3559,
+            3561,
+            3562,
+            3563,
+            3564,
+            3565,
+            3566,
+            3567,
+            3571,
+            3572,
+            3573,
+            3574,
+            3575,
+            3576,
+            3581,
+            3582,
+            3585,
+            3588,
+            3589,
+            3590,
+            3591,
+            3592,
+            3593,
+            3594,
+            3596,
+            3599,
+            3600,
+            3603,
+            3604,
+            3605,
+            3606,
+            3610,
+            3611,
+            3612,
+            3613,
+            3614,
+            3615,
+            3616,
+            3617,
+            3618,
+            3619,
+            3621,
+            3622,
+            3624
+        ]
+    },
+    "visitedLines_before": {
+        "pigz.c": [
+            3300,
+            3306,
+            3307,
+            3310,
+            3311,
+            3312,
+            3313,
+            3314,
+            3315,
+            3316,
+            3320,
+            3321,
+            3322,
+            3323,
+            3325,
+            3329,
+            3330,
+            3331,
+            3333,
+            3335,
+            3336,
+            3337,
+            3344,
+            3349,
+            3354,
+            3355,
+            3356,
+            3360,
+            3364,
+            3370,
+            3436,
+            3437,
+            3443,
+            3444,
+            3445,
+            3450,
+            3454,
+            3455,
+            3456,
+            3459,
+            3460,
+            3465,
+            3466,
+            3468,
+            3469,
+            3471,
+            3472,
+            3484,
+            3502,
+            3511,
+            3523,
+            3526,
+            3527,
+            3528,
+            3529,
+            3533,
+            3536,
+            3537,
+            3538,
+            3539,
+            3540,
+            3541,
+            3542,
+            3545,
+            3548,
+            3549,
+            3550,
+            3552,
+            3553,
+            3554,
+            3555,
+            3556,
+            3557,
+            3558,
+            3562,
+            3563,
+            3564,
+            3565,
+            3566,
+            3567,
+            3572,
+            3573,
+            3576,
+            3579,
+            3580,
+            3581,
+            3582,
+            3583,
+            3584,
+            3585,
+            3587,
+            3590,
+            3591,
+            3594,
+            3595,
+            3596,
+            3597,
+            3601,
+            3602,
+            3603,
+            3604,
+            3605,
+            3606,
+            3607,
+            3608,
+            3609,
+            3610,
+            3612,
+            3613,
+            3615
+        ]
+    },
+    "visitedParams": {
+        "pigz.c": [
+            [
+                "char *path",
+                "process"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "pigz.c",
+            "process",
+            "local void process(char *path) /* <=== process */ \n{\n    int method = -1;                /* get_header() return value */\n    size_t len;                     /* length of base name (minus suffix) */\n    struct stat st;                 /* to get file type and mod time */\n    /* all compressed suffixes for decoding search, in length order */\n    static char *sufs[] = {\".z\", \"-z\", \"_z\", \".Z\", \".gz\", \"-gz\", \".zz\", \"-zz\",\n                           \".zip\", \".ZIP\", \".tgz\", NULL};\n\n    /* open input file with name in, descriptor ind -- set name and mtime */\n    if (path == NULL) {\n        strcpy(g.inf, \"<stdin>\");\n        g.ind = 0;\n        g.name = NULL;\n        g.mtime = g.headis & 2 ?\n                  (fstat(g.ind, &st) ? time(NULL) : st.st_mtime) : 0;\n        len = 0;\n    }\n    else {\n        /* set input file name (already set if recursed here) */\n        if (path != g.inf) {\n            strncpy(g.inf, path, sizeof(g.inf));\n            if (g.inf[sizeof(g.inf) - 1])\n                bail(\"name too long: \", path);\n        }\n        len = strlen(g.inf);\n\n        /* try to stat input file -- if not there and decoding, look for that\n           name with compressed suffixes */\n        if (lstat(g.inf, &st)) {\n            if (errno == ENOENT && (g.list || g.decode)) {\n                char **try = sufs;\n                do {\n                    if (*try == NULL || len + strlen(*try) >= sizeof(g.inf))\n                        break;\n                    strcpy(g.inf + len, *try++);\n                    errno = 0;\n                } while (lstat(g.inf, &st) && errno == ENOENT);\n            }\n#ifdef EOVERFLOW\n            if (errno == EOVERFLOW || errno == EFBIG)\n                bail(g.inf,\n                    \" too large -- not compiled with large file support\");\n#endif\n            if (errno) {\n                g.inf[len] = 0;\n                complain(\"%s does not exist -- skipping\", g.inf);\n                return;\n            }\n            len = strlen(g.inf);\n        }\n\n        /* only process regular files, but allow symbolic links if -f,\n           recurse into directory if -r */\n        if ((st.st_mode & S_IFMT) != S_IFREG &&\n            (st.st_mode & S_IFMT) != S_IFLNK &&\n            (st.st_mode & S_IFMT) != S_IFDIR) {\n            complain(\"%s is a special file or device -- skipping\", g.inf);\n            return;\n        }\n        if ((st.st_mode & S_IFMT) == S_IFLNK && !g.force && !g.pipeout) {\n            complain(\"%s is a symbolic link -- skipping\", g.inf);\n            return;\n        }\n        if ((st.st_mode & S_IFMT) == S_IFDIR && !g.recurse) {\n            complain(\"%s is a directory -- skipping\", g.inf);\n            return;\n        }\n\n        /* recurse into directory (assumes Unix) */\n        if ((st.st_mode & S_IFMT) == S_IFDIR) {\n            char *roll, *item, *cut, *base, *bigger;\n            size_t len, hold;\n            DIR *here;\n            struct dirent *next;\n\n            /* accumulate list of entries (need to do this, since readdir()\n               behavior not defined if directory modified between calls) */\n            here = opendir(g.inf);\n            if (here == NULL)\n                return;\n            hold = 512;\n            roll = MALLOC(hold);\n            if (roll == NULL)\n                bail(\"not enough memory\", \"\");\n            *roll = 0;\n            item = roll;\n            while ((next = readdir(here)) != NULL) {\n                if (next->d_name[0] == 0 ||\n                    (next->d_name[0] == '.' && (next->d_name[1] == 0 ||\n                     (next->d_name[1] == '.' && next->d_name[2] == 0))))\n                    continue;\n                len = strlen(next->d_name) + 1;\n                if (item + len + 1 > roll + hold) {\n                    do {                    /* make roll bigger */\n                        hold <<= 1;\n                    } while (item + len + 1 > roll + hold);\n                    bigger = REALLOC(roll, hold);\n                    if (bigger == NULL) {\n                        FREE(roll);\n                        bail(\"not enough memory\", \"\");\n                    }\n                    item = bigger + (item - roll);\n                    roll = bigger;\n                }\n                strcpy(item, next->d_name);\n                item += len;\n                *item = 0;\n            }\n            closedir(here);\n\n            /* run process() for each entry in the directory */\n            cut = base = g.inf + strlen(g.inf);\n            if (base > g.inf && base[-1] != (unsigned char)'/') {\n                if ((size_t)(base - g.inf) >= sizeof(g.inf))\n                    bail(\"path too long\", g.inf);\n                *base++ = '/';\n            }\n            item = roll;\n            while (*item) {\n                strncpy(base, item, sizeof(g.inf) - (base - g.inf));\n                if (g.inf[sizeof(g.inf) - 1]) {\n                    strcpy(g.inf + (sizeof(g.inf) - 4), \"...\");\n                    bail(\"path too long: \", g.inf);\n                }\n                process(g.inf);\n                item += strlen(item) + 1;\n            }\n            *cut = 0;\n\n            /* release list of entries */\n            FREE(roll);\n            return;\n        }\n\n        /* don't compress .gz (or provided suffix) files, unless -f */\n        if (!(g.force || g.list || g.decode) && len >= strlen(g.sufx) &&\n                strcmp(g.inf + len - strlen(g.sufx), g.sufx) == 0) {\n            complain(\"%s ends with %s -- skipping\", g.inf, g.sufx);\n            return;\n        }\n\n        /* create output file only if input file has compressed suffix */\n        if (g.decode == 1 && !g.pipeout && !g.list) {\n            int suf = compressed_suffix(g.inf);\n            if (suf == 0) {\n                complain(\"%s does not have compressed suffix -- skipping\",\n                         g.inf);\n                return;\n            }\n            len -= suf;\n        }\n\n        /* open input file */\n        g.ind = open(g.inf, O_RDONLY, 0);\n        if (g.ind < 0)\n            bail(\"read error on \", g.inf);\n\n        /* prepare gzip header information for compression */\n        g.name = g.headis & 1 ? justname(g.inf) : NULL;\n        g.mtime = g.headis & 2 ? st.st_mtime : 0;\n    }\n    SET_BINARY_MODE(g.ind);\n\n    /* if decoding or testing, try to read gzip header */\n    g.hname = NULL;\n    if (g.decode) {\n        in_init();\n        method = get_header(1);\n        if (method != 8 && method != 257 &&\n                /* gzip -cdf acts like cat on uncompressed input */\n                !(method == -2 && g.force && g.pipeout && g.decode != 2 &&\n                  !g.list)) {\n            RELEASE(g.hname);\n            if (g.ind != 0)\n                close(g.ind);\n            if (method != -1)\n                complain(method < 0 ? \"%s is not compressed -- skipping\" :\n                         \"%s has unknown compression method -- skipping\",\n                         g.inf);\n            return;\n        }\n\n        /* if requested, test input file (possibly a special list) */\n        if (g.decode == 2) {\n            if (method == 8)\n                infchk();\n            else {\n                unlzw();\n                if (g.list) {\n                    g.in_tot -= 3;\n                    show_info(method, 0, g.out_tot, 0);\n                }\n            }\n            RELEASE(g.hname);\n            if (g.ind != 0)\n                close(g.ind);\n            return;\n        }\n    }\n\n    /* if requested, just list information about input file */\n    if (g.list) {\n        list_info();\n        RELEASE(g.hname);\n        if (g.ind != 0)\n            close(g.ind);\n        return;\n    }\n\n    /* create output file out, descriptor outd */\n    if (path == NULL || g.pipeout) {\n        /* write to stdout */\n        g.outf = MALLOC(strlen(\"<stdout>\") + 1);\n        if (g.outf == NULL)\n            bail(\"not enough memory\", \"\");\n        strcpy(g.outf, \"<stdout>\");\n        g.outd = 1;\n        if (!g.decode && !g.force && isatty(g.outd))\n            bail(\"trying to write compressed data to a terminal\",\n                 \" (use -f to force)\");\n    }\n    else {\n        char *to = g.inf, *sufx = \"\";\n        size_t pre = 0;\n\n        /* select parts of the output file name */\n        if (g.decode) {\n            /* for -dN or -dNT, use the path from the input file and the name\n               from the header, stripping any path in the header name */\n            if ((g.headis & 1) != 0 && g.hname != NULL) {\n                pre = justname(g.inf) - g.inf;\n                to = justname(g.hname);\n                len = strlen(to);\n            }\n            /* for -d or -dNn, replace abbreviated suffixes */\n            else if (strcmp(to + len, \".tgz\") == 0)\n                sufx = \".tar\";\n        }\n        else\n            /* add appropriate suffix when compressing */\n            sufx = g.sufx;\n\n        /* create output file and open to write */\n        g.outf = MALLOC(pre + len + strlen(sufx) + 1);\n        if (g.outf == NULL)\n            bail(\"not enough memory\", \"\");\n        memcpy(g.outf, g.inf, pre);\n        memcpy(g.outf + pre, to, len);\n        strcpy(g.outf + pre + len, sufx);\n        g.outd = open(g.outf, O_CREAT | O_TRUNC | O_WRONLY |\n                              (g.force ? 0 : O_EXCL), 0600);\n\n        /* if exists and not -f, give user a chance to overwrite */\n        if (g.outd < 0 && errno == EEXIST && isatty(0) && g.verbosity) {\n            int ch, reply;\n\n            fprintf(stderr, \"%s exists -- overwrite (y/n)? \", g.outf);\n            fflush(stderr);\n            reply = -1;\n            do {\n                ch = getchar();\n                if (reply < 0 && ch != ' ' && ch != '\\t')\n                    reply = ch == 'y' || ch == 'Y' ? 1 : 0;\n            } while (ch != EOF && ch != '\\n' && ch != '\\r');\n            if (reply == 1)\n                g.outd = open(g.outf, O_CREAT | O_TRUNC | O_WRONLY,\n                              0600);\n        }\n\n        /* if exists and no overwrite, report and go on to next */\n        if (g.outd < 0 && errno == EEXIST) {\n            complain(\"%s exists -- skipping\", g.outf);\n            RELEASE(g.outf);\n            RELEASE(g.hname);\n            if (g.ind != 0)\n                close(g.ind);\n            return;\n        }\n\n        /* if some other error, give up */\n        if (g.outd < 0)\n            bail(\"write error on \", g.outf);\n    }\n    SET_BINARY_MODE(g.outd);\n    RELEASE(g.hname);\n\n    /* process ind to outd */\n    if (g.verbosity > 1)\n        fprintf(stderr, \"%s to %s \", g.inf, g.outf);\n    if (g.decode) {\n        if (method == 8)\n            infchk();\n        else if (method == 257)\n            unlzw();\n        else\n            cat();\n    }\n#ifndef NOTHREAD\n    else if (g.procs > 1)\n        parallel_compress();\n#endif\n    else\n        single_compress(0);\n    if (g.verbosity > 1) {\n        putc('\\n', stderr);\n        fflush(stderr);\n    }\n\n    /* finish up, copy attributes, set times, delete original */\n    if (g.ind != 0)\n        close(g.ind);\n    if (g.outd != 1) {\n        if (close(g.outd))\n            bail(\"write error on \", g.outf);\n        g.outd = -1;            /* now prevent deletion on interrupt */\n        if (g.ind != 0) {\n            copymeta(g.inf, g.outf);\n            if (!g.keep)\n                unlink(g.inf);\n        }\n        if (g.decode && (g.headis & 2) != 0 && g.stamp)\n            touch(g.outf, g.stamp);\n    }\n    RELEASE(g.outf);\n}",
+            3300
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "pigz.c",
+            "process",
+            "local void process(char *path) /* <=== process */ \n{\n    int method = -1;                /* get_header() return value */\n    size_t len;                     /* length of base name (minus suffix) */\n    struct stat st;                 /* to get file type and mod time */\n    /* all compressed suffixes for decoding search, in length order */\n    static char *sufs[] = {\".z\", \"-z\", \"_z\", \".Z\", \".gz\", \"-gz\", \".zz\", \"-zz\",\n                           \".zip\", \".ZIP\", \".tgz\", NULL};\n\n    /* open input file with name in, descriptor ind -- set name and mtime */\n    if (path == NULL) {\n        strcpy(g.inf, \"<stdin>\");\n        g.ind = 0;\n        g.name = NULL;\n        g.mtime = g.headis & 2 ?\n                  (fstat(g.ind, &st) ? time(NULL) : st.st_mtime) : 0;\n        len = 0;\n    }\n    else {\n        /* set input file name (already set if recursed here) */\n        if (path != g.inf) {\n            strncpy(g.inf, path, sizeof(g.inf));\n            if (g.inf[sizeof(g.inf) - 1])\n                bail(\"name too long: \", path);\n        }\n        len = strlen(g.inf);\n\n        /* try to stat input file -- if not there and decoding, look for that\n           name with compressed suffixes */\n        if (lstat(g.inf, &st)) {\n            if (errno == ENOENT && (g.list || g.decode)) {\n                char **try = sufs;\n                do {\n                    if (*try == NULL || len + strlen(*try) >= sizeof(g.inf))\n                        break;\n                    strcpy(g.inf + len, *try++);\n                    errno = 0;\n                } while (lstat(g.inf, &st) && errno == ENOENT);\n            }\n#ifdef EOVERFLOW\n            if (errno == EOVERFLOW || errno == EFBIG)\n                bail(g.inf,\n                    \" too large -- not compiled with large file support\");\n#endif\n            if (errno) {\n                g.inf[len] = 0;\n                complain(\"%s does not exist -- skipping\", g.inf);\n                return;\n            }\n            len = strlen(g.inf);\n        }\n\n        /* only process regular files, but allow symbolic links if -f,\n           recurse into directory if -r */\n        if ((st.st_mode & S_IFMT) != S_IFREG &&\n            (st.st_mode & S_IFMT) != S_IFLNK &&\n            (st.st_mode & S_IFMT) != S_IFDIR) {\n            complain(\"%s is a special file or device -- skipping\", g.inf);\n            return;\n        }\n        if ((st.st_mode & S_IFMT) == S_IFLNK && !g.force && !g.pipeout) {\n            complain(\"%s is a symbolic link -- skipping\", g.inf);\n            return;\n        }\n        if ((st.st_mode & S_IFMT) == S_IFDIR && !g.recurse) {\n            complain(\"%s is a directory -- skipping\", g.inf);\n            return;\n        }\n\n        /* recurse into directory (assumes Unix) */\n        if ((st.st_mode & S_IFMT) == S_IFDIR) {\n            char *roll, *item, *cut, *base, *bigger;\n            size_t len, hold;\n            DIR *here;\n            struct dirent *next;\n\n            /* accumulate list of entries (need to do this, since readdir()\n               behavior not defined if directory modified between calls) */\n            here = opendir(g.inf);\n            if (here == NULL)\n                return;\n            hold = 512;\n            roll = MALLOC(hold);\n            if (roll == NULL)\n                bail(\"not enough memory\", \"\");\n            *roll = 0;\n            item = roll;\n            while ((next = readdir(here)) != NULL) {\n                if (next->d_name[0] == 0 ||\n                    (next->d_name[0] == '.' && (next->d_name[1] == 0 ||\n                     (next->d_name[1] == '.' && next->d_name[2] == 0))))\n                    continue;\n                len = strlen(next->d_name) + 1;\n                if (item + len + 1 > roll + hold) {\n                    do {                    /* make roll bigger */\n                        hold <<= 1;\n                    } while (item + len + 1 > roll + hold);\n                    bigger = REALLOC(roll, hold);\n                    if (bigger == NULL) {\n                        FREE(roll);\n                        bail(\"not enough memory\", \"\");\n                    }\n                    item = bigger + (item - roll);\n                    roll = bigger;\n                }\n                strcpy(item, next->d_name);\n                item += len;\n                *item = 0;\n            }\n            closedir(here);\n\n            /* run process() for each entry in the directory */\n            cut = base = g.inf + strlen(g.inf);\n            if (base > g.inf && base[-1] != (unsigned char)'/') {\n                if ((size_t)(base - g.inf) >= sizeof(g.inf))\n                    bail(\"path too long\", g.inf);\n                *base++ = '/';\n            }\n            item = roll;\n            while (*item) {\n                strncpy(base, item, sizeof(g.inf) - (base - g.inf));\n                if (g.inf[sizeof(g.inf) - 1]) {\n                    strcpy(g.inf + (sizeof(g.inf) - 4), \"...\");\n                    bail(\"path too long: \", g.inf);\n                }\n                process(g.inf);\n                item += strlen(item) + 1;\n            }\n            *cut = 0;\n\n            /* release list of entries */\n            FREE(roll);\n            return;\n        }\n\n        /* don't compress .gz (or provided suffix) files, unless -f */\n        if (!(g.force || g.list || g.decode) && len >= strlen(g.sufx) &&\n                strcmp(g.inf + len - strlen(g.sufx), g.sufx) == 0) {\n            complain(\"%s ends with %s -- skipping\", g.inf, g.sufx);\n            return;\n        }\n\n        /* create output file only if input file has compressed suffix */\n        if (g.decode == 1 && !g.pipeout && !g.list) {\n            int suf = compressed_suffix(g.inf);\n            if (suf == 0) {\n                complain(\"%s does not have compressed suffix -- skipping\",\n                         g.inf);\n                return;\n            }\n            len -= suf;\n        }\n\n        /* open input file */\n        g.ind = open(g.inf, O_RDONLY, 0);\n        if (g.ind < 0)\n            bail(\"read error on \", g.inf);\n\n        /* prepare gzip header information for compression */\n        g.name = g.headis & 1 ? justname(g.inf) : NULL;\n        g.mtime = g.headis & 2 ? st.st_mtime : 0;\n    }\n    SET_BINARY_MODE(g.ind);\n\n    /* if decoding or testing, try to read gzip header */\n    g.hname = NULL;\n    if (g.decode) {\n        in_init();\n        method = get_header(1);\n        if (method != 8 && method != 257 &&\n                /* gzip -cdf acts like cat on uncompressed input */\n                !(method == -2 && g.force && g.pipeout && g.decode != 2 &&\n                  !g.list)) {\n            RELEASE(g.hname);\n            if (g.ind != 0)\n                close(g.ind);\n            if (method != -1)\n                complain(method < 0 ? \"%s is not compressed -- skipping\" :\n                         \"%s has unknown compression method -- skipping\",\n                         g.inf);\n            return;\n        }\n\n        /* if requested, test input file (possibly a special list) */\n        if (g.decode == 2) {\n            if (method == 8)\n                infchk();\n            else {\n                unlzw();\n                if (g.list) {\n                    g.in_tot -= 3;\n                    show_info(method, 0, g.out_tot, 0);\n                }\n            }\n            RELEASE(g.hname);\n            if (g.ind != 0)\n                close(g.ind);\n            return;\n        }\n    }\n\n    /* if requested, just list information about input file */\n    if (g.list) {\n        list_info();\n        RELEASE(g.hname);\n        if (g.ind != 0)\n            close(g.ind);\n        return;\n    }\n\n    /* create output file out, descriptor outd */\n    if (path == NULL || g.pipeout) {\n        /* write to stdout */\n        g.outf = MALLOC(strlen(\"<stdout>\") + 1);\n        if (g.outf == NULL)\n            bail(\"not enough memory\", \"\");\n        strcpy(g.outf, \"<stdout>\");\n        g.outd = 1;\n        if (!g.decode && !g.force && isatty(g.outd))\n            bail(\"trying to write compressed data to a terminal\",\n                 \" (use -f to force)\");\n    }\n    else {\n        char *to, *repl;\n\n        /* use header name for output when decompressing with -N */\n        to = g.inf;\n        if (g.decode && (g.headis & 1) != 0 && g.hname != NULL) {\n            to = g.hname;\n            len = strlen(g.hname);\n        }\n\n        /* replace .tgz with .tar when decoding */\n        repl = g.decode && strcmp(to + len, \".tgz\") ? \"\" : \".tar\";\n\n        /* create output file and open to write */\n        g.outf = MALLOC(len + (g.decode ? strlen(repl) : strlen(g.sufx)) + 1);\n        if (g.outf == NULL)\n            bail(\"not enough memory\", \"\");\n        memcpy(g.outf, to, len);\n        strcpy(g.outf + len, g.decode ? repl : g.sufx);\n        g.outd = open(g.outf, O_CREAT | O_TRUNC | O_WRONLY |\n                             (g.force ? 0 : O_EXCL), 0600);\n\n        /* if exists and not -f, give user a chance to overwrite */\n        if (g.outd < 0 && errno == EEXIST && isatty(0) && g.verbosity) {\n            int ch, reply;\n\n            fprintf(stderr, \"%s exists -- overwrite (y/n)? \", g.outf);\n            fflush(stderr);\n            reply = -1;\n            do {\n                ch = getchar();\n                if (reply < 0 && ch != ' ' && ch != '\\t')\n                    reply = ch == 'y' || ch == 'Y' ? 1 : 0;\n            } while (ch != EOF && ch != '\\n' && ch != '\\r');\n            if (reply == 1)\n                g.outd = open(g.outf, O_CREAT | O_TRUNC | O_WRONLY,\n                              0600);\n        }\n\n        /* if exists and no overwrite, report and go on to next */\n        if (g.outd < 0 && errno == EEXIST) {\n            complain(\"%s exists -- skipping\", g.outf);\n            RELEASE(g.outf);\n            RELEASE(g.hname);\n            if (g.ind != 0)\n                close(g.ind);\n            return;\n        }\n\n        /* if some other error, give up */\n        if (g.outd < 0)\n            bail(\"write error on \", g.outf);\n    }\n    SET_BINARY_MODE(g.outd);\n    RELEASE(g.hname);\n\n    /* process ind to outd */\n    if (g.verbosity > 1)\n        fprintf(stderr, \"%s to %s \", g.inf, g.outf);\n    if (g.decode) {\n        if (method == 8)\n            infchk();\n        else if (method == 257)\n            unlzw();\n        else\n            cat();\n    }\n#ifndef NOTHREAD\n    else if (g.procs > 1)\n        parallel_compress();\n#endif\n    else\n        single_compress(0);\n    if (g.verbosity > 1) {\n        putc('\\n', stderr);\n        fflush(stderr);\n    }\n\n    /* finish up, copy attributes, set times, delete original */\n    if (g.ind != 0)\n        close(g.ind);\n    if (g.outd != 1) {\n        if (close(g.outd))\n            bail(\"write error on \", g.outf);\n        g.outd = -1;            /* now prevent deletion on interrupt */\n        if (g.ind != 0) {\n            copymeta(g.inf, g.outf);\n            if (!g.keep)\n                unlink(g.inf);\n        }\n        if (g.decode && (g.headis & 2) != 0 && g.stamp)\n            touch(g.outf, g.stamp);\n    }\n    RELEASE(g.outf);\n}",
+            3300
+        ]
+    ]
+}

@@ -1,0 +1,536 @@
+{
+    "calleeMethods": [
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_JSON",
+            "#define DATASOURCE_JSON 0 /* <=== web/api/formatters/rrd2json.h:25:25:DATASOURCE_JSON:0 */ ",
+            2
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_HTML",
+            "#define DATASOURCE_HTML 7 /* <=== web/api/formatters/rrd2json.h:32:32:DATASOURCE_HTML:0 */ ",
+            2
+        ],
+        [
+            "libnetdata/buffer/buffer.h",
+            "buffer_cacheable",
+            "#define buffer_cacheable(wb)    do { (wb)->options |= WB_CONTENT_CACHEABLE;    if((wb)->options & WB_CONTENT_NO_CACHEABLE) (wb)->options &= ~WB_CONTENT_NO_CACHEABLE; } while(0) /* <=== libnetdata/buffer/buffer.h:48:48:buffer_cacheable:1 */ ",
+            2
+        ],
+        [
+            "database/rrd.h",
+            "rrdset_last_entry_t",
+            "#define rrdset_last_entry_t(st) ((time_t)(((st)->last_updated.tv_sec))) /* <=== database/rrd.h:746:746:rrdset_last_entry_t:1 */ ",
+            3
+        ],
+        [
+            "web/api/queries/query.c",
+            "rrd2rrdr",
+            "RRDR *rrd2rrdr( /* <=== rrd2rrdr */ \n        RRDSET *st\n        , long points_requested\n        , long long after_requested\n        , long long before_requested\n        , RRDR_GROUPING group_method\n        , long resampling_time_requested\n        , RRDR_OPTIONS options\n        , const char *dimensions\n) {\n    int aligned = !(options & RRDR_OPTION_NOT_ALIGNED);\n\n    int absolute_period_requested = -1;\n\n    time_t first_entry_t = rrdset_first_entry_t(st);\n    time_t last_entry_t  = rrdset_last_entry_t(st);\n\n    if(before_requested == 0 && after_requested == 0) {\n        // dump the all the data\n        before_requested = last_entry_t;\n        after_requested = first_entry_t;\n        absolute_period_requested = 0;\n    }\n\n    // allow relative for before (smaller than API_RELATIVE_TIME_MAX)\n    if(((before_requested < 0)?-before_requested:before_requested) <= API_RELATIVE_TIME_MAX) {\n        if(abs(before_requested) % st->update_every) {\n            // make sure it is multiple of st->update_every\n            if(before_requested < 0) before_requested = before_requested - st->update_every - before_requested % st->update_every;\n            else           before_requested = before_requested + st->update_every - before_requested % st->update_every;\n        }\n        if(before_requested > 0) before_requested = first_entry_t + before_requested;\n        else           before_requested = last_entry_t  + before_requested;\n        absolute_period_requested = 0;\n    }\n\n    // allow relative for after (smaller than API_RELATIVE_TIME_MAX)\n    if(((after_requested < 0)?-after_requested:after_requested) <= API_RELATIVE_TIME_MAX) {\n        if(after_requested == 0) after_requested = -st->update_every;\n        if(abs(after_requested) % st->update_every) {\n            // make sure it is multiple of st->update_every\n            if(after_requested < 0) after_requested = after_requested - st->update_every - after_requested % st->update_every;\n            else          after_requested = after_requested + st->update_every - after_requested % st->update_every;\n        }\n        after_requested = before_requested + after_requested;\n        absolute_period_requested = 0;\n    }\n\n    if(absolute_period_requested == -1)\n        absolute_period_requested = 1;\n\n    // make sure they are within our timeframe\n    if(before_requested > last_entry_t)  before_requested = last_entry_t;\n    if(before_requested < first_entry_t) before_requested = first_entry_t;\n\n    if(after_requested > last_entry_t)  after_requested = last_entry_t;\n    if(after_requested < first_entry_t) after_requested = first_entry_t;\n\n    // check if they are reversed\n    if(after_requested > before_requested) {\n        time_t tmp = before_requested;\n        before_requested = after_requested;\n        after_requested = tmp;\n    }\n\n    // the duration of the chart\n    time_t duration = before_requested - after_requested;\n    long available_points = duration / st->update_every;\n\n    if(duration <= 0 || available_points <= 0)\n        return rrdr_create(st, 1);\n\n    // check the number of wanted points in the result\n    if(unlikely(points_requested < 0)) points_requested = -points_requested;\n    if(unlikely(points_requested > available_points)) points_requested = available_points;\n    if(unlikely(points_requested == 0)) points_requested = available_points;\n\n    // calculate the desired grouping of source data points\n    long group = available_points / points_requested;\n    if(unlikely(group <= 0)) group = 1;\n    if(unlikely(available_points % points_requested > points_requested / 2)) group++; // rounding to the closest integer\n\n    // resampling_time_requested enforces a certain grouping multiple\n    calculated_number resampling_divisor = 1.0;\n    long resampling_group = 1;\n    if(unlikely(resampling_time_requested > st->update_every)) {\n        if (unlikely(resampling_time_requested > duration)) {\n            // group_time is above the available duration\n\n            #ifdef NETDATA_INTERNAL_CHECKS\n            info(\"INTERNAL CHECK: %s: requested gtime %ld secs, is greater than the desired duration %ld secs\", st->id, resampling_time_requested, duration);\n            #endif\n\n            group = available_points; // use all the points\n        }\n        else {\n            // the points we should group to satisfy gtime\n            resampling_group = resampling_time_requested / st->update_every;\n            if(unlikely(resampling_time_requested % st->update_every)) {\n                #ifdef NETDATA_INTERNAL_CHECKS\n                info(\"INTERNAL CHECK: %s: requested gtime %ld secs, is not a multiple of the chart's data collection frequency %d secs\", st->id, resampling_time_requested, st->update_every);\n                #endif\n\n                resampling_group++;\n            }\n\n            // adapt group according to resampling_group\n            if(unlikely(group < resampling_group)) group  = resampling_group; // do not allow grouping below the desired one\n            if(unlikely(group % resampling_group)) group += resampling_group - (group % resampling_group); // make sure group is multiple of resampling_group\n\n            //resampling_divisor = group / resampling_group;\n            resampling_divisor = (calculated_number)(group * st->update_every) / (calculated_number)resampling_time_requested;\n        }\n    }\n\n    // now that we have group,\n    // align the requested timeframe to fit it.\n\n    if(aligned) {\n        // alignement has been requested, so align the values\n        before_requested -= (before_requested % group);\n        after_requested  -= (after_requested % group);\n    }\n\n    // we align the request on requested_before\n    time_t before_wanted = before_requested;\n    if(likely(before_wanted > last_entry_t)) {\n        #ifdef NETDATA_INTERNAL_CHECKS\n        error(\"INTERNAL ERROR: rrd2rrdr() on %s, before_wanted is after db max\", st->name);\n        #endif\n\n        before_wanted = last_entry_t - (last_entry_t % ( ((aligned)?group:1) * st->update_every ));\n    }\n    size_t before_slot = rrdset_time2slot(st, before_wanted);\n\n    // we need to estimate the number of points, for having\n    // an integer number of values per point\n    long points_wanted = (before_wanted - after_requested) / st->update_every / group;\n\n    time_t after_wanted  = before_wanted - (points_wanted * group * st->update_every) + st->update_every;\n    if(unlikely(after_wanted < first_entry_t)) {\n        // hm... we go to the past, calculate again points_wanted using all the db from before_wanted to the beginning\n        points_wanted = (before_wanted - first_entry_t) / group;\n\n        // recalculate after wanted with the new number of points\n        after_wanted  = before_wanted - (points_wanted * group * st->update_every) + st->update_every;\n\n        if(unlikely(after_wanted < first_entry_t)) {\n            #ifdef NETDATA_INTERNAL_CHECKS\n            error(\"INTERNAL ERROR: rrd2rrdr() on %s, after_wanted is before db min\", st->name);\n            #endif\n\n            after_wanted = first_entry_t - (first_entry_t % ( ((aligned)?group:1) * st->update_every )) + ( ((aligned)?group:1) * st->update_every );\n        }\n    }\n    size_t after_slot  = rrdset_time2slot(st, after_wanted);\n\n    // check if they are reversed\n    if(unlikely(after_wanted > before_wanted)) {\n        #ifdef NETDATA_INTERNAL_CHECKS\n        error(\"INTERNAL ERROR: rrd2rrdr() on %s, reversed wanted after/before\", st->name);\n        #endif\n        time_t tmp = before_wanted;\n        before_wanted = after_wanted;\n        after_wanted = tmp;\n    }\n\n    // recalculate points_wanted using the final time-frame\n    points_wanted   = (before_wanted - after_wanted) / st->update_every / group + 1;\n    if(unlikely(points_wanted < 0)) {\n        #ifdef NETDATA_INTERNAL_CHECKS\n        error(\"INTERNAL ERROR: rrd2rrdr() on %s, points_wanted is %ld\", st->name, points_wanted);\n        #endif\n        points_wanted = 0;\n    }\n\n#ifdef NETDATA_INTERNAL_CHECKS\n    duration = before_wanted - after_wanted;\n\n    if(after_wanted < first_entry_t)\n        error(\"INTERNAL CHECK: after_wanted %u is too small, minimum %u\", (uint32_t)after_wanted, (uint32_t)first_entry_t);\n\n    if(after_wanted > last_entry_t)\n        error(\"INTERNAL CHECK: after_wanted %u is too big, maximum %u\", (uint32_t)after_wanted, (uint32_t)last_entry_t);\n\n    if(before_wanted < first_entry_t)\n        error(\"INTERNAL CHECK: before_wanted %u is too small, minimum %u\", (uint32_t)before_wanted, (uint32_t)first_entry_t);\n\n    if(before_wanted > last_entry_t)\n        error(\"INTERNAL CHECK: before_wanted %u is too big, maximum %u\", (uint32_t)before_wanted, (uint32_t)last_entry_t);\n\n    if(before_slot >= (size_t)st->entries)\n        error(\"INTERNAL CHECK: before_slot is invalid %zu, expected 0 to %ld\", before_slot, st->entries - 1);\n\n    if(after_slot >= (size_t)st->entries)\n        error(\"INTERNAL CHECK: after_slot is invalid %zu, expected 0 to %ld\", after_slot, st->entries - 1);\n\n    if(points_wanted > (before_wanted - after_wanted) / group / st->update_every + 1)\n        error(\"INTERNAL CHECK: points_wanted %ld is more than points %ld\", points_wanted, (before_wanted - after_wanted) / group / st->update_every + 1);\n\n    if(group < resampling_group)\n        error(\"INTERNAL CHECK: group %ld is less than the desired group points %ld\", group, resampling_group);\n\n    if(group > resampling_group && group % resampling_group)\n        error(\"INTERNAL CHECK: group %ld is not a multiple of the desired group points %ld\", group, resampling_group);\n#endif\n\n    // -------------------------------------------------------------------------\n    // initialize our result set\n    // this also locks the chart for us\n\n    RRDR *r = rrdr_create(st, points_wanted);\n    if(unlikely(!r)) {\n        #ifdef NETDATA_INTERNAL_CHECKS\n        error(\"INTERNAL CHECK: Cannot create RRDR for %s, after=%u, before=%u, duration=%u, points=%ld\", st->id, (uint32_t)after_wanted, (uint32_t)before_wanted, (uint32_t)duration, points_wanted);\n        #endif\n        return NULL;\n    }\n\n    if(unlikely(!r->d || !points_wanted)) {\n        #ifdef NETDATA_INTERNAL_CHECKS\n        error(\"INTERNAL CHECK: Returning empty RRDR (no dimensions in RRDSET) for %s, after=%u, before=%u, duration=%zu, points=%ld\", st->id, (uint32_t)after_wanted, (uint32_t)before_wanted, (size_t)duration, points_wanted);\n        #endif\n        return r;\n    }\n\n    if(unlikely(absolute_period_requested == 1))\n        r->result_options |= RRDR_RESULT_OPTION_ABSOLUTE;\n    else\n        r->result_options |= RRDR_RESULT_OPTION_RELATIVE;\n\n    // find how many dimensions we have\n    long dimensions_count = r->d;\n\n    // -------------------------------------------------------------------------\n    // initialize RRDR\n\n    r->group = group;\n    r->update_every = (int)group * st->update_every;\n    r->before = before_wanted;\n    r->after = after_wanted;\n    r->internal.points_wanted = points_wanted;\n    r->internal.resampling_group = resampling_group;\n    r->internal.resampling_divisor = resampling_divisor;\n\n\n    // -------------------------------------------------------------------------\n    // assign the processor functions\n\n    {\n        int i, found = 0;\n        for(i = 0; !found && api_v1_data_groups[i].name ;i++) {\n            if(api_v1_data_groups[i].value == group_method) {\n                r->internal.grouping_create= api_v1_data_groups[i].create;\n                r->internal.grouping_reset = api_v1_data_groups[i].reset;\n                r->internal.grouping_free  = api_v1_data_groups[i].free;\n                r->internal.grouping_add   = api_v1_data_groups[i].add;\n                r->internal.grouping_flush = api_v1_data_groups[i].flush;\n                found = 1;\n            }\n        }\n        if(!found) {\n            errno = 0;\n            #ifdef NETDATA_INTERNAL_CHECKS\n            error(\"INTERNAL ERROR: grouping method %u not found for chart '%s'. Using 'average'\", (unsigned int)group_method, r->st->name);\n            #endif\n            r->internal.grouping_create= grouping_create_average;\n            r->internal.grouping_reset = grouping_reset_average;\n            r->internal.grouping_free  = grouping_free_average;\n            r->internal.grouping_add   = grouping_add_average;\n            r->internal.grouping_flush = grouping_flush_average;\n        }\n    }\n\n    // allocate any memory required by the grouping method\n    r->internal.grouping_data = r->internal.grouping_create(r);\n\n\n    // -------------------------------------------------------------------------\n    // disable the not-wanted dimensions\n\n    rrdset_check_rdlock(st);\n\n    if(dimensions)\n        rrdr_disable_not_selected_dimensions(r, options, dimensions);\n\n\n    // -------------------------------------------------------------------------\n    // do the work for each dimension\n\n    time_t max_after = 0, min_before = 0;\n    long max_rows = 0;\n\n    RRDDIM *rd;\n    long c, dimensions_used = 0, dimensions_nonzero = 0;\n    for(rd = st->dimensions, c = 0 ; rd && c < dimensions_count ; rd = rd->next, c++) {\n\n        // if we need a percentage, we need to calculate all dimensions\n        if(unlikely(!(options & RRDR_OPTION_PERCENTAGE) && (r->od[c] & RRDR_DIMENSION_HIDDEN)))\n            continue;\n\n        // reset the grouping for the new dimension\n        r->internal.grouping_reset(r);\n\n        do_dimension(\n                r\n                , points_wanted\n                , rd\n                , c\n                , after_slot\n                , before_slot\n                , after_wanted\n                , before_wanted\n                );\n\n        if(r->od[c] & RRDR_DIMENSION_NONZERO)\n            dimensions_nonzero++;\n\n        // verify all dimensions are aligned\n        if(unlikely(!dimensions_used)) {\n            min_before = r->before;\n            max_after = r->after;\n            max_rows = r->rows;\n        }\n        else {\n            if(r->after != max_after) {\n                #ifdef NETDATA_INTERNAL_CHECKS\n                error(\"INTERNAL ERROR: 'after' mismatch between dimensions for chart '%s': max is %zu, dimension '%s' has %zu\",\n                        st->name, (size_t)max_after, rd->name, (size_t)r->after);\n                #endif\n                r->after = (r->after > max_after) ? r->after : max_after;\n            }\n\n            if(r->before != min_before) {\n                #ifdef NETDATA_INTERNAL_CHECKS\n                error(\"INTERNAL ERROR: 'before' mismatch between dimensions for chart '%s': max is %zu, dimension '%s' has %zu\",\n                        st->name, (size_t)min_before, rd->name, (size_t)r->before);\n                #endif\n                r->before = (r->before < min_before) ? r->before : min_before;\n            }\n\n            if(r->rows != max_rows) {\n                #ifdef NETDATA_INTERNAL_CHECKS\n                error(\"INTERNAL ERROR: 'rows' mismatch between dimensions for chart '%s': max is %zu, dimension '%s' has %zu\",\n                        st->name, (size_t)max_rows, rd->name, (size_t)r->rows);\n                #endif\n                r->rows = (r->rows > max_rows) ? r->rows : max_rows;\n            }\n        }\n\n        dimensions_used++;\n    }\n\n    #ifdef NETDATA_INTERNAL_CHECKS\n\n    if(r->internal.log)\n        rrd2rrdr_log_request_response_metdata(r, group_method, aligned, group, resampling_time_requested, resampling_group, after_wanted, after_requested, before_wanted, before_requested, points_requested, points_wanted, after_slot, before_slot, r->internal.log);\n\n    if(r->rows != points_wanted)\n        rrd2rrdr_log_request_response_metdata(r, group_method, aligned, group, resampling_time_requested, resampling_group, after_wanted, after_requested, before_wanted, before_requested, points_requested, points_wanted, after_slot, before_slot, \"got 'points' is not wanted 'points'\");\n\n    if(aligned && (r->before % group) != 0)\n        rrd2rrdr_log_request_response_metdata(r, group_method, aligned, group, resampling_time_requested, resampling_group, after_wanted, after_requested, before_wanted, before_requested, points_requested, points_wanted, after_slot, before_slot, \"'before' is not aligned but alignment is required\");\n\n    // 'after' should not be aligned, since we start inside the first group\n    //if(aligned && (r->after % group) != 0)\n    //    rrd2rrdr_log_request_response_metdata(r, group_method, aligned, group, resampling_time_requested, resampling_group, after_wanted, after_requested, before_wanted, before_requested, points_requested, points_wanted, after_slot, before_slot, \"'after' is not aligned but alignment is required\");\n\n    if(r->before != before_requested)\n        rrd2rrdr_log_request_response_metdata(r, group_method, aligned, group, resampling_time_requested, resampling_group, after_wanted, after_requested, before_wanted, before_requested, points_requested, points_wanted, after_slot, before_slot, \"chart is not aligned to requested 'before'\");\n\n    if(r->before != before_wanted)\n        rrd2rrdr_log_request_response_metdata(r, group_method, aligned, group, resampling_time_requested, resampling_group, after_wanted, after_requested, before_wanted, before_requested, points_requested, points_wanted, after_slot, before_slot, \"got 'before' is not wanted 'before'\");\n\n    // reported 'after' varies, depending on group\n    if((r->after - (group - 1) * r->st->update_every) != after_wanted)\n        rrd2rrdr_log_request_response_metdata(r, group_method, aligned, group, resampling_time_requested, resampling_group, after_wanted, after_requested, before_wanted, before_requested, points_requested, points_wanted, after_slot, before_slot, \"got 'after' is not wanted 'after'\");\n\n    #endif\n\n    // free all resources used by the grouping method\n    r->internal.grouping_free(r);\n\n    // when all the dimensions are zero, we should return all of them\n    if(unlikely(options & RRDR_OPTION_NONZERO && !dimensions_nonzero)) {\n        // all the dimensions are zero\n        // mark them as NONZERO to send them all\n        for(rd = st->dimensions, c = 0 ; rd && c < dimensions_count ; rd = rd->next, c++) {\n            if(unlikely(r->od[c] & RRDR_DIMENSION_HIDDEN)) continue;\n            r->od[c] |= RRDR_DIMENSION_NONZERO;\n        }\n    }\n\n    rrdr_query_completed(r->internal.db_points_read, r->internal.result_points_generated);\n    return r;\n}",
+            2
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_DATATABLE_JSON",
+            "#define DATASOURCE_DATATABLE_JSON 1 /* <=== web/api/formatters/rrd2json.h:26:26:DATASOURCE_DATATABLE_JSON:0 */ ",
+            2
+        ],
+        [
+            "libnetdata/buffer/buffer.h",
+            "CT_APPLICATION_JSON",
+            "#define CT_APPLICATION_JSON             1 /* <=== libnetdata/buffer/buffer.h:25:25:CT_APPLICATION_JSON:0 */ ",
+            2
+        ],
+        [
+            "libnetdata/buffer/buffer.h",
+            "CT_APPLICATION_X_JAVASCRIPT",
+            "#define CT_APPLICATION_X_JAVASCRIPT     4 /* <=== libnetdata/buffer/buffer.h:28:28:CT_APPLICATION_X_JAVASCRIPT:0 */ ",
+            2
+        ],
+        [
+            "libnetdata/libnetdata.h",
+            "abs",
+            "#define abs(x) (((x) < 0)? (-(x)) : (x)) /* <=== libnetdata/libnetdata.h:203:203:abs:1 */ ",
+            3
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_JSONP",
+            "#define DATASOURCE_JSONP 5 /* <=== web/api/formatters/rrd2json.h:30:30:DATASOURCE_JSONP:0 */ ",
+            1
+        ],
+        [
+            "libnetdata/log/log.h",
+            "debug",
+            "#define debug(type, args...) debug_dummy() /* <=== libnetdata/log/log.h:80:80:debug:2 */ ",
+            1
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_JS_ARRAY",
+            "#define DATASOURCE_JS_ARRAY 8 /* <=== web/api/formatters/rrd2json.h:33:33:DATASOURCE_JS_ARRAY:0 */ ",
+            2
+        ],
+        [
+            "web/api/queries/query.c",
+            "rrdr_disable_not_selected_dimensions",
+            "static void rrdr_disable_not_selected_dimensions(RRDR *r, RRDR_OPTIONS options, const char *dims) { /* <=== rrdr_disable_not_selected_dimensions */ \n    rrdset_check_rdlock(r->st);\n\n    if(unlikely(!dims || !*dims || (dims[0] == '*' && dims[1] == '\\0'))) return;\n\n    int match_ids = 0, match_names = 0;\n\n    if(unlikely(options & RRDR_OPTION_MATCH_IDS))\n        match_ids = 1;\n    if(unlikely(options & RRDR_OPTION_MATCH_NAMES))\n        match_names = 1;\n\n    if(likely(!match_ids && !match_names))\n        match_ids = match_names = 1;\n\n    SIMPLE_PATTERN *pattern = simple_pattern_create(dims, \",|\\t\\r\\n\\f\\v\", SIMPLE_PATTERN_EXACT);\n\n    RRDDIM *d;\n    long c, dims_selected = 0, dims_not_hidden_not_zero = 0;\n    for(c = 0, d = r->st->dimensions; d ;c++, d = d->next) {\n        if(    (match_ids   && simple_pattern_matches(pattern, d->id))\n               || (match_names && simple_pattern_matches(pattern, d->name))\n                ) {\n            r->od[c] |= RRDR_DIMENSION_SELECTED;\n            if(unlikely(r->od[c] & RRDR_DIMENSION_HIDDEN)) r->od[c] &= ~RRDR_DIMENSION_HIDDEN;\n            dims_selected++;\n\n            // since the user needs this dimension\n            // make it appear as NONZERO, to return it\n            // even if the dimension has only zeros\n            // unless option non_zero is set\n            if(unlikely(!(options & RRDR_OPTION_NONZERO)))\n                r->od[c] |= RRDR_DIMENSION_NONZERO;\n\n            // count the visible dimensions\n            if(likely(r->od[c] & RRDR_DIMENSION_NONZERO))\n                dims_not_hidden_not_zero++;\n        }\n        else {\n            r->od[c] |= RRDR_DIMENSION_HIDDEN;\n            if(unlikely(r->od[c] & RRDR_DIMENSION_SELECTED)) r->od[c] &= ~RRDR_DIMENSION_SELECTED;\n        }\n    }\n    simple_pattern_free(pattern);\n\n    // check if all dimensions are hidden\n    if(unlikely(!dims_not_hidden_not_zero && dims_selected)) {\n        // there are a few selected dimensions\n        // but they are all zero\n        // enable the selected ones\n        // to avoid returning an empty chart\n        for(c = 0, d = r->st->dimensions; d ;c++, d = d->next)\n            if(unlikely(r->od[c] & RRDR_DIMENSION_SELECTED))\n                r->od[c] |= RRDR_DIMENSION_NONZERO;\n    }\n}",
+            3
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_CSV_MARKDOWN",
+            "#define DATASOURCE_CSV_MARKDOWN 11 /* <=== web/api/formatters/rrd2json.h:36:36:DATASOURCE_CSV_MARKDOWN:0 */ ",
+            2
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_TSV",
+            "#define DATASOURCE_TSV 6 /* <=== web/api/formatters/rrd2json.h:31:31:DATASOURCE_TSV:0 */ ",
+            2
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_SSV",
+            "#define DATASOURCE_SSV 3 /* <=== web/api/formatters/rrd2json.h:28:28:DATASOURCE_SSV:0 */ ",
+            2
+        ],
+        [
+            "libnetdata/buffer/buffer.h",
+            "buffer_flush",
+            "#define buffer_flush(wb) wb->buffer[(wb)->len = 0] = '\\0' /* <=== libnetdata/buffer/buffer.h:54:54:buffer_flush:1 */ ",
+            1
+        ],
+        [
+            "libnetdata/buffer/buffer.c",
+            "buffer_tostring",
+            "const char *buffer_tostring(BUFFER *wb) /* <=== buffer_tostring */ \n{\n    buffer_need_bytes(wb, 1);\n    wb->buffer[wb->len] = '\\0';\n\n    buffer_overflow_check(wb);\n\n    return(wb->buffer);\n}",
+            2
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_DATATABLE_JSONP",
+            "#define DATASOURCE_DATATABLE_JSONP 2 /* <=== web/api/formatters/rrd2json.h:27:27:DATASOURCE_DATATABLE_JSONP:0 */ ",
+            1
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_CSV",
+            "#define DATASOURCE_CSV 4 /* <=== web/api/formatters/rrd2json.h:29:29:DATASOURCE_CSV:0 */ ",
+            2
+        ],
+        [
+            "libnetdata/buffer/buffer.c",
+            "BUFFER_OVERFLOW_EOF",
+            "#define BUFFER_OVERFLOW_EOF \"EOF\" /* <=== libnetdata/buffer/buffer.c:5:5:BUFFER_OVERFLOW_EOF:0 */ ",
+            3
+        ],
+        [
+            "libnetdata/buffer/buffer.h",
+            "WEB_DATA_LENGTH_INCREASE_STEP",
+            "#define WEB_DATA_LENGTH_INCREASE_STEP 1024 /* <=== libnetdata/buffer/buffer.h:8:8:WEB_DATA_LENGTH_INCREASE_STEP:0 */ ",
+            2
+        ],
+        [
+            "libnetdata/buffer/buffer.h",
+            "buffer_no_cacheable",
+            "#define buffer_no_cacheable(wb) do { (wb)->options |= WB_CONTENT_NO_CACHEABLE; if((wb)->options & WB_CONTENT_CACHEABLE)    (wb)->options &= ~WB_CONTENT_CACHEABLE;  (wb)->expires = 0; } while(0) /* <=== libnetdata/buffer/buffer.h:49:49:buffer_no_cacheable:1 */ ",
+            2
+        ],
+        [
+            "libnetdata/buffer/buffer.c",
+            "buffer_strcat",
+            "void buffer_strcat(BUFFER *wb, const char *txt) /* <=== buffer_strcat */ \n{\n    // buffer_sprintf(wb, \"%s\", txt);\n\n    if(unlikely(!txt || !*txt)) return;\n\n    buffer_need_bytes(wb, 1);\n\n    char *s = &wb->buffer[wb->len], *start, *end = &wb->buffer[wb->size];\n    size_t len = wb->len;\n\n    start = s;\n    while(*txt && s != end)\n        *s++ = *txt++;\n\n    len += s - start;\n\n    wb->len = len;\n    buffer_overflow_check(wb);\n\n    if(*txt) {\n        debug(D_WEB_BUFFER, \"strcat(): increasing web_buffer at position %zu, size = %zu\\n\", wb->len, wb->size);\n        len = strlen(txt);\n        buffer_increase(wb, len);\n        buffer_strcat(wb, txt);\n    }\n    else {\n        // terminate the string\n        // without increasing the length\n        buffer_need_bytes(wb, (size_t)1);\n        wb->buffer[wb->len] = '\\0';\n    }\n}",
+            1
+        ],
+        [
+            "libnetdata/clocks/clocks.h",
+            "CLOCK_REALTIME",
+            "#define CLOCK_REALTIME  0 /* <=== libnetdata/clocks/clocks.h:31:31:CLOCK_REALTIME:0 */ ",
+            3
+        ],
+        [
+            "libnetdata/url/url.c",
+            "from_hex",
+            "char from_hex(char ch) { /* <=== from_hex */ \n    return (char)(isdigit(ch) ? ch - '0' : tolower(ch) - 'a' + 10);\n}",
+            1
+        ],
+        [
+            "libnetdata/clocks/clocks.c",
+            "now_sec",
+            "static inline time_t now_sec(clockid_t clk_id) { /* <=== now_sec */ \n    struct timespec ts;\n    if(unlikely(clock_gettime(clk_id, &ts) == -1)) {\n        error(\"clock_gettime(%d, &timespec) failed.\", clk_id);\n        return 0;\n    }\n    return ts.tv_sec;\n}",
+            3
+        ],
+        [
+            "libnetdata/buffer/buffer.c",
+            "buffer_sprintf",
+            "void buffer_sprintf(BUFFER *wb, const char *fmt, ...) /* <=== buffer_sprintf */ \n{\n    if(unlikely(!fmt || !*fmt)) return;\n\n    va_list args;\n    size_t wrote = 0, need = 2, multiplier = 0, len;\n\n    do {\n        need += wrote + multiplier * WEB_DATA_LENGTH_INCREASE_STEP;\n        multiplier++;\n\n        debug(D_WEB_BUFFER, \"web_buffer_sprintf(): increasing web_buffer at position %zu, size = %zu, by %zu bytes (wrote = %zu)\\n\", wb->len, wb->size, need, wrote);\n        buffer_need_bytes(wb, need);\n\n        len = wb->size - wb->len - 1;\n\n        va_start(args, fmt);\n        wrote = (size_t) vsnprintfz(&wb->buffer[wb->len], len, fmt, args);\n        va_end(args);\n\n    } while(wrote >= len);\n\n    wb->len += wrote;\n\n    // the buffer is \\0 terminated by vsnprintf\n}",
+            1
+        ],
+        [
+            "web/api/queries/query.c",
+            "do_dimension",
+            "static inline void do_dimension( /* <=== do_dimension */ \n          RRDR *r\n        , long points_wanted\n        , RRDDIM *rd\n        , long dim_id_in_rrdr\n        , long after_slot\n        , long before_slot\n        , time_t after_wanted\n        , time_t before_wanted\n){\n    (void) before_slot;\n\n    RRDSET *st = r->st;\n\n    time_t\n        now = after_wanted,\n        dt = st->update_every,\n        max_date = 0,\n        min_date = 0;\n\n    long\n        slot = after_slot,\n        group_size = r->group,\n        points_added = 0,\n        values_in_group = 0,\n        values_in_group_non_zero = 0,\n        rrdr_line = -1,\n        entries = st->entries;\n\n    RRDR_VALUE_FLAGS\n        group_value_flags = RRDR_VALUE_NOTHING;\n\n    calculated_number min = r->min, max = r->max;\n    size_t db_points_read = 0;\n    for( ; points_added < points_wanted ; now += dt, slot++ ) {\n        if(unlikely(slot >= entries)) slot = 0;\n\n        // make sure we return data in the proper time range\n        if(unlikely(now > before_wanted)) {\n            #ifdef NETDATA_INTERNAL_CHECKS\n            r->internal.log = \"stopped, because attempted to access the db after 'wanted before'\";\n            #endif\n            break;\n        }\n        if(unlikely(now < after_wanted)) {\n            #ifdef NETDATA_INTERNAL_CHECKS\n            r->internal.log = \"skipped, because attempted to access the db before 'wanted after'\";\n            #endif\n            continue;\n        }\n\n        // read the value from the database\n        storage_number n = rd->values[slot];\n        calculated_number value = NAN;\n        if(likely(does_storage_number_exist(n))) {\n\n            value = unpack_storage_number(n);\n            if(likely(value != 0.0))\n                values_in_group_non_zero++;\n\n            if(unlikely(did_storage_number_reset(n)))\n                group_value_flags |= RRDR_VALUE_RESET;\n\n        }\n\n        // add this value for grouping\n        r->internal.grouping_add(r, value);\n        values_in_group++;\n        db_points_read++;\n\n        if(unlikely(values_in_group == group_size)) {\n            rrdr_line = rrdr_line_init(r, now, rrdr_line);\n\n            if(unlikely(!min_date)) min_date = now;\n            max_date = now;\n\n            // find the place to store our values\n            RRDR_VALUE_FLAGS *rrdr_value_options_ptr = &r->o[rrdr_line * r->d + dim_id_in_rrdr];\n\n            // update the dimension options\n            if(likely(values_in_group_non_zero))\n                r->od[dim_id_in_rrdr] |= RRDR_DIMENSION_NONZERO;\n\n            // store the specific point options\n            *rrdr_value_options_ptr = group_value_flags;\n\n            // store the value\n            calculated_number value = r->internal.grouping_flush(r, rrdr_value_options_ptr);\n            r->v[rrdr_line * r->d + dim_id_in_rrdr] = value;\n\n            if(likely(points_added || dim_id_in_rrdr)) {\n                // find the min/max across all dimensions\n\n                if(unlikely(value < min)) min = value;\n                if(unlikely(value > max)) max = value;\n\n            }\n            else {\n                // runs only when dim_id_in_rrdr == 0 && points_added == 0\n                // so, on the first point added for the query.\n                min = max = value;\n            }\n\n            points_added++;\n            values_in_group = 0;\n            group_value_flags = RRDR_VALUE_NOTHING;\n            values_in_group_non_zero = 0;\n        }\n    }\n\n    r->internal.db_points_read += db_points_read;\n    r->internal.result_points_generated += points_added;\n\n    r->min = min;\n    r->max = max;\n    r->before = max_date;\n    r->after = min_date;\n    rrdr_done(r, rrdr_line);\n\n    #ifdef NETDATA_INTERNAL_CHECKS\n    if(unlikely(r->rows != points_added))\n        error(\"INTERNAL ERROR: %s.%s added %zu rows, but RRDR says I added %zu.\", r->st->name, rd->name, (size_t)points_added, (size_t)r->rows);\n    #endif\n}",
+            3
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "API_RELATIVE_TIME_MAX",
+            "#define API_RELATIVE_TIME_MAX (3 * 365 * 86400) /* <=== web/api/formatters/rrd2json.h:21:21:API_RELATIVE_TIME_MAX:0 */ ",
+            3
+        ],
+        [
+            "libnetdata/buffer/buffer.c",
+            "buffer_free",
+            "void buffer_free(BUFFER *b) { /* <=== buffer_free */ \n    if(unlikely(!b)) return;\n\n    buffer_overflow_check(b);\n\n    debug(D_WEB_BUFFER, \"Freeing web buffer of size %zu.\", b->size);\n\n    freez(b->buffer);\n    freez(b);\n}",
+            1
+        ],
+        [
+            "web/api/queries/rrdr.h",
+            "rrdr_rows",
+            "#define rrdr_rows(r) ((r)->rows) /* <=== web/api/queries/rrdr.h:93:93:rrdr_rows:1 */ ",
+            2
+        ],
+        [
+            "libnetdata/clocks/clocks.c",
+            "now_realtime_sec",
+            "inline time_t now_realtime_sec(void) { /* <=== now_realtime_sec */ \n    return now_sec(CLOCK_REALTIME);\n}",
+            2
+        ],
+        [
+            "libnetdata/buffer/buffer.h",
+            "CT_TEXT_PLAIN",
+            "#define CT_TEXT_PLAIN                   2 /* <=== libnetdata/buffer/buffer.h:26:26:CT_TEXT_PLAIN:0 */ ",
+            2
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_SSV_COMMA",
+            "#define DATASOURCE_SSV_COMMA 9 /* <=== web/api/formatters/rrd2json.h:34:34:DATASOURCE_SSV_COMMA:0 */ ",
+            2
+        ],
+        [
+            "web/api/formatters/rrd2json.c",
+            "rrdset2anything_api_v1",
+            "int rrdset2anything_api_v1( /* <=== rrdset2anything_api_v1 */ \n          RRDSET *st\n        , BUFFER *wb\n        , BUFFER *dimensions\n        , uint32_t format\n        , long points\n        , long long after\n        , long long before\n        , int group_method\n        , long group_time\n        , uint32_t options\n        , time_t *latest_timestamp\n) {\n    st->last_accessed_time = now_realtime_sec();\n\n    RRDR *r = rrd2rrdr(st, points, after, before, group_method, group_time, options, dimensions?buffer_tostring(dimensions):NULL);\n    if(!r) {\n        buffer_strcat(wb, \"Cannot generate output with these parameters on this chart.\");\n        return 500;\n    }\n\n    if(r->result_options & RRDR_RESULT_OPTION_RELATIVE)\n        buffer_no_cacheable(wb);\n    else if(r->result_options & RRDR_RESULT_OPTION_ABSOLUTE)\n        buffer_cacheable(wb);\n\n    if(latest_timestamp && rrdr_rows(r) > 0)\n        *latest_timestamp = r->before;\n\n    switch(format) {\n    case DATASOURCE_SSV:\n        if(options & RRDR_OPTION_JSON_WRAP) {\n            wb->contenttype = CT_APPLICATION_JSON;\n            rrdr_json_wrapper_begin(r, wb, format, options, 1);\n            rrdr2ssv(r, wb, options, \"\", \" \", \"\");\n            rrdr_json_wrapper_end(r, wb, format, options, 1);\n        }\n        else {\n            wb->contenttype = CT_TEXT_PLAIN;\n            rrdr2ssv(r, wb, options, \"\", \" \", \"\");\n        }\n        break;\n\n    case DATASOURCE_SSV_COMMA:\n        if(options & RRDR_OPTION_JSON_WRAP) {\n            wb->contenttype = CT_APPLICATION_JSON;\n            rrdr_json_wrapper_begin(r, wb, format, options, 1);\n            rrdr2ssv(r, wb, options, \"\", \",\", \"\");\n            rrdr_json_wrapper_end(r, wb, format, options, 1);\n        }\n        else {\n            wb->contenttype = CT_TEXT_PLAIN;\n            rrdr2ssv(r, wb, options, \"\", \",\", \"\");\n        }\n        break;\n\n    case DATASOURCE_JS_ARRAY:\n        if(options & RRDR_OPTION_JSON_WRAP) {\n            wb->contenttype = CT_APPLICATION_JSON;\n            rrdr_json_wrapper_begin(r, wb, format, options, 0);\n            rrdr2ssv(r, wb, options, \"[\", \",\", \"]\");\n            rrdr_json_wrapper_end(r, wb, format, options, 0);\n        }\n        else {\n            wb->contenttype = CT_APPLICATION_JSON;\n            rrdr2ssv(r, wb, options, \"[\", \",\", \"]\");\n        }\n        break;\n\n    case DATASOURCE_CSV:\n        if(options & RRDR_OPTION_JSON_WRAP) {\n            wb->contenttype = CT_APPLICATION_JSON;\n            rrdr_json_wrapper_begin(r, wb, format, options, 1);\n            rrdr2csv(r, wb, format, options, \"\", \",\", \"\\\\n\", \"\");\n            rrdr_json_wrapper_end(r, wb, format, options, 1);\n        }\n        else {\n            wb->contenttype = CT_TEXT_PLAIN;\n            rrdr2csv(r, wb, format, options, \"\", \",\", \"\\r\\n\", \"\");\n        }\n        break;\n\n    case DATASOURCE_CSV_MARKDOWN:\n        if(options & RRDR_OPTION_JSON_WRAP) {\n            wb->contenttype = CT_APPLICATION_JSON;\n            rrdr_json_wrapper_begin(r, wb, format, options, 1);\n            rrdr2csv(r, wb, format, options, \"\", \"|\", \"\\\\n\", \"\");\n            rrdr_json_wrapper_end(r, wb, format, options, 1);\n        }\n        else {\n            wb->contenttype = CT_TEXT_PLAIN;\n            rrdr2csv(r, wb, format, options, \"\", \"|\", \"\\r\\n\", \"\");\n        }\n        break;\n\n    case DATASOURCE_CSV_JSON_ARRAY:\n        wb->contenttype = CT_APPLICATION_JSON;\n        if(options & RRDR_OPTION_JSON_WRAP) {\n            rrdr_json_wrapper_begin(r, wb, format, options, 0);\n            buffer_strcat(wb, \"[\\n\");\n            rrdr2csv(r, wb, format, options + RRDR_OPTION_LABEL_QUOTES, \"[\", \",\", \"]\", \",\\n\");\n            buffer_strcat(wb, \"\\n]\");\n            rrdr_json_wrapper_end(r, wb, format, options, 0);\n        }\n        else {\n            wb->contenttype = CT_APPLICATION_JSON;\n            buffer_strcat(wb, \"[\\n\");\n            rrdr2csv(r, wb, format, options + RRDR_OPTION_LABEL_QUOTES, \"[\", \",\", \"]\", \",\\n\");\n            buffer_strcat(wb, \"\\n]\");\n        }\n        break;\n\n    case DATASOURCE_TSV:\n        if(options & RRDR_OPTION_JSON_WRAP) {\n            wb->contenttype = CT_APPLICATION_JSON;\n            rrdr_json_wrapper_begin(r, wb, format, options, 1);\n            rrdr2csv(r, wb, format, options, \"\", \"\\t\", \"\\\\n\", \"\");\n            rrdr_json_wrapper_end(r, wb, format, options, 1);\n        }\n        else {\n            wb->contenttype = CT_TEXT_PLAIN;\n            rrdr2csv(r, wb, format, options, \"\", \"\\t\", \"\\r\\n\", \"\");\n        }\n        break;\n\n    case DATASOURCE_HTML:\n        if(options & RRDR_OPTION_JSON_WRAP) {\n            wb->contenttype = CT_APPLICATION_JSON;\n            rrdr_json_wrapper_begin(r, wb, format, options, 1);\n            buffer_strcat(wb, \"<html>\\\\n<center>\\\\n<table border=\\\\\\\"0\\\\\\\" cellpadding=\\\\\\\"5\\\\\\\" cellspacing=\\\\\\\"5\\\\\\\">\\\\n\");\n            rrdr2csv(r, wb, format, options, \"<tr><td>\", \"</td><td>\", \"</td></tr>\\\\n\", \"\");\n            buffer_strcat(wb, \"</table>\\\\n</center>\\\\n</html>\\\\n\");\n            rrdr_json_wrapper_end(r, wb, format, options, 1);\n        }\n        else {\n            wb->contenttype = CT_TEXT_HTML;\n            buffer_strcat(wb, \"<html>\\n<center>\\n<table border=\\\"0\\\" cellpadding=\\\"5\\\" cellspacing=\\\"5\\\">\\n\");\n            rrdr2csv(r, wb, format, options, \"<tr><td>\", \"</td><td>\", \"</td></tr>\\n\", \"\");\n            buffer_strcat(wb, \"</table>\\n</center>\\n</html>\\n\");\n        }\n        break;\n\n    case DATASOURCE_DATATABLE_JSONP:\n        wb->contenttype = CT_APPLICATION_X_JAVASCRIPT;\n\n        if(options & RRDR_OPTION_JSON_WRAP)\n            rrdr_json_wrapper_begin(r, wb, format, options, 0);\n\n        rrdr2json(r, wb, options, 1);\n\n        if(options & RRDR_OPTION_JSON_WRAP)\n            rrdr_json_wrapper_end(r, wb, format, options, 0);\n        break;\n\n    case DATASOURCE_DATATABLE_JSON:\n        wb->contenttype = CT_APPLICATION_JSON;\n\n        if(options & RRDR_OPTION_JSON_WRAP)\n            rrdr_json_wrapper_begin(r, wb, format, options, 0);\n\n        rrdr2json(r, wb, options, 1);\n\n        if(options & RRDR_OPTION_JSON_WRAP)\n            rrdr_json_wrapper_end(r, wb, format, options, 0);\n        break;\n\n    case DATASOURCE_JSONP:\n        wb->contenttype = CT_APPLICATION_X_JAVASCRIPT;\n        if(options & RRDR_OPTION_JSON_WRAP)\n            rrdr_json_wrapper_begin(r, wb, format, options, 0);\n\n        rrdr2json(r, wb, options, 0);\n\n        if(options & RRDR_OPTION_JSON_WRAP)\n            rrdr_json_wrapper_end(r, wb, format, options, 0);\n        break;\n\n    case DATASOURCE_JSON:\n    default:\n        wb->contenttype = CT_APPLICATION_JSON;\n\n        if(options & RRDR_OPTION_JSON_WRAP)\n            rrdr_json_wrapper_begin(r, wb, format, options, 0);\n\n        rrdr2json(r, wb, options, 0);\n\n        if(options & RRDR_OPTION_JSON_WRAP)\n            rrdr_json_wrapper_end(r, wb, format, options, 0);\n        break;\n    }\n\n    rrdr_free(r);\n    return 200;\n}",
+            1
+        ],
+        [
+            "web/api/formatters/rrd2json.h",
+            "DATASOURCE_CSV_JSON_ARRAY",
+            "#define DATASOURCE_CSV_JSON_ARRAY 10 /* <=== web/api/formatters/rrd2json.h:35:35:DATASOURCE_CSV_JSON_ARRAY:0 */ ",
+            2
+        ],
+        [
+            "libnetdata/buffer/buffer.h",
+            "CT_TEXT_HTML",
+            "#define CT_TEXT_HTML                    3 /* <=== libnetdata/buffer/buffer.h:27:27:CT_TEXT_HTML:0 */ ",
+            2
+        ],
+        [
+            "database/rrd.h",
+            "rrdset_first_entry_t",
+            "#define rrdset_first_entry_t(st) ((time_t)(rrdset_last_entry_t(st) - rrdset_duration(st))) /* <=== database/rrd.h:749:749:rrdset_first_entry_t:1 */ ",
+            3
+        ],
+        [
+            "libnetdata/buffer/buffer.c",
+            "buffer_overflow_init",
+            "static inline void buffer_overflow_init(BUFFER *b) /* <=== buffer_overflow_init */ \n{\n    b->buffer[b->size] = '\\0';\n    strcpy(&b->buffer[b->size + 1], BUFFER_OVERFLOW_EOF);\n}",
+            3
+        ],
+        [
+            "libnetdata/buffer/buffer.c",
+            "buffer_increase",
+            "void buffer_increase(BUFFER *b, size_t free_size_required) /* <=== buffer_increase */ \n{\n    buffer_overflow_check(b);\n\n    size_t left = b->size - b->len;\n\n    if(left >= free_size_required) return;\n\n    size_t increase = free_size_required - left;\n    if(increase < WEB_DATA_LENGTH_INCREASE_STEP) increase = WEB_DATA_LENGTH_INCREASE_STEP;\n\n    debug(D_WEB_BUFFER, \"Increasing data buffer from size %zu to %zu.\", b->size, b->size + increase);\n\n    b->buffer = reallocz(b->buffer, b->size + increase + sizeof(BUFFER_OVERFLOW_EOF) + 2);\n    b->size += increase;\n\n    buffer_overflow_init(b);\n    buffer_overflow_check(b);\n}",
+            2
+        ],
+        [
+            "database/rrd.h",
+            "rrdset_check_rdlock",
+            "#define rrdset_check_rdlock(st) (void)0 /* <=== database/rrd.h:674:674:rrdset_check_rdlock:1 */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"../libnetdata.h\"",
+        "#include \"web_api_v1.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct web_client",
+            "web_client"
+        ]
+    ],
+    "visitedLines_after": {
+        "libnetdata/url/url.c": [
+            55,
+            56,
+            57,
+            58,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            69,
+            70,
+            73,
+            75,
+            78
+        ],
+        "web/api/web_api_v1.c": [
+            236,
+            237,
+            239,
+            240,
+            241,
+            246,
+            250,
+            254,
+            255,
+            256,
+            257,
+            258,
+            259,
+            263,
+            264,
+            265,
+            266,
+            267,
+            273,
+            274,
+            275,
+            277,
+            278,
+            279,
+            286,
+            287,
+            292,
+            293,
+            294,
+            295,
+            296,
+            299,
+            302,
+            305,
+            306,
+            308,
+            309,
+            311,
+            316,
+            317,
+            318,
+            320,
+            321,
+            322,
+            324,
+            325,
+            326,
+            327,
+            328,
+            329,
+            330,
+            332,
+            333,
+            334,
+            336,
+            337,
+            338,
+            339,
+            345,
+            346,
+            347,
+            348,
+            349,
+            350,
+            384,
+            385,
+            386,
+            390,
+            391,
+            397,
+            398,
+            399,
+            402,
+            403,
+            405,
+            406,
+            409,
+            410,
+            412,
+            413,
+            414,
+            418,
+            419,
+            420,
+            421,
+            424,
+            425,
+            428,
+            429
+        ]
+    },
+    "visitedLines_before": {
+        "libnetdata/url/url.c": [
+            55,
+            56,
+            57,
+            58,
+            60,
+            61,
+            62,
+            63,
+            64,
+            67,
+            68,
+            71,
+            73,
+            76
+        ],
+        "web/api/web_api_v1.c": [
+            237,
+            241,
+            245,
+            246,
+            247,
+            248,
+            249,
+            250,
+            254,
+            255,
+            256,
+            257,
+            258,
+            264,
+            265,
+            266,
+            268,
+            269,
+            270,
+            277,
+            278,
+            283,
+            284,
+            285,
+            286,
+            287,
+            290,
+            293,
+            296,
+            297,
+            299,
+            300,
+            302,
+            307,
+            308,
+            309,
+            311,
+            312,
+            313,
+            315,
+            316,
+            317,
+            318,
+            319,
+            320,
+            321,
+            323,
+            324,
+            325,
+            327,
+            328,
+            329,
+            330,
+            367,
+            368,
+            369,
+            373,
+            374,
+            380,
+            381,
+            382,
+            385,
+            386,
+            388,
+            389,
+            392,
+            393,
+            395,
+            396,
+            397,
+            401,
+            402,
+            403,
+            404,
+            407,
+            408,
+            411,
+            412
+        ]
+    },
+    "visitedParams": {
+        "libnetdata/url/url.c": [
+            [
+                "char *to",
+                "url_decode_r"
+            ],
+            [
+                "char *url",
+                "url_decode_r"
+            ],
+            [
+                "size_t size",
+                "url_decode_r"
+            ]
+        ],
+        "web/api/web_api_v1.c": [
+            [
+                "char *s",
+                "fix_google_param"
+            ],
+            [
+                "char *url",
+                "web_client_api_request_v1_data"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libnetdata/url/url.c",
+            "url_decode_r",
+            "char *url_decode_r(char *to, char *url, size_t size) { /* <=== url_decode_r */ \n    char *s = url,           // source\n         *d = to,            // destination\n         *e = &to[size - 1]; // destination end\n\n    while(*s && d < e) {\n        if(unlikely(*s == '%')) {\n            if(likely(s[1] && s[2])) {\n                char t = from_hex(s[1]) << 4 | from_hex(s[2]);\n                // avoid HTTP header injection\n                *d++ = (char)((isprint(t))? t : ' ');\n                s += 2;\n            }\n        }\n        else if(unlikely(*s == '+'))\n            *d++ = ' ';\n\n        else\n            *d++ = *s;\n\n        s++;\n    }\n\n    *d = '\\0';\n\n    return to;\n}",
+            55
+        ],
+        [
+            "web/api/web_api_v1.c",
+            "fix_google_param",
+            "void fix_google_param(char *s) { /* <=== fix_google_param */ \n    if(unlikely(!s)) return;\n\n    for( ; *s ;s++) {\n        if(!isalnum(*s) && *s != '.' && *s != '_' && *s != '-')\n            *s = '_';\n    }\n}",
+            236
+        ],
+        [
+            "web/api/web_api_v1.c",
+            "web_client_api_request_v1_data",
+            "inline int web_client_api_request_v1_data(RRDHOST *host, struct web_client *w, char *url) { /* <=== web_client_api_request_v1_data */ \n    debug(D_WEB_CLIENT, \"%llu: API v1 data with URL '%s'\", w->id, url);\n\n    int ret = 400;\n    BUFFER *dimensions = NULL;\n\n    buffer_flush(w->response.data);\n\n    char    *google_version = \"0.6\",\n            *google_reqId = \"0\",\n            *google_sig = \"0\",\n            *google_out = \"json\",\n            *responseHandler = NULL,\n            *outFileName = NULL;\n\n    time_t last_timestamp_in_data = 0, google_timestamp = 0;\n\n    char *chart = NULL\n    , *before_str = NULL\n    , *after_str = NULL\n    , *group_time_str = NULL\n    , *points_str = NULL;\n\n    int group = RRDR_GROUPING_AVERAGE;\n    uint32_t format = DATASOURCE_JSON;\n    uint32_t options = 0x00000000;\n\n    while(url) {\n        char *value = mystrsep(&url, \"?&\");\n        if(!value || !*value) continue;\n\n        char *name = mystrsep(&value, \"=\");\n        if(!name || !*name) continue;\n        if(!value || !*value) continue;\n\n        debug(D_WEB_CLIENT, \"%llu: API v1 data query param '%s' with value '%s'\", w->id, name, value);\n\n        // name and value are now the parameters\n        // they are not null and not empty\n\n        if(!strcmp(name, \"chart\")) chart = value;\n        else if(!strcmp(name, \"dimension\") || !strcmp(name, \"dim\") || !strcmp(name, \"dimensions\") || !strcmp(name, \"dims\")) {\n            if(!dimensions) dimensions = buffer_create(100);\n            buffer_strcat(dimensions, \"|\");\n            buffer_strcat(dimensions, value);\n        }\n        else if(!strcmp(name, \"after\")) after_str = value;\n        else if(!strcmp(name, \"before\")) before_str = value;\n        else if(!strcmp(name, \"points\")) points_str = value;\n        else if(!strcmp(name, \"gtime\")) group_time_str = value;\n        else if(!strcmp(name, \"group\")) {\n            group = web_client_api_request_v1_data_group(value, RRDR_GROUPING_AVERAGE);\n        }\n        else if(!strcmp(name, \"format\")) {\n            format = web_client_api_request_v1_data_format(value);\n        }\n        else if(!strcmp(name, \"options\")) {\n            options |= web_client_api_request_v1_data_options(value);\n        }\n        else if(!strcmp(name, \"callback\")) {\n            responseHandler = value;\n        }\n        else if(!strcmp(name, \"filename\")) {\n            outFileName = value;\n        }\n        else if(!strcmp(name, \"tqx\")) {\n            // parse Google Visualization API options\n            // https://developers.google.com/chart/interactive/docs/dev/implementing_data_source\n            char *tqx_name, *tqx_value;\n\n            while(value) {\n                tqx_value = mystrsep(&value, \";\");\n                if(!tqx_value || !*tqx_value) continue;\n\n                tqx_name = mystrsep(&tqx_value, \":\");\n                if(!tqx_name || !*tqx_name) continue;\n                if(!tqx_value || !*tqx_value) continue;\n\n                if(!strcmp(tqx_name, \"version\"))\n                    google_version = tqx_value;\n                else if(!strcmp(tqx_name, \"reqId\"))\n                    google_reqId = tqx_value;\n                else if(!strcmp(tqx_name, \"sig\")) {\n                    google_sig = tqx_value;\n                    google_timestamp = strtoul(google_sig, NULL, 0);\n                }\n                else if(!strcmp(tqx_name, \"out\")) {\n                    google_out = tqx_value;\n                    format = web_client_api_request_v1_data_google_format(google_out);\n                }\n                else if(!strcmp(tqx_name, \"responseHandler\"))\n                    responseHandler = tqx_value;\n                else if(!strcmp(tqx_name, \"outFileName\"))\n                    outFileName = tqx_value;\n            }\n        }\n    }\n\n    // validate the google parameters given\n    fix_google_param(google_out);\n    fix_google_param(google_sig);\n    fix_google_param(google_reqId);\n    fix_google_param(google_version);\n    fix_google_param(responseHandler);\n    fix_google_param(outFileName);\n\n    if(!chart || !*chart) {\n        buffer_sprintf(w->response.data, \"No chart id is given at the request.\");\n        goto cleanup;\n    }\n\n    RRDSET *st = rrdset_find(host, chart);\n    if(!st) st = rrdset_find_byname(host, chart);\n    if(!st) {\n        buffer_strcat(w->response.data, \"Chart is not found: \");\n        buffer_strcat_htmlescape(w->response.data, chart);\n        ret = 404;\n        goto cleanup;\n    }\n    st->last_accessed_time = now_realtime_sec();\n\n    long long before = (before_str && *before_str)?str2l(before_str):0;\n    long long after  = (after_str  && *after_str) ?str2l(after_str):0;\n    int       points = (points_str && *points_str)?str2i(points_str):0;\n    long      group_time = (group_time_str && *group_time_str)?str2l(group_time_str):0;\n\n    debug(D_WEB_CLIENT, \"%llu: API command 'data' for chart '%s', dimensions '%s', after '%lld', before '%lld', points '%d', group '%d', format '%u', options '0x%08x'\"\n          , w->id\n          , chart\n          , (dimensions)?buffer_tostring(dimensions):\"\"\n          , after\n          , before\n          , points\n          , group\n          , format\n          , options\n    );\n\n    if(outFileName && *outFileName) {\n        buffer_sprintf(w->response.header, \"Content-Disposition: attachment; filename=\\\"%s\\\"\\r\\n\", outFileName);\n        debug(D_WEB_CLIENT, \"%llu: generating outfilename header: '%s'\", w->id, outFileName);\n    }\n\n    if(format == DATASOURCE_DATATABLE_JSONP) {\n        if(responseHandler == NULL)\n            responseHandler = \"google.visualization.Query.setResponse\";\n\n        debug(D_WEB_CLIENT_ACCESS, \"%llu: GOOGLE JSON/JSONP: version = '%s', reqId = '%s', sig = '%s', out = '%s', responseHandler = '%s', outFileName = '%s'\",\n                w->id, google_version, google_reqId, google_sig, google_out, responseHandler, outFileName\n        );\n\n        buffer_sprintf(w->response.data,\n                \"%s({version:'%s',reqId:'%s',status:'ok',sig:'%ld',table:\",\n                responseHandler, google_version, google_reqId, st->last_updated.tv_sec);\n    }\n    else if(format == DATASOURCE_JSONP) {\n        if(responseHandler == NULL)\n            responseHandler = \"callback\";\n\n        buffer_strcat(w->response.data, responseHandler);\n        buffer_strcat(w->response.data, \"(\");\n    }\n\n    ret = rrdset2anything_api_v1(st, w->response.data, dimensions, format, points, after, before, group, group_time\n                                 , options, &last_timestamp_in_data);\n\n    if(format == DATASOURCE_DATATABLE_JSONP) {\n        if(google_timestamp < last_timestamp_in_data)\n            buffer_strcat(w->response.data, \"});\");\n\n        else {\n            // the client already has the latest data\n            buffer_flush(w->response.data);\n            buffer_sprintf(w->response.data,\n                    \"%s({version:'%s',reqId:'%s',status:'error',errors:[{reason:'not_modified',message:'Data not modified'}]});\",\n                    responseHandler, google_version, google_reqId);\n        }\n    }\n    else if(format == DATASOURCE_JSONP)\n        buffer_strcat(w->response.data, \");\");\n\n    cleanup:\n    buffer_free(dimensions);\n    return ret;\n}",
+            246
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libnetdata/url/url.c",
+            "url_decode_r",
+            "char *url_decode_r(char *to, char *url, size_t size) { /* <=== url_decode_r */ \n    char *s = url,           // source\n         *d = to,            // destination\n         *e = &to[size - 1]; // destination end\n\n    while(*s && d < e) {\n        if(unlikely(*s == '%')) {\n            if(likely(s[1] && s[2])) {\n                *d++ = from_hex(s[1]) << 4 | from_hex(s[2]);\n                s += 2;\n            }\n        }\n        else if(unlikely(*s == '+'))\n            *d++ = ' ';\n\n        else\n            *d++ = *s;\n\n        s++;\n    }\n\n    *d = '\\0';\n\n    return to;\n}",
+            55
+        ],
+        [
+            "web/api/web_api_v1.c",
+            "web_client_api_request_v1_data",
+            "inline int web_client_api_request_v1_data(RRDHOST *host, struct web_client *w, char *url) { /* <=== web_client_api_request_v1_data */ \n    debug(D_WEB_CLIENT, \"%llu: API v1 data with URL '%s'\", w->id, url);\n\n    int ret = 400;\n    BUFFER *dimensions = NULL;\n\n    buffer_flush(w->response.data);\n\n    char    *google_version = \"0.6\",\n            *google_reqId = \"0\",\n            *google_sig = \"0\",\n            *google_out = \"json\",\n            *responseHandler = NULL,\n            *outFileName = NULL;\n\n    time_t last_timestamp_in_data = 0, google_timestamp = 0;\n\n    char *chart = NULL\n    , *before_str = NULL\n    , *after_str = NULL\n    , *group_time_str = NULL\n    , *points_str = NULL;\n\n    int group = RRDR_GROUPING_AVERAGE;\n    uint32_t format = DATASOURCE_JSON;\n    uint32_t options = 0x00000000;\n\n    while(url) {\n        char *value = mystrsep(&url, \"?&\");\n        if(!value || !*value) continue;\n\n        char *name = mystrsep(&value, \"=\");\n        if(!name || !*name) continue;\n        if(!value || !*value) continue;\n\n        debug(D_WEB_CLIENT, \"%llu: API v1 data query param '%s' with value '%s'\", w->id, name, value);\n\n        // name and value are now the parameters\n        // they are not null and not empty\n\n        if(!strcmp(name, \"chart\")) chart = value;\n        else if(!strcmp(name, \"dimension\") || !strcmp(name, \"dim\") || !strcmp(name, \"dimensions\") || !strcmp(name, \"dims\")) {\n            if(!dimensions) dimensions = buffer_create(100);\n            buffer_strcat(dimensions, \"|\");\n            buffer_strcat(dimensions, value);\n        }\n        else if(!strcmp(name, \"after\")) after_str = value;\n        else if(!strcmp(name, \"before\")) before_str = value;\n        else if(!strcmp(name, \"points\")) points_str = value;\n        else if(!strcmp(name, \"gtime\")) group_time_str = value;\n        else if(!strcmp(name, \"group\")) {\n            group = web_client_api_request_v1_data_group(value, RRDR_GROUPING_AVERAGE);\n        }\n        else if(!strcmp(name, \"format\")) {\n            format = web_client_api_request_v1_data_format(value);\n        }\n        else if(!strcmp(name, \"options\")) {\n            options |= web_client_api_request_v1_data_options(value);\n        }\n        else if(!strcmp(name, \"callback\")) {\n            responseHandler = value;\n        }\n        else if(!strcmp(name, \"filename\")) {\n            outFileName = value;\n        }\n        else if(!strcmp(name, \"tqx\")) {\n            // parse Google Visualization API options\n            // https://developers.google.com/chart/interactive/docs/dev/implementing_data_source\n            char *tqx_name, *tqx_value;\n\n            while(value) {\n                tqx_value = mystrsep(&value, \";\");\n                if(!tqx_value || !*tqx_value) continue;\n\n                tqx_name = mystrsep(&tqx_value, \":\");\n                if(!tqx_name || !*tqx_name) continue;\n                if(!tqx_value || !*tqx_value) continue;\n\n                if(!strcmp(tqx_name, \"version\"))\n                    google_version = tqx_value;\n                else if(!strcmp(tqx_name, \"reqId\"))\n                    google_reqId = tqx_value;\n                else if(!strcmp(tqx_name, \"sig\")) {\n                    google_sig = tqx_value;\n                    google_timestamp = strtoul(google_sig, NULL, 0);\n                }\n                else if(!strcmp(tqx_name, \"out\")) {\n                    google_out = tqx_value;\n                    format = web_client_api_request_v1_data_google_format(google_out);\n                }\n                else if(!strcmp(tqx_name, \"responseHandler\"))\n                    responseHandler = tqx_value;\n                else if(!strcmp(tqx_name, \"outFileName\"))\n                    outFileName = tqx_value;\n            }\n        }\n    }\n\n    if(!chart || !*chart) {\n        buffer_sprintf(w->response.data, \"No chart id is given at the request.\");\n        goto cleanup;\n    }\n\n    RRDSET *st = rrdset_find(host, chart);\n    if(!st) st = rrdset_find_byname(host, chart);\n    if(!st) {\n        buffer_strcat(w->response.data, \"Chart is not found: \");\n        buffer_strcat_htmlescape(w->response.data, chart);\n        ret = 404;\n        goto cleanup;\n    }\n    st->last_accessed_time = now_realtime_sec();\n\n    long long before = (before_str && *before_str)?str2l(before_str):0;\n    long long after  = (after_str  && *after_str) ?str2l(after_str):0;\n    int       points = (points_str && *points_str)?str2i(points_str):0;\n    long      group_time = (group_time_str && *group_time_str)?str2l(group_time_str):0;\n\n    debug(D_WEB_CLIENT, \"%llu: API command 'data' for chart '%s', dimensions '%s', after '%lld', before '%lld', points '%d', group '%d', format '%u', options '0x%08x'\"\n          , w->id\n          , chart\n          , (dimensions)?buffer_tostring(dimensions):\"\"\n          , after\n          , before\n          , points\n          , group\n          , format\n          , options\n    );\n\n    if(outFileName && *outFileName) {\n        buffer_sprintf(w->response.header, \"Content-Disposition: attachment; filename=\\\"%s\\\"\\r\\n\", outFileName);\n        debug(D_WEB_CLIENT, \"%llu: generating outfilename header: '%s'\", w->id, outFileName);\n    }\n\n    if(format == DATASOURCE_DATATABLE_JSONP) {\n        if(responseHandler == NULL)\n            responseHandler = \"google.visualization.Query.setResponse\";\n\n        debug(D_WEB_CLIENT_ACCESS, \"%llu: GOOGLE JSON/JSONP: version = '%s', reqId = '%s', sig = '%s', out = '%s', responseHandler = '%s', outFileName = '%s'\",\n                w->id, google_version, google_reqId, google_sig, google_out, responseHandler, outFileName\n        );\n\n        buffer_sprintf(w->response.data,\n                \"%s({version:'%s',reqId:'%s',status:'ok',sig:'%ld',table:\",\n                responseHandler, google_version, google_reqId, st->last_updated.tv_sec);\n    }\n    else if(format == DATASOURCE_JSONP) {\n        if(responseHandler == NULL)\n            responseHandler = \"callback\";\n\n        buffer_strcat(w->response.data, responseHandler);\n        buffer_strcat(w->response.data, \"(\");\n    }\n\n    ret = rrdset2anything_api_v1(st, w->response.data, dimensions, format, points, after, before, group, group_time\n                                 , options, &last_timestamp_in_data);\n\n    if(format == DATASOURCE_DATATABLE_JSONP) {\n        if(google_timestamp < last_timestamp_in_data)\n            buffer_strcat(w->response.data, \"});\");\n\n        else {\n            // the client already has the latest data\n            buffer_flush(w->response.data);\n            buffer_sprintf(w->response.data,\n                    \"%s({version:'%s',reqId:'%s',status:'error',errors:[{reason:'not_modified',message:'Data not modified'}]});\",\n                    responseHandler, google_version, google_reqId);\n        }\n    }\n    else if(format == DATASOURCE_JSONP)\n        buffer_strcat(w->response.data, \");\");\n\n    cleanup:\n    buffer_free(dimensions);\n    return ret;\n}",
+            237
+        ]
+    ]
+}

@@ -1,0 +1,475 @@
+{
+    "calleeMethods": [
+        [
+            "libinfinity/common/inf-error.c",
+            "inf_gnutls_certificate_verification_set_error",
+            "void /* <=== inf_gnutls_certificate_verification_set_error */ \ninf_gnutls_certificate_verification_set_error(GError** error,\n                                              int verify)\n{\n  const gchar* message;\n\n  if(error != NULL)\n  {\n    if(verify & GNUTLS_CERT_REVOKED)\n      message = _(\"The certificate was revoked\");\n    else if(verify & GNUTLS_CERT_SIGNER_NOT_FOUND)\n      message = _(\"The certificate was not signed by a trusted CA\");\n    else if(verify & GNUTLS_CERT_SIGNER_NOT_CA)\n      message = _(\"The signer of the certificate is not a CA\");\n    else if(verify & GNUTLS_CERT_INSECURE_ALGORITHM)\n      message = _(\"The certificate uses an insecure algorithm\");\n    else if(verify & GNUTLS_CERT_NOT_ACTIVATED)\n      message = _(\"The certificate is not yet activated\");\n    else if(verify & GNUTLS_CERT_EXPIRED)\n      message = _(\"The certificate has expired\");\n    else if(verify & GNUTLS_CERT_INVALID)\n      message = _(\"The certificate is invalid\");\n    else\n      g_assert_not_reached();\n\n    *error = g_error_new_literal(\n      inf_gnutls_certificate_verification_error_quark(),\n      verify,\n      message\n    );\n  }\n}",
+            1
+        ],
+        [
+            "libinfgtk/inf-gtk-certificate-manager.c",
+            "inf_gtk_certificate_manager_write_known_hosts_with_warning",
+            "static void /* <=== inf_gtk_certificate_manager_write_known_hosts_with_warning */ \ninf_gtk_certificate_manager_write_known_hosts_with_warning(\n  InfGtkCertificateManager* mgr,\n  GHashTable* table)\n{\n  InfGtkCertificateManagerPrivate* priv;\n  GError* error;\n  gboolean result;\n\n  priv = INF_GTK_CERTIFICATE_MANAGER_PRIVATE(mgr);\n  error = NULL;\n\n  result = inf_gtk_certificate_manager_write_known_hosts(\n    mgr,\n    table,\n    &error\n  );\n\n  if(error != NULL)\n  {\n    g_warning(\n      _(\"Failed to write file with known hosts \\\"%s\\\": %s\"),\n      priv->known_hosts_file,\n      error->message\n    );\n\n    g_error_free(error);\n  }\n}",
+            1
+        ],
+        [
+            "libinfgtk/inf-gtk-certificate-manager.c",
+            "inf_gtk_certificate_manager_compare_fingerprint",
+            "static gboolean /* <=== inf_gtk_certificate_manager_compare_fingerprint */ \ninf_gtk_certificate_manager_compare_fingerprint(gnutls_x509_crt_t cert1,\n                                                gnutls_x509_crt_t cert2,\n                                                GError** error)\n{\n  static const unsigned int SHA256_DIGEST_SIZE = 32;\n\n  size_t size;\n  guchar cert1_fingerprint[SHA256_DIGEST_SIZE];\n  guchar cert2_fingerprint[SHA256_DIGEST_SIZE];\n\n  int ret;\n  int cmp;\n\n  size = SHA256_DIGEST_SIZE;\n\n  ret = gnutls_x509_crt_get_fingerprint(\n    cert1,\n    GNUTLS_DIG_SHA256,\n    cert1_fingerprint,\n    &size\n  );\n\n  if(ret == GNUTLS_E_SUCCESS)\n  {\n    g_assert(size == SHA256_DIGEST_SIZE);\n\n    ret = gnutls_x509_crt_get_fingerprint(\n      cert2,\n      GNUTLS_DIG_SHA256,\n      cert2_fingerprint,\n      &size\n    );\n  }\n\n  if(ret != GNUTLS_E_SUCCESS)\n  {\n    inf_gnutls_set_error(error, ret);\n    return FALSE;\n  }\n\n  cmp = memcmp(cert1_fingerprint, cert2_fingerprint, SHA256_DIGEST_SIZE);\n  if(cmp != 0) return FALSE;\n\n  return TRUE;\n}",
+            1
+        ],
+        [
+            "libinfgtk/inf-gtk-certificate-manager.c",
+            "inf_gtk_certificate_manager_memrchr",
+            "static void* /* <=== inf_gtk_certificate_manager_memrchr */ \ninf_gtk_certificate_manager_memrchr(void* buf,\n                                    char c,\n                                    size_t len)\n{\n  char* pos;\n  char* end;\n\n  pos = buf + len;\n  end = buf;\n\n  while(pos >= end)\n  {\n    if(*(pos - 1) == c)\n      return pos - 1;\n    --pos;\n  }\n\n  return NULL;\n}",
+            3
+        ],
+        [
+            "libinfgtk/inf-gtk-certificate-manager.c",
+            "inf_gtk_certificate_manager_write_known_hosts",
+            "static gboolean /* <=== inf_gtk_certificate_manager_write_known_hosts */ \ninf_gtk_certificate_manager_write_known_hosts(InfGtkCertificateManager* mgr,\n                                              GHashTable* table,\n                                              GError** error)\n{\n  InfGtkCertificateManagerPrivate* priv;\n  gchar* dirname;\n  GIOChannel* channel;\n  GIOStatus status;\n\n  GHashTableIter iter;\n  gpointer key;\n  gpointer value;\n  const gchar* hostname;\n  gnutls_x509_crt_t cert;\n\n  size_t size;\n  int res;\n  gchar* buffer;\n  gchar* encoded_cert;\n\n  priv = INF_GTK_CERTIFICATE_MANAGER_PRIVATE(mgr);\n  \n  /* Note that we pin the whole certificate and not only the public key of\n   * our known hosts. This allows us to differentiate two cases when a\n   * host presents a new certificate:\n   *    a) The old certificate has expired or is very close to expiration. In\n   *       this case we still show a message to the user asking whether they\n   *       trust the new certificate.\n   *    b) The old certificate was perfectly valid. In this case we show a\n   *       message saying that the certificate change was unexpected, and\n   *       unless it was expected the host should not be trusted.\n   */\n  dirname = g_path_get_dirname(priv->known_hosts_file);\n  if(!inf_file_util_create_directory(dirname, 0755, error))\n  {\n    g_free(dirname);\n    return FALSE;\n  }\n\n  g_free(dirname);\n\n  channel = g_io_channel_new_file(priv->known_hosts_file, \"w\", error);\n  if(channel == NULL) return FALSE;\n\n  status = g_io_channel_set_encoding(channel, NULL, error);\n  if(status != G_IO_STATUS_NORMAL)\n  {\n    g_io_channel_unref(channel);\n    return FALSE;\n  }\n\n  g_hash_table_iter_init(&iter, table);\n  while(g_hash_table_iter_next(&iter, &key, &value))\n  {\n    hostname = (const gchar*)key;\n    cert = (gnutls_x509_crt_t)value;\n\n    size = 0;\n    res = gnutls_x509_crt_export(cert, GNUTLS_X509_FMT_DER, NULL, &size);\n    g_assert(res != GNUTLS_E_SUCCESS);\n\n    buffer = NULL;\n    if(res == GNUTLS_E_SHORT_MEMORY_BUFFER)\n    {\n      buffer = g_malloc(size);\n      res = gnutls_x509_crt_export(cert, GNUTLS_X509_FMT_DER, buffer, &size);\n    }\n\n    if(res != GNUTLS_E_SUCCESS)\n    {\n      g_free(buffer);\n      g_io_channel_unref(channel);\n      inf_gnutls_set_error(error, res);\n      return FALSE;\n    }\n\n    encoded_cert = g_base64_encode(buffer, size);\n    g_free(buffer);\n\n    status = g_io_channel_write_chars(channel, hostname, strlen(hostname), NULL, error);\n    if(status == G_IO_STATUS_NORMAL)\n      status = g_io_channel_write_chars(channel, \":\", 1, NULL, error);\n    if(status == G_IO_STATUS_NORMAL)\n      status = g_io_channel_write_chars(channel, encoded_cert, strlen(encoded_cert), NULL, error);\n    if(status == G_IO_STATUS_NORMAL)\n      status = g_io_channel_write_chars(channel, \"\\n\", 1, NULL, error);\n\n    g_free(encoded_cert);\n\n    if(status != G_IO_STATUS_NORMAL)\n    {\n      g_io_channel_unref(channel);\n      return FALSE;\n    }\n  }\n\n  g_io_channel_unref(channel);\n  return TRUE;\n}",
+            2
+        ],
+        [
+            "libinfinity/common/inf-certificate-chain.c",
+            "inf_certificate_chain_get_raw",
+            "gnutls_x509_crt_t* /* <=== inf_certificate_chain_get_raw */ \ninf_certificate_chain_get_raw(const InfCertificateChain* chain)\n{\n  return chain->certs;\n}",
+            1
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "inf_xmpp_connection_error_quark",
+            "GQuark /* <=== inf_xmpp_connection_error_quark */ \ninf_xmpp_connection_error_quark(void)\n{\n  return g_quark_from_static_string(\"INF_XMPP_CONNECTION_ERROR\");\n}",
+            2
+        ],
+        [
+            "libinfgtk/inf-gtk-certificate-manager.c",
+            "inf_gtk_certificate_manager_ref_known_hosts",
+            "static GHashTable* /* <=== inf_gtk_certificate_manager_ref_known_hosts */ \ninf_gtk_certificate_manager_ref_known_hosts(InfGtkCertificateManager* mgr,\n                                            GError** error)\n{\n  InfGtkCertificateManagerPrivate* priv;\n  InfGtkCertificateManagerQuery* query;\n\n  priv = INF_GTK_CERTIFICATE_MANAGER_PRIVATE(mgr);\n  if(priv->queries != NULL)\n  {\n    query = (InfGtkCertificateManagerQuery*)priv->queries->data;\n    g_hash_table_ref(query->known_hosts);\n    return query->known_hosts;\n  }\n  else\n  {\n    return inf_gtk_certificate_manager_load_known_hosts(mgr, error);\n  }\n}",
+            1
+        ],
+        [
+            "libinfinity/common/inf-certificate-chain.c",
+            "inf_certificate_chain_get_n_certificates",
+            "guint /* <=== inf_certificate_chain_get_n_certificates */ \ninf_certificate_chain_get_n_certificates(const InfCertificateChain* chain)\n{\n  return chain->n_certs;\n}",
+            1
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "inf_xmpp_connection_certificate_verify_cancel",
+            "void /* <=== inf_xmpp_connection_certificate_verify_cancel */ \ninf_xmpp_connection_certificate_verify_cancel(InfXmppConnection* xmpp,\n                                              const GError* error)\n{\n  InfXmppConnectionPrivate* priv;\n  GError* local_error;\n\n  g_return_if_fail(INF_IS_XMPP_CONNECTION(xmpp));\n\n  priv = INF_XMPP_CONNECTION_PRIVATE(xmpp);\n  g_return_if_fail(priv->status == INF_XMPP_CONNECTION_CONNECTED);\n  g_return_if_fail(priv->session != NULL);\n\n  if(priv->site == INF_XMPP_CONNECTION_CLIENT)\n  {\n    if(error == NULL)\n    {\n      local_error = g_error_new_literal(\n        inf_xmpp_connection_error_quark(),\n        INF_XMPP_CONNECTION_ERROR_CERTIFICATE_NOT_TRUSTED,\n        _(\"The server certificate is not trusted\")\n      );\n    }\n    else\n    {\n      local_error = g_error_new(\n        inf_xmpp_connection_error_quark(),\n        INF_XMPP_CONNECTION_ERROR_CERTIFICATE_NOT_TRUSTED,\n        _(\"The server certificate is not trusted: %s\"),\n        error->message\n      );\n    }\n  }\n  else\n  {\n    if(error == NULL)\n    {\n      local_error = g_error_new_literal(\n        inf_xmpp_connection_error_quark(),\n        INF_XMPP_CONNECTION_ERROR_CERTIFICATE_NOT_TRUSTED,\n        _(\"The client certificate is not trusted\")\n      );\n    }\n    else\n    {\n      local_error = g_error_new(\n        inf_xmpp_connection_error_quark(),\n        INF_XMPP_CONNECTION_ERROR_CERTIFICATE_NOT_TRUSTED,\n        _(\"The client certificate is not trusted: %s\"),\n        error->message\n      );\n    }\n  }\n\n  inf_xml_connection_error(INF_XML_CONNECTION(xmpp), local_error);\n  g_error_free(local_error);\n\n  inf_xmpp_connection_terminate(xmpp);\n}",
+            1
+        ],
+        [
+            "libinfinity/common/inf-certificate-chain.c",
+            "inf_certificate_chain_ref",
+            "InfCertificateChain* /* <=== inf_certificate_chain_ref */ \ninf_certificate_chain_ref(InfCertificateChain* chain)\n{\n  ++ chain->ref_count;\n  return chain;\n}",
+            1
+        ],
+        [
+            "libinfinity/common/inf-certificate-chain.c",
+            "inf_certificate_chain_get_root_certificate",
+            "gnutls_x509_crt_t /* <=== inf_certificate_chain_get_root_certificate */ \ninf_certificate_chain_get_root_certificate(const InfCertificateChain* chain)\n{\n  return chain->certs[chain->n_certs - 1];\n}",
+            1
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "inf_xmpp_connection_clear",
+            "static void /* <=== inf_xmpp_connection_clear */ \ninf_xmpp_connection_clear(InfXmppConnection* xmpp)\n{\n  InfXmppConnectionPrivate* priv;\n  priv = INF_XMPP_CONNECTION_PRIVATE(xmpp);\n\n  g_object_freeze_notify(G_OBJECT(xmpp));\n\n  if(priv->sasl_session != NULL)\n  {\n    inf_sasl_context_stop_session(priv->sasl_context, priv->sasl_session);\n    priv->sasl_session = NULL;\n  }\n\n  if(priv->sasl_remote_mechanisms != NULL)\n  {\n    g_free(priv->sasl_remote_mechanisms);\n    priv->sasl_remote_mechanisms = NULL;\n  }\n\n  /* Keep the certificates alive, in case they still need to be accessed after\n   * the connection was closed. They are reset before a new connection is\n   * made. */\n#if 0\n  if(priv->own_cert != NULL)\n  {\n    gnutls_x509_crt_deinit(priv->own_cert);\n    priv->own_cert = NULL;\n\n    g_object_notify(G_OBJECT(xmpp), \"local-certificate\");\n  }\n\n  if(priv->peer_cert != NULL)\n  {\n    inf_certificate_chain_unref(priv->peer_cert);\n    priv->peer_cert = NULL;\n\n    g_object_notify(G_OBJECT(xmpp), \"remote-certificate\");\n  }\n#endif\n\n  if(priv->session != NULL)\n  {\n    gnutls_deinit(priv->session);\n    priv->session = NULL;\n\n    g_object_notify(G_OBJECT(xmpp), \"tls-enabled\");\n  }\n\n  if(priv->parser != NULL)\n  {\n    xmlFreeParserCtxt(priv->parser);\n    priv->parser = NULL;\n\n    if(priv->root != NULL)\n    {\n      xmlFreeNode(priv->root);\n      priv->root = NULL;\n      priv->cur = NULL;\n    }\n  }\n\n  while(priv->messages != NULL)\n    inf_xmpp_connection_pop_message(xmpp);\n\n  if(priv->buf != NULL)\n  {\n    g_assert(priv->doc != NULL);\n\n    xmlBufferFree(priv->buf);\n    xmlFreeDoc(priv->doc);\n\n    priv->buf = NULL;\n    priv->doc = NULL;\n  }\n\n  priv->pull_data = NULL;\n  priv->pull_len = 0;\n\n  g_object_thaw_notify(G_OBJECT(xmpp));\n}",
+            3
+        ],
+        [
+            "libinfgtk/inf-gtk-certificate-manager.c",
+            "INF_GTK_CERTIFICATE_MANAGER_PRIVATE",
+            "#define INF_GTK_CERTIFICATE_MANAGER_PRIVATE(obj) (G_TYPE_INSTANCE_GET_PRIVATE((obj), INF_GTK_TYPE_CERTIFICATE_MANAGER, InfGtkCertificateManagerPrivate)) /* <=== libinfgtk/inf-gtk-certificate-manager.c:72:72:INF_GTK_CERTIFICATE_MANAGER_PRIVATE:1 */ ",
+            2
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "INF_XMPP_CONNECTION_PRIVATE",
+            "#define INF_XMPP_CONNECTION_PRIVATE(obj) (G_TYPE_INSTANCE_GET_PRIVATE((obj), INF_TYPE_XMPP_CONNECTION, InfXmppConnectionPrivate)) /* <=== libinfinity/common/inf-xmpp-connection.c:227:227:INF_XMPP_CONNECTION_PRIVATE:1 */ ",
+            2
+        ],
+        [
+            "libinfgtk/inf-gtk-certificate-manager.c",
+            "inf_gtk_certificate_manager_load_known_hosts",
+            "static GHashTable* /* <=== inf_gtk_certificate_manager_load_known_hosts */ \ninf_gtk_certificate_manager_load_known_hosts(InfGtkCertificateManager* mgr,\n                                             GError** error)\n{\n  InfGtkCertificateManagerPrivate* priv;\n  GHashTable* table;\n  gchar* content;\n  gsize size;\n  GError* local_error;\n\n  gchar* out_buf;\n  gsize out_buf_len;\n  gchar* pos;\n  gchar* prev;\n  gchar* next;\n  gchar* sep;\n\n  gsize len;\n  gsize out_len;\n  gint base64_state;\n  guint base64_save;\n\n  gnutls_datum_t data;\n  gnutls_x509_crt_t cert;\n  int res;\n\n  priv = INF_GTK_CERTIFICATE_MANAGER_PRIVATE(mgr);\n\n  table = g_hash_table_new_full(\n    g_str_hash,\n    g_str_equal,\n    g_free,\n    (GDestroyNotify)gnutls_x509_crt_deinit\n  );\n\n  local_error = NULL;\n  g_file_get_contents(priv->known_hosts_file, &content, &size, &local_error);\n  if(local_error != NULL)\n  {\n    if(local_error->domain == G_FILE_ERROR &&\n       local_error->code == G_FILE_ERROR_NOENT)\n    {\n      return table;\n    }\n\n    g_propagate_prefixed_error(\n      error,\n      local_error,\n      _(\"Failed to open known hosts file \\\"%s\\\": \"),\n      priv->known_hosts_file\n    );\n\n    g_hash_table_destroy(table);\n    return NULL;\n  }\n\n  out_buf = NULL;\n  out_buf_len = 0;\n  prev = content;\n  for(prev = content; prev != NULL; prev = next)\n  {\n    pos = strchr(prev, '\\n');\n    next = NULL;\n\n    if(pos == NULL)\n      pos = content + size;\n    else\n      next = pos + 1;\n\n    sep = inf_gtk_certificate_manager_memrchr(prev, ':', pos - prev);\n    if(sep == NULL) continue; /* ignore line */\n\n    *sep = '\\0';\n    if(g_hash_table_lookup(table, prev) != NULL)\n    {\n      g_set_error(\n        error,\n        g_quark_from_static_string(\"INF_GTK_CERTIFICATE_MANAGER_ERROR\"),\n        INF_GTK_CERTIFICATE_MANAGER_ERROR_DUPLICATE_HOST_ENTRY,\n        _(\"Certificate for host \\\"%s\\\" appears twice in \"\n          \"known hosts file \\\"%s\\\"\"),\n        prev,\n        priv->known_hosts_file\n      );\n\n      g_hash_table_destroy(table);\n      g_free(out_buf);\n      g_free(content);\n      return NULL;\n    }\n\n    /* decode base64, import DER certificate */\n    len = (pos - (sep + 1));\n    out_len = len * 3 / 4;\n\n    if(out_len > out_buf_len)\n    {\n      out_buf = g_realloc(out_buf, out_len);\n      out_buf_len = out_len;\n    }\n\n    base64_state = 0;\n    base64_save = 0;\n\n    out_len = g_base64_decode_step(\n      sep + 1,\n      len,\n      out_buf,\n      &base64_state,\n      &base64_save\n    );\n\n    cert = NULL;\n    res = gnutls_x509_crt_init(&cert);\n    if(res == GNUTLS_E_SUCCESS)\n    {\n      data.data = out_buf;\n      data.size = out_len;\n      res = gnutls_x509_crt_import(cert, &data, GNUTLS_X509_FMT_DER);\n    }\n\n    if(res != GNUTLS_E_SUCCESS)\n    {\n      inf_gnutls_set_error(&local_error, res);\n\n      g_propagate_prefixed_error(\n        error,\n        local_error,\n        _(\"Failed to read certificate for host \\\"%s\\\" from \"\n          \"known hosts file \\\"%s\\\": \"),\n        prev,\n        priv->known_hosts_file\n      );\n\n      if(cert != NULL)\n        gnutls_x509_crt_deinit(cert);\n\n      g_hash_table_destroy(table);\n      g_free(out_buf);\n      g_free(content);\n      return NULL;\n    }\n\n    g_hash_table_insert(table, g_strdup(prev), cert);\n  }\n\n  g_free(out_buf);\n  g_free(content);\n  return table;\n}",
+            2
+        ],
+        [
+            "libinfgtk/inf-gtk-certificate-dialog.c",
+            "inf_gtk_certificate_dialog_new",
+            "InfGtkCertificateDialog* /* <=== inf_gtk_certificate_dialog_new */ \ninf_gtk_certificate_dialog_new(GtkWindow* parent,\n                               GtkDialogFlags dialog_flags,\n                               InfGtkCertificateDialogFlags certificate_flags,\n                               const gchar* hostname,\n                               InfCertificateChain* certificate_chain)\n{\n  GObject* object;\n\n  g_return_val_if_fail(parent == NULL || GTK_IS_WINDOW(parent), NULL);\n  g_return_val_if_fail(certificate_flags != 0, NULL);\n  g_return_val_if_fail(hostname != NULL, NULL);\n  g_return_val_if_fail(certificate_chain != NULL, NULL);\n\n  object = g_object_new(\n    INF_GTK_TYPE_CERTIFICATE_DIALOG,\n    \"certificate-chain\", certificate_chain,\n    \"certificate-flags\", certificate_flags,\n    \"hostname\", hostname,\n    NULL\n  );\n\n  if(dialog_flags & GTK_DIALOG_MODAL)\n    gtk_window_set_modal(GTK_WINDOW(object), TRUE);\n\n  if(dialog_flags & GTK_DIALOG_DESTROY_WITH_PARENT)\n    gtk_window_set_destroy_with_parent(GTK_WINDOW(object), TRUE);\n\n  gtk_window_set_transient_for(GTK_WINDOW(object), parent);\n  return INF_GTK_CERTIFICATE_DIALOG(object);\n}",
+            1
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "inf_xmpp_connection_send_xml",
+            "static void /* <=== inf_xmpp_connection_send_xml */ \ninf_xmpp_connection_send_xml(InfXmppConnection* xmpp,\n                             xmlNodePtr xml)\n{\n  InfXmppConnectionPrivate* priv;\n  priv = INF_XMPP_CONNECTION_PRIVATE(xmpp);\n\n  g_return_if_fail(priv->doc != NULL);\n  g_return_if_fail(priv->buf != NULL);\n\n  xmlDocSetRootElement(priv->doc, xml);\n  xmlNodeDump(priv->buf, priv->doc, xml, 0, 0);\n  xmlUnlinkNode(xml);\n  xmlSetListDoc(xml, NULL);\n\n  /* Keep the object alive during the send_chars call, so that we can check\n   * the buffer variable afterwards. */\n  g_object_ref(xmpp);\n\n  inf_xmpp_connection_send_chars(\n    xmpp,\n    xmlBufferContent(priv->buf),\n    xmlBufferLength(priv->buf)\n  );\n\n  /* The connection might be closed & cleared as a result from\n   * inf_xmpp_connection_send_chars(), so make sure the buffer still\n   * exists before emptying it. */\n  if(priv->buf != NULL)\n    xmlBufferEmpty(priv->buf);\n\n  g_object_unref(xmpp);\n}",
+            3
+        ],
+        [
+            "libinfinity/common/inf-xml-connection.c",
+            "inf_xml_connection_error",
+            "void /* <=== inf_xml_connection_error */ \ninf_xml_connection_error(InfXmlConnection* connection,\n                         const GError* error)\n{\n  g_return_if_fail(INF_IS_XML_CONNECTION(connection));\n  g_return_if_fail(error != NULL);\n\n  g_signal_emit(\n    G_OBJECT(connection),\n    connection_signals[ERROR],\n    0,\n    error\n  );\n}",
+            2
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "inf_xmpp_connection_terminate",
+            "static void /* <=== inf_xmpp_connection_terminate */ \ninf_xmpp_connection_terminate(InfXmppConnection* xmpp)\n{\n  static const gchar xmpp_connection_deinit_request[] = \"</stream:stream>\";\n\n  InfXmppConnectionPrivate* priv;\n  xmlNodePtr abort;\n\n  priv = INF_XMPP_CONNECTION_PRIVATE(xmpp);\n\n  g_assert(priv->status != INF_XMPP_CONNECTION_CLOSED &&\n           priv->status != INF_XMPP_CONNECTION_CLOSING_GNUTLS &&\n           priv->status != INF_XMPP_CONNECTION_CONNECTING);\n\n  /* We cannot send </stream:stream> or a gnutls bye in these states\n   * because it would interfere with the handshake. */\n  if(priv->status != INF_XMPP_CONNECTION_HANDSHAKING &&\n     priv->status != INF_XMPP_CONNECTION_ENCRYPTION_REQUESTED)\n  {\n    /* Session termination is not required in these states because the session\n     * did not yet even begin or </stream:stream> has already been sent,\n     * respectively. */\n\n    if(priv->status != INF_XMPP_CONNECTION_CONNECTED &&\n       priv->status != INF_XMPP_CONNECTION_AUTH_CONNECTED &&\n       priv->status != INF_XMPP_CONNECTION_CLOSING_STREAM)\n    {\n      if(priv->status == INF_XMPP_CONNECTION_AUTHENTICATING)\n      {\n        /* Abort authentication before sending final </stream:stream> */\n        abort = inf_xmpp_connection_node_new_sasl(\"abort\");\n        inf_xmpp_connection_send_xml(xmpp, abort);\n        xmlFreeNode(abort);\n      }\n\n      /* inf_xmpp_connection_send_xml() above might have caused\n       * status update: */\n      if(priv->status != INF_XMPP_CONNECTION_CLOSED)\n      {\n        inf_xmpp_connection_send_chars(\n          xmpp,\n          xmpp_connection_deinit_request,\n          sizeof(xmpp_connection_deinit_request) - 1\n        );\n      }\n    }\n\n    /* One of the send() calls above might have caused status update */\n    if(priv->status != INF_XMPP_CONNECTION_CLOSED && priv->session != NULL)\n      gnutls_bye(priv->session, GNUTLS_SHUT_WR);\n  }\n\n  /* Clear resources such as GnuTLS session and XML parser */\n  if(priv->parsing == 0)\n    inf_xmpp_connection_clear(xmpp);\n\n  /* It can happen that the call to gnutls_bye() causes a send error because\n   * the connection is already down. In that case the status is changed to\n   * CLOSED, in which case we do not need further status updates at\n   * this point. */\n  if(priv->status != INF_XMPP_CONNECTION_CLOSED)\n  {\n    /* The Change from CLOSING_STREAM to CLOSING_GNUTLS does not change\n     * the XML status, so we need no notify in this case. */\n    if(priv->status != INF_XMPP_CONNECTION_CLOSING_STREAM)\n    {\n      priv->status = INF_XMPP_CONNECTION_CLOSING_GNUTLS;\n      if(priv->parsing == 0)\n        g_object_notify(G_OBJECT(xmpp), \"status\");\n    }\n    else\n    {\n      priv->status = INF_XMPP_CONNECTION_CLOSING_GNUTLS;\n    }\n  }\n}",
+            2
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "inf_xmpp_connection_send_chars",
+            "static void /* <=== inf_xmpp_connection_send_chars */ \ninf_xmpp_connection_send_chars(InfXmppConnection* xmpp,\n                               gconstpointer data,\n                               guint len)\n{\n  InfXmppConnectionPrivate* priv;\n  ssize_t cur_bytes;\n  GError* error;\n\n  priv = INF_XMPP_CONNECTION_PRIVATE(xmpp);\n\n  g_assert(priv->status != INF_XMPP_CONNECTION_HANDSHAKING &&\n           priv->status != INF_XMPP_CONNECTION_CLOSED);\n\n  if(INF_XMPP_CONNECTION_PRINT_TRAFFIC)\n    printf(\"\\033[00;34m%.*s\\033[00;00m\\n\", (int)len, (const char*)data);\n\n  /* From here on we go into a GnuTLS callback. Set this flag to prevent\n   * premature cleanup -- make sure that if the connection is being brought\n   * down from a GnuTLS callback then we keep the GnuTLS context around\n   * until the gntuls_record_send() call finishes. */\n  ++priv->parsing;\n\n  if(priv->session != NULL)\n  {\n    do\n    {\n      cur_bytes = gnutls_record_send(priv->session, data, len);\n\n      if(cur_bytes < 0)\n      {\n        /* A GnuTLS error occured. It does not make sense to try to send\n         * </stream:stream> or a gnutls bye here, since this would again\n         * have to go through GnuTLS, which would fail again, and so on. */\n        error = NULL;\n        inf_gnutls_set_error(&error, cur_bytes);\n        inf_xml_connection_error(INF_XML_CONNECTION(xmpp), error);\n        g_error_free(error);\n\n        inf_tcp_connection_close(priv->tcp);\n        break;\n      }\n      else if(cur_bytes == 0)\n      {\n        /* TODO: I am not sure whether this can actually happen and what\n         * it means. */\n        g_assert_not_reached();\n        /*inf_tcp_connection_close(priv->tcp);*/\n      }\n      else\n      {\n        *((const char**)&data) += cur_bytes;\n        len -= cur_bytes;\n      }\n    } while(len > 0);\n  }\n  else\n  {\n    priv->position += len;\n    inf_tcp_connection_send(priv->tcp, data, len);\n  }\n\n  g_assert(priv->parsing > 0);\n  if(--priv->parsing == 0)\n  {\n    if(priv->status == INF_XMPP_CONNECTION_CLOSED)\n    {\n      /* Status changed to CLOSED, so while attempting to send data we noticed\n       * that the connection is down. Clear up. We didn't clean up in the\n       * disconnection callback because we wanted to keep the gnutls context\n       * alive until gnutls_record_send() returns. */\n      inf_xmpp_connection_clear(xmpp);\n      g_object_notify(G_OBJECT(xmpp), \"status\");\n    }\n  }\n}",
+            3
+        ],
+        [
+            "libinfinity/common/inf-error.c",
+            "inf_gnutls_set_error",
+            "void /* <=== inf_gnutls_set_error */ \ninf_gnutls_set_error(GError** error,\n                     int error_code)\n{\n  if(error != NULL)\n  {\n    *error = g_error_new_literal(\n      inf_gnutls_error_quark(),\n      error_code,\n      gnutls_strerror(error_code)\n    );\n  }\n}",
+            2
+        ],
+        [
+            "libinfinity/common/inf-file-util.c",
+            "inf_file_util_create_directory",
+            "gboolean /* <=== inf_file_util_create_directory */ \ninf_file_util_create_directory(const gchar* path,\n                               int mode,\n                               GError** error)\n{\n  gchar* dirname;\n  gboolean result;\n\n  if(g_file_test(path, G_FILE_TEST_IS_DIR))\n    return TRUE;\n\n  dirname = g_path_get_dirname(path);\n\n  result = inf_file_util_create_directory(dirname, mode, error);\n  g_free(dirname);\n\n  if(result == FALSE)\n    return FALSE;\n\n  return inf_file_util_create_single_directory(path, mode, error);\n}",
+            3
+        ],
+        [
+            "libinfinity/common/inf-error.c",
+            "inf_gnutls_error_quark",
+            "GQuark /* <=== inf_gnutls_error_quark */ \ninf_gnutls_error_quark(void)\n{\n  return g_quark_from_static_string(\"INF_GNUTLS_ERROR\");\n}",
+            3
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "inf_xmpp_connection_certificate_verify_continue",
+            "void /* <=== inf_xmpp_connection_certificate_verify_continue */ \ninf_xmpp_connection_certificate_verify_continue(InfXmppConnection* xmpp)\n{\n  InfXmppConnectionPrivate* priv;\n\n  g_return_if_fail(INF_IS_XMPP_CONNECTION(xmpp));\n\n  priv = INF_XMPP_CONNECTION_PRIVATE(xmpp);\n  g_return_if_fail(priv->status == INF_XMPP_CONNECTION_CONNECTED);\n  g_return_if_fail(priv->session != NULL);\n\n  inf_xmpp_connection_initiate(xmpp);\n}",
+            1
+        ],
+        [
+            "libinfinity/common/inf-error.c",
+            "inf_gnutls_certificate_verification_error_quark",
+            "GQuark /* <=== inf_gnutls_certificate_verification_error_quark */ \ninf_gnutls_certificate_verification_error_quark(void)\n{\n  return g_quark_from_static_string(\n    \"INF_GNUTLS_CERTIFICATE_VERIFICATION_ERROR\"\n  );\n}",
+            2
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "inf_xmpp_connection_node_new_sasl",
+            "static xmlNodePtr /* <=== inf_xmpp_connection_node_new_sasl */ \ninf_xmpp_connection_node_new_sasl(const gchar* name)\n{\n  return inf_xmpp_connection_node_new(\n    name,\n    \"urn:ietf:params:xml:ns:xmpp-sasl\"\n  );\n}",
+            3
+        ],
+        [
+            "libinfinity/common/inf-xmpp-connection.c",
+            "inf_xmpp_connection_initiate",
+            "static void /* <=== inf_xmpp_connection_initiate */ \ninf_xmpp_connection_initiate(InfXmppConnection* xmpp)\n{\n  static const gchar xmpp_connection_initial_request[] =\n    \"<stream:stream version=\\\"1.0\\\" xmlns=\\\"jabber:client\\\" \"\n    \"xmlns:stream=\\\"http://etherx.jabber.org/streams\\\" to=\\\"%s\\\">\";\n\n  InfXmppConnectionPrivate* priv;\n  gchar* request;\n\n  priv = INF_XMPP_CONNECTION_PRIVATE(xmpp);\n\n  g_assert(priv->status == INF_XMPP_CONNECTION_CONNECTED ||\n           priv->status == INF_XMPP_CONNECTION_AUTH_CONNECTED);\n\n  /* Create XML parser for incoming data */\n  if(priv->parser != NULL) xmlFreeParserCtxt(priv->parser);\n  priv->parser = xmlCreatePushParserCtxt(\n    &inf_xmpp_connection_handler,\n    xmpp,\n    NULL,\n    0,\n    NULL\n  );\n\n  /* Create XML buffer for outgoing data */\n  if(priv->buf == NULL)\n  {\n    priv->buf = xmlBufferCreate();\n    priv->doc = xmlNewDoc((const xmlChar*)\"1.0\");\n  }\n\n  if(priv->site == INF_XMPP_CONNECTION_CLIENT)\n  {\n    request = g_strdup_printf(\n      xmpp_connection_initial_request,\n      priv->remote_hostname\n    );\n\n    inf_xmpp_connection_send_chars(xmpp, request, strlen(request));\n    g_free(request);\n\n    switch(priv->status)\n    {\n    case INF_XMPP_CONNECTION_CONNECTED:\n      priv->status = INF_XMPP_CONNECTION_INITIATED;\n      break;\n    case INF_XMPP_CONNECTION_AUTH_CONNECTED:\n      priv->status = INF_XMPP_CONNECTION_AUTH_INITIATED;\n      break;\n    default:\n      g_assert_not_reached();\n      break;\n    }\n  }\n}",
+            2
+        ]
+    ],
+    "globalVars": [
+        "static const unsigned int INF_GTK_CERTIFICATE_MANAGER_EXPIRATION_TOLERANCE"
+    ],
+    "importContext": [
+        "#include <libinfinity/common/inf-xml-connection.h>",
+        "#include <libinfinity/common/inf-file-util.h>",
+        "#include <string.h>",
+        "#include <libinfinity/common/inf-cert-util.h>",
+        "#include <gnutls/x509.h>",
+        "#include <libinfinity/inf-i18n.h>",
+        "#include <libinfgtk/inf-gtk-certificate-manager.h>",
+        "#include <errno.h>",
+        "#include <libinfinity/common/inf-error.h>",
+        "#include <libinfgtk/inf-gtk-certificate-dialog.h>",
+        "#include <libinfinity/inf-signals.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct _InfGtkCertificateManager InfGtkCertificateManager;",
+            "InfGtkCertificateManager"
+        ],
+        [
+            "typedef struct _InfGtkCertificateManagerPrivate\n  InfGtkCertificateManagerPrivate;",
+            "InfGtkCertificateManagerPrivate"
+        ],
+        [
+            "typedef struct _InfGtkCertificateManagerQuery InfGtkCertificateManagerQuery;",
+            "InfGtkCertificateManagerQuery"
+        ],
+        [
+            "typedef struct _InfCertificateChain InfCertificateChain;",
+            "InfCertificateChain"
+        ],
+        [
+            "typedef enum _InfGtkCertificateDialogFlags {\n  INF_GTK_CERTIFICATE_DIALOG_CERT_HOSTNAME_MISMATCH  = 1 << 0,\n  INF_GTK_CERTIFICATE_DIALOG_CERT_ISSUER_NOT_KNOWN   = 1 << 1,\n  INF_GTK_CERTIFICATE_DIALOG_CERT_UNEXPECTED         = 1 << 2,\n  INF_GTK_CERTIFICATE_DIALOG_CERT_OLD_EXPIRED        = 1 << 3\n} InfGtkCertificateDialogFlags;",
+            "InfGtkCertificateDialogFlags"
+        ]
+    ],
+    "visitedLines_after": {
+        "libinfgtk/inf-gtk-certificate-manager.c": [
+            635,
+            636,
+            637,
+            638,
+            669,
+            670,
+            675,
+            676,
+            678,
+            679,
+            683,
+            686,
+            697,
+            699,
+            700,
+            701,
+            702,
+            703,
+            704,
+            705,
+            706,
+            707,
+            710,
+            711,
+            714,
+            715,
+            716,
+            722,
+            723,
+            725,
+            726,
+            732,
+            733,
+            734,
+            742,
+            744,
+            746,
+            747,
+            748,
+            749,
+            752,
+            754,
+            755,
+            756,
+            757,
+            759,
+            760,
+            761,
+            763,
+            764,
+            766,
+            773,
+            774,
+            775,
+            776,
+            782,
+            784,
+            786,
+            790,
+            792,
+            793,
+            794,
+            799,
+            803,
+            804,
+            805,
+            806,
+            807,
+            808,
+            809,
+            810,
+            811,
+            812,
+            814,
+            816,
+            818,
+            819,
+            821,
+            822,
+            823,
+            824,
+            825,
+            828,
+            829,
+            830,
+            831,
+            832,
+            835,
+            836,
+            837,
+            838,
+            841,
+            842,
+            843,
+            844,
+            847,
+            848,
+            851,
+            854,
+            855,
+            856,
+            857,
+            858,
+            859,
+            860,
+            862,
+            863,
+            865,
+            866,
+            871,
+            872,
+            875,
+            876
+        ]
+    },
+    "visitedLines_before": {
+        "libinfgtk/inf-gtk-certificate-manager.c": [
+            635,
+            636,
+            637,
+            638,
+            669,
+            670,
+            675,
+            676,
+            678,
+            679,
+            683,
+            686,
+            697,
+            699,
+            700,
+            701,
+            702,
+            703,
+            704,
+            705,
+            706,
+            707,
+            710,
+            711,
+            712,
+            713,
+            720,
+            721,
+            723,
+            724,
+            730,
+            731,
+            732,
+            740,
+            742,
+            744,
+            745,
+            746,
+            747,
+            750,
+            752,
+            753,
+            754,
+            755,
+            757,
+            758,
+            759,
+            761,
+            762,
+            764,
+            771,
+            772,
+            773,
+            774,
+            780,
+            782,
+            784,
+            788,
+            790,
+            791,
+            792,
+            797,
+            801,
+            802,
+            803,
+            804,
+            805,
+            806,
+            807,
+            808,
+            809,
+            810,
+            812,
+            814,
+            816,
+            817,
+            819,
+            820,
+            821,
+            822,
+            823,
+            826,
+            827,
+            828,
+            829,
+            830,
+            833,
+            834,
+            835,
+            836,
+            839,
+            840,
+            841,
+            842,
+            845,
+            846,
+            849,
+            852,
+            853,
+            854,
+            855,
+            856,
+            857,
+            858,
+            860,
+            861,
+            863,
+            864,
+            869,
+            870,
+            873,
+            874
+        ]
+    },
+    "visitedParams": {
+        "libinfgtk/inf-gtk-certificate-manager.c": [
+            [
+                "InfCertificateChain* chain",
+                "inf_gtk_certificate_manager_certificate_func"
+            ],
+            [
+                "InfXmppConnection* connection",
+                "inf_gtk_certificate_manager_certificate_func"
+            ],
+            [
+                "gnutls_session_t session",
+                "inf_gtk_certificate_manager_certificate_func"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libinfgtk/inf-gtk-certificate-manager.c",
+            "inf_gtk_certificate_manager_certificate_func",
+            "static void /* <=== inf_gtk_certificate_manager_certificate_func */ \ninf_gtk_certificate_manager_certificate_func(InfXmppConnection* connection,\n                                             gnutls_session_t session,\n                                             InfCertificateChain* chain,\n                                             gpointer user_data)\n{\n  InfGtkCertificateManager* manager;\n  InfGtkCertificateManagerPrivate* priv;\n\n  InfGtkCertificateDialogFlags flags;\n  gnutls_x509_crt_t presented_cert;\n  gnutls_x509_crt_t known_cert;\n  gchar* hostname;\n\n  gboolean match_hostname;\n  gboolean issuer_known;\n  gnutls_x509_crt_t root_cert;\n\n  int ret;\n  unsigned int verify;\n  GHashTable* table;\n  gboolean cert_equal;\n  time_t expiration_time;\n\n  InfGtkCertificateManagerQuery* query;\n  gchar* text;\n  GtkWidget* vbox;\n  GtkWidget* label;\n\n  GError* error;\n\n  manager = INF_GTK_CERTIFICATE_MANAGER(user_data);\n  priv = INF_GTK_CERTIFICATE_MANAGER_PRIVATE(manager);\n\n  g_object_get(G_OBJECT(connection), \"remote-hostname\", &hostname, NULL);\n  presented_cert = inf_certificate_chain_get_own_certificate(chain);\n\n  match_hostname = gnutls_x509_crt_check_hostname(presented_cert, hostname);\n\n  /* First, validate the certificate */\n  ret = gnutls_certificate_verify_peers2(session, &verify);\n  error = NULL;\n\n  if(ret != GNUTLS_E_SUCCESS)\n    inf_gnutls_set_error(&error, ret);\n\n  /* Remove the GNUTLS_CERT_ISSUER_NOT_KNOWN flag from the verification\n   * result, and if the certificate is still invalid, then set an error. */\n  if(error == NULL)\n  {\n    issuer_known = TRUE;\n    if(verify & GNUTLS_CERT_SIGNER_NOT_FOUND)\n    {\n      issuer_known = FALSE;\n\n      /* Re-validate the certificate for other failure reasons --\n       * unfortunately the gnutls_certificate_verify_peers2() call\n       * does not tell us whether the certificate is otherwise invalid\n       * if a signer is not found already. */\n      /* TODO: Here it would be good to use the verify flags from the\n       * certificate credentials, but GnuTLS does not have API to\n       * retrieve them. */\n      root_cert = inf_certificate_chain_get_root_certificate(chain);\n\n      ret = gnutls_x509_crt_list_verify(\n        inf_certificate_chain_get_raw(chain),\n        inf_certificate_chain_get_n_certificates(chain),\n        &root_cert,\n        1,\n        NULL,\n        0,\n        GNUTLS_VERIFY_ALLOW_X509_V1_CA_CRT,\n        &verify\n      );\n\n      if(ret != GNUTLS_E_SUCCESS)\n        inf_gnutls_set_error(&error, ret);\n    }\n\n    if(error == NULL)\n      if(verify & GNUTLS_CERT_INVALID)\n        inf_gnutls_certificate_verification_set_error(&error, verify);\n  }\n\n  /* Look up the host in our database of pinned certificates if we could not\n   * fully verify the certificate, i.e. if either the issuer is not known or\n   * the hostname of the connection does not match the certificate. */\n  table = NULL;\n  if(error == NULL)\n  {\n    known_cert = NULL;\n    if(!match_hostname || !issuer_known)\n    {\n      /* If we cannot load the known host file, then cancel the connection.\n       * Otherwise it might happen that someone shows us a certificate that we\n       * tell the user we don't know, if though actually for that host we expect\n       * a different certificate. */\n      table = inf_gtk_certificate_manager_ref_known_hosts(manager, &error);\n      if(table != NULL)\n        known_cert = g_hash_table_lookup(table, hostname);\n    }\n  }\n\n  /* Next, configure the flags for the dialog to be shown based on the\n   * verification result, and on whether the pinned certificate matches\n   * the one presented by the host or not. */\n  flags = 0;\n  if(error == NULL)\n  {\n    if(known_cert != NULL)\n    {\n      cert_equal = inf_gtk_certificate_manager_compare_fingerprint(\n        known_cert,\n        presented_cert,\n        &error\n      );\n\n      if(error == NULL && cert_equal == FALSE)\n      {\n        if(!match_hostname)\n          flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_HOSTNAME_MISMATCH;\n        if(!issuer_known)\n          flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_ISSUER_NOT_KNOWN;\n\n        flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_UNEXPECTED;\n        expiration_time = gnutls_x509_crt_get_expiration_time(known_cert);\n        if(expiration_time != (time_t)(-1))\n        {\n          expiration_time -= INF_GTK_CERTIFICATE_MANAGER_EXPIRATION_TOLERANCE;\n          if(time(NULL) > expiration_time)\n          {\n            flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_OLD_EXPIRED;\n          }\n        }\n      }\n    }\n    else\n    {\n      if(!match_hostname)\n        flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_HOSTNAME_MISMATCH;\n      if(!issuer_known)\n        flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_ISSUER_NOT_KNOWN;\n    }\n  }\n\n  /* Now proceed either by accepting the connection, rejecting it, or\n   * bothering the user with an annoying dialog. */\n  if(error == NULL)\n  {\n    if(flags == 0)\n    {\n      if(match_hostname && issuer_known)\n      {\n        /* Remove the pinned entry if we now have a valid certificate for\n         * this host. */\n        if(table != NULL && g_hash_table_remove(table, hostname) == TRUE)\n        {\n          inf_gtk_certificate_manager_write_known_hosts_with_warning(\n            manager,\n            table\n          );\n        }\n      }\n\n      inf_xmpp_connection_certificate_verify_continue(connection);\n    }\n    else\n    {\n      query = g_slice_new(InfGtkCertificateManagerQuery);\n      query->manager = manager;\n      query->known_hosts = table;\n      query->connection = connection;\n      query->dialog = inf_gtk_certificate_dialog_new(\n        priv->parent_window,\n        0,\n        flags,\n        hostname,\n        chain\n      );\n      query->certificate_chain = chain;\n\n      table = NULL;\n\n      g_object_ref(query->connection);\n      inf_certificate_chain_ref(chain);\n\n      g_signal_connect(\n        G_OBJECT(connection),\n        \"notify::status\",\n        G_CALLBACK(inf_gtk_certificate_manager_notify_status_cb),\n        query\n      );\n\n      g_signal_connect(\n        G_OBJECT(query->dialog),\n        \"response\",\n        G_CALLBACK(inf_gtk_certificate_manager_response_cb),\n        query\n      );\n\n      gtk_dialog_add_button(\n        GTK_DIALOG(query->dialog),\n        _(\"_Cancel connection\"),\n        GTK_RESPONSE_REJECT\n      );\n\n      gtk_dialog_add_button(\n        GTK_DIALOG(query->dialog),\n        _(\"C_ontinue connection\"),\n        GTK_RESPONSE_ACCEPT\n      );\n\n      text = g_strdup_printf(\n        _(\"Do you want to continue the connection to host \\\"%s\\\"? If you \"\n          \"choose to continue, this certificate will be trusted in the \"\n          \"future when connecting to this host.\"),\n        hostname\n      );\n\n      label = gtk_label_new(text);\n      gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);\n      gtk_label_set_line_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);\n      gtk_label_set_max_width_chars(GTK_LABEL(label), 60);\n      gtk_misc_set_alignment(GTK_MISC(label), 0.0, 0.0);\n      gtk_widget_show(label);\n      g_free(text);\n\n      vbox = gtk_dialog_get_content_area(GTK_DIALOG(query->dialog));\n      gtk_box_pack_start(GTK_BOX(vbox), label, FALSE, FALSE, 0);\n\n      priv->queries = g_slist_prepend(priv->queries, query);\n      gtk_window_present(GTK_WINDOW(query->dialog));\n    }\n  }\n  else\n  {\n    inf_xmpp_connection_certificate_verify_cancel(connection, error);\n    g_error_free(error);\n  }\n\n  if(table != NULL) g_hash_table_unref(table);\n  g_free(hostname);\n}",
+            635
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libinfgtk/inf-gtk-certificate-manager.c",
+            "inf_gtk_certificate_manager_certificate_func",
+            "static void /* <=== inf_gtk_certificate_manager_certificate_func */ \ninf_gtk_certificate_manager_certificate_func(InfXmppConnection* connection,\n                                             gnutls_session_t session,\n                                             InfCertificateChain* chain,\n                                             gpointer user_data)\n{\n  InfGtkCertificateManager* manager;\n  InfGtkCertificateManagerPrivate* priv;\n\n  InfGtkCertificateDialogFlags flags;\n  gnutls_x509_crt_t presented_cert;\n  gnutls_x509_crt_t known_cert;\n  gchar* hostname;\n\n  gboolean match_hostname;\n  gboolean issuer_known;\n  gnutls_x509_crt_t root_cert;\n\n  int ret;\n  unsigned int verify;\n  GHashTable* table;\n  gboolean cert_equal;\n  time_t expiration_time;\n\n  InfGtkCertificateManagerQuery* query;\n  gchar* text;\n  GtkWidget* vbox;\n  GtkWidget* label;\n\n  GError* error;\n\n  manager = INF_GTK_CERTIFICATE_MANAGER(user_data);\n  priv = INF_GTK_CERTIFICATE_MANAGER_PRIVATE(manager);\n\n  g_object_get(G_OBJECT(connection), \"remote-hostname\", &hostname, NULL);\n  presented_cert = inf_certificate_chain_get_own_certificate(chain);\n\n  match_hostname = gnutls_x509_crt_check_hostname(presented_cert, hostname);\n\n  /* First, validate the certificate */\n  ret = gnutls_certificate_verify_peers2(session, &verify);\n  error = NULL;\n\n  if(ret != GNUTLS_E_SUCCESS)\n    inf_gnutls_set_error(&error, ret);\n\n  /* Remove the GNUTLS_CERT_ISSUER_NOT_KNOWN flag from the verification\n   * result, and if the certificate is still invalid, then set an error. */\n  if(error == NULL)\n  {\n    issuer_known = TRUE;\n    if(verify & GNUTLS_CERT_SIGNER_NOT_FOUND)\n    {\n      issuer_known = FALSE;\n\n      /* Re-validate the certificate for other failure reasons --\n       * unfortunately the gnutls_certificate_verify_peers2() call\n       * does not tell us whether the certificate is otherwise invalid\n       * if a signer is not found already. */\n      /* TODO: Here it would be good to use the verify flags from the\n       * certificate credentials, but GnuTLS does not have API to\n       * retrieve them. */\n      root_cert = inf_certificate_chain_get_root_certificate(chain);\n\n      ret = gnutls_x509_crt_list_verify(\n        inf_certificate_chain_get_raw(chain),\n        inf_certificate_chain_get_n_certificates(chain),\n        &root_cert,\n        1,\n        NULL,\n        0,\n        GNUTLS_VERIFY_ALLOW_X509_V1_CA_CRT,\n        &verify\n      );\n\n      if(ret != GNUTLS_E_SUCCESS)\n        inf_gnutls_set_error(&error, ret);\n      else if(verify & GNUTLS_CERT_INVALID)\n        inf_gnutls_certificate_verification_set_error(&error, verify);\n    }\n  }\n\n  /* Look up the host in our database of pinned certificates if we could not\n   * fully verify the certificate, i.e. if either the issuer is not known or\n   * the hostname of the connection does not match the certificate. */\n  table = NULL;\n  if(error == NULL)\n  {\n    known_cert = NULL;\n    if(!match_hostname || !issuer_known)\n    {\n      /* If we cannot load the known host file, then cancel the connection.\n       * Otherwise it might happen that someone shows us a certificate that we\n       * tell the user we don't know, if though actually for that host we expect\n       * a different certificate. */\n      table = inf_gtk_certificate_manager_ref_known_hosts(manager, &error);\n      if(table != NULL)\n        known_cert = g_hash_table_lookup(table, hostname);\n    }\n  }\n\n  /* Next, configure the flags for the dialog to be shown based on the\n   * verification result, and on whether the pinned certificate matches\n   * the one presented by the host or not. */\n  flags = 0;\n  if(error == NULL)\n  {\n    if(known_cert != NULL)\n    {\n      cert_equal = inf_gtk_certificate_manager_compare_fingerprint(\n        known_cert,\n        presented_cert,\n        &error\n      );\n\n      if(error == NULL && cert_equal == FALSE)\n      {\n        if(!match_hostname)\n          flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_HOSTNAME_MISMATCH;\n        if(!issuer_known)\n          flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_ISSUER_NOT_KNOWN;\n\n        flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_UNEXPECTED;\n        expiration_time = gnutls_x509_crt_get_expiration_time(known_cert);\n        if(expiration_time != (time_t)(-1))\n        {\n          expiration_time -= INF_GTK_CERTIFICATE_MANAGER_EXPIRATION_TOLERANCE;\n          if(time(NULL) > expiration_time)\n          {\n            flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_OLD_EXPIRED;\n          }\n        }\n      }\n    }\n    else\n    {\n      if(!match_hostname)\n        flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_HOSTNAME_MISMATCH;\n      if(!issuer_known)\n        flags |= INF_GTK_CERTIFICATE_DIALOG_CERT_ISSUER_NOT_KNOWN;\n    }\n  }\n\n  /* Now proceed either by accepting the connection, rejecting it, or\n   * bothering the user with an annoying dialog. */\n  if(error == NULL)\n  {\n    if(flags == 0)\n    {\n      if(match_hostname && issuer_known)\n      {\n        /* Remove the pinned entry if we now have a valid certificate for\n         * this host. */\n        if(table != NULL && g_hash_table_remove(table, hostname) == TRUE)\n        {\n          inf_gtk_certificate_manager_write_known_hosts_with_warning(\n            manager,\n            table\n          );\n        }\n      }\n\n      inf_xmpp_connection_certificate_verify_continue(connection);\n    }\n    else\n    {\n      query = g_slice_new(InfGtkCertificateManagerQuery);\n      query->manager = manager;\n      query->known_hosts = table;\n      query->connection = connection;\n      query->dialog = inf_gtk_certificate_dialog_new(\n        priv->parent_window,\n        0,\n        flags,\n        hostname,\n        chain\n      );\n      query->certificate_chain = chain;\n\n      table = NULL;\n\n      g_object_ref(query->connection);\n      inf_certificate_chain_ref(chain);\n\n      g_signal_connect(\n        G_OBJECT(connection),\n        \"notify::status\",\n        G_CALLBACK(inf_gtk_certificate_manager_notify_status_cb),\n        query\n      );\n\n      g_signal_connect(\n        G_OBJECT(query->dialog),\n        \"response\",\n        G_CALLBACK(inf_gtk_certificate_manager_response_cb),\n        query\n      );\n\n      gtk_dialog_add_button(\n        GTK_DIALOG(query->dialog),\n        _(\"_Cancel connection\"),\n        GTK_RESPONSE_REJECT\n      );\n\n      gtk_dialog_add_button(\n        GTK_DIALOG(query->dialog),\n        _(\"C_ontinue connection\"),\n        GTK_RESPONSE_ACCEPT\n      );\n\n      text = g_strdup_printf(\n        _(\"Do you want to continue the connection to host \\\"%s\\\"? If you \"\n          \"choose to continue, this certificate will be trusted in the \"\n          \"future when connecting to this host.\"),\n        hostname\n      );\n\n      label = gtk_label_new(text);\n      gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);\n      gtk_label_set_line_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);\n      gtk_label_set_max_width_chars(GTK_LABEL(label), 60);\n      gtk_misc_set_alignment(GTK_MISC(label), 0.0, 0.0);\n      gtk_widget_show(label);\n      g_free(text);\n\n      vbox = gtk_dialog_get_content_area(GTK_DIALOG(query->dialog));\n      gtk_box_pack_start(GTK_BOX(vbox), label, FALSE, FALSE, 0);\n\n      priv->queries = g_slist_prepend(priv->queries, query);\n      gtk_window_present(GTK_WINDOW(query->dialog));\n    }\n  }\n  else\n  {\n    inf_xmpp_connection_certificate_verify_cancel(connection, error);\n    g_error_free(error);\n  }\n\n  if(table != NULL) g_hash_table_unref(table);\n  g_free(hostname);\n}",
+            635
+        ]
+    ]
+}

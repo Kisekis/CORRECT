@@ -1,0 +1,623 @@
+{
+    "calleeMethods": [
+        [
+            "lib/cookie.c",
+            "Curl_cookie_init",
+            "struct CookieInfo *Curl_cookie_init(struct Curl_easy *data, /* <=== Curl_cookie_init */ \n                                    const char *file,\n                                    struct CookieInfo *inc,\n                                    bool newsession)\n{\n  struct CookieInfo *c;\n  FILE *fp = NULL;\n  bool fromfile = TRUE;\n  char *line = NULL;\n\n  if(NULL == inc) {\n    /* we didn't get a struct, create one */\n    c = calloc(1, sizeof(struct CookieInfo));\n    if(!c)\n      return NULL; /* failed to get memory */\n    c->filename = strdup(file?file:\"none\"); /* copy the name just in case */\n    if(!c->filename)\n      goto fail; /* failed to get memory */\n  }\n  else {\n    /* we got an already existing one, use that */\n    c = inc;\n  }\n  c->running = FALSE; /* this is not running, this is init */\n\n  if(file && !strcmp(file, \"-\")) {\n    fp = stdin;\n    fromfile = FALSE;\n  }\n  else if(file && !*file) {\n    /* points to a \"\" string */\n    fp = NULL;\n  }\n  else\n    fp = file?fopen(file, FOPEN_READTEXT):NULL;\n\n  c->newsession = newsession; /* new session? */\n\n  if(fp) {\n    char *lineptr;\n    bool headerline;\n\n    line = malloc(MAX_COOKIE_LINE);\n    if(!line)\n      goto fail;\n    while(get_line(line, MAX_COOKIE_LINE, fp)) {\n      if(checkprefix(\"Set-Cookie:\", line)) {\n        /* This is a cookie line, get it! */\n        lineptr = &line[11];\n        headerline = TRUE;\n      }\n      else {\n        lineptr = line;\n        headerline = FALSE;\n      }\n      while(*lineptr && ISBLANK(*lineptr))\n        lineptr++;\n\n      Curl_cookie_add(data, c, headerline, TRUE, lineptr, NULL, NULL);\n    }\n    free(line); /* free the line buffer */\n    remove_expired(c); /* run this once, not on every cookie */\n\n    if(fromfile)\n      fclose(fp);\n  }\n\n  c->running = TRUE;          /* now, we're running */\n\n  return c;\n\nfail:\n  free(line);\n  if(!inc)\n    /* Only clean up if we allocated it here, as the original could still be in\n     * use by a share handle */\n    Curl_cookie_cleanup(c);\n  if(fromfile && fp)\n    fclose(fp);\n  return NULL; /* out of memory */\n}",
+            3
+        ],
+        [
+            "lib/cookie.c",
+            "remove_expired",
+            "static void remove_expired(struct CookieInfo *cookies) /* <=== remove_expired */ \n{\n  struct Cookie *co, *nx;\n  curl_off_t now = (curl_off_t)time(NULL);\n  unsigned int i;\n\n  for(i = 0; i < COOKIE_HASH_SIZE; i++) {\n    struct Cookie *pv = NULL;\n    co = cookies->cookies[i];\n    while(co) {\n      nx = co->next;\n      if(co->expires && co->expires < now) {\n        if(!pv) {\n          cookies->cookies[i] = co->next;\n        }\n        else {\n          pv->next = co->next;\n        }\n        cookies->numcookies--;\n        freecookie(co);\n      }\n      else {\n        pv = co;\n      }\n      co = nx;\n    }\n  }\n}",
+            3
+        ],
+        [
+            "lib/sendf.c",
+            "Curl_debug",
+            "int Curl_debug(struct Curl_easy *data, curl_infotype type, /* <=== Curl_debug */ \n               char *ptr, size_t size)\n{\n  static const char s_infotype[CURLINFO_END][3] = {\n    \"* \", \"< \", \"> \", \"{ \", \"} \", \"{ \", \"} \" };\n  int rc = 0;\n\n#ifdef CURL_DOES_CONVERSIONS\n  char *buf = NULL;\n  size_t conv_size = 0;\n\n  switch(type) {\n  case CURLINFO_HEADER_OUT:\n    buf = Curl_memdup(ptr, size);\n    if(!buf)\n      return 1;\n    conv_size = size;\n\n    /* Special processing is needed for this block if it\n     * contains both headers and data (separated by CRLFCRLF).\n     * We want to convert just the headers, leaving the data as-is.\n     */\n    if(size > 4) {\n      size_t i;\n      for(i = 0; i < size-4; i++) {\n        if(memcmp(&buf[i], \"\\x0d\\x0a\\x0d\\x0a\", 4) == 0) {\n          /* convert everything through this CRLFCRLF but no further */\n          conv_size = i + 4;\n          break;\n        }\n      }\n    }\n\n    Curl_convert_from_network(data, buf, conv_size);\n    /* Curl_convert_from_network calls failf if unsuccessful */\n    /* we might as well continue even if it fails...   */\n    ptr = buf; /* switch pointer to use my buffer instead */\n    break;\n  default:\n    /* leave everything else as-is */\n    break;\n  }\n#endif /* CURL_DOES_CONVERSIONS */\n\n  if(data->set.fdebug) {\n    Curl_set_in_callback(data, true);\n    rc = (*data->set.fdebug)(data, type, ptr, size, data->set.debugdata);\n    Curl_set_in_callback(data, false);\n  }\n  else {\n    switch(type) {\n    case CURLINFO_TEXT:\n    case CURLINFO_HEADER_OUT:\n    case CURLINFO_HEADER_IN:\n      fwrite(s_infotype[type], 2, 1, data->set.err);\n      fwrite(ptr, size, 1, data->set.err);\n#ifdef CURL_DOES_CONVERSIONS\n      if(size != conv_size) {\n        /* we had untranslated data so we need an explicit newline */\n        fwrite(\"\\n\", 1, 1, data->set.err);\n      }\n#endif\n      break;\n    default: /* nada */\n      break;\n    }\n  }\n#ifdef CURL_DOES_CONVERSIONS\n  free(buf);\n#endif\n  return rc;\n}",
+            3
+        ],
+        [
+            "lib/llist.c",
+            "Curl_llist_insert_next",
+            "void /* <=== Curl_llist_insert_next */ \nCurl_llist_insert_next(struct curl_llist *list, struct curl_llist_element *e,\n                       const void *p,\n                       struct curl_llist_element *ne)\n{\n  ne->ptr = (void *) p;\n  if(list->size == 0) {\n    list->head = ne;\n    list->head->prev = NULL;\n    list->head->next = NULL;\n    list->tail = ne;\n  }\n  else {\n    /* if 'e' is NULL here, we insert the new element first in the list */\n    ne->next = e?e->next:list->head;\n    ne->prev = e;\n    if(!e) {\n      list->head->prev = ne;\n      list->head = ne;\n    }\n    else if(e->next) {\n      e->next->prev = ne;\n    }\n    else {\n      list->tail = ne;\n    }\n    if(e)\n      e->next = ne;\n  }\n\n  ++list->size;\n}",
+            3
+        ],
+        [
+            "lib/sigpipe.h",
+            "sigpipe_restore",
+            "#define sigpipe_restore(x)  Curl_nop_stmt /* <=== lib/sigpipe.h:74:74:sigpipe_restore:1 */ ",
+            3
+        ],
+        [
+            "lib/curl_setup_once.h",
+            "ZERO_NULL",
+            "#define ZERO_NULL 0 /* <=== lib/curl_setup_once.h:514:514:ZERO_NULL:0 */ ",
+            2
+        ],
+        [
+            "lib/hostip.c",
+            "Curl_hostcache_clean",
+            "void Curl_hostcache_clean(struct Curl_easy *data, /* <=== Curl_hostcache_clean */ \n                          struct curl_hash *hash)\n{\n  if(data && data->share)\n    Curl_share_lock(data, CURL_LOCK_DATA_DNS, CURL_LOCK_ACCESS_SINGLE);\n\n  Curl_hash_clean(hash);\n\n  if(data && data->share)\n    Curl_share_unlock(data, CURL_LOCK_DATA_DNS);\n}",
+            2
+        ],
+        [
+            "lib/multi.c",
+            "curl_multi_cleanup",
+            "CURLMcode curl_multi_cleanup(struct Curl_multi *multi) /* <=== curl_multi_cleanup */ \n{\n  struct Curl_easy *data;\n  struct Curl_easy *nextdata;\n\n  if(GOOD_MULTI_HANDLE(multi)) {\n    if(multi->in_callback)\n      return CURLM_RECURSIVE_API_CALL;\n\n    multi->type = 0; /* not good anymore */\n\n    /* Firsrt remove all remaining easy handles */\n    data = multi->easyp;\n    while(data) {\n      nextdata = data->next;\n      if(!data->state.done && data->easy_conn)\n        /* if DONE was never called for this handle */\n        (void)multi_done(&data->easy_conn, CURLE_OK, TRUE);\n      if(data->dns.hostcachetype == HCACHE_MULTI) {\n        /* clear out the usage of the shared DNS cache */\n        Curl_hostcache_clean(data, data->dns.hostcache);\n        data->dns.hostcache = NULL;\n        data->dns.hostcachetype = HCACHE_NONE;\n      }\n\n      /* Clear the pointer to the connection cache */\n      data->state.conn_cache = NULL;\n      data->multi = NULL; /* clear the association */\n\n#ifdef USE_LIBPSL\n      if(data->psl == &multi->psl)\n        data->psl = NULL;\n#endif\n\n      data = nextdata;\n    }\n\n    /* Close all the connections in the connection cache */\n    Curl_conncache_close_all_connections(&multi->conn_cache);\n\n    Curl_hash_destroy(&multi->sockhash);\n    Curl_conncache_destroy(&multi->conn_cache);\n    Curl_llist_destroy(&multi->msglist, NULL);\n    Curl_llist_destroy(&multi->pending, NULL);\n\n    Curl_hash_destroy(&multi->hostcache);\n    Curl_psl_destroy(&multi->psl);\n\n    /* Free the blacklists by setting them to NULL */\n    Curl_pipeline_set_site_blacklist(NULL, &multi->pipelining_site_bl);\n    Curl_pipeline_set_server_blacklist(NULL, &multi->pipelining_server_bl);\n\n    free(multi);\n\n    return CURLM_OK;\n  }\n  return CURLM_BAD_HANDLE;\n}",
+            1
+        ],
+        [
+            "lib/share.c",
+            "Curl_share_unlock",
+            "CURLSHcode /* <=== Curl_share_unlock */ \nCurl_share_unlock(struct Curl_easy *data, curl_lock_data type)\n{\n  struct Curl_share *share = data->share;\n\n  if(share == NULL)\n    return CURLSHE_INVALID;\n\n  if(share->specifier & (1<<type)) {\n    if(share->unlockfunc) /* only call this if set! */\n      share->unlockfunc (data, type, share->clientdata);\n  }\n\n  return CURLSHE_OK;\n}",
+            1
+        ],
+        [
+            "lib/urldata.h",
+            "PROTOPT_STREAM",
+            "#define PROTOPT_STREAM (1<<9) /* a protocol with individual logical streams */ /* <=== lib/urldata.h:722:722:PROTOPT_STREAM:0 */ ",
+            3
+        ],
+        [
+            "lib/cookie.c",
+            "Curl_cookie_freelist",
+            "void Curl_cookie_freelist(struct Cookie *co) /* <=== Curl_cookie_freelist */ \n{\n  struct Cookie *next;\n  while(co) {\n    next = co->next;\n    freecookie(co);\n    co = next;\n  }\n}",
+            3
+        ],
+        [
+            "lib/url.c",
+            "Curl_free_request_state",
+            "void Curl_free_request_state(struct Curl_easy *data) /* <=== Curl_free_request_state */ \n{\n  Curl_safefree(data->req.protop);\n  Curl_safefree(data->req.newurl);\n}",
+            1
+        ],
+        [
+            "lib/asyn.h",
+            "Curl_resolver_wait_resolv",
+            "#define Curl_resolver_wait_resolv(x,y) CURLE_COULDNT_RESOLVE_HOST /* <=== lib/asyn.h:151:151:Curl_resolver_wait_resolv:2 */ ",
+            3
+        ],
+        [
+            "lib/progress.c",
+            "Curl_pgrsDone",
+            "int Curl_pgrsDone(struct connectdata *conn) /* <=== Curl_pgrsDone */ \n{\n  int rc;\n  struct Curl_easy *data = conn->data;\n  data->progress.lastshow = 0;\n  rc = Curl_pgrsUpdate(conn); /* the final (forced) update */\n  if(rc)\n    return rc;\n\n  if(!(data->progress.flags & PGRS_HIDE) &&\n     !data->progress.callback)\n    /* only output if we don't use a progress callback and we're not\n     * hidden */\n    fprintf(data->set.err, \"\\n\");\n\n  data->progress.speeder_c = 0; /* reset the progress meter display */\n  return 0;\n}",
+            3
+        ],
+        [
+            "lib/curl_setup.h",
+            "FOPEN_WRITETEXT",
+            "#define FOPEN_WRITETEXT \"w\" /* <=== lib/curl_setup.h:772:772:FOPEN_WRITETEXT:0 */ ",
+            3
+        ],
+        [
+            "lib/cookie.c",
+            "Curl_flush_cookies",
+            "void Curl_flush_cookies(struct Curl_easy *data, int cleanup) /* <=== Curl_flush_cookies */ \n{\n  if(data->set.str[STRING_COOKIEJAR]) {\n    if(data->change.cookielist) {\n      /* If there is a list of cookie files to read, do it first so that\n         we have all the told files read before we write the new jar.\n         Curl_cookie_loadfiles() LOCKS and UNLOCKS the share itself! */\n      Curl_cookie_loadfiles(data);\n    }\n\n    Curl_share_lock(data, CURL_LOCK_DATA_COOKIE, CURL_LOCK_ACCESS_SINGLE);\n\n    /* if we have a destination file for all the cookies to get dumped to */\n    if(cookie_output(data->cookies, data->set.str[STRING_COOKIEJAR]))\n      infof(data, \"WARNING: failed to save cookies in %s\\n\",\n            data->set.str[STRING_COOKIEJAR]);\n  }\n  else {\n    if(cleanup && data->change.cookielist) {\n      /* since nothing is written, we can just free the list of cookie file\n         names */\n      curl_slist_free_all(data->change.cookielist); /* clean up list */\n      data->change.cookielist = NULL;\n    }\n    Curl_share_lock(data, CURL_LOCK_DATA_COOKIE, CURL_LOCK_ACCESS_SINGLE);\n  }\n\n  if(cleanup && (!data->share || (data->cookies != data->share->cookies))) {\n    Curl_cookie_cleanup(data->cookies);\n  }\n  Curl_share_unlock(data, CURL_LOCK_DATA_COOKIE);\n}",
+            1
+        ],
+        [
+            "include/curl/mprintf.h",
+            "curl_mvsnprintf",
+            "CURL_EXTERN int curl_mvsnprintf(char *buffer, size_t maxlength, /* <=== curl_mvsnprintf */ \n                                const char *format, va_list args);",
+            3
+        ],
+        [
+            "lib/http_digest.c",
+            "Curl_digest_cleanup",
+            "void Curl_digest_cleanup(struct Curl_easy *data) /* <=== Curl_digest_cleanup */ \n{\n  Curl_auth_digest_cleanup(&data->state.digest);\n  Curl_auth_digest_cleanup(&data->state.proxydigest);\n}",
+            1
+        ],
+        [
+            "lib/asyn.h",
+            "Curl_resolver_cancel",
+            "#define Curl_resolver_cancel(x) Curl_nop_stmt /* <=== lib/asyn.h:149:149:Curl_resolver_cancel:1 */ ",
+            3
+        ],
+        [
+            "lib/mime.h",
+            "MIME_USERHEADERS_OWNER",
+            "#define MIME_USERHEADERS_OWNER  (1 << 0) /* <=== lib/mime.h:30:30:MIME_USERHEADERS_OWNER:0 */ ",
+            3
+        ],
+        [
+            "lib/curl_memory.h",
+            "malloc",
+            "#define malloc(size) Curl_cmalloc(size) /* <=== lib/curl_memory.h:124:124:malloc:1 */ ",
+            3
+        ],
+        [
+            "lib/cookie.c",
+            "cookie_output",
+            "static int cookie_output(struct CookieInfo *c, const char *dumphere) /* <=== cookie_output */ \n{\n  struct Cookie *co;\n  FILE *out;\n  bool use_stdout = FALSE;\n  char *format_ptr;\n  unsigned int i;\n  unsigned int j;\n  struct Cookie **array;\n\n  if((NULL == c) || (0 == c->numcookies))\n    /* If there are no known cookies, we don't write or even create any\n       destination file */\n    return 0;\n\n  /* at first, remove expired cookies */\n  remove_expired(c);\n\n  /* make sure we still have cookies after expiration */\n  if(0 == c->numcookies)\n    return 0;\n\n  array = malloc(sizeof(struct Cookie *) * c->numcookies);\n  if(!array)\n    return 1;\n\n  if(!strcmp(\"-\", dumphere)) {\n    /* use stdout */\n    out = stdout;\n    use_stdout = TRUE;\n  }\n  else {\n    out = fopen(dumphere, FOPEN_WRITETEXT);\n    if(!out) {\n      free(array);\n      return 1; /* failure */\n    }\n  }\n\n  fputs(\"# Netscape HTTP Cookie File\\n\"\n        \"# https://curl.haxx.se/docs/http-cookies.html\\n\"\n        \"# This file was generated by libcurl! Edit at your own risk.\\n\\n\",\n        out);\n\n  j = 0;\n  for(i = 0; i < COOKIE_HASH_SIZE; i++) {\n    for(co = c->cookies[i]; co; co = co->next) {\n      if(!co->domain)\n        continue;\n      array[j++] = co;\n    }\n  }\n\n  qsort(array, c->numcookies, sizeof(struct Cookie *), cookie_sort_ct);\n\n  for(i = 0; i < j; i++) {\n    format_ptr = get_netscape_format(array[i]);\n    if(format_ptr == NULL) {\n      fprintf(out, \"#\\n# Fatal libcurl error\\n\");\n      free(array);\n      if(!use_stdout)\n        fclose(out);\n      return 1;\n    }\n    fprintf(out, \"%s\\n\", format_ptr);\n    free(format_ptr);\n  }\n\n  free(array);\n\n  if(!use_stdout)\n    fclose(out);\n\n  return 0;\n}",
+            2
+        ],
+        [
+            "lib/pipeline.c",
+            "Curl_pipeline_set_server_blacklist",
+            "CURLMcode Curl_pipeline_set_server_blacklist(char **servers, /* <=== Curl_pipeline_set_server_blacklist */ \n                                             struct curl_llist *list)\n{\n  /* Free the old list */\n  if(list->size)\n    Curl_llist_destroy(list, NULL);\n\n  if(servers) {\n    Curl_llist_init(list, (curl_llist_dtor) server_blacklist_llist_dtor);\n\n    /* Parse the URLs and populate the list */\n    while(*servers) {\n      struct blacklist_node *n;\n      size_t len = strlen(*servers);\n\n      n = malloc(sizeof(struct blacklist_node) + len);\n      if(!n) {\n        Curl_llist_destroy(list, NULL);\n        return CURLM_OUT_OF_MEMORY;\n      }\n      strcpy(n->server_name, *servers);\n\n      Curl_llist_insert_next(list, list->tail, n, &n->list);\n      servers++;\n    }\n  }\n\n\n  return CURLM_OK;\n}",
+            2
+        ],
+        [
+            "lib/cookie.c",
+            "get_netscape_format",
+            "static char *get_netscape_format(const struct Cookie *co) /* <=== get_netscape_format */ \n{\n  return aprintf(\n    \"%s\"     /* httponly preamble */\n    \"%s%s\\t\" /* domain */\n    \"%s\\t\"   /* tailmatch */\n    \"%s\\t\"   /* path */\n    \"%s\\t\"   /* secure */\n    \"%\" CURL_FORMAT_CURL_OFF_T \"\\t\"   /* expires */\n    \"%s\\t\"   /* name */\n    \"%s\",    /* value */\n    co->httponly?\"#HttpOnly_\":\"\",\n    /* Make sure all domains are prefixed with a dot if they allow\n       tailmatching. This is Mozilla-style. */\n    (co->tailmatch && co->domain && co->domain[0] != '.')? \".\":\"\",\n    co->domain?co->domain:\"unknown\",\n    co->tailmatch?\"TRUE\":\"FALSE\",\n    co->path?co->path:\"/\",\n    co->secure?\"TRUE\":\"FALSE\",\n    co->expires,\n    co->name,\n    co->value?co->value:\"\");\n}",
+            3
+        ],
+        [
+            "lib/pipeline.c",
+            "Curl_pipeline_set_site_blacklist",
+            "CURLMcode Curl_pipeline_set_site_blacklist(char **sites, /* <=== Curl_pipeline_set_site_blacklist */ \n                                           struct curl_llist *list)\n{\n  /* Free the old list */\n  if(list->size)\n    Curl_llist_destroy(list, NULL);\n\n  if(sites) {\n    Curl_llist_init(list, (curl_llist_dtor) site_blacklist_llist_dtor);\n\n    /* Parse the URLs and populate the list */\n    while(*sites) {\n      char *port;\n      struct site_blacklist_entry *entry;\n\n      entry = malloc(sizeof(struct site_blacklist_entry) + strlen(*sites));\n      if(!entry) {\n        Curl_llist_destroy(list, NULL);\n        return CURLM_OUT_OF_MEMORY;\n      }\n      strcpy(entry->hostname, *sites);\n\n      port = strchr(entry->hostname, ':');\n      if(port) {\n        *port = '\\0';\n        port++;\n        entry->port = (unsigned short)strtol(port, NULL, 10);\n      }\n      else {\n        /* Default port number for HTTP */\n        entry->port = 80;\n      }\n\n      Curl_llist_insert_next(list, list->tail, entry, &entry->list);\n      sites++;\n    }\n  }\n\n  return CURLM_OK;\n}",
+            2
+        ],
+        [
+            "lib/llist.c",
+            "Curl_llist_destroy",
+            "void /* <=== Curl_llist_destroy */ \nCurl_llist_destroy(struct curl_llist *list, void *user)\n{\n  if(list) {\n    while(list->size > 0)\n      Curl_llist_remove(list, list->tail, user);\n  }\n}",
+            1
+        ],
+        [
+            "lib/url.c",
+            "Curl_getoff_all_pipelines",
+            "void Curl_getoff_all_pipelines(struct Curl_easy *data, /* <=== Curl_getoff_all_pipelines */ \n                               struct connectdata *conn)\n{\n  if(!conn->bundle)\n    return;\n  if(conn->bundle->multiuse == BUNDLE_PIPELINING) {\n    bool recv_head = (conn->readchannel_inuse &&\n                      Curl_recvpipe_head(data, conn));\n    bool send_head = (conn->writechannel_inuse &&\n                      Curl_sendpipe_head(data, conn));\n\n    if(Curl_removeHandleFromPipeline(data, &conn->recv_pipe) && recv_head)\n      Curl_pipeline_leave_read(conn);\n    if(Curl_removeHandleFromPipeline(data, &conn->send_pipe) && send_head)\n      Curl_pipeline_leave_write(conn);\n  }\n  else {\n    (void)Curl_removeHandleFromPipeline(data, &conn->recv_pipe);\n    (void)Curl_removeHandleFromPipeline(data, &conn->send_pipe);\n  }\n}",
+            3
+        ],
+        [
+            "lib/connect.c",
+            "Curl_conncontrol",
+            "void Curl_conncontrol(struct connectdata *conn, /* <=== Curl_conncontrol */ \n                      int ctrl /* see defines in header */\n#if defined(DEBUGBUILD) && !defined(CURL_DISABLE_VERBOSE_STRINGS)\n                      , const char *reason\n#endif\n  )\n{\n  /* close if a connection, or a stream that isn't multiplexed */\n  bool closeit = (ctrl == CONNCTRL_CONNECTION) ||\n    ((ctrl == CONNCTRL_STREAM) && !(conn->handler->flags & PROTOPT_STREAM));\n  if((ctrl == CONNCTRL_STREAM) &&\n     (conn->handler->flags & PROTOPT_STREAM))\n    DEBUGF(infof(conn->data, \"Kill stream: %s\\n\", reason));\n  else if(closeit != conn->bits.close) {\n    DEBUGF(infof(conn->data, \"Marked for [%s]: %s\\n\",\n                 closeit?\"closure\":\"keep alive\", reason));\n    conn->bits.close = closeit; /* the only place in the source code that\n                                   should assign this bit */\n  }\n}",
+            3
+        ],
+        [
+            "lib/curl_setup_once.h",
+            "DEBUGF",
+            "#define DEBUGF(x) do { } WHILE_FALSE /* <=== lib/curl_setup_once.h:390:390:DEBUGF:1 */ ",
+            3
+        ],
+        [
+            "lib/sendf.c",
+            "Curl_infof",
+            "void Curl_infof(struct Curl_easy *data, const char *fmt, ...) /* <=== Curl_infof */ \n{\n  if(data && data->set.verbose) {\n    va_list ap;\n    size_t len;\n    char print_buffer[2048 + 1];\n    va_start(ap, fmt);\n    vsnprintf(print_buffer, sizeof(print_buffer), fmt, ap);\n    va_end(ap);\n    len = strlen(print_buffer);\n    Curl_debug(data, CURLINFO_TEXT, print_buffer, len);\n  }\n}",
+            2
+        ],
+        [
+            "lib/curl_memory.h",
+            "free",
+            "#define free(ptr) Curl_cfree(ptr) /* <=== lib/curl_memory.h:130:130:free:1 */ ",
+            1
+        ],
+        [
+            "include/curl/mprintf.h",
+            "curl_msnprintf",
+            "CURL_EXTERN int curl_msnprintf(char *buffer, size_t maxlength, /* <=== curl_msnprintf */ \n                               const char *format, ...);",
+            3
+        ],
+        [
+            "include/curl/mprintf.h",
+            "curl_mfprintf",
+            "CURL_EXTERN int curl_mfprintf(FILE *fd, const char *format, ...); /* <=== curl_mfprintf */ ",
+            3
+        ],
+        [
+            "lib/cookie.c",
+            "Curl_cookie_loadfiles",
+            "void Curl_cookie_loadfiles(struct Curl_easy *data) /* <=== Curl_cookie_loadfiles */ \n{\n  struct curl_slist *list = data->change.cookielist;\n  if(list) {\n    Curl_share_lock(data, CURL_LOCK_DATA_COOKIE, CURL_LOCK_ACCESS_SINGLE);\n    while(list) {\n      struct CookieInfo *newcookies = Curl_cookie_init(data,\n                                        list->data,\n                                        data->cookies,\n                                        data->set.cookiesession);\n      if(!newcookies)\n        /* Failure may be due to OOM or a bad cookie; both are ignored\n         * but only the first should be\n         */\n        infof(data, \"ignoring failed cookie_init for %s\\n\", list->data);\n      else\n        data->cookies = newcookies;\n      list = list->next;\n    }\n    curl_slist_free_all(data->change.cookielist); /* clean up list */\n    data->change.cookielist = NULL; /* don't do this again! */\n    Curl_share_unlock(data, CURL_LOCK_DATA_COOKIE);\n  }\n}",
+            2
+        ],
+        [
+            "lib/curl_printf.h",
+            "fprintf",
+            "# define fprintf curl_mfprintf /* <=== lib/curl_printf.h:41:41:fprintf:0 */ ",
+            3
+        ],
+        [
+            "lib/curl_setup_once.h",
+            "TRUE",
+            "#define TRUE true /* <=== lib/curl_setup_once.h:324:324:TRUE:0 */ ",
+            2
+        ],
+        [
+            "lib/sendf.h",
+            "infof",
+            "#define infof Curl_infof /* <=== lib/sendf.h:44:44:infof:0 */ ",
+            2
+        ],
+        [
+            "lib/hash.c",
+            "Curl_hash_clean",
+            "void /* <=== Curl_hash_clean */ \nCurl_hash_clean(struct curl_hash *h)\n{\n  Curl_hash_clean_with_criterium(h, NULL, NULL);\n}",
+            3
+        ],
+        [
+            "lib/memdebug.h",
+            "Curl_safefree",
+            "#define Curl_safefree(ptr) \\ /* <=== lib/memdebug.h:176:177:Curl_safefree:1 */ \n  do { free((ptr)); (ptr) = NULL;} WHILE_FALSE",
+            2
+        ],
+        [
+            "lib/multi.c",
+            "multi_done",
+            "static CURLcode multi_done(struct connectdata **connp, /* <=== multi_done */ \n                          CURLcode status,  /* an error if this is called\n                                               after an error was detected */\n                          bool premature)\n{\n  CURLcode result;\n  struct connectdata *conn;\n  struct Curl_easy *data;\n  unsigned int i;\n\n  DEBUGASSERT(*connp);\n\n  conn = *connp;\n  data = conn->data;\n\n  DEBUGF(infof(data, \"multi_done\\n\"));\n\n  if(data->state.done)\n    /* Stop if multi_done() has already been called */\n    return CURLE_OK;\n\n  if(data->mstate == CURLM_STATE_WAITRESOLVE) {\n    /* still waiting for the resolve to complete */\n    (void)Curl_resolver_wait_resolv(conn, NULL);\n  }\n\n  Curl_getoff_all_pipelines(data, conn);\n\n  /* Cleanup possible redirect junk */\n  Curl_safefree(data->req.newurl);\n  Curl_safefree(data->req.location);\n\n  switch(status) {\n  case CURLE_ABORTED_BY_CALLBACK:\n  case CURLE_READ_ERROR:\n  case CURLE_WRITE_ERROR:\n    /* When we're aborted due to a callback return code it basically have to\n       be counted as premature as there is trouble ahead if we don't. We have\n       many callbacks and protocols work differently, we could potentially do\n       this more fine-grained in the future. */\n    premature = TRUE;\n  default:\n    break;\n  }\n\n  /* this calls the protocol-specific function pointer previously set */\n  if(conn->handler->done)\n    result = conn->handler->done(conn, status, premature);\n  else\n    result = status;\n\n  if(CURLE_ABORTED_BY_CALLBACK != result) {\n    /* avoid this if we already aborted by callback to avoid this calling\n       another callback */\n    CURLcode rc = Curl_pgrsDone(conn);\n    if(!result && rc)\n      result = CURLE_ABORTED_BY_CALLBACK;\n  }\n\n  process_pending_handles(data->multi); /* connection / multiplex */\n\n  if(conn->send_pipe.size || conn->recv_pipe.size) {\n    /* Stop if pipeline is not empty . */\n    data->easy_conn = NULL;\n    DEBUGF(infof(data, \"Connection still in use %zu/%zu, \"\n                 \"no more multi_done now!\\n\",\n                 conn->send_pipe.size, conn->recv_pipe.size));\n    return CURLE_OK;\n  }\n\n  data->state.done = TRUE; /* called just now! */\n  Curl_resolver_cancel(conn);\n\n  if(conn->dns_entry) {\n    Curl_resolv_unlock(data, conn->dns_entry); /* done with this */\n    conn->dns_entry = NULL;\n  }\n  Curl_hostcache_prune(data);\n  Curl_safefree(data->state.ulbuf);\n\n  /* if the transfer was completed in a paused state there can be buffered\n     data left to free */\n  for(i = 0; i < data->state.tempcount; i++) {\n    free(data->state.tempwrite[i].buf);\n  }\n  data->state.tempcount = 0;\n\n  /* if data->set.reuse_forbid is TRUE, it means the libcurl client has\n     forced us to close this connection. This is ignored for requests taking\n     place in a NTLM authentication handshake\n\n     if conn->bits.close is TRUE, it means that the connection should be\n     closed in spite of all our efforts to be nice, due to protocol\n     restrictions in our or the server's end\n\n     if premature is TRUE, it means this connection was said to be DONE before\n     the entire request operation is complete and thus we can't know in what\n     state it is for re-using, so we're forced to close it. In a perfect world\n     we can add code that keep track of if we really must close it here or not,\n     but currently we have no such detail knowledge.\n  */\n\n  if((data->set.reuse_forbid\n#if defined(USE_NTLM)\n      && !(conn->ntlm.state == NTLMSTATE_TYPE2 ||\n           conn->proxyntlm.state == NTLMSTATE_TYPE2)\n#endif\n     ) || conn->bits.close\n       || (premature && !(conn->handler->flags & PROTOPT_STREAM))) {\n    CURLcode res2 = Curl_disconnect(data, conn, premature);\n\n    /* If we had an error already, make sure we return that one. But\n       if we got a new error, return that. */\n    if(!result && res2)\n      result = res2;\n  }\n  else {\n    char buffer[256];\n    /* create string before returning the connection */\n    snprintf(buffer, sizeof(buffer),\n             \"Connection #%ld to host %s left intact\",\n             conn->connection_id,\n             conn->bits.socksproxy ? conn->socks_proxy.host.dispname :\n             conn->bits.httpproxy ? conn->http_proxy.host.dispname :\n             conn->bits.conn_to_host ? conn->conn_to_host.dispname :\n             conn->host.dispname);\n\n    /* the connection is no longer in use by this transfer */\n    if(Curl_conncache_return_conn(conn)) {\n      /* remember the most recently used connection */\n      data->state.lastconnect = conn;\n      infof(data, \"%s\\n\", buffer);\n    }\n    else\n      data->state.lastconnect = NULL;\n  }\n\n  *connp = NULL; /* to make the caller of this function better detect that\n                    this was either closed or handed over to the connection\n                    cache here, and therefore cannot be used from this point on\n                 */\n  Curl_free_request_state(data);\n  return result;\n}",
+            2
+        ],
+        [
+            "lib/vauth/vauth.h",
+            "Curl_auth_digest_cleanup",
+            "void Curl_auth_digest_cleanup(struct digestdata *digest); /* <=== Curl_auth_digest_cleanup */ ",
+            2
+        ],
+        [
+            "lib/llist.c",
+            "Curl_llist_remove",
+            "void /* <=== Curl_llist_remove */ \nCurl_llist_remove(struct curl_llist *list, struct curl_llist_element *e,\n                  void *user)\n{\n  void *ptr;\n  if(e == NULL || list->size == 0)\n    return;\n\n  if(e == list->head) {\n    list->head = e->next;\n\n    if(list->head == NULL)\n      list->tail = NULL;\n    else\n      e->next->prev = NULL;\n  }\n  else {\n    if(!e->prev)\n      list->head = e->next;\n    else\n      e->prev->next = e->next;\n\n    if(!e->next)\n      list->tail = e->prev;\n    else\n      e->next->prev = e->prev;\n  }\n\n  ptr = e->ptr;\n\n  e->ptr  = NULL;\n  e->prev = NULL;\n  e->next = NULL;\n\n  --list->size;\n\n  /* call the dtor() last for when it actually frees the 'e' memory itself */\n  if(list->dtor)\n    list->dtor(user, ptr);\n}",
+            3
+        ],
+        [
+            "lib/conncache.c",
+            "Curl_conncache_close_all_connections",
+            "void Curl_conncache_close_all_connections(struct conncache *connc) /* <=== Curl_conncache_close_all_connections */ \n{\n  struct connectdata *conn;\n\n  conn = Curl_conncache_find_first_connection(connc);\n  while(conn) {\n    SIGPIPE_VARIABLE(pipe_st);\n    conn->data = connc->closure_handle;\n\n    sigpipe_ignore(conn->data, &pipe_st);\n    conn->data->easy_conn = NULL; /* clear the easy handle's connection\n                                     pointer */\n    /* This will remove the connection from the cache */\n    connclose(conn, \"kill all\");\n    (void)Curl_disconnect(connc->closure_handle, conn, FALSE);\n    sigpipe_restore(&pipe_st);\n\n    conn = Curl_conncache_find_first_connection(connc);\n  }\n\n  if(connc->closure_handle) {\n    SIGPIPE_VARIABLE(pipe_st);\n    sigpipe_ignore(connc->closure_handle, &pipe_st);\n\n    Curl_hostcache_clean(connc->closure_handle,\n                         connc->closure_handle->dns.hostcache);\n    Curl_close(connc->closure_handle);\n    sigpipe_restore(&pipe_st);\n  }\n}",
+            2
+        ],
+        [
+            "lib/hostip.c",
+            "Curl_resolv_unlock",
+            "void Curl_resolv_unlock(struct Curl_easy *data, struct Curl_dns_entry *dns) /* <=== Curl_resolv_unlock */ \n{\n  if(data && data->share)\n    Curl_share_lock(data, CURL_LOCK_DATA_DNS, CURL_LOCK_ACCESS_SINGLE);\n\n  freednsentry(dns);\n\n  if(data && data->share)\n    Curl_share_unlock(data, CURL_LOCK_DATA_DNS);\n}",
+            3
+        ],
+        [
+            "lib/curl_setup_once.h",
+            "FALSE",
+            "#define FALSE false /* <=== lib/curl_setup_once.h:327:327:FALSE:0 */ ",
+            2
+        ],
+        [
+            "lib/url.c",
+            "Curl_freeset",
+            "void Curl_freeset(struct Curl_easy *data) /* <=== Curl_freeset */ \n{\n  /* Free all dynamic strings stored in the data->set substructure. */\n  enum dupstring i;\n  for(i = (enum dupstring)0; i < STRING_LAST; i++) {\n    Curl_safefree(data->set.str[i]);\n  }\n\n  if(data->change.referer_alloc) {\n    Curl_safefree(data->change.referer);\n    data->change.referer_alloc = FALSE;\n  }\n  data->change.referer = NULL;\n  if(data->change.url_alloc) {\n    Curl_safefree(data->change.url);\n    data->change.url_alloc = FALSE;\n  }\n  data->change.url = NULL;\n\n  Curl_mime_cleanpart(&data->set.mimepost);\n}",
+            1
+        ],
+        [
+            "lib/url.c",
+            "Curl_disconnect",
+            "CURLcode Curl_disconnect(struct Curl_easy *data, /* <=== Curl_disconnect */ \n                         struct connectdata *conn, bool dead_connection)\n{\n  if(!conn)\n    return CURLE_OK; /* this is closed and fine already */\n\n  if(!data) {\n    DEBUGF(infof(data, \"DISCONNECT without easy handle, ignoring\\n\"));\n    return CURLE_OK;\n  }\n\n  /*\n   * If this connection isn't marked to force-close, leave it open if there\n   * are other users of it\n   */\n  if(CONN_INUSE(conn) && !dead_connection) {\n    DEBUGF(infof(data, \"Curl_disconnect when inuse: %zu\\n\", CONN_INUSE(conn)));\n    return CURLE_OK;\n  }\n\n  conn->data = data;\n  if(conn->dns_entry != NULL) {\n    Curl_resolv_unlock(data, conn->dns_entry);\n    conn->dns_entry = NULL;\n  }\n\n  Curl_hostcache_prune(data); /* kill old DNS cache entries */\n\n#if !defined(CURL_DISABLE_HTTP) && defined(USE_NTLM)\n  /* Cleanup NTLM connection-related data */\n  Curl_http_ntlm_cleanup(conn);\n#endif\n\n  if(conn->handler->disconnect)\n    /* This is set if protocol-specific cleanups should be made */\n    conn->handler->disconnect(conn, dead_connection);\n\n    /* unlink ourselves! */\n  infof(data, \"Closing connection %ld\\n\", conn->connection_id);\n  Curl_conncache_remove_conn(conn, TRUE);\n\n  free_fixed_hostname(&conn->host);\n  free_fixed_hostname(&conn->conn_to_host);\n  free_fixed_hostname(&conn->http_proxy.host);\n  free_fixed_hostname(&conn->socks_proxy.host);\n\n  DEBUGASSERT(conn->data == data);\n  /* this assumes that the pointer is still there after the connection was\n     detected from the cache */\n  Curl_ssl_close(conn, FIRSTSOCKET);\n\n  conn_free(conn);\n  return CURLE_OK;\n}",
+            3
+        ],
+        [
+            "lib/multi.c",
+            "process_pending_handles",
+            "static void process_pending_handles(struct Curl_multi *multi) /* <=== process_pending_handles */ \n{\n  struct curl_llist_element *e = multi->pending.head;\n  if(e) {\n    struct Curl_easy *data = e->ptr;\n\n    DEBUGASSERT(data->mstate == CURLM_STATE_CONNECT_PEND);\n\n    multistate(data, CURLM_STATE_CONNECT);\n\n    /* Remove this node from the list */\n    Curl_llist_remove(&multi->pending, e, NULL);\n\n    /* Make sure that the handle will be processed soonish. */\n    Curl_expire(data, 0, EXPIRE_RUN_NOW);\n  }\n}",
+            3
+        ],
+        [
+            "lib/url.c",
+            "Curl_up_free",
+            "void Curl_up_free(struct Curl_easy *data) /* <=== Curl_up_free */ \n{\n  struct urlpieces *up = &data->state.up;\n  Curl_safefree(up->scheme);\n  Curl_safefree(up->hostname);\n  Curl_safefree(up->port);\n  Curl_safefree(up->user);\n  Curl_safefree(up->password);\n  Curl_safefree(up->options);\n  Curl_safefree(up->path);\n  Curl_safefree(up->query);\n  curl_url_cleanup(data->state.uh);\n  data->state.uh = NULL;\n}",
+            1
+        ],
+        [
+            "lib/llist.c",
+            "Curl_llist_destroy",
+            "void /* <=== Curl_llist_destroy */ \nCurl_llist_destroy(struct curl_llist *list, void *user)\n{\n  if(list) {\n    while(list->size > 0)\n      Curl_llist_remove(list, list->tail, user);\n  }\n}",
+            2
+        ],
+        [
+            "lib/slist.c",
+            "curl_slist_free_all",
+            "void curl_slist_free_all(struct curl_slist *list) /* <=== curl_slist_free_all */ \n{\n  struct curl_slist     *next;\n  struct curl_slist     *item;\n\n  if(!list)\n    return;\n\n  item = list;\n  do {\n    next = item->next;\n    Curl_safefree(item->data);\n    free(item);\n    item = next;\n  } while(next);\n}",
+            2
+        ],
+        [
+            "lib/hostip.c",
+            "Curl_hostcache_prune",
+            "void Curl_hostcache_prune(struct Curl_easy *data) /* <=== Curl_hostcache_prune */ \n{\n  time_t now;\n\n  if((data->set.dns_cache_timeout == -1) || !data->dns.hostcache)\n    /* cache forever means never prune, and NULL hostcache means\n       we can't do it */\n    return;\n\n  if(data->share)\n    Curl_share_lock(data, CURL_LOCK_DATA_DNS, CURL_LOCK_ACCESS_SINGLE);\n\n  time(&now);\n\n  /* Remove outdated and unused entries from the hostcache */\n  hostcache_prune(data->dns.hostcache,\n                  data->set.dns_cache_timeout,\n                  now);\n\n  if(data->share)\n    Curl_share_unlock(data, CURL_LOCK_DATA_DNS);\n}",
+            3
+        ],
+        [
+            "lib/mime.c",
+            "cleanup_part_content",
+            "static void cleanup_part_content(curl_mimepart *part) /* <=== cleanup_part_content */ \n{\n  if(part->freefunc)\n    part->freefunc(part->arg);\n\n  part->readfunc = NULL;\n  part->seekfunc = NULL;\n  part->freefunc = NULL;\n  part->arg = (void *) part;          /* Defaults to part itself. */\n  part->data = NULL;\n  part->fp = NULL;\n  part->datasize = (curl_off_t) 0;    /* No size yet. */\n  cleanup_encoder_state(&part->encstate);\n  part->kind = MIMEKIND_NONE;\n}",
+            3
+        ],
+        [
+            "lib/curl_printf.h",
+            "snprintf",
+            "# define snprintf curl_msnprintf /* <=== lib/curl_printf.h:42:42:snprintf:0 */ ",
+            3
+        ],
+        [
+            "lib/cookie.c",
+            "Curl_cookie_cleanup",
+            "void Curl_cookie_cleanup(struct CookieInfo *c) /* <=== Curl_cookie_cleanup */ \n{\n  if(c) {\n    unsigned int i;\n    free(c->filename);\n    for(i = 0; i < COOKIE_HASH_SIZE; i++)\n      Curl_cookie_freelist(c->cookies[i]);\n    free(c); /* free the base struct as well */\n  }\n}",
+            2
+        ],
+        [
+            "lib/curl_printf.h",
+            "vsnprintf",
+            "# define vsnprintf curl_mvsnprintf /* <=== lib/curl_printf.h:45:45:vsnprintf:0 */ ",
+            3
+        ],
+        [
+            "lib/wildcard.c",
+            "Curl_wildcard_dtor",
+            "void Curl_wildcard_dtor(struct WildcardData *wc) /* <=== Curl_wildcard_dtor */ \n{\n  if(!wc)\n    return;\n\n  if(wc->dtor) {\n    wc->dtor(wc->protdata);\n    wc->dtor = ZERO_NULL;\n    wc->protdata = NULL;\n  }\n  DEBUGASSERT(wc->protdata == NULL);\n\n  Curl_llist_destroy(&wc->filelist, NULL);\n\n\n  free(wc->path);\n  wc->path = NULL;\n  free(wc->pattern);\n  wc->pattern = NULL;\n\n  wc->customptr = NULL;\n  wc->state = CURLWC_INIT;\n}",
+            1
+        ],
+        [
+            "lib/conncache.c",
+            "Curl_conncache_destroy",
+            "void Curl_conncache_destroy(struct conncache *connc) /* <=== Curl_conncache_destroy */ \n{\n  if(connc)\n    Curl_hash_destroy(&connc->hash);\n}",
+            2
+        ],
+        [
+            "lib/multi.c",
+            "GOOD_MULTI_HANDLE",
+            "#define GOOD_MULTI_HANDLE(x) \\ /* <=== lib/multi.c:69:70:GOOD_MULTI_HANDLE:1 */ \n  ((x) && (x)->type == CURL_MULTI_HANDLE)",
+            2
+        ],
+        [
+            "lib/conncache.c",
+            "Curl_conncache_return_conn",
+            "bool Curl_conncache_return_conn(struct connectdata *conn) /* <=== Curl_conncache_return_conn */ \n{\n  struct Curl_easy *data = conn->data;\n\n  /* data->multi->maxconnects can be negative, deal with it. */\n  size_t maxconnects =\n    (data->multi->maxconnects < 0) ? data->multi->num_easy * 4:\n    data->multi->maxconnects;\n  struct connectdata *conn_candidate = NULL;\n\n  if(maxconnects > 0 &&\n     Curl_conncache_size(data) > maxconnects) {\n    infof(data, \"Connection cache is full, closing the oldest one.\\n\");\n\n    conn_candidate = Curl_conncache_extract_oldest(data);\n    if(conn_candidate) {\n      /* the winner gets the honour of being disconnected */\n      (void)Curl_disconnect(data, conn_candidate, /* dead_connection */ FALSE);\n    }\n  }\n\n  return (conn_candidate == conn) ? FALSE : TRUE;\n\n}",
+            3
+        ],
+        [
+            "lib/connect.h",
+            "connclose",
+            "#define connclose(x,y) Curl_conncontrol(x, CONNCTRL_CONNECTION) /* <=== lib/connect.h:145:145:connclose:2 */ ",
+            3
+        ],
+        [
+            "lib/sigpipe.h",
+            "sigpipe_ignore",
+            "#define sigpipe_ignore(x,y) Curl_nop_stmt /* <=== lib/sigpipe.h:73:73:sigpipe_ignore:2 */ ",
+            3
+        ],
+        [
+            "lib/hash.c",
+            "Curl_hash_destroy",
+            "void /* <=== Curl_hash_destroy */ \nCurl_hash_destroy(struct curl_hash *h)\n{\n  int i;\n\n  for(i = 0; i < h->slots; ++i) {\n    Curl_llist_destroy(&h->table[i], (void *) h);\n  }\n\n  Curl_safefree(h->table);\n  h->size = 0;\n  h->slots = 0;\n}",
+            2
+        ],
+        [
+            "lib/share.c",
+            "Curl_share_lock",
+            "CURLSHcode /* <=== Curl_share_lock */ \nCurl_share_lock(struct Curl_easy *data, curl_lock_data type,\n                curl_lock_access accesstype)\n{\n  struct Curl_share *share = data->share;\n\n  if(share == NULL)\n    return CURLSHE_INVALID;\n\n  if(share->specifier & (1<<type)) {\n    if(share->lockfunc) /* only call this if set! */\n      share->lockfunc(data, type, accesstype, share->clientdata);\n  }\n  /* else if we don't share this, pretend successful lock */\n\n  return CURLSHE_OK;\n}",
+            1
+        ],
+        [
+            "lib/llist.c",
+            "Curl_llist_init",
+            "void /* <=== Curl_llist_init */ \nCurl_llist_init(struct curl_llist *l, curl_llist_dtor dtor)\n{\n  l->size = 0;\n  l->dtor = dtor;\n  l->head = NULL;\n  l->tail = NULL;\n}",
+            3
+        ],
+        [
+            "lib/curl_setup_once.h",
+            "DEBUGASSERT",
+            "#define DEBUGASSERT(x) do { } WHILE_FALSE /* <=== lib/curl_setup_once.h:401:401:DEBUGASSERT:1 */ ",
+            2
+        ],
+        [
+            "lib/conncache.c",
+            "Curl_conncache_find_first_connection",
+            "struct connectdata * /* <=== Curl_conncache_find_first_connection */ \nCurl_conncache_find_first_connection(struct conncache *connc)\n{\n  struct curl_hash_iterator iter;\n  struct curl_hash_element *he;\n  struct connectbundle *bundle;\n\n  Curl_hash_start_iterate(&connc->hash, &iter);\n\n  he = Curl_hash_next_element(&iter);\n  while(he) {\n    struct curl_llist_element *curr;\n    bundle = he->ptr;\n\n    curr = bundle->conn_list.head;\n    if(curr) {\n      return curr->ptr;\n    }\n\n    he = Curl_hash_next_element(&iter);\n  }\n\n  return NULL;\n}",
+            3
+        ],
+        [
+            "lib/llist.c",
+            "Curl_llist_remove",
+            "void /* <=== Curl_llist_remove */ \nCurl_llist_remove(struct curl_llist *list, struct curl_llist_element *e,\n                  void *user)\n{\n  void *ptr;\n  if(e == NULL || list->size == 0)\n    return;\n\n  if(e == list->head) {\n    list->head = e->next;\n\n    if(list->head == NULL)\n      list->tail = NULL;\n    else\n      e->next->prev = NULL;\n  }\n  else {\n    if(!e->prev)\n      list->head = e->next;\n    else\n      e->prev->next = e->next;\n\n    if(!e->next)\n      list->tail = e->prev;\n    else\n      e->next->prev = e->prev;\n  }\n\n  ptr = e->ptr;\n\n  e->ptr  = NULL;\n  e->prev = NULL;\n  e->next = NULL;\n\n  --list->size;\n\n  /* call the dtor() last for when it actually frees the 'e' memory itself */\n  if(list->dtor)\n    list->dtor(user, ptr);\n}",
+            2
+        ],
+        [
+            "lib/mime.c",
+            "Curl_mime_initpart",
+            "void Curl_mime_initpart(curl_mimepart *part, struct Curl_easy *easy) /* <=== Curl_mime_initpart */ \n{\n  memset((char *) part, 0, sizeof(*part));\n  part->easy = easy;\n  mimesetstate(&part->state, MIMESTATE_BEGIN, NULL);\n}",
+            3
+        ],
+        [
+            "lib/cookie.h",
+            "COOKIE_HASH_SIZE",
+            "#define COOKIE_HASH_SIZE 256 /* <=== lib/cookie.h:49:49:COOKIE_HASH_SIZE:0 */ ",
+            3
+        ],
+        [
+            "lib/mime.c",
+            "Curl_mime_cleanpart",
+            "void Curl_mime_cleanpart(curl_mimepart *part) /* <=== Curl_mime_cleanpart */ \n{\n  cleanup_part_content(part);\n  curl_slist_free_all(part->curlheaders);\n  if(part->flags & MIME_USERHEADERS_OWNER)\n    curl_slist_free_all(part->userheaders);\n  Curl_safefree(part->mimetype);\n  Curl_safefree(part->name);\n  Curl_safefree(part->filename);\n  Curl_mime_initpart(part, part->easy);\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <in.h>",
+        "#include \"pipeline.h\"",
+        "#include \"strerror.h\"",
+        "#include \"cookie.h\"",
+        "#include \"select.h\"",
+        "#include \"getinfo.h\"",
+        "#include \"curl_printf.h\"",
+        "#include <sys/param.h>",
+        "#include \"curl_setup.h\"",
+        "#include \"http_ntlm.h\"",
+        "#include \"vtls/vtls.h\"",
+        "#include <sys/un.h>",
+        "#include \"ssh.h\"",
+        "#include \"sendf.h\"",
+        "#include \"easyif.h\"",
+        "#include \"imap.h\"",
+        "#include \"warnless.h\"",
+        "#include <netinet/in.h>",
+        "#include \"escape.h\"",
+        "#include \"socks.h\"",
+        "#include <idn2.h>",
+        "#include \"memdebug.h\"",
+        "#include <inet.h>",
+        "#include \"progress.h\"",
+        "#include \"strtok.h\"",
+        "#include \"url.h\"",
+        "#include \"strdup.h\"",
+        "#include \"http_proxy.h\"",
+        "#include \"inet_ntop.h\"",
+        "#include <netdb.h>",
+        "#include \"share.h\"",
+        "#include \"netrc.h\"",
+        "#include \"inet_pton.h\"",
+        "#include \"mime.h\"",
+        "#include \"http2.h\"",
+        "#include <sys/ioctl.h>",
+        "#include \"http.h\"",
+        "#include \"curl_ntlm_wb.h\"",
+        "#include \"http_digest.h\"",
+        "#include \"curl_rtmp.h\"",
+        "#include \"tftp.h\"",
+        "#include \"non-ascii.h\"",
+        "#include \"urldata.h\"",
+        "#include \"ftp.h\"",
+        "#include \"connect.h\"",
+        "#include \"dotdot.h\"",
+        "#include \"curl_memory.h\"",
+        "#include <net/if.h>",
+        "#include \"http_negotiate.h\"",
+        "#include \"setopt.h\"",
+        "#include \"conncache.h\"",
+        "#include \"content_encoding.h\"",
+        "#include \"formdata.h\"",
+        "#include \"telnet.h\"",
+        "#include \"gopher.h\"",
+        "#include <arpa/inet.h>",
+        "#include \"strcase.h\"",
+        "#include \"urlapi-int.h\"",
+        "#include \"multihandle.h\"",
+        "#include \"file.h\"",
+        "#include \"speedcheck.h\"",
+        "#include \"hostip.h\"",
+        "#include <limits.h>",
+        "#include \"transfer.h\"",
+        "#include \"multiif.h\"",
+        "#include \"dict.h\"",
+        "#include \"curl_ldap.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef enum {\n  CURLE_OK = 0,\n  CURLE_UNSUPPORTED_PROTOCOL,    /* 1 */\n  CURLE_FAILED_INIT,             /* 2 */\n  CURLE_URL_MALFORMAT,           /* 3 */\n  CURLE_NOT_BUILT_IN,            /* 4 - [was obsoleted in August 2007 for\n                                    7.17.0, reused in April 2011 for 7.21.5] */\n  CURLE_COULDNT_RESOLVE_PROXY,   /* 5 */\n  CURLE_COULDNT_RESOLVE_HOST,    /* 6 */\n  CURLE_COULDNT_CONNECT,         /* 7 */\n  CURLE_WEIRD_SERVER_REPLY,      /* 8 */\n  CURLE_REMOTE_ACCESS_DENIED,    /* 9 a service was denied by the server\n                                    due to lack of access - when login fails\n                                    this is not returned. */\n  CURLE_FTP_ACCEPT_FAILED,       /* 10 - [was obsoleted in April 2006 for\n                                    7.15.4, reused in Dec 2011 for 7.24.0]*/\n  CURLE_FTP_WEIRD_PASS_REPLY,    /* 11 */\n  CURLE_FTP_ACCEPT_TIMEOUT,      /* 12 - timeout occurred accepting server\n                                    [was obsoleted in August 2007 for 7.17.0,\n                                    reused in Dec 2011 for 7.24.0]*/\n  CURLE_FTP_WEIRD_PASV_REPLY,    /* 13 */\n  CURLE_FTP_WEIRD_227_FORMAT,    /* 14 */\n  CURLE_FTP_CANT_GET_HOST,       /* 15 */\n  CURLE_HTTP2,                   /* 16 - A problem in the http2 framing layer.\n                                    [was obsoleted in August 2007 for 7.17.0,\n                                    reused in July 2014 for 7.38.0] */\n  CURLE_FTP_COULDNT_SET_TYPE,    /* 17 */\n  CURLE_PARTIAL_FILE,            /* 18 */\n  CURLE_FTP_COULDNT_RETR_FILE,   /* 19 */\n  CURLE_OBSOLETE20,              /* 20 - NOT USED */\n  CURLE_QUOTE_ERROR,             /* 21 - quote command failure */\n  CURLE_HTTP_RETURNED_ERROR,     /* 22 */\n  CURLE_WRITE_ERROR,             /* 23 */\n  CURLE_OBSOLETE24,              /* 24 - NOT USED */\n  CURLE_UPLOAD_FAILED,           /* 25 - failed upload \"command\" */\n  CURLE_READ_ERROR,              /* 26 - couldn't open/read from file */\n  CURLE_OUT_OF_MEMORY,           /* 27 */\n  /* Note: CURLE_OUT_OF_MEMORY may sometimes indicate a conversion error\n           instead of a memory allocation error if CURL_DOES_CONVERSIONS\n           is defined\n  */\n  CURLE_OPERATION_TIMEDOUT,      /* 28 - the timeout time was reached */\n  CURLE_OBSOLETE29,              /* 29 - NOT USED */\n  CURLE_FTP_PORT_FAILED,         /* 30 - FTP PORT operation failed */\n  CURLE_FTP_COULDNT_USE_REST,    /* 31 - the REST command failed */\n  CURLE_OBSOLETE32,              /* 32 - NOT USED */\n  CURLE_RANGE_ERROR,             /* 33 - RANGE \"command\" didn't work */\n  CURLE_HTTP_POST_ERROR,         /* 34 */\n  CURLE_SSL_CONNECT_ERROR,       /* 35 - wrong when connecting with SSL */\n  CURLE_BAD_DOWNLOAD_RESUME,     /* 36 - couldn't resume download */\n  CURLE_FILE_COULDNT_READ_FILE,  /* 37 */\n  CURLE_LDAP_CANNOT_BIND,        /* 38 */\n  CURLE_LDAP_SEARCH_FAILED,      /* 39 */\n  CURLE_OBSOLETE40,              /* 40 - NOT USED */\n  CURLE_FUNCTION_NOT_FOUND,      /* 41 - NOT USED starting with 7.53.0 */\n  CURLE_ABORTED_BY_CALLBACK,     /* 42 */\n  CURLE_BAD_FUNCTION_ARGUMENT,   /* 43 */\n  CURLE_OBSOLETE44,              /* 44 - NOT USED */\n  CURLE_INTERFACE_FAILED,        /* 45 - CURLOPT_INTERFACE failed */\n  CURLE_OBSOLETE46,              /* 46 - NOT USED */\n  CURLE_TOO_MANY_REDIRECTS,      /* 47 - catch endless re-direct loops */\n  CURLE_UNKNOWN_OPTION,          /* 48 - User specified an unknown option */\n  CURLE_TELNET_OPTION_SYNTAX,    /* 49 - Malformed telnet option */\n  CURLE_OBSOLETE50,              /* 50 - NOT USED */\n  CURLE_OBSOLETE51,              /* 51 - NOT USED */\n  CURLE_GOT_NOTHING,             /* 52 - when this is a specific error */\n  CURLE_SSL_ENGINE_NOTFOUND,     /* 53 - SSL crypto engine not found */\n  CURLE_SSL_ENGINE_SETFAILED,    /* 54 - can not set SSL crypto engine as\n                                    default */\n  CURLE_SEND_ERROR,              /* 55 - failed sending network data */\n  CURLE_RECV_ERROR,              /* 56 - failure in receiving network data */\n  CURLE_OBSOLETE57,              /* 57 - NOT IN USE */\n  CURLE_SSL_CERTPROBLEM,         /* 58 - problem with the local certificate */\n  CURLE_SSL_CIPHER,              /* 59 - couldn't use specified cipher */\n  CURLE_PEER_FAILED_VERIFICATION, /* 60 - peer's certificate or fingerprint\n                                     wasn't verified fine */\n  CURLE_BAD_CONTENT_ENCODING,    /* 61 - Unrecognized/bad encoding */\n  CURLE_LDAP_INVALID_URL,        /* 62 - Invalid LDAP URL */\n  CURLE_FILESIZE_EXCEEDED,       /* 63 - Maximum file size exceeded */\n  CURLE_USE_SSL_FAILED,          /* 64 - Requested FTP SSL level failed */\n  CURLE_SEND_FAIL_REWIND,        /* 65 - Sending the data requires a rewind\n                                    that failed */\n  CURLE_SSL_ENGINE_INITFAILED,   /* 66 - failed to initialise ENGINE */\n  CURLE_LOGIN_DENIED,            /* 67 - user, password or similar was not\n                                    accepted and we failed to login */\n  CURLE_TFTP_NOTFOUND,           /* 68 - file not found on server */\n  CURLE_TFTP_PERM,               /* 69 - permission problem on server */\n  CURLE_REMOTE_DISK_FULL,        /* 70 - out of disk space on server */\n  CURLE_TFTP_ILLEGAL,            /* 71 - Illegal TFTP operation */\n  CURLE_TFTP_UNKNOWNID,          /* 72 - Unknown transfer ID */\n  CURLE_REMOTE_FILE_EXISTS,      /* 73 - File already exists */\n  CURLE_TFTP_NOSUCHUSER,         /* 74 - No such user */\n  CURLE_CONV_FAILED,             /* 75 - conversion failed */\n  CURLE_CONV_REQD,               /* 76 - caller must register conversion\n                                    callbacks using curl_easy_setopt options\n                                    CURLOPT_CONV_FROM_NETWORK_FUNCTION,\n                                    CURLOPT_CONV_TO_NETWORK_FUNCTION, and\n                                    CURLOPT_CONV_FROM_UTF8_FUNCTION */\n  CURLE_SSL_CACERT_BADFILE,      /* 77 - could not load CACERT file, missing\n                                    or wrong format */\n  CURLE_REMOTE_FILE_NOT_FOUND,   /* 78 - remote file not found */\n  CURLE_SSH,                     /* 79 - error from the SSH layer, somewhat\n                                    generic so the error message will be of\n                                    interest when this has happened */\n\n  CURLE_SSL_SHUTDOWN_FAILED,     /* 80 - Failed to shut down the SSL\n                                    connection */\n  CURLE_AGAIN,                   /* 81 - socket is not ready for send/recv,\n                                    wait till it's ready and try again (Added\n                                    in 7.18.2) */\n  CURLE_SSL_CRL_BADFILE,         /* 82 - could not load CRL file, missing or\n                                    wrong format (Added in 7.19.0) */\n  CURLE_SSL_ISSUER_ERROR,        /* 83 - Issuer check failed.  (Added in\n                                    7.19.0) */\n  CURLE_FTP_PRET_FAILED,         /* 84 - a PRET command failed */\n  CURLE_RTSP_CSEQ_ERROR,         /* 85 - mismatch of RTSP CSeq numbers */\n  CURLE_RTSP_SESSION_ERROR,      /* 86 - mismatch of RTSP Session Ids */\n  CURLE_FTP_BAD_FILE_LIST,       /* 87 - unable to parse FTP file list */\n  CURLE_CHUNK_FAILED,            /* 88 - chunk callback reported error */\n  CURLE_NO_CONNECTION_AVAILABLE, /* 89 - No connection available, the\n                                    session will be queued */\n  CURLE_SSL_PINNEDPUBKEYNOTMATCH, /* 90 - specified pinned public key did not\n                                     match */\n  CURLE_SSL_INVALIDCERTSTATUS,   /* 91 - invalid certificate status */\n  CURLE_HTTP2_STREAM,            /* 92 - stream error in HTTP/2 framing layer\n                                    */\n  CURLE_RECURSIVE_API_CALL,      /* 93 - an api function was called from\n                                    inside a callback */\n  CURL_LAST /* never use! */\n}",
+            "CURLcode"
+        ],
+        [
+            "struct Curl_multi {\n  /* First a simple identifier to easier detect if a user mix up\n     this multi handle with an easy handle. Set this to CURL_MULTI_HANDLE. */\n  long type;\n\n  /* We have a doubly-linked circular list with easy handles */\n  struct Curl_easy *easyp;\n  struct Curl_easy *easylp; /* last node */\n\n  int num_easy; /* amount of entries in the linked list above. */\n  int num_alive; /* amount of easy handles that are added but have not yet\n                    reached COMPLETE state */\n\n  struct curl_llist msglist; /* a list of messages from completed transfers */\n\n  struct curl_llist pending; /* Curl_easys that are in the\n                                CURLM_STATE_CONNECT_PEND state */\n\n  /* callback function and user data pointer for the *socket() API */\n  curl_socket_callback socket_cb;\n  void *socket_userp;\n\n  /* callback function and user data pointer for server push */\n  curl_push_callback push_cb;\n  void *push_userp;\n\n  /* Hostname cache */\n  struct curl_hash hostcache;\n\n#ifdef USE_LIBPSL\n  /* PSL cache. */\n  struct PslCache psl;\n#endif\n\n  /* timetree points to the splay-tree of time nodes to figure out expire\n     times of all currently set timers */\n  struct Curl_tree *timetree;\n\n  /* 'sockhash' is the lookup hash for socket descriptor => easy handles (note\n     the pluralis form, there can be more than one easy handle waiting on the\n     same actual socket) */\n  struct curl_hash sockhash;\n\n  /* pipelining wanted bits (CURLPIPE*) */\n  long pipelining;\n\n  bool recheckstate; /* see Curl_multi_connchanged */\n\n  /* Shared connection cache (bundles)*/\n  struct conncache conn_cache;\n\n  long maxconnects; /* if >0, a fixed limit of the maximum number of entries\n                       we're allowed to grow the connection cache to */\n\n  long max_host_connections; /* if >0, a fixed limit of the maximum number\n                                of connections per host */\n\n  long max_total_connections; /* if >0, a fixed limit of the maximum number\n                                 of connections in total */\n\n  long max_pipeline_length; /* if >0, maximum number of requests in a\n                               pipeline */\n\n  long content_length_penalty_size; /* a connection with a\n                                       content-length bigger than\n                                       this is not considered\n                                       for pipelining */\n\n  long chunk_length_penalty_size; /* a connection with a chunk length\n                                     bigger than this is not\n                                     considered for pipelining */\n\n  struct curl_llist pipelining_site_bl; /* List of sites that are blacklisted\n                                           from pipelining */\n\n  struct curl_llist pipelining_server_bl; /* List of server types that are\n                                             blacklisted from pipelining */\n\n  /* timer callback and user data pointer for the *socket() API */\n  curl_multi_timer_callback timer_cb;\n  void *timer_userp;\n  struct curltime timer_lastcall; /* the fixed time for the timeout for the\n                                    previous callback */\n  bool in_callback;            /* true while executing a callback */\n}",
+            "Curl_multi"
+        ],
+        [
+            "struct Curl_easy {\n  /* first, two fields for the linked list of these */\n  struct Curl_easy *next;\n  struct Curl_easy *prev;\n\n  struct connectdata *easy_conn;     /* the \"unit's\" connection */\n  struct curl_llist_element connect_queue;\n  struct curl_llist_element pipeline_queue;\n\n  CURLMstate mstate;  /* the handle's state */\n  CURLcode result;   /* previous result */\n\n  struct Curl_message msg; /* A single posted message. */\n\n  /* Array with the plain socket numbers this handle takes care of, in no\n     particular order. Note that all sockets are added to the sockhash, where\n     the state etc are also kept. This array is mostly used to detect when a\n     socket is to be removed from the hash. See singlesocket(). */\n  curl_socket_t sockets[MAX_SOCKSPEREASYHANDLE];\n  int numsocks;\n\n  struct Names dns;\n  struct Curl_multi *multi;    /* if non-NULL, points to the multi handle\n                                  struct to which this \"belongs\" when used by\n                                  the multi interface */\n  struct Curl_multi *multi_easy; /* if non-NULL, points to the multi handle\n                                    struct to which this \"belongs\" when used\n                                    by the easy interface */\n  struct Curl_share *share;    /* Share, handles global variable mutexing */\n#ifdef USE_LIBPSL\n  struct PslCache *psl;        /* The associated PSL cache. */\n#endif\n  struct SingleRequest req;    /* Request-specific data */\n  struct UserDefined set;      /* values set by the libcurl user */\n  struct DynamicStatic change; /* possibly modified userdefined data */\n  struct CookieInfo *cookies;  /* the cookies, read from files and servers.\n                                  NOTE that the 'cookie' field in the\n                                  UserDefined struct defines if the \"engine\"\n                                  is to be used or not. */\n  struct Progress progress;    /* for all the progress meter data */\n  struct UrlState state;       /* struct for fields used for state info and\n                                  other dynamic purposes */\n  struct WildcardData wildcard; /* wildcard download state info */\n  struct PureInfo info;        /* stats, reports and info data */\n  struct curl_tlssessioninfo tsi; /* Information about the TLS session, only\n                                     valid after a client has asked for it */\n#if defined(CURL_DOES_CONVERSIONS) && defined(HAVE_ICONV)\n  iconv_t outbound_cd;         /* for translating to the network encoding */\n  iconv_t inbound_cd;          /* for translating from the network encoding */\n  iconv_t utf8_cd;             /* for translating to UTF8 */\n#endif /* CURL_DOES_CONVERSIONS && HAVE_ICONV */\n  unsigned int magic;          /* set to a CURLEASY_MAGIC_NUMBER */\n}",
+            "Curl_easy"
+        ],
+        [
+            "struct Curl_easy",
+            "Curl_easy"
+        ]
+    ],
+    "visitedLines_after": {
+        "lib/url.c": [
+            319,
+            323,
+            326,
+            328,
+            329,
+            332,
+            334,
+            337,
+            338,
+            344,
+            346,
+            350,
+            351,
+            354,
+            358,
+            359,
+            363,
+            364,
+            366,
+            367,
+            368,
+            370,
+            372,
+            373,
+            374,
+            375,
+            376,
+            377,
+            378,
+            379,
+            388,
+            389,
+            390,
+            391,
+            395,
+            396,
+            397
+        ]
+    },
+    "visitedLines_before": {
+        "lib/url.c": [
+            319,
+            323,
+            326,
+            328,
+            329,
+            332,
+            334,
+            337,
+            342,
+            344,
+            348,
+            349,
+            352,
+            356,
+            357,
+            361,
+            362,
+            364,
+            365,
+            366,
+            368,
+            370,
+            371,
+            372,
+            373,
+            374,
+            375,
+            376,
+            377,
+            386,
+            387,
+            388,
+            389,
+            393,
+            394,
+            395
+        ]
+    },
+    "visitedParams": {
+        "lib/url.c": [
+            [
+                "struct Curl_easy *data",
+                "Curl_close"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "lib/url.c",
+            "Curl_close",
+            "CURLcode Curl_close(struct Curl_easy *data) /* <=== Curl_close */ \n{\n  struct Curl_multi *m;\n\n  if(!data)\n    return CURLE_OK;\n\n  Curl_expire_clear(data); /* shut off timers */\n\n  m = data->multi;\n  if(m)\n    /* This handle is still part of a multi handle, take care of this first\n       and detach this handle from there. */\n    curl_multi_remove_handle(data->multi, data);\n\n  if(data->multi_easy) {\n    /* when curl_easy_perform() is used, it creates its own multi handle to\n       use and this is the one */\n    curl_multi_cleanup(data->multi_easy);\n    data->multi_easy = NULL;\n  }\n\n  /* Destroy the timeout list that is held in the easy handle. It is\n     /normally/ done by curl_multi_remove_handle() but this is \"just in\n     case\" */\n  Curl_llist_destroy(&data->state.timeoutlist, NULL);\n\n  data->magic = 0; /* force a clear AFTER the possibly enforced removal from\n                      the multi handle, since that function uses the magic\n                      field! */\n\n  if(data->state.rangestringalloc)\n    free(data->state.range);\n\n  /* freed here just in case DONE wasn't called */\n  Curl_free_request_state(data);\n\n  /* Close down all open SSL info and sessions */\n  Curl_ssl_close_all(data);\n  Curl_safefree(data->state.first_host);\n  Curl_safefree(data->state.scratch);\n  Curl_ssl_free_certinfo(data);\n\n  /* Cleanup possible redirect junk */\n  free(data->req.newurl);\n  data->req.newurl = NULL;\n\n  if(data->change.referer_alloc) {\n    Curl_safefree(data->change.referer);\n    data->change.referer_alloc = FALSE;\n  }\n  data->change.referer = NULL;\n\n  Curl_up_free(data);\n  Curl_safefree(data->state.buffer);\n  Curl_safefree(data->state.headerbuff);\n  Curl_safefree(data->state.ulbuf);\n  Curl_flush_cookies(data, 1);\n  Curl_digest_cleanup(data);\n  Curl_safefree(data->info.contenttype);\n  Curl_safefree(data->info.wouldredirect);\n\n  /* this destroys the channel and we cannot use it anymore after this */\n  Curl_resolver_cleanup(data->state.resolver);\n\n  Curl_http2_cleanup_dependencies(data);\n  Curl_convert_close(data);\n\n  /* No longer a dirty share, if it exists */\n  if(data->share) {\n    Curl_share_lock(data, CURL_LOCK_DATA_SHARE, CURL_LOCK_ACCESS_SINGLE);\n    data->share->dirty--;\n    Curl_share_unlock(data, CURL_LOCK_DATA_SHARE);\n  }\n\n  /* destruct wildcard structures if it is needed */\n  Curl_wildcard_dtor(&data->wildcard);\n  Curl_freeset(data);\n  free(data);\n  return CURLE_OK;\n}",
+            319
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "lib/url.c",
+            "Curl_close",
+            "CURLcode Curl_close(struct Curl_easy *data) /* <=== Curl_close */ \n{\n  struct Curl_multi *m;\n\n  if(!data)\n    return CURLE_OK;\n\n  Curl_expire_clear(data); /* shut off timers */\n\n  m = data->multi;\n  if(m)\n    /* This handle is still part of a multi handle, take care of this first\n       and detach this handle from there. */\n    curl_multi_remove_handle(data->multi, data);\n\n  if(data->multi_easy)\n    /* when curl_easy_perform() is used, it creates its own multi handle to\n       use and this is the one */\n    curl_multi_cleanup(data->multi_easy);\n\n  /* Destroy the timeout list that is held in the easy handle. It is\n     /normally/ done by curl_multi_remove_handle() but this is \"just in\n     case\" */\n  Curl_llist_destroy(&data->state.timeoutlist, NULL);\n\n  data->magic = 0; /* force a clear AFTER the possibly enforced removal from\n                      the multi handle, since that function uses the magic\n                      field! */\n\n  if(data->state.rangestringalloc)\n    free(data->state.range);\n\n  /* freed here just in case DONE wasn't called */\n  Curl_free_request_state(data);\n\n  /* Close down all open SSL info and sessions */\n  Curl_ssl_close_all(data);\n  Curl_safefree(data->state.first_host);\n  Curl_safefree(data->state.scratch);\n  Curl_ssl_free_certinfo(data);\n\n  /* Cleanup possible redirect junk */\n  free(data->req.newurl);\n  data->req.newurl = NULL;\n\n  if(data->change.referer_alloc) {\n    Curl_safefree(data->change.referer);\n    data->change.referer_alloc = FALSE;\n  }\n  data->change.referer = NULL;\n\n  Curl_up_free(data);\n  Curl_safefree(data->state.buffer);\n  Curl_safefree(data->state.headerbuff);\n  Curl_safefree(data->state.ulbuf);\n  Curl_flush_cookies(data, 1);\n  Curl_digest_cleanup(data);\n  Curl_safefree(data->info.contenttype);\n  Curl_safefree(data->info.wouldredirect);\n\n  /* this destroys the channel and we cannot use it anymore after this */\n  Curl_resolver_cleanup(data->state.resolver);\n\n  Curl_http2_cleanup_dependencies(data);\n  Curl_convert_close(data);\n\n  /* No longer a dirty share, if it exists */\n  if(data->share) {\n    Curl_share_lock(data, CURL_LOCK_DATA_SHARE, CURL_LOCK_ACCESS_SINGLE);\n    data->share->dirty--;\n    Curl_share_unlock(data, CURL_LOCK_DATA_SHARE);\n  }\n\n  /* destruct wildcard structures if it is needed */\n  Curl_wildcard_dtor(&data->wildcard);\n  Curl_freeset(data);\n  free(data);\n  return CURLE_OK;\n}",
+            319
+        ]
+    ]
+}

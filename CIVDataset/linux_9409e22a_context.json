@@ -1,0 +1,897 @@
+{
+    "calleeMethods": [
+        [
+            "fs/dcache.c",
+            "dentry_lock_for_move",
+            "static void dentry_lock_for_move(struct dentry *dentry, struct dentry *target) /* <=== dentry_lock_for_move */ \n{\n\t/*\n\t * XXXX: do we really need to take target->d_lock?\n\t */\n\tif (IS_ROOT(dentry) || dentry->d_parent == target->d_parent)\n\t\tspin_lock(&target->d_parent->d_lock);\n\telse {\n\t\tif (d_ancestor(dentry->d_parent, target->d_parent)) {\n\t\t\tspin_lock(&dentry->d_parent->d_lock);\n\t\t\tspin_lock_nested(&target->d_parent->d_lock,\n\t\t\t\t\t\tDENTRY_D_LOCK_NESTED);\n\t\t} else {\n\t\t\tspin_lock(&target->d_parent->d_lock);\n\t\t\tspin_lock_nested(&dentry->d_parent->d_lock,\n\t\t\t\t\t\tDENTRY_D_LOCK_NESTED);\n\t\t}\n\t}\n\tif (target < dentry) {\n\t\tspin_lock_nested(&target->d_lock, 2);\n\t\tspin_lock_nested(&dentry->d_lock, 3);\n\t} else {\n\t\tspin_lock_nested(&dentry->d_lock, 2);\n\t\tspin_lock_nested(&target->d_lock, 3);\n\t}\n}",
+            3
+        ],
+        [
+            "include/linux/dcache.h",
+            "vfs_select_inode",
+            "static inline struct inode *vfs_select_inode(struct dentry *dentry, /* <=== vfs_select_inode */ \n\t\t\t\t\t     unsigned open_flags)\n{\n\tstruct inode *inode = d_inode(dentry);\n\n\tif (inode && unlikely(dentry->d_flags & DCACHE_OP_SELECT_INODE))\n\t\tinode = dentry->d_op->d_select_inode(dentry, open_flags);\n\n\treturn inode;\n}",
+            1
+        ],
+        [
+            "include/linux/list.h",
+            "list_move",
+            "static inline void list_move(struct list_head *list, struct list_head *head) /* <=== list_move */ \n{\n\t__list_del_entry(list);\n\tlist_add(list, head);\n}",
+            3
+        ],
+        [
+            "fs/mount.h",
+            "__is_local_mountpoint",
+            "extern bool __is_local_mountpoint(struct dentry *dentry); /* <=== __is_local_mountpoint */ ",
+            2
+        ],
+        [
+            "fs/dcache.c",
+            "fast_dput",
+            "static inline bool fast_dput(struct dentry *dentry) /* <=== fast_dput */ \n{\n\tint ret;\n\tunsigned int d_flags;\n\n\t/*\n\t * If we have a d_op->d_delete() operation, we sould not\n\t * let the dentry count go to zero, so use \"put_or_lock\".\n\t */\n\tif (unlikely(dentry->d_flags & DCACHE_OP_DELETE))\n\t\treturn lockref_put_or_lock(&dentry->d_lockref);\n\n\t/*\n\t * .. otherwise, we can try to just decrement the\n\t * lockref optimistically.\n\t */\n\tret = lockref_put_return(&dentry->d_lockref);\n\n\t/*\n\t * If the lockref_put_return() failed due to the lock being held\n\t * by somebody else, the fast path has failed. We will need to\n\t * get the lock, and then check the count again.\n\t */\n\tif (unlikely(ret < 0)) {\n\t\tspin_lock(&dentry->d_lock);\n\t\tif (dentry->d_lockref.count > 1) {\n\t\t\tdentry->d_lockref.count--;\n\t\t\tspin_unlock(&dentry->d_lock);\n\t\t\treturn 1;\n\t\t}\n\t\treturn 0;\n\t}\n\n\t/*\n\t * If we weren't the last ref, we're done.\n\t */\n\tif (ret)\n\t\treturn 1;\n\n\t/*\n\t * Careful, careful. The reference count went down\n\t * to zero, but we don't hold the dentry lock, so\n\t * somebody else could get it again, and do another\n\t * dput(), and we need to not race with that.\n\t *\n\t * However, there is a very special and common case\n\t * where we don't care, because there is nothing to\n\t * do: the dentry is still hashed, it does not have\n\t * a 'delete' op, and it's referenced and already on\n\t * the LRU list.\n\t *\n\t * NOTE! Since we aren't locked, these values are\n\t * not \"stable\". However, it is sufficient that at\n\t * some point after we dropped the reference the\n\t * dentry was hashed and the flags had the proper\n\t * value. Other dentry users may have re-gotten\n\t * a reference to the dentry and change that, but\n\t * our work is done - we can leave the dentry\n\t * around with a zero refcount.\n\t */\n\tsmp_rmb();\n\td_flags = ACCESS_ONCE(dentry->d_flags);\n\td_flags &= DCACHE_REFERENCED | DCACHE_LRU_LIST | DCACHE_DISCONNECTED;\n\n\t/* Nothing to do? Dropping the reference was all we needed? */\n\tif (d_flags == (DCACHE_REFERENCED | DCACHE_LRU_LIST) && !d_unhashed(dentry))\n\t\treturn 1;\n\n\t/*\n\t * Not the fast normal case? Get the lock. We've already decremented\n\t * the refcount, but we'll need to re-check the situation after\n\t * getting the lock.\n\t */\n\tspin_lock(&dentry->d_lock);\n\n\t/*\n\t * Did somebody else grab a reference to it in the meantime, and\n\t * we're no longer the last user after all? Alternatively, somebody\n\t * else could have killed it and marked it dead. Either way, we\n\t * don't need to do anything else.\n\t */\n\tif (dentry->d_lockref.count) {\n\t\tspin_unlock(&dentry->d_lock);\n\t\treturn 1;\n\t}\n\n\t/*\n\t * Re-get the reference we optimistically dropped. We hold the\n\t * lock, and we just tested that it was zero, so we can just\n\t * set it to 1.\n\t */\n\tdentry->d_lockref.count = 1;\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "fs/namei.c",
+            "inode_permission",
+            "int inode_permission(struct inode *inode, int mask) /* <=== inode_permission */ \n{\n\tint retval;\n\n\tretval = sb_permission(inode->i_sb, inode, mask);\n\tif (retval)\n\t\treturn retval;\n\treturn __inode_permission(inode, mask);\n}",
+            1
+        ],
+        [
+            "fs/inode.c",
+            "unlock_two_nondirectories",
+            "void unlock_two_nondirectories(struct inode *inode1, struct inode *inode2) /* <=== unlock_two_nondirectories */ \n{\n\tif (inode1 && !S_ISDIR(inode1->i_mode))\n\t\tinode_unlock(inode1);\n\tif (inode2 && !S_ISDIR(inode2->i_mode) && inode2 != inode1)\n\t\tinode_unlock(inode2);\n}",
+            1
+        ],
+        [
+            "fs/dcache.c",
+            "shrink_dcache_parent",
+            "void shrink_dcache_parent(struct dentry *parent) /* <=== shrink_dcache_parent */ \n{\n\tfor (;;) {\n\t\tstruct select_data data;\n\n\t\tINIT_LIST_HEAD(&data.dispose);\n\t\tdata.start = parent;\n\t\tdata.found = 0;\n\n\t\td_walk(parent, &data, select_collect, NULL);\n\t\tif (!data.found)\n\t\t\tbreak;\n\n\t\tshrink_dentry_list(&data.dispose);\n\t\tcond_resched();\n\t}\n}",
+            1
+        ],
+        [
+            "security/selinux/hooks.c",
+            "selinux_determine_inode_label",
+            "static int selinux_determine_inode_label(struct inode *dir, /* <=== selinux_determine_inode_label */ \n\t\t\t\t\t const struct qstr *name,\n\t\t\t\t\t u16 tclass,\n\t\t\t\t\t u32 *_new_isid)\n{\n\tconst struct superblock_security_struct *sbsec = dir->i_sb->s_security;\n\tconst struct inode_security_struct *dsec = inode_security(dir);\n\tconst struct task_security_struct *tsec = current_security();\n\n\tif ((sbsec->flags & SE_SBINITIALIZED) &&\n\t    (sbsec->behavior == SECURITY_FS_USE_MNTPOINT)) {\n\t\t*_new_isid = sbsec->mntpoint_sid;\n\t} else if ((sbsec->flags & SBLABEL_MNT) &&\n\t\t   tsec->create_sid) {\n\t\t*_new_isid = tsec->create_sid;\n\t} else {\n\t\treturn security_transition_sid(tsec->sid, dsec->sid, tclass,\n\t\t\t\t\t       name, _new_isid);\n\t}\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_can_lookup",
+            "static inline bool d_can_lookup(const struct dentry *dentry) /* <=== d_can_lookup */ \n{\n\treturn __d_entry_type(dentry) == DCACHE_DIRECTORY_TYPE;\n}",
+            2
+        ],
+        [
+            "fs/namei.c",
+            "may_delete",
+            "static int may_delete(struct inode *dir, struct dentry *victim, bool isdir) /* <=== may_delete */ \n{\n\tstruct inode *inode = d_backing_inode(victim);\n\tint error;\n\n\tif (d_is_negative(victim))\n\t\treturn -ENOENT;\n\tBUG_ON(!inode);\n\n\tBUG_ON(victim->d_parent->d_inode != dir);\n\taudit_inode_child(dir, victim, AUDIT_TYPE_CHILD_DELETE);\n\n\terror = inode_permission(dir, MAY_WRITE | MAY_EXEC);\n\tif (error)\n\t\treturn error;\n\tif (IS_APPEND(dir))\n\t\treturn -EPERM;\n\n\tif (check_sticky(dir, inode) || IS_APPEND(inode) ||\n\t    IS_IMMUTABLE(inode) || IS_SWAPFILE(inode))\n\t\treturn -EPERM;\n\tif (isdir) {\n\t\tif (!d_is_dir(victim))\n\t\t\treturn -ENOTDIR;\n\t\tif (IS_ROOT(victim))\n\t\t\treturn -EBUSY;\n\t} else if (d_is_dir(victim))\n\t\treturn -EISDIR;\n\tif (IS_DEADDIR(dir))\n\t\treturn -ENOENT;\n\tif (victim->d_flags & DCACHE_NFSFS_RENAMED)\n\t\treturn -EBUSY;\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "include/linux/dcache.h",
+            "dget",
+            "static inline struct dentry *dget(struct dentry *dentry) /* <=== dget */ \n{\n\tif (dentry)\n\t\tlockref_get(&dentry->d_lockref);\n\treturn dentry;\n}",
+            1
+        ],
+        [
+            "include/linux/seqlock.h",
+            "write_seqcount_end",
+            "static inline void write_seqcount_end(seqcount_t *s) /* <=== write_seqcount_end */ \n{\n\tseqcount_release(&s->dep_map, 1, _RET_IP_);\n\traw_write_seqcount_end(s);\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "d_exchange",
+            "void d_exchange(struct dentry *dentry1, struct dentry *dentry2) /* <=== d_exchange */ \n{\n\twrite_seqlock(&rename_lock);\n\n\tWARN_ON(!dentry1->d_inode);\n\tWARN_ON(!dentry2->d_inode);\n\tWARN_ON(IS_ROOT(dentry1));\n\tWARN_ON(IS_ROOT(dentry2));\n\n\t__d_move(dentry1, dentry2, true);\n\n\twrite_sequnlock(&rename_lock);\n}",
+            1
+        ],
+        [
+            "fs/dcache.c",
+            "dentry_lru_add",
+            "static void dentry_lru_add(struct dentry *dentry) /* <=== dentry_lru_add */ \n{\n\tif (unlikely(!(dentry->d_flags & DCACHE_LRU_LIST)))\n\t\td_lru_add(dentry);\n}",
+            2
+        ],
+        [
+            "security/security.c",
+            "security_inode_rename",
+            "int security_inode_rename(struct inode *old_dir, struct dentry *old_dentry, /* <=== security_inode_rename */ \n\t\t\t   struct inode *new_dir, struct dentry *new_dentry,\n\t\t\t   unsigned int flags)\n{\n        if (unlikely(IS_PRIVATE(d_backing_inode(old_dentry)) ||\n            (d_is_positive(new_dentry) && IS_PRIVATE(d_backing_inode(new_dentry)))))\n\t\treturn 0;\n\n\tif (flags & RENAME_EXCHANGE) {\n\t\tint err = call_int_hook(inode_rename, 0, new_dir, new_dentry,\n\t\t\t\t\t\t     old_dir, old_dentry);\n\t\tif (err)\n\t\t\treturn err;\n\t}\n\n\treturn call_int_hook(inode_rename, 0, old_dir, old_dentry,\n\t\t\t\t\t   new_dir, new_dentry);\n}",
+            1
+        ],
+        [
+            "include/linux/dcache.h",
+            "DCACHE_CANT_MOUNT",
+            "#define DCACHE_CANT_MOUNT\t\t0x00000100 /* <=== include/linux/dcache.h:196:196:DCACHE_CANT_MOUNT:0 */ ",
+            2
+        ],
+        [
+            "include/linux/seqlock.h",
+            "write_seqlock",
+            "static inline void write_seqlock(seqlock_t *sl) /* <=== write_seqlock */ \n{\n\tspin_lock(&sl->lock);\n\twrite_seqcount_begin(&sl->seqcount);\n}",
+            2
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "rcu_lock_release",
+            "# define rcu_lock_release(a)\t\tdo { } while (0) /* <=== include/linux/rcupdate.h:523:523:rcu_lock_release:1 */ ",
+            3
+        ],
+        [
+            "tools/include/linux/list.h",
+            "INIT_LIST_HEAD",
+            "static inline void INIT_LIST_HEAD(struct list_head *list) /* <=== INIT_LIST_HEAD */ \n{\n\tlist->next = list;\n\tlist->prev = list;\n}",
+            2
+        ],
+        [
+            "security/selinux/hooks.c",
+            "may_create",
+            "static int may_create(struct inode *dir, /* <=== may_create */ \n\t\t      struct dentry *dentry,\n\t\t      u16 tclass)\n{\n\tconst struct task_security_struct *tsec = current_security();\n\tstruct inode_security_struct *dsec;\n\tstruct superblock_security_struct *sbsec;\n\tu32 sid, newsid;\n\tstruct common_audit_data ad;\n\tint rc;\n\n\tdsec = inode_security(dir);\n\tsbsec = dir->i_sb->s_security;\n\n\tsid = tsec->sid;\n\n\tad.type = LSM_AUDIT_DATA_DENTRY;\n\tad.u.dentry = dentry;\n\n\trc = avc_has_perm(sid, dsec->sid, SECCLASS_DIR,\n\t\t\t  DIR__ADD_NAME | DIR__SEARCH,\n\t\t\t  &ad);\n\tif (rc)\n\t\treturn rc;\n\n\trc = selinux_determine_inode_label(dir, &dentry->d_name, tclass,\n\t\t\t\t\t   &newsid);\n\tif (rc)\n\t\treturn rc;\n\n\trc = avc_has_perm(sid, newsid, tclass, FILE__CREATE, &ad);\n\tif (rc)\n\t\treturn rc;\n\n\treturn avc_has_perm(newsid, sbsec->sid,\n\t\t\t    SECCLASS_FILESYSTEM,\n\t\t\t    FILESYSTEM__ASSOCIATE, &ad);\n}",
+            1
+        ],
+        [
+            "fs/dcache.c",
+            "d_lru_add",
+            "static void d_lru_add(struct dentry *dentry) /* <=== d_lru_add */ \n{\n\tD_FLAG_VERIFY(dentry, 0);\n\tdentry->d_flags |= DCACHE_LRU_LIST;\n\tthis_cpu_inc(nr_dentry_unused);\n\tWARN_ON_ONCE(!list_lru_add(&dentry->d_sb->s_dentry_lru, &dentry->d_lru));\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "d_shrink_del",
+            "static void d_shrink_del(struct dentry *dentry) /* <=== d_shrink_del */ \n{\n\tD_FLAG_VERIFY(dentry, DCACHE_SHRINK_LIST | DCACHE_LRU_LIST);\n\tlist_del_init(&dentry->d_lru);\n\tdentry->d_flags &= ~(DCACHE_SHRINK_LIST | DCACHE_LRU_LIST);\n\tthis_cpu_dec(nr_dentry_unused);\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "dentry_free",
+            "static void dentry_free(struct dentry *dentry) /* <=== dentry_free */ \n{\n\tWARN_ON(!hlist_unhashed(&dentry->d_u.d_alias));\n\tif (unlikely(dname_external(dentry))) {\n\t\tstruct external_name *p = external_name(dentry);\n\t\tif (likely(atomic_dec_and_test(&p->u.count))) {\n\t\t\tcall_rcu(&dentry->d_u.d_rcu, __d_free_external);\n\t\t\treturn;\n\t\t}\n\t}\n\t/* if dentry was never visible to RCU, immediate free is OK */\n\tif (!(dentry->d_flags & DCACHE_RCUACCESS))\n\t\t__d_free(&dentry->d_u.d_rcu);\n\telse\n\t\tcall_rcu(&dentry->d_u.d_rcu, __d_free);\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "__d_drop",
+            "void __d_drop(struct dentry *dentry) /* <=== __d_drop */ \n{\n\tif (!d_unhashed(dentry)) {\n\t\tstruct hlist_bl_head *b;\n\t\t/*\n\t\t * Hashed dentries are normally on the dentry hashtable,\n\t\t * with the exception of those newly allocated by\n\t\t * d_obtain_alias, which are always IS_ROOT:\n\t\t */\n\t\tif (unlikely(IS_ROOT(dentry)))\n\t\t\tb = &dentry->d_sb->s_anon;\n\t\telse\n\t\t\tb = d_hash(dentry->d_parent, dentry->d_name.hash);\n\n\t\thlist_bl_lock(b);\n\t\t__hlist_bl_del(&dentry->d_hash);\n\t\tdentry->d_hash.pprev = NULL;\n\t\thlist_bl_unlock(b);\n\t\tdentry_rcuwalk_invalidate(dentry);\n\t}\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "copy_name",
+            "static void copy_name(struct dentry *dentry, struct dentry *target) /* <=== copy_name */ \n{\n\tstruct external_name *old_name = NULL;\n\tif (unlikely(dname_external(dentry)))\n\t\told_name = external_name(dentry);\n\tif (unlikely(dname_external(target))) {\n\t\tatomic_inc(&external_name(target)->u.count);\n\t\tdentry->d_name = target->d_name;\n\t} else {\n\t\tmemcpy(dentry->d_iname, target->d_name.name,\n\t\t\t\ttarget->d_name.len + 1);\n\t\tdentry->d_name.name = dentry->d_iname;\n\t\tdentry->d_name.hash_len = target->d_name.hash_len;\n\t}\n\tif (old_name && likely(atomic_dec_and_test(&old_name->u.count)))\n\t\tkfree_rcu(old_name, u.head);\n}",
+            3
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "rcu_lock_acquire",
+            "# define rcu_lock_acquire(a)\t\tdo { } while (0) /* <=== include/linux/rcupdate.h:522:522:rcu_lock_acquire:1 */ ",
+            3
+        ],
+        [
+            "fs/mount.h",
+            "__detach_mounts",
+            "extern void __detach_mounts(struct dentry *dentry); /* <=== __detach_mounts */ ",
+            2
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_mountpoint",
+            "static inline bool d_mountpoint(const struct dentry *dentry) /* <=== d_mountpoint */ \n{\n\treturn dentry->d_flags & DCACHE_MOUNTED;\n}",
+            2
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "rcu_read_lock",
+            "static inline void rcu_read_lock(void) /* <=== rcu_read_lock */ \n{\n\t__rcu_read_lock();\n\t__acquire(RCU);\n\trcu_lock_acquire(&rcu_lock_map);\n\tRCU_LOCKDEP_WARN(!rcu_is_watching(),\n\t\t\t \"rcu_read_lock() used illegally while idle\");\n}",
+            2
+        ],
+        [
+            "include/linux/fs.h",
+            "try_break_deleg",
+            "static inline int try_break_deleg(struct inode *inode, struct inode **delegated_inode) /* <=== try_break_deleg */ \n{\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "include/linux/seqlock.h",
+            "write_sequnlock",
+            "static inline void write_sequnlock(seqlock_t *sl) /* <=== write_sequnlock */ \n{\n\twrite_seqcount_end(&sl->seqcount);\n\tspin_unlock(&sl->lock);\n}",
+            2
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "rcu_read_unlock",
+            "static inline void rcu_read_unlock(void) /* <=== rcu_read_unlock */ \n{\n\tRCU_LOCKDEP_WARN(!rcu_is_watching(),\n\t\t\t \"rcu_read_unlock() used illegally while idle\");\n\t__release(RCU);\n\t__rcu_read_unlock();\n\trcu_lock_release(&rcu_lock_map); /* Keep acq info for rls diags. */\n}",
+            2
+        ],
+        [
+            "fs/dcache.c",
+            "swap_names",
+            "static void swap_names(struct dentry *dentry, struct dentry *target) /* <=== swap_names */ \n{\n\tif (unlikely(dname_external(target))) {\n\t\tif (unlikely(dname_external(dentry))) {\n\t\t\t/*\n\t\t\t * Both external: swap the pointers\n\t\t\t */\n\t\t\tswap(target->d_name.name, dentry->d_name.name);\n\t\t} else {\n\t\t\t/*\n\t\t\t * dentry:internal, target:external.  Steal target's\n\t\t\t * storage and make target internal.\n\t\t\t */\n\t\t\tmemcpy(target->d_iname, dentry->d_name.name,\n\t\t\t\t\tdentry->d_name.len + 1);\n\t\t\tdentry->d_name.name = target->d_name.name;\n\t\t\ttarget->d_name.name = target->d_iname;\n\t\t}\n\t} else {\n\t\tif (unlikely(dname_external(dentry))) {\n\t\t\t/*\n\t\t\t * dentry:external, target:internal.  Give dentry's\n\t\t\t * storage to target and make dentry internal\n\t\t\t */\n\t\t\tmemcpy(dentry->d_iname, target->d_name.name,\n\t\t\t\t\ttarget->d_name.len + 1);\n\t\t\ttarget->d_name.name = dentry->d_name.name;\n\t\t\tdentry->d_name.name = dentry->d_iname;\n\t\t} else {\n\t\t\t/*\n\t\t\t * Both are internal.\n\t\t\t */\n\t\t\tunsigned int i;\n\t\t\tBUILD_BUG_ON(!IS_ALIGNED(DNAME_INLINE_LEN, sizeof(long)));\n\t\t\tkmemcheck_mark_initialized(dentry->d_iname, DNAME_INLINE_LEN);\n\t\t\tkmemcheck_mark_initialized(target->d_iname, DNAME_INLINE_LEN);\n\t\t\tfor (i = 0; i < DNAME_INLINE_LEN / sizeof(long); i++) {\n\t\t\t\tswap(((long *) &dentry->d_iname)[i],\n\t\t\t\t     ((long *) &target->d_iname)[i]);\n\t\t\t}\n\t\t}\n\t}\n\tswap(dentry->d_name.hash_len, target->d_name.hash_len);\n}",
+            3
+        ],
+        [
+            "include/linux/fs.h",
+            "check_sticky",
+            "static inline int check_sticky(struct inode *dir, struct inode *inode) /* <=== check_sticky */ \n{\n\tif (!(dir->i_mode & S_ISVTX))\n\t\treturn 0;\n\n\treturn __check_sticky(dir, inode);\n}",
+            2
+        ],
+        [
+            "fs/dcache.c",
+            "__dentry_kill",
+            "static void __dentry_kill(struct dentry *dentry) /* <=== __dentry_kill */ \n{\n\tstruct dentry *parent = NULL;\n\tbool can_free = true;\n\tif (!IS_ROOT(dentry))\n\t\tparent = dentry->d_parent;\n\n\t/*\n\t * The dentry is now unrecoverably dead to the world.\n\t */\n\tlockref_mark_dead(&dentry->d_lockref);\n\n\t/*\n\t * inform the fs via d_prune that this dentry is about to be\n\t * unhashed and destroyed.\n\t */\n\tif (dentry->d_flags & DCACHE_OP_PRUNE)\n\t\tdentry->d_op->d_prune(dentry);\n\n\tif (dentry->d_flags & DCACHE_LRU_LIST) {\n\t\tif (!(dentry->d_flags & DCACHE_SHRINK_LIST))\n\t\t\td_lru_del(dentry);\n\t}\n\t/* if it was on the hash then remove it */\n\t__d_drop(dentry);\n\t__list_del_entry(&dentry->d_child);\n\t/*\n\t * Inform d_walk() that we are no longer attached to the\n\t * dentry tree\n\t */\n\tdentry->d_flags |= DCACHE_DENTRY_KILLED;\n\tif (parent)\n\t\tspin_unlock(&parent->d_lock);\n\tdentry_iput(dentry);\n\t/*\n\t * dentry_iput drops the locks, at which point nobody (except\n\t * transient RCU lookups) can reach this dentry.\n\t */\n\tBUG_ON(dentry->d_lockref.count > 0);\n\tthis_cpu_dec(nr_dentry);\n\tif (dentry->d_op && dentry->d_op->d_release)\n\t\tdentry->d_op->d_release(dentry);\n\n\tspin_lock(&dentry->d_lock);\n\tif (dentry->d_flags & DCACHE_SHRINK_LIST) {\n\t\tdentry->d_flags |= DCACHE_MAY_FREE;\n\t\tcan_free = false;\n\t}\n\tspin_unlock(&dentry->d_lock);\n\tif (likely(can_free))\n\t\tdentry_free(dentry);\n}",
+            3
+        ],
+        [
+            "include/linux/list.h",
+            "list_del_init",
+            "static inline void list_del_init(struct list_head *entry) /* <=== list_del_init */ \n{\n\t__list_del_entry(entry);\n\tINIT_LIST_HEAD(entry);\n}",
+            3
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "RCU_LOCKDEP_WARN",
+            "#define RCU_LOCKDEP_WARN(c, s) do { } while (0) /* <=== include/linux/rcupdate.h:588:588:RCU_LOCKDEP_WARN:2 */ ",
+            3
+        ],
+        [
+            "include/linux/dcache.h",
+            "__d_entry_type",
+            "static inline unsigned __d_entry_type(const struct dentry *dentry) /* <=== __d_entry_type */ \n{\n\treturn dentry->d_flags & DCACHE_ENTRY_TYPE;\n}",
+            3
+        ],
+        [
+            "include/linux/fs.h",
+            "inode_lock",
+            "static inline void inode_lock(struct inode *inode) /* <=== inode_lock */ \n{\n\tmutex_lock(&inode->i_mutex);\n}",
+            1
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_is_negative",
+            "static inline bool d_is_negative(const struct dentry *dentry) /* <=== d_is_negative */ \n{\n\t// TODO: check d_is_whiteout(dentry) also.\n\treturn d_is_miss(dentry);\n}",
+            2
+        ],
+        [
+            "security/security.c",
+            "call_int_hook",
+            "#define call_int_hook(FUNC, IRC, ...) ({\t\t\t\\ /* <=== security/security.c:117:129:call_int_hook:3 */ \n\tint RC = IRC;\t\t\t\t\t\t\\\n\tdo {\t\t\t\t\t\t\t\\\n\t\tstruct security_hook_list *P;\t\t\t\\\n\t\t\t\t\t\t\t\t\\\n\t\tlist_for_each_entry(P, &security_hook_heads.FUNC, list) { \\\n\t\t\tRC = P->hook.FUNC(__VA_ARGS__);\t\t\\\n\t\t\tif (RC != 0)\t\t\t\t\\\n\t\t\t\tbreak;\t\t\t\t\\\n\t\t}\t\t\t\t\t\t\\\n\t} while (0);\t\t\t\t\t\t\\\n\tRC;\t\t\t\t\t\t\t\\\n})",
+            2
+        ],
+        [
+            "fs/namei.c",
+            "__check_sticky",
+            "int __check_sticky(struct inode *dir, struct inode *inode) /* <=== __check_sticky */ \n{\n\tkuid_t fsuid = current_fsuid();\n\n\tif (uid_eq(inode->i_uid, fsuid))\n\t\treturn 0;\n\tif (uid_eq(dir->i_uid, fsuid))\n\t\treturn 0;\n\treturn !capable_wrt_inode_uidgid(inode, CAP_FOWNER);\n}",
+            3
+        ],
+        [
+            "security/selinux/hooks.c",
+            "__inode_security_revalidate",
+            "static int __inode_security_revalidate(struct inode *inode, /* <=== __inode_security_revalidate */ \n\t\t\t\t       struct dentry *opt_dentry,\n\t\t\t\t       bool may_sleep)\n{\n\tstruct inode_security_struct *isec = inode->i_security;\n\n\tmight_sleep_if(may_sleep);\n\n\tif (isec->initialized == LABEL_INVALID) {\n\t\tif (!may_sleep)\n\t\t\treturn -ECHILD;\n\n\t\t/*\n\t\t * Try reloading the inode security label.  This will fail if\n\t\t * @opt_dentry is NULL and no dentry for this inode can be\n\t\t * found; in that case, continue using the old label.\n\t\t */\n\t\tinode_doinit_with_dentry(inode, opt_dentry);\n\t}\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "shrink_dentry_list",
+            "static void shrink_dentry_list(struct list_head *list) /* <=== shrink_dentry_list */ \n{\n\tstruct dentry *dentry, *parent;\n\n\twhile (!list_empty(list)) {\n\t\tstruct inode *inode;\n\t\tdentry = list_entry(list->prev, struct dentry, d_lru);\n\t\tspin_lock(&dentry->d_lock);\n\t\tparent = lock_parent(dentry);\n\n\t\t/*\n\t\t * The dispose list is isolated and dentries are not accounted\n\t\t * to the LRU here, so we can simply remove it from the list\n\t\t * here regardless of whether it is referenced or not.\n\t\t */\n\t\td_shrink_del(dentry);\n\n\t\t/*\n\t\t * We found an inuse dentry which was not removed from\n\t\t * the LRU because of laziness during lookup. Do not free it.\n\t\t */\n\t\tif (dentry->d_lockref.count > 0) {\n\t\t\tspin_unlock(&dentry->d_lock);\n\t\t\tif (parent)\n\t\t\t\tspin_unlock(&parent->d_lock);\n\t\t\tcontinue;\n\t\t}\n\n\n\t\tif (unlikely(dentry->d_flags & DCACHE_DENTRY_KILLED)) {\n\t\t\tbool can_free = dentry->d_flags & DCACHE_MAY_FREE;\n\t\t\tspin_unlock(&dentry->d_lock);\n\t\t\tif (parent)\n\t\t\t\tspin_unlock(&parent->d_lock);\n\t\t\tif (can_free)\n\t\t\t\tdentry_free(dentry);\n\t\t\tcontinue;\n\t\t}\n\n\t\tinode = dentry->d_inode;\n\t\tif (inode && unlikely(!spin_trylock(&inode->i_lock))) {\n\t\t\td_shrink_add(dentry, list);\n\t\t\tspin_unlock(&dentry->d_lock);\n\t\t\tif (parent)\n\t\t\t\tspin_unlock(&parent->d_lock);\n\t\t\tcontinue;\n\t\t}\n\n\t\t__dentry_kill(dentry);\n\n\t\t/*\n\t\t * We need to prune ancestors too. This is necessary to prevent\n\t\t * quadratic behavior of shrink_dcache_parent(), but is also\n\t\t * expected to be beneficial in reducing dentry cache\n\t\t * fragmentation.\n\t\t */\n\t\tdentry = parent;\n\t\twhile (dentry && !lockref_put_or_lock(&dentry->d_lockref)) {\n\t\t\tparent = lock_parent(dentry);\n\t\t\tif (dentry->d_lockref.count != 1) {\n\t\t\t\tdentry->d_lockref.count--;\n\t\t\t\tspin_unlock(&dentry->d_lock);\n\t\t\t\tif (parent)\n\t\t\t\t\tspin_unlock(&parent->d_lock);\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tinode = dentry->d_inode;\t/* can't be NULL */\n\t\t\tif (unlikely(!spin_trylock(&inode->i_lock))) {\n\t\t\t\tspin_unlock(&dentry->d_lock);\n\t\t\t\tif (parent)\n\t\t\t\t\tspin_unlock(&parent->d_lock);\n\t\t\t\tcpu_relax();\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t\t__dentry_kill(dentry);\n\t\t\tdentry = parent;\n\t\t}\n\t}\n}",
+            2
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_inode",
+            "static inline struct inode *d_inode(const struct dentry *dentry) /* <=== d_inode */ \n{\n\treturn dentry->d_inode;\n}",
+            2
+        ],
+        [
+            "include/linux/dcache.h",
+            "dont_mount",
+            "static inline void dont_mount(struct dentry *dentry) /* <=== dont_mount */ \n{\n\tspin_lock(&dentry->d_lock);\n\tdentry->d_flags |= DCACHE_CANT_MOUNT;\n\tspin_unlock(&dentry->d_lock);\n}",
+            1
+        ],
+        [
+            "include/linux/fsnotify.h",
+            "fsnotify_link_count",
+            "static inline void fsnotify_link_count(struct inode *inode) /* <=== fsnotify_link_count */ \n{\n\tfsnotify(inode, FS_ATTRIB, inode, FSNOTIFY_EVENT_INODE, NULL, 0);\n}",
+            2
+        ],
+        [
+            "include/linux/list.h",
+            "list_empty",
+            "static inline int list_empty(const struct list_head *head) /* <=== list_empty */ \n{\n\treturn READ_ONCE(head->next) == head;\n}",
+            3
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_lock",
+            "extern void mutex_lock(struct mutex *lock); /* <=== mutex_lock */ ",
+            2
+        ],
+        [
+            "include/linux/security.h",
+            "security_inode_permission",
+            "static inline int security_inode_permission(struct inode *inode, int mask) /* <=== security_inode_permission */ \n{\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "include/linux/list.h",
+            "INIT_LIST_HEAD",
+            "static inline void INIT_LIST_HEAD(struct list_head *list) /* <=== INIT_LIST_HEAD */ \n{\n\tWRITE_ONCE(list->next, list);\n\tlist->prev = list;\n}",
+            2
+        ],
+        [
+            "fs/namei.c",
+            "__inode_permission",
+            "int __inode_permission(struct inode *inode, int mask) /* <=== __inode_permission */ \n{\n\tint retval;\n\n\tif (unlikely(mask & MAY_WRITE)) {\n\t\t/*\n\t\t * Nobody gets write access to an immutable file.\n\t\t */\n\t\tif (IS_IMMUTABLE(inode))\n\t\t\treturn -EACCES;\n\t}\n\n\tretval = do_inode_permission(inode, mask);\n\tif (retval)\n\t\treturn retval;\n\n\tretval = devcgroup_inode_permission(inode, mask);\n\tif (retval)\n\t\treturn retval;\n\n\treturn security_inode_permission(inode, mask);\n}",
+            2
+        ],
+        [
+            "include/linux/seqlock.h",
+            "write_seqcount_begin_nested",
+            "static inline void write_seqcount_begin_nested(seqcount_t *s, int subclass) /* <=== write_seqcount_begin_nested */ \n{\n\traw_write_seqcount_begin(s);\n\tseqcount_acquire(&s->dep_map, subclass, 0, _RET_IP_);\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "dput",
+            "void dput(struct dentry *dentry) /* <=== dput */ \n{\n\tif (unlikely(!dentry))\n\t\treturn;\n\nrepeat:\n\trcu_read_lock();\n\tif (likely(fast_dput(dentry))) {\n\t\trcu_read_unlock();\n\t\treturn;\n\t}\n\n\t/* Slow case: now with the dentry lock held */\n\trcu_read_unlock();\n\n\t/* Unreachable? Get rid of it */\n\tif (unlikely(d_unhashed(dentry)))\n\t\tgoto kill_it;\n\n\tif (unlikely(dentry->d_flags & DCACHE_DISCONNECTED))\n\t\tgoto kill_it;\n\n\tif (unlikely(dentry->d_flags & DCACHE_OP_DELETE)) {\n\t\tif (dentry->d_op->d_delete(dentry))\n\t\t\tgoto kill_it;\n\t}\n\n\tif (!(dentry->d_flags & DCACHE_REFERENCED))\n\t\tdentry->d_flags |= DCACHE_REFERENCED;\n\tdentry_lru_add(dentry);\n\n\tdentry->d_lockref.count--;\n\tspin_unlock(&dentry->d_lock);\n\treturn;\n\nkill_it:\n\tdentry = dentry_kill(dentry);\n\tif (dentry)\n\t\tgoto repeat;\n}",
+            1
+        ],
+        [
+            "fs/dcache.c",
+            "d_shrink_add",
+            "static void d_shrink_add(struct dentry *dentry, struct list_head *list) /* <=== d_shrink_add */ \n{\n\tD_FLAG_VERIFY(dentry, 0);\n\tlist_add(&dentry->d_lru, list);\n\tdentry->d_flags |= DCACHE_SHRINK_LIST | DCACHE_LRU_LIST;\n\tthis_cpu_inc(nr_dentry_unused);\n}",
+            3
+        ],
+        [
+            "fs/inode.c",
+            "lock_two_nondirectories",
+            "void lock_two_nondirectories(struct inode *inode1, struct inode *inode2) /* <=== lock_two_nondirectories */ \n{\n\tif (inode1 > inode2)\n\t\tswap(inode1, inode2);\n\n\tif (inode1 && !S_ISDIR(inode1->i_mode))\n\t\tinode_lock(inode1);\n\tif (inode2 && !S_ISDIR(inode2->i_mode) && inode2 != inode1)\n\t\tinode_lock_nested(inode2, I_MUTEX_NONDIR2);\n}",
+            1
+        ],
+        [
+            "include/linux/audit.h",
+            "audit_inode_child",
+            "static inline void audit_inode_child(struct inode *parent, /* <=== audit_inode_child */ \n\t\t\t\t     const struct dentry *dentry,\n\t\t\t\t     const unsigned char type)\n{ }",
+            2
+        ],
+        [
+            "fs/mount.h",
+            "detach_mounts",
+            "static inline void detach_mounts(struct dentry *dentry) /* <=== detach_mounts */ \n{\n\tif (!d_mountpoint(dentry))\n\t\treturn;\n\t__detach_mounts(dentry);\n}",
+            1
+        ],
+        [
+            "fs/dcache.c",
+            "d_hash",
+            "static inline struct hlist_bl_head *d_hash(const struct dentry *parent, /* <=== d_hash */ \n\t\t\t\t\tunsigned int hash)\n{\n\thash += (unsigned long) parent / L1_CACHE_BYTES;\n\treturn dentry_hashtable + hash_32(hash, d_hash_shift);\n}",
+            3
+        ],
+        [
+            "fs/namei.c",
+            "do_inode_permission",
+            "static inline int do_inode_permission(struct inode *inode, int mask) /* <=== do_inode_permission */ \n{\n\tif (unlikely(!(inode->i_opflags & IOP_FASTPERM))) {\n\t\tif (likely(inode->i_op->permission))\n\t\t\treturn inode->i_op->permission(inode, mask);\n\n\t\t/* This gets set once for the inode lifetime */\n\t\tspin_lock(&inode->i_lock);\n\t\tinode->i_opflags |= IOP_FASTPERM;\n\t\tspin_unlock(&inode->i_lock);\n\t}\n\treturn generic_permission(inode, mask);\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "__d_move",
+            "static void __d_move(struct dentry *dentry, struct dentry *target, /* <=== __d_move */ \n\t\t     bool exchange)\n{\n\tif (!dentry->d_inode)\n\t\tprintk(KERN_WARNING \"VFS: moving negative dcache entry\\n\");\n\n\tBUG_ON(d_ancestor(dentry, target));\n\tBUG_ON(d_ancestor(target, dentry));\n\n\tdentry_lock_for_move(dentry, target);\n\n\twrite_seqcount_begin(&dentry->d_seq);\n\twrite_seqcount_begin_nested(&target->d_seq, DENTRY_D_LOCK_NESTED);\n\n\t/* __d_drop does write_seqcount_barrier, but they're OK to nest. */\n\n\t/*\n\t * Move the dentry to the target hash queue. Don't bother checking\n\t * for the same hash queue because of how unlikely it is.\n\t */\n\t__d_drop(dentry);\n\t__d_rehash(dentry, d_hash(target->d_parent, target->d_name.hash));\n\n\t/*\n\t * Unhash the target (d_delete() is not usable here).  If exchanging\n\t * the two dentries, then rehash onto the other's hash queue.\n\t */\n\t__d_drop(target);\n\tif (exchange) {\n\t\t__d_rehash(target,\n\t\t\t   d_hash(dentry->d_parent, dentry->d_name.hash));\n\t}\n\n\t/* Switch the names.. */\n\tif (exchange)\n\t\tswap_names(dentry, target);\n\telse\n\t\tcopy_name(dentry, target);\n\n\t/* ... and switch them in the tree */\n\tif (IS_ROOT(dentry)) {\n\t\t/* splicing a tree */\n\t\tdentry->d_parent = target->d_parent;\n\t\ttarget->d_parent = target;\n\t\tlist_del_init(&target->d_child);\n\t\tlist_move(&dentry->d_child, &dentry->d_parent->d_subdirs);\n\t} else {\n\t\t/* swapping two dentries */\n\t\tswap(dentry->d_parent, target->d_parent);\n\t\tlist_move(&target->d_child, &target->d_parent->d_subdirs);\n\t\tlist_move(&dentry->d_child, &dentry->d_parent->d_subdirs);\n\t\tif (exchange)\n\t\t\tfsnotify_d_move(target);\n\t\tfsnotify_d_move(dentry);\n\t}\n\n\twrite_seqcount_end(&target->d_seq);\n\twrite_seqcount_end(&dentry->d_seq);\n\n\tdentry_unlock_for_move(dentry, target);\n}",
+            2
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_backing_inode",
+            "static inline struct inode *d_backing_inode(const struct dentry *upper) /* <=== d_backing_inode */ \n{\n\tstruct inode *inode = upper->d_inode;\n\n\treturn inode;\n}",
+            2
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "__rcu_read_unlock",
+            "static inline void __rcu_read_unlock(void) /* <=== __rcu_read_unlock */ \n{\n\tif (IS_ENABLED(CONFIG_PREEMPT_COUNT))\n\t\tpreempt_enable();\n}",
+            3
+        ],
+        [
+            "tools/include/linux/list.h",
+            "list_empty",
+            "static inline int list_empty(const struct list_head *head) /* <=== list_empty */ \n{\n\treturn head->next == head;\n}",
+            3
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_is_dir",
+            "static inline bool d_is_dir(const struct dentry *dentry) /* <=== d_is_dir */ \n{\n\treturn d_can_lookup(dentry) || d_is_autodir(dentry);\n}",
+            1
+        ],
+        [
+            "security/security.c",
+            "security_inode_permission",
+            "int security_inode_permission(struct inode *inode, int mask) /* <=== security_inode_permission */ \n{\n\tif (unlikely(IS_PRIVATE(inode)))\n\t\treturn 0;\n\treturn call_int_hook(inode_permission, 0, inode, mask);\n}",
+            3
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_unlock",
+            "extern void mutex_unlock(struct mutex *lock); /* <=== mutex_unlock */ ",
+            2
+        ],
+        [
+            "fs/dcache.c",
+            "dentry_unlock_for_move",
+            "static void dentry_unlock_for_move(struct dentry *dentry, struct dentry *target) /* <=== dentry_unlock_for_move */ \n{\n\tif (target->d_parent != dentry->d_parent)\n\t\tspin_unlock(&dentry->d_parent->d_lock);\n\tif (target->d_parent != target)\n\t\tspin_unlock(&target->d_parent->d_lock);\n\tspin_unlock(&target->d_lock);\n\tspin_unlock(&dentry->d_lock);\n}",
+            3
+        ],
+        [
+            "include/linux/seqlock.h",
+            "need_seqretry",
+            "static inline int need_seqretry(seqlock_t *lock, int seq) /* <=== need_seqretry */ \n{\n\treturn !(seq & 1) && read_seqretry(lock, seq);\n}",
+            3
+        ],
+        [
+            "security/selinux/include/security.h",
+            "SBLABEL_MNT",
+            "#define SBLABEL_MNT\t0x10 /* <=== security/selinux/include/security.h:56:56:SBLABEL_MNT:0 */ ",
+            3
+        ],
+        [
+            "security/selinux/include/security.h",
+            "SECURITY_FS_USE_MNTPOINT",
+            "#define SECURITY_FS_USE_MNTPOINT\t6 /* use mountpoint labeling */ /* <=== security/selinux/include/security.h:211:211:SECURITY_FS_USE_MNTPOINT:0 */ ",
+            3
+        ],
+        [
+            "include/linux/fs.h",
+            "inode_lock_nested",
+            "static inline void inode_lock_nested(struct inode *inode, unsigned subclass) /* <=== inode_lock_nested */ \n{\n\tmutex_lock_nested(&inode->i_mutex, subclass);\n}",
+            2
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_is_positive",
+            "static inline bool d_is_positive(const struct dentry *dentry) /* <=== d_is_positive */ \n{\n\treturn !d_is_negative(dentry);\n}",
+            2
+        ],
+        [
+            "tools/include/linux/list.h",
+            "list_move",
+            "static inline void list_move(struct list_head *list, struct list_head *head) /* <=== list_move */ \n{\n\t__list_del_entry(list);\n\tlist_add(list, head);\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "lock_parent",
+            "static inline struct dentry *lock_parent(struct dentry *dentry) /* <=== lock_parent */ \n{\n\tstruct dentry *parent = dentry->d_parent;\n\tif (IS_ROOT(dentry))\n\t\treturn NULL;\n\tif (unlikely(dentry->d_lockref.count < 0))\n\t\treturn NULL;\n\tif (likely(spin_trylock(&parent->d_lock)))\n\t\treturn parent;\n\trcu_read_lock();\n\tspin_unlock(&dentry->d_lock);\nagain:\n\tparent = ACCESS_ONCE(dentry->d_parent);\n\tspin_lock(&parent->d_lock);\n\t/*\n\t * We can't blindly lock dentry until we are sure\n\t * that we won't violate the locking order.\n\t * Any changes of dentry->d_parent must have\n\t * been done with parent->d_lock held, so\n\t * spin_lock() above is enough of a barrier\n\t * for checking if it's still our child.\n\t */\n\tif (unlikely(parent != dentry->d_parent)) {\n\t\tspin_unlock(&parent->d_lock);\n\t\tgoto again;\n\t}\n\trcu_read_unlock();\n\tif (parent != dentry)\n\t\tspin_lock_nested(&dentry->d_lock, DENTRY_D_LOCK_NESTED);\n\telse\n\t\tparent = NULL;\n\treturn parent;\n}",
+            3
+        ],
+        [
+            "include/linux/dcache.h",
+            "DCACHE_AUTODIR_TYPE",
+            "#define DCACHE_AUTODIR_TYPE\t\t0x00300000 /* Lookupless directory (presumed automount) */ /* <=== include/linux/dcache.h:223:223:DCACHE_AUTODIR_TYPE:0 */ ",
+            3
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_is_autodir",
+            "static inline bool d_is_autodir(const struct dentry *dentry) /* <=== d_is_autodir */ \n{\n\treturn __d_entry_type(dentry) == DCACHE_AUTODIR_TYPE;\n}",
+            2
+        ],
+        [
+            "include/linux/fsnotify.h",
+            "fsnotify_move",
+            "static inline void fsnotify_move(struct inode *old_dir, struct inode *new_dir, /* <=== fsnotify_move */ \n\t\t\t\t const unsigned char *old_name,\n\t\t\t\t int isdir, struct inode *target, struct dentry *moved)\n{\n\tstruct inode *source = moved->d_inode;\n\tu32 fs_cookie = fsnotify_get_cookie();\n\t__u32 old_dir_mask = (FS_EVENT_ON_CHILD | FS_MOVED_FROM);\n\t__u32 new_dir_mask = (FS_EVENT_ON_CHILD | FS_MOVED_TO);\n\tconst unsigned char *new_name = moved->d_name.name;\n\n\tif (old_dir == new_dir)\n\t\told_dir_mask |= FS_DN_RENAME;\n\n\tif (isdir) {\n\t\told_dir_mask |= FS_ISDIR;\n\t\tnew_dir_mask |= FS_ISDIR;\n\t}\n\n\tfsnotify(old_dir, old_dir_mask, source, FSNOTIFY_EVENT_INODE, old_name,\n\t\t fs_cookie);\n\tfsnotify(new_dir, new_dir_mask, source, FSNOTIFY_EVENT_INODE, new_name,\n\t\t fs_cookie);\n\n\tif (target)\n\t\tfsnotify_link_count(target);\n\n\tif (source)\n\t\tfsnotify(source, FS_MOVE_SELF, moved->d_inode, FSNOTIFY_EVENT_INODE, NULL, 0);\n\taudit_inode_child(new_dir, moved, AUDIT_TYPE_CHILD_CREATE);\n}",
+            1
+        ],
+        [
+            "include/linux/dcache.h",
+            "DCACHE_MOUNTED",
+            "#define DCACHE_MOUNTED\t\t\t0x00010000 /* is a mountpoint */ /* <=== include/linux/dcache.h:211:211:DCACHE_MOUNTED:0 */ ",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "d_move",
+            "void d_move(struct dentry *dentry, struct dentry *target) /* <=== d_move */ \n{\n\twrite_seqlock(&rename_lock);\n\t__d_move(dentry, target, false);\n\twrite_sequnlock(&rename_lock);\n}",
+            1
+        ],
+        [
+            "include/linux/fsnotify.h",
+            "fsnotify_d_move",
+            "static inline void fsnotify_d_move(struct dentry *dentry) /* <=== fsnotify_d_move */ \n{\n\t/*\n\t * On move we need to update dentry->d_flags to indicate if the new parent\n\t * cares about events from this dentry.\n\t */\n\t__fsnotify_update_dcache_flags(dentry);\n}",
+            3
+        ],
+        [
+            "include/linux/dcache.h",
+            "DCACHE_DIRECTORY_TYPE",
+            "#define DCACHE_DIRECTORY_TYPE\t\t0x00200000 /* Normal directory */ /* <=== include/linux/dcache.h:222:222:DCACHE_DIRECTORY_TYPE:0 */ ",
+            3
+        ],
+        [
+            "fs/mount.h",
+            "is_local_mountpoint",
+            "static inline bool is_local_mountpoint(struct dentry *dentry) /* <=== is_local_mountpoint */ \n{\n\tif (!d_mountpoint(dentry))\n\t\treturn false;\n\n\treturn __is_local_mountpoint(dentry);\n}",
+            1
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_is_miss",
+            "static inline bool d_is_miss(const struct dentry *dentry) /* <=== d_is_miss */ \n{\n\treturn __d_entry_type(dentry) == DCACHE_MISS_TYPE;\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "__d_rehash",
+            "static void __d_rehash(struct dentry * entry, struct hlist_bl_head *b) /* <=== __d_rehash */ \n{\n\tBUG_ON(!d_unhashed(entry));\n\thlist_bl_lock(b);\n\tentry->d_flags |= DCACHE_RCUACCESS;\n\thlist_bl_add_head_rcu(&entry->d_hash, b);\n\thlist_bl_unlock(b);\n}",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "d_walk",
+            "static void d_walk(struct dentry *parent, void *data, /* <=== d_walk */ \n\t\t   enum d_walk_ret (*enter)(void *, struct dentry *),\n\t\t   void (*finish)(void *))\n{\n\tstruct dentry *this_parent;\n\tstruct list_head *next;\n\tunsigned seq = 0;\n\tenum d_walk_ret ret;\n\tbool retry = true;\n\nagain:\n\tread_seqbegin_or_lock(&rename_lock, &seq);\n\tthis_parent = parent;\n\tspin_lock(&this_parent->d_lock);\n\n\tret = enter(data, this_parent);\n\tswitch (ret) {\n\tcase D_WALK_CONTINUE:\n\t\tbreak;\n\tcase D_WALK_QUIT:\n\tcase D_WALK_SKIP:\n\t\tgoto out_unlock;\n\tcase D_WALK_NORETRY:\n\t\tretry = false;\n\t\tbreak;\n\t}\nrepeat:\n\tnext = this_parent->d_subdirs.next;\nresume:\n\twhile (next != &this_parent->d_subdirs) {\n\t\tstruct list_head *tmp = next;\n\t\tstruct dentry *dentry = list_entry(tmp, struct dentry, d_child);\n\t\tnext = tmp->next;\n\n\t\tspin_lock_nested(&dentry->d_lock, DENTRY_D_LOCK_NESTED);\n\n\t\tret = enter(data, dentry);\n\t\tswitch (ret) {\n\t\tcase D_WALK_CONTINUE:\n\t\t\tbreak;\n\t\tcase D_WALK_QUIT:\n\t\t\tspin_unlock(&dentry->d_lock);\n\t\t\tgoto out_unlock;\n\t\tcase D_WALK_NORETRY:\n\t\t\tretry = false;\n\t\t\tbreak;\n\t\tcase D_WALK_SKIP:\n\t\t\tspin_unlock(&dentry->d_lock);\n\t\t\tcontinue;\n\t\t}\n\n\t\tif (!list_empty(&dentry->d_subdirs)) {\n\t\t\tspin_unlock(&this_parent->d_lock);\n\t\t\tspin_release(&dentry->d_lock.dep_map, 1, _RET_IP_);\n\t\t\tthis_parent = dentry;\n\t\t\tspin_acquire(&this_parent->d_lock.dep_map, 0, 1, _RET_IP_);\n\t\t\tgoto repeat;\n\t\t}\n\t\tspin_unlock(&dentry->d_lock);\n\t}\n\t/*\n\t * All done at this level ... ascend and resume the search.\n\t */\n\trcu_read_lock();\nascend:\n\tif (this_parent != parent) {\n\t\tstruct dentry *child = this_parent;\n\t\tthis_parent = child->d_parent;\n\n\t\tspin_unlock(&child->d_lock);\n\t\tspin_lock(&this_parent->d_lock);\n\n\t\t/* might go back up the wrong parent if we have had a rename. */\n\t\tif (need_seqretry(&rename_lock, seq))\n\t\t\tgoto rename_retry;\n\t\t/* go into the first sibling still alive */\n\t\tdo {\n\t\t\tnext = child->d_child.next;\n\t\t\tif (next == &this_parent->d_subdirs)\n\t\t\t\tgoto ascend;\n\t\t\tchild = list_entry(next, struct dentry, d_child);\n\t\t} while (unlikely(child->d_flags & DCACHE_DENTRY_KILLED));\n\t\trcu_read_unlock();\n\t\tgoto resume;\n\t}\n\tif (need_seqretry(&rename_lock, seq))\n\t\tgoto rename_retry;\n\trcu_read_unlock();\n\tif (finish)\n\t\tfinish(data);\n\nout_unlock:\n\tspin_unlock(&this_parent->d_lock);\n\tdone_seqretry(&rename_lock, seq);\n\treturn;\n\nrename_retry:\n\tspin_unlock(&this_parent->d_lock);\n\trcu_read_unlock();\n\tBUG_ON(seq & 1);\n\tif (!retry)\n\t\treturn;\n\tseq = 1;\n\tgoto again;\n}",
+            2
+        ],
+        [
+            "include/linux/fs.h",
+            "inode_unlock",
+            "static inline void inode_unlock(struct inode *inode) /* <=== inode_unlock */ \n{\n\tmutex_unlock(&inode->i_mutex);\n}",
+            1
+        ],
+        [
+            "include/linux/fsnotify.h",
+            "fsnotify_oldname_free",
+            "static inline void fsnotify_oldname_free(const unsigned char *old_name) /* <=== fsnotify_oldname_free */ \n{\n}",
+            1
+        ],
+        [
+            "security/selinux/include/security.h",
+            "SE_SBINITIALIZED",
+            "#define SE_SBINITIALIZED\t0x0100 /* <=== security/selinux/include/security.h:58:58:SE_SBINITIALIZED:0 */ ",
+            3
+        ],
+        [
+            "fs/dcache.c",
+            "d_ancestor",
+            "struct dentry *d_ancestor(struct dentry *p1, struct dentry *p2) /* <=== d_ancestor */ \n{\n\tstruct dentry *p;\n\n\tfor (p = p2; !IS_ROOT(p); p = p->d_parent) {\n\t\tif (p->d_parent == p1)\n\t\t\treturn p;\n\t}\n\treturn NULL;\n}",
+            3
+        ],
+        [
+            "include/linux/seqlock.h",
+            "write_seqcount_begin",
+            "static inline void write_seqcount_begin(seqcount_t *s) /* <=== write_seqcount_begin */ \n{\n\twrite_seqcount_begin_nested(s, 0);\n}",
+            3
+        ],
+        [
+            "tools/include/linux/list.h",
+            "list_del_init",
+            "static inline void list_del_init(struct list_head *entry) /* <=== list_del_init */ \n{\n\t__list_del_entry(entry);\n\tINIT_LIST_HEAD(entry);\n}",
+            3
+        ],
+        [
+            "fs/namei.c",
+            "may_create",
+            "static inline int may_create(struct inode *dir, struct dentry *child) /* <=== may_create */ \n{\n\taudit_inode_child(dir, child, AUDIT_TYPE_CHILD_CREATE);\n\tif (child->d_inode)\n\t\treturn -EEXIST;\n\tif (IS_DEADDIR(dir))\n\t\treturn -ENOENT;\n\treturn inode_permission(dir, MAY_WRITE | MAY_EXEC);\n}",
+            1
+        ],
+        [
+            "arch/tile/include/asm/processor.h",
+            "cpu_relax",
+            "static inline void cpu_relax(void) /* <=== cpu_relax */ \n{\n\t__insn_mfspr(SPR_PASS);\n\tbarrier();\n}",
+            3
+        ],
+        [
+            "include/linux/seqlock.h",
+            "read_seqbegin_or_lock",
+            "static inline void read_seqbegin_or_lock(seqlock_t *lock, int *seq) /* <=== read_seqbegin_or_lock */ \n{\n\tif (!(*seq & 1))\t/* Even */\n\t\t*seq = read_seqbegin(lock);\n\telse\t\t\t/* Odd */\n\t\tread_seqlock_excl(lock);\n}",
+            3
+        ],
+        [
+            "security/selinux/hooks.c",
+            "inode_security",
+            "static struct inode_security_struct *inode_security(struct inode *inode) /* <=== inode_security */ \n{\n\t__inode_security_revalidate(inode, NULL, true);\n\treturn inode->i_security;\n}",
+            2
+        ],
+        [
+            "include/linux/dcache.h",
+            "DCACHE_OP_SELECT_INODE",
+            "#define DCACHE_OP_SELECT_INODE\t\t0x02000000 /* Unioned entry: dcache op selects inode */ /* <=== include/linux/dcache.h:230:230:DCACHE_OP_SELECT_INODE:0 */ ",
+            2
+        ],
+        [
+            "include/linux/dcache.h",
+            "d_unhashed",
+            "static inline int d_unhashed(const struct dentry *dentry) /* <=== d_unhashed */ \n{\n\treturn hlist_bl_unhashed(&dentry->d_hash);\n}",
+            2
+        ],
+        [
+            "include/linux/device_cgroup.h",
+            "devcgroup_inode_permission",
+            "static inline int devcgroup_inode_permission(struct inode *inode, int mask) /* <=== devcgroup_inode_permission */ \n{ return 0; }",
+            3
+        ],
+        [
+            "include/linux/fsnotify.h",
+            "fsnotify_oldname_init",
+            "static inline const char *fsnotify_oldname_init(const unsigned char *name) /* <=== fsnotify_oldname_init */ \n{\n\treturn NULL;\n}",
+            1
+        ],
+        [
+            "include/linux/security.h",
+            "security_inode_rename",
+            "static inline int security_inode_rename(struct inode *old_dir, /* <=== security_inode_rename */ \n\t\t\t\t\t struct dentry *old_dentry,\n\t\t\t\t\t struct inode *new_dir,\n\t\t\t\t\t struct dentry *new_dentry,\n\t\t\t\t\t unsigned int flags)\n{\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "include/linux/seqlock.h",
+            "done_seqretry",
+            "static inline void done_seqretry(seqlock_t *lock, int seq) /* <=== done_seqretry */ \n{\n\tif (seq & 1)\n\t\tread_sequnlock_excl(lock);\n}",
+            3
+        ],
+        [
+            "fs/namei.c",
+            "sb_permission",
+            "static int sb_permission(struct super_block *sb, struct inode *inode, int mask) /* <=== sb_permission */ \n{\n\tif (unlikely(mask & MAY_WRITE)) {\n\t\tumode_t mode = inode->i_mode;\n\n\t\t/* Nobody gets write access to a read-only fs. */\n\t\tif ((sb->s_flags & MS_RDONLY) &&\n\t\t    (S_ISREG(mode) || S_ISDIR(mode) || S_ISLNK(mode)))\n\t\t\treturn -EROFS;\n\t}\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "tools/testing/radix-tree/linux/types.h",
+            "INIT_LIST_HEAD",
+            "static inline void INIT_LIST_HEAD(struct list_head *list) /* <=== INIT_LIST_HEAD */ \n{\n\tlist->next = list;\n\tlist->prev = list;\n}",
+            2
+        ],
+        [
+            "include/linux/rcupdate.h",
+            "__rcu_read_lock",
+            "static inline void __rcu_read_lock(void) /* <=== __rcu_read_lock */ \n{\n\tif (IS_ENABLED(CONFIG_PREEMPT_COUNT))\n\t\tpreempt_disable();\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/init.h>",
+        "#include <linux/fs.h>",
+        "#include <linux/posix_acl.h>",
+        "#include <linux/fcntl.h>",
+        "#include <linux/namei.h>",
+        "#include <linux/fs_struct.h>",
+        "#include <linux/export.h>",
+        "#include <linux/pagemap.h>",
+        "#include <linux/file.h>",
+        "#include <asm/uaccess.h>",
+        "#include \"mount.h\"",
+        "#include <linux/kernel.h>",
+        "#include <linux/security.h>",
+        "#include <linux/mount.h>",
+        "#include <linux/syscalls.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/ima.h>",
+        "#include \"internal.h\"",
+        "#include <linux/device_cgroup.h>",
+        "#include <linux/fsnotify.h>",
+        "#include <linux/audit.h>",
+        "#include <linux/personality.h>",
+        "#include <linux/capability.h>",
+        "#include <linux/hash.h>",
+        "#include <asm/word-at-a-time.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct dentry {\n\t/* RCU lookup touched fields */\n\tunsigned int d_flags;\t\t/* protected by d_lock */\n\tseqcount_t d_seq;\t\t/* per dentry seqlock */\n\tstruct hlist_bl_node d_hash;\t/* lookup hash list */\n\tstruct dentry *d_parent;\t/* parent directory */\n\tstruct qstr d_name;\n\tstruct inode *d_inode;\t\t/* Where the name belongs to - NULL is\n\t\t\t\t\t * negative */\n\tunsigned char d_iname[DNAME_INLINE_LEN];\t/* small names */\n\n\t/* Ref lookup also touches following */\n\tstruct lockref d_lockref;\t/* per-dentry lock and refcount */\n\tconst struct dentry_operations *d_op;\n\tstruct super_block *d_sb;\t/* The root of the dentry tree */\n\tunsigned long d_time;\t\t/* used by d_revalidate */\n\tvoid *d_fsdata;\t\t\t/* fs-specific data */\n\n\tstruct list_head d_lru;\t\t/* LRU list */\n\tstruct list_head d_child;\t/* child of parent list */\n\tstruct list_head d_subdirs;\t/* our children */\n\t/*\n\t * d_alias and d_rcu can share memory\n\t */\n\tunion {\n\t\tstruct hlist_node d_alias;\t/* inode alias list */\n\t \tstruct rcu_head d_rcu;\n\t} d_u;\n}",
+            "dentry"
+        ],
+        [
+            "struct inode",
+            "inode"
+        ],
+        [
+            "static struct dentry",
+            "dentry"
+        ],
+        [
+            "struct inode {\n\tumode_t\t\t\ti_mode;\n\tunsigned short\t\ti_opflags;\n\tkuid_t\t\t\ti_uid;\n\tkgid_t\t\t\ti_gid;\n\tunsigned int\t\ti_flags;\n\n#ifdef CONFIG_FS_POSIX_ACL\n\tstruct posix_acl\t*i_acl;\n\tstruct posix_acl\t*i_default_acl;\n#endif\n\n\tconst struct inode_operations\t*i_op;\n\tstruct super_block\t*i_sb;\n\tstruct address_space\t*i_mapping;\n\n#ifdef CONFIG_SECURITY\n\tvoid\t\t\t*i_security;\n#endif\n\n\t/* Stat data, not accessed from path walking */\n\tunsigned long\t\ti_ino;\n\t/*\n\t * Filesystems may only read i_nlink directly.  They shall use the\n\t * following functions for modification:\n\t *\n\t *    (set|clear|inc|drop)_nlink\n\t *    inode_(inc|dec)_link_count\n\t */\n\tunion {\n\t\tconst unsigned int i_nlink;\n\t\tunsigned int __i_nlink;\n\t};\n\tdev_t\t\t\ti_rdev;\n\tloff_t\t\t\ti_size;\n\tstruct timespec\t\ti_atime;\n\tstruct timespec\t\ti_mtime;\n\tstruct timespec\t\ti_ctime;\n\tspinlock_t\t\ti_lock;\t/* i_blocks, i_bytes, maybe i_size */\n\tunsigned short          i_bytes;\n\tunsigned int\t\ti_blkbits;\n\tblkcnt_t\t\ti_blocks;\n\n#ifdef __NEED_I_SIZE_ORDERED\n\tseqcount_t\t\ti_size_seqcount;\n#endif\n\n\t/* Misc */\n\tunsigned long\t\ti_state;\n\tstruct mutex\t\ti_mutex;\n\n\tunsigned long\t\tdirtied_when;\t/* jiffies of first dirtying */\n\tunsigned long\t\tdirtied_time_when;\n\n\tstruct hlist_node\ti_hash;\n\tstruct list_head\ti_io_list;\t/* backing dev IO list */\n#ifdef CONFIG_CGROUP_WRITEBACK\n\tstruct bdi_writeback\t*i_wb;\t\t/* the associated cgroup wb */\n\n\t/* foreign inode detection, see wbc_detach_inode() */\n\tint\t\t\ti_wb_frn_winner;\n\tu16\t\t\ti_wb_frn_avg_time;\n\tu16\t\t\ti_wb_frn_history;\n#endif\n\tstruct list_head\ti_lru;\t\t/* inode LRU list */\n\tstruct list_head\ti_sb_list;\n\tunion {\n\t\tstruct hlist_head\ti_dentry;\n\t\tstruct rcu_head\t\ti_rcu;\n\t};\n\tu64\t\t\ti_version;\n\tatomic_t\t\ti_count;\n\tatomic_t\t\ti_dio_count;\n\tatomic_t\t\ti_writecount;\n#ifdef CONFIG_IMA\n\tatomic_t\t\ti_readcount; /* struct files open RO */\n#endif\n\tconst struct file_operations\t*i_fop;\t/* former ->i_op->default_file_ops */\n\tstruct file_lock_context\t*i_flctx;\n\tstruct address_space\ti_data;\n\tstruct list_head\ti_devices;\n\tunion {\n\t\tstruct pipe_inode_info\t*i_pipe;\n\t\tstruct block_device\t*i_bdev;\n\t\tstruct cdev\t\t*i_cdev;\n\t\tchar\t\t\t*i_link;\n\t};\n\n\t__u32\t\t\ti_generation;\n\n#ifdef CONFIG_FSNOTIFY\n\t__u32\t\t\ti_fsnotify_mask; /* all events this inode cares about */\n\tstruct hlist_head\ti_fsnotify_marks;\n#endif\n\n#if IS_ENABLED(CONFIG_FS_ENCRYPTION)\n\tstruct fscrypt_info\t*i_crypt_info;\n#endif\n\n\tvoid\t\t\t*i_private; /* fs or device private pointer */\n}",
+            "inode"
+        ],
+        [
+            "typedef _Bool\t\t\tbool;",
+            "bool"
+        ]
+    ],
+    "visitedLines_after": {
+        "fs/namei.c": [
+            4204,
+            4205,
+            4209,
+            4211,
+            4212,
+            4217,
+            4220,
+            4221,
+            4223,
+            4224,
+            4225,
+            4227,
+            4228,
+            4230,
+            4232,
+            4233,
+            4235,
+            4237,
+            4238,
+            4240,
+            4241,
+            4243,
+            4244,
+            4250,
+            4251,
+            4252,
+            4253,
+            4254,
+            4256,
+            4257,
+            4258,
+            4259,
+            4263,
+            4264,
+            4265,
+            4266,
+            4268,
+            4269,
+            4270,
+            4271,
+            4272,
+            4273,
+            4275,
+            4276,
+            4279,
+            4280,
+            4281,
+            4283,
+            4284,
+            4287,
+            4288,
+            4289,
+            4290,
+            4291,
+            4294,
+            4295,
+            4296,
+            4299,
+            4300,
+            4301,
+            4303,
+            4304,
+            4305,
+            4307,
+            4310,
+            4311,
+            4312,
+            4313,
+            4314,
+            4316,
+            4317,
+            4318,
+            4320,
+            4323,
+            4324,
+            4325,
+            4326,
+            4327,
+            4328,
+            4329,
+            4330,
+            4331,
+            4332,
+            4333,
+            4336,
+            4338
+        ]
+    },
+    "visitedLines_before": {
+        "fs/namei.c": [
+            4204,
+            4205,
+            4209,
+            4211,
+            4212,
+            4216,
+            4217,
+            4219,
+            4220,
+            4221,
+            4223,
+            4224,
+            4226,
+            4228,
+            4229,
+            4231,
+            4233,
+            4234,
+            4236,
+            4237,
+            4239,
+            4240,
+            4246,
+            4247,
+            4248,
+            4249,
+            4250,
+            4252,
+            4253,
+            4254,
+            4255,
+            4259,
+            4260,
+            4261,
+            4262,
+            4264,
+            4265,
+            4266,
+            4267,
+            4268,
+            4269,
+            4271,
+            4272,
+            4275,
+            4276,
+            4277,
+            4279,
+            4280,
+            4283,
+            4284,
+            4285,
+            4286,
+            4287,
+            4290,
+            4291,
+            4292,
+            4295,
+            4296,
+            4297,
+            4299,
+            4300,
+            4301,
+            4303,
+            4306,
+            4307,
+            4308,
+            4309,
+            4310,
+            4312,
+            4313,
+            4314,
+            4316,
+            4319,
+            4320,
+            4321,
+            4322,
+            4323,
+            4324,
+            4325,
+            4326,
+            4327,
+            4328,
+            4329,
+            4332,
+            4334
+        ]
+    },
+    "visitedParams": {
+        "fs/namei.c": [
+            [
+                "struct dentry *new_dentry",
+                "vfs_rename"
+            ],
+            [
+                "struct dentry *old_dentry",
+                "vfs_rename"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "fs/namei.c",
+            "vfs_rename",
+            "int vfs_rename(struct inode *old_dir, struct dentry *old_dentry, /* <=== vfs_rename */ \n\t       struct inode *new_dir, struct dentry *new_dentry,\n\t       struct inode **delegated_inode, unsigned int flags)\n{\n\tint error;\n\tbool is_dir = d_is_dir(old_dentry);\n\tconst unsigned char *old_name;\n\tstruct inode *source = old_dentry->d_inode;\n\tstruct inode *target = new_dentry->d_inode;\n\tbool new_is_dir = false;\n\tunsigned max_links = new_dir->i_sb->s_max_links;\n\n\t/*\n\t * Check source == target.\n\t * On overlayfs need to look at underlying inodes.\n\t */\n\tif (vfs_select_inode(old_dentry, 0) == vfs_select_inode(new_dentry, 0))\n\t\treturn 0;\n\n\terror = may_delete(old_dir, old_dentry, is_dir);\n\tif (error)\n\t\treturn error;\n\n\tif (!target) {\n\t\terror = may_create(new_dir, new_dentry);\n\t} else {\n\t\tnew_is_dir = d_is_dir(new_dentry);\n\n\t\tif (!(flags & RENAME_EXCHANGE))\n\t\t\terror = may_delete(new_dir, new_dentry, is_dir);\n\t\telse\n\t\t\terror = may_delete(new_dir, new_dentry, new_is_dir);\n\t}\n\tif (error)\n\t\treturn error;\n\n\tif (!old_dir->i_op->rename && !old_dir->i_op->rename2)\n\t\treturn -EPERM;\n\n\tif (flags && !old_dir->i_op->rename2)\n\t\treturn -EINVAL;\n\n\t/*\n\t * If we are going to change the parent - check write permissions,\n\t * we'll need to flip '..'.\n\t */\n\tif (new_dir != old_dir) {\n\t\tif (is_dir) {\n\t\t\terror = inode_permission(source, MAY_WRITE);\n\t\t\tif (error)\n\t\t\t\treturn error;\n\t\t}\n\t\tif ((flags & RENAME_EXCHANGE) && new_is_dir) {\n\t\t\terror = inode_permission(target, MAY_WRITE);\n\t\t\tif (error)\n\t\t\t\treturn error;\n\t\t}\n\t}\n\n\terror = security_inode_rename(old_dir, old_dentry, new_dir, new_dentry,\n\t\t\t\t      flags);\n\tif (error)\n\t\treturn error;\n\n\told_name = fsnotify_oldname_init(old_dentry->d_name.name);\n\tdget(new_dentry);\n\tif (!is_dir || (flags & RENAME_EXCHANGE))\n\t\tlock_two_nondirectories(source, target);\n\telse if (target)\n\t\tinode_lock(target);\n\n\terror = -EBUSY;\n\tif (is_local_mountpoint(old_dentry) || is_local_mountpoint(new_dentry))\n\t\tgoto out;\n\n\tif (max_links && new_dir != old_dir) {\n\t\terror = -EMLINK;\n\t\tif (is_dir && !new_is_dir && new_dir->i_nlink >= max_links)\n\t\t\tgoto out;\n\t\tif ((flags & RENAME_EXCHANGE) && !is_dir && new_is_dir &&\n\t\t    old_dir->i_nlink >= max_links)\n\t\t\tgoto out;\n\t}\n\tif (is_dir && !(flags & RENAME_EXCHANGE) && target)\n\t\tshrink_dcache_parent(new_dentry);\n\tif (!is_dir) {\n\t\terror = try_break_deleg(source, delegated_inode);\n\t\tif (error)\n\t\t\tgoto out;\n\t}\n\tif (target && !new_is_dir) {\n\t\terror = try_break_deleg(target, delegated_inode);\n\t\tif (error)\n\t\t\tgoto out;\n\t}\n\tif (!old_dir->i_op->rename2) {\n\t\terror = old_dir->i_op->rename(old_dir, old_dentry,\n\t\t\t\t\t      new_dir, new_dentry);\n\t} else {\n\t\tWARN_ON(old_dir->i_op->rename != NULL);\n\t\terror = old_dir->i_op->rename2(old_dir, old_dentry,\n\t\t\t\t\t       new_dir, new_dentry, flags);\n\t}\n\tif (error)\n\t\tgoto out;\n\n\tif (!(flags & RENAME_EXCHANGE) && target) {\n\t\tif (is_dir)\n\t\t\ttarget->i_flags |= S_DEAD;\n\t\tdont_mount(new_dentry);\n\t\tdetach_mounts(new_dentry);\n\t}\n\tif (!(old_dir->i_sb->s_type->fs_flags & FS_RENAME_DOES_D_MOVE)) {\n\t\tif (!(flags & RENAME_EXCHANGE))\n\t\t\td_move(old_dentry, new_dentry);\n\t\telse\n\t\t\td_exchange(old_dentry, new_dentry);\n\t}\nout:\n\tif (!is_dir || (flags & RENAME_EXCHANGE))\n\t\tunlock_two_nondirectories(source, target);\n\telse if (target)\n\t\tinode_unlock(target);\n\tdput(new_dentry);\n\tif (!error) {\n\t\tfsnotify_move(old_dir, new_dir, old_name, is_dir,\n\t\t\t      !(flags & RENAME_EXCHANGE) ? target : NULL, old_dentry);\n\t\tif (flags & RENAME_EXCHANGE) {\n\t\t\tfsnotify_move(new_dir, old_dir, old_dentry->d_name.name,\n\t\t\t\t      new_is_dir, NULL, new_dentry);\n\t\t}\n\t}\n\tfsnotify_oldname_free(old_name);\n\n\treturn error;\n}",
+            4204
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "fs/namei.c",
+            "vfs_rename",
+            "int vfs_rename(struct inode *old_dir, struct dentry *old_dentry, /* <=== vfs_rename */ \n\t       struct inode *new_dir, struct dentry *new_dentry,\n\t       struct inode **delegated_inode, unsigned int flags)\n{\n\tint error;\n\tbool is_dir = d_is_dir(old_dentry);\n\tconst unsigned char *old_name;\n\tstruct inode *source = old_dentry->d_inode;\n\tstruct inode *target = new_dentry->d_inode;\n\tbool new_is_dir = false;\n\tunsigned max_links = new_dir->i_sb->s_max_links;\n\n\tif (source == target)\n\t\treturn 0;\n\n\terror = may_delete(old_dir, old_dentry, is_dir);\n\tif (error)\n\t\treturn error;\n\n\tif (!target) {\n\t\terror = may_create(new_dir, new_dentry);\n\t} else {\n\t\tnew_is_dir = d_is_dir(new_dentry);\n\n\t\tif (!(flags & RENAME_EXCHANGE))\n\t\t\terror = may_delete(new_dir, new_dentry, is_dir);\n\t\telse\n\t\t\terror = may_delete(new_dir, new_dentry, new_is_dir);\n\t}\n\tif (error)\n\t\treturn error;\n\n\tif (!old_dir->i_op->rename && !old_dir->i_op->rename2)\n\t\treturn -EPERM;\n\n\tif (flags && !old_dir->i_op->rename2)\n\t\treturn -EINVAL;\n\n\t/*\n\t * If we are going to change the parent - check write permissions,\n\t * we'll need to flip '..'.\n\t */\n\tif (new_dir != old_dir) {\n\t\tif (is_dir) {\n\t\t\terror = inode_permission(source, MAY_WRITE);\n\t\t\tif (error)\n\t\t\t\treturn error;\n\t\t}\n\t\tif ((flags & RENAME_EXCHANGE) && new_is_dir) {\n\t\t\terror = inode_permission(target, MAY_WRITE);\n\t\t\tif (error)\n\t\t\t\treturn error;\n\t\t}\n\t}\n\n\terror = security_inode_rename(old_dir, old_dentry, new_dir, new_dentry,\n\t\t\t\t      flags);\n\tif (error)\n\t\treturn error;\n\n\told_name = fsnotify_oldname_init(old_dentry->d_name.name);\n\tdget(new_dentry);\n\tif (!is_dir || (flags & RENAME_EXCHANGE))\n\t\tlock_two_nondirectories(source, target);\n\telse if (target)\n\t\tinode_lock(target);\n\n\terror = -EBUSY;\n\tif (is_local_mountpoint(old_dentry) || is_local_mountpoint(new_dentry))\n\t\tgoto out;\n\n\tif (max_links && new_dir != old_dir) {\n\t\terror = -EMLINK;\n\t\tif (is_dir && !new_is_dir && new_dir->i_nlink >= max_links)\n\t\t\tgoto out;\n\t\tif ((flags & RENAME_EXCHANGE) && !is_dir && new_is_dir &&\n\t\t    old_dir->i_nlink >= max_links)\n\t\t\tgoto out;\n\t}\n\tif (is_dir && !(flags & RENAME_EXCHANGE) && target)\n\t\tshrink_dcache_parent(new_dentry);\n\tif (!is_dir) {\n\t\terror = try_break_deleg(source, delegated_inode);\n\t\tif (error)\n\t\t\tgoto out;\n\t}\n\tif (target && !new_is_dir) {\n\t\terror = try_break_deleg(target, delegated_inode);\n\t\tif (error)\n\t\t\tgoto out;\n\t}\n\tif (!old_dir->i_op->rename2) {\n\t\terror = old_dir->i_op->rename(old_dir, old_dentry,\n\t\t\t\t\t      new_dir, new_dentry);\n\t} else {\n\t\tWARN_ON(old_dir->i_op->rename != NULL);\n\t\terror = old_dir->i_op->rename2(old_dir, old_dentry,\n\t\t\t\t\t       new_dir, new_dentry, flags);\n\t}\n\tif (error)\n\t\tgoto out;\n\n\tif (!(flags & RENAME_EXCHANGE) && target) {\n\t\tif (is_dir)\n\t\t\ttarget->i_flags |= S_DEAD;\n\t\tdont_mount(new_dentry);\n\t\tdetach_mounts(new_dentry);\n\t}\n\tif (!(old_dir->i_sb->s_type->fs_flags & FS_RENAME_DOES_D_MOVE)) {\n\t\tif (!(flags & RENAME_EXCHANGE))\n\t\t\td_move(old_dentry, new_dentry);\n\t\telse\n\t\t\td_exchange(old_dentry, new_dentry);\n\t}\nout:\n\tif (!is_dir || (flags & RENAME_EXCHANGE))\n\t\tunlock_two_nondirectories(source, target);\n\telse if (target)\n\t\tinode_unlock(target);\n\tdput(new_dentry);\n\tif (!error) {\n\t\tfsnotify_move(old_dir, new_dir, old_name, is_dir,\n\t\t\t      !(flags & RENAME_EXCHANGE) ? target : NULL, old_dentry);\n\t\tif (flags & RENAME_EXCHANGE) {\n\t\t\tfsnotify_move(new_dir, old_dir, old_dentry->d_name.name,\n\t\t\t\t      new_is_dir, NULL, new_dentry);\n\t\t}\n\t}\n\tfsnotify_oldname_free(old_name);\n\n\treturn error;\n}",
+            4204
+        ]
+    ]
+}

@@ -1,0 +1,684 @@
+{
+    "calleeMethods": [
+        [
+            "libexif/exif-data.c",
+            "exif_data_load_data_content",
+            "static void /* <=== exif_data_load_data_content */ \nexif_data_load_data_content (ExifData *data, ExifIfd ifd,\n\t\t\t     const unsigned char *d,\n\t\t\t     unsigned int ds, unsigned int offset, unsigned int recursion_cost)\n{\n\tExifLong o, thumbnail_offset = 0, thumbnail_length = 0;\n\tExifShort n;\n\tExifEntry *entry;\n\tunsigned int i;\n\tExifTag tag;\n\n\tif (!data || !data->priv) \n\t\treturn;\n\n\t/* check for valid ExifIfd enum range */\n\tif ((((int)ifd) < 0) || ( ((int)ifd) >= EXIF_IFD_COUNT))\n\t  return;\n\n\tif (recursion_cost > 170) {\n\t\t/*\n\t\t * recursion_cost is a logarithmic-scale indicator of how expensive this\n\t\t * recursive call might end up being. It is an indicator of the depth of\n\t\t * recursion as well as the potential for worst-case future recursive\n\t\t * calls. Since it's difficult to tell ahead of time how often recursion\n\t\t * will occur, this assumes the worst by assuming every tag could end up\n\t\t * causing recursion.\n\t\t * The value of 170 was chosen to limit typical EXIF structures to a\n\t\t * recursive depth of about 6, but pathological ones (those with very\n\t\t * many tags) to only 2.\n\t\t */\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA, \"ExifData\",\n\t\t\t  \"Deep/expensive recursion detected!\");\n\t\treturn;\n\t}\n\n\t/* Read the number of entries */\n\tif ((offset + 2 < offset) || (offset + 2 < 2) || (offset + 2 > ds)) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA, \"ExifData\",\n\t\t\t  \"Tag data past end of buffer (%u > %u)\", offset+2, ds);\n\t\treturn;\n\t}\n\tn = exif_get_short (d + offset, data->priv->order);\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t          \"Loading %hu entries...\", n);\n\toffset += 2;\n\n\t/* Check if we have enough data. */\n\tif (offset + 12 * n > ds) {\n\t\tn = (ds - offset) / 12;\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t  \"Short data; only loading %hu entries...\", n);\n\t}\n\n\tfor (i = 0; i < n; i++) {\n\n\t\ttag = exif_get_short (d + offset + 12 * i, data->priv->order);\n\t\tswitch (tag) {\n\t\tcase EXIF_TAG_EXIF_IFD_POINTER:\n\t\tcase EXIF_TAG_GPS_INFO_IFD_POINTER:\n\t\tcase EXIF_TAG_INTEROPERABILITY_IFD_POINTER:\n\t\tcase EXIF_TAG_JPEG_INTERCHANGE_FORMAT_LENGTH:\n\t\tcase EXIF_TAG_JPEG_INTERCHANGE_FORMAT:\n\t\t\to = exif_get_long (d + offset + 12 * i + 8,\n\t\t\t\t\t   data->priv->order);\n\t\t\t/* FIXME: IFD_POINTER tags aren't marked as being in a\n\t\t\t * specific IFD, so exif_tag_get_name_in_ifd won't work\n\t\t\t */\n\t\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t  \"Sub-IFD entry 0x%x ('%s') at %u.\", tag,\n\t\t\t\t  exif_tag_get_name(tag), o);\n\t\t\tswitch (tag) {\n\t\t\tcase EXIF_TAG_EXIF_IFD_POINTER:\n\t\t\t\tCHECK_REC (EXIF_IFD_EXIF);\n\t\t\t\texif_data_load_data_content (data, EXIF_IFD_EXIF, d, ds, o,\n\t\t\t\t\trecursion_cost + level_cost(n));\n\t\t\t\tbreak;\n\t\t\tcase EXIF_TAG_GPS_INFO_IFD_POINTER:\n\t\t\t\tCHECK_REC (EXIF_IFD_GPS);\n\t\t\t\texif_data_load_data_content (data, EXIF_IFD_GPS, d, ds, o,\n\t\t\t\t\trecursion_cost + level_cost(n));\n\t\t\t\tbreak;\n\t\t\tcase EXIF_TAG_INTEROPERABILITY_IFD_POINTER:\n\t\t\t\tCHECK_REC (EXIF_IFD_INTEROPERABILITY);\n\t\t\t\texif_data_load_data_content (data, EXIF_IFD_INTEROPERABILITY, d, ds, o,\n\t\t\t\t\trecursion_cost + level_cost(n));\n\t\t\t\tbreak;\n\t\t\tcase EXIF_TAG_JPEG_INTERCHANGE_FORMAT:\n\t\t\t\tthumbnail_offset = o;\n\t\t\t\tif (thumbnail_offset && thumbnail_length)\n\t\t\t\t\texif_data_load_data_thumbnail (data, d,\n\t\t\t\t\t\t\t\t       ds, thumbnail_offset,\n\t\t\t\t\t\t\t\t       thumbnail_length);\n\t\t\t\tbreak;\n\t\t\tcase EXIF_TAG_JPEG_INTERCHANGE_FORMAT_LENGTH:\n\t\t\t\tthumbnail_length = o;\n\t\t\t\tif (thumbnail_offset && thumbnail_length)\n\t\t\t\t\texif_data_load_data_thumbnail (data, d,\n\t\t\t\t\t\t\t\t       ds, thumbnail_offset,\n\t\t\t\t\t\t\t\t       thumbnail_length);\n\t\t\t\tbreak;\n\t\t\tdefault:\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tbreak;\n\t\tdefault:\n\n\t\t\t/*\n\t\t\t * If we don't know the tag, don't fail. It could be that new \n\t\t\t * versions of the standard have defined additional tags. Note that\n\t\t\t * 0 is a valid tag in the GPS IFD.\n\t\t\t */\n\t\t\tif (!exif_tag_get_name_in_ifd (tag, ifd)) {\n\n\t\t\t\t/*\n\t\t\t\t * Special case: Tag and format 0. That's against specification\n\t\t\t\t * (at least up to 2.2). But Photoshop writes it anyways.\n\t\t\t\t */\n\t\t\t\tif (!memcmp (d + offset + 12 * i, \"\\0\\0\\0\\0\", 4)) {\n\t\t\t\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t\t\t  \"Skipping empty entry at position %u in '%s'.\", i, \n\t\t\t\t\t\t  exif_ifd_get_name (ifd));\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\t\t\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t\t  \"Unknown tag 0x%04x (entry %u in '%s'). Please report this tag \"\n\t\t\t\t\t  \"to <libexif-devel@lists.sourceforge.net>.\", tag, i,\n\t\t\t\t\t  exif_ifd_get_name (ifd));\n\t\t\t\tif (data->priv->options & EXIF_DATA_OPTION_IGNORE_UNKNOWN_TAGS)\n\t\t\t\t\tbreak;\n\t\t\t}\n\t\t\tentry = exif_entry_new_mem (data->priv->mem);\n\t\t\tif (!entry) {\n\t\t\t\t  exif_log (data->priv->log, EXIF_LOG_CODE_NO_MEMORY, \"ExifData\",\n                                          \"Could not allocate memory\");\n\t\t\t\t  return;\n\t\t\t}\n\t\t\tif (exif_data_load_data_entry (data, entry, d, ds,\n\t\t\t\t\t\t   offset + 12 * i))\n\t\t\t\texif_content_add_entry (data->ifd[ifd], entry);\n\t\t\texif_entry_unref (entry);\n\t\t\tbreak;\n\t\t}\n\t}\n}",
+            1
+        ],
+        [
+            "libexif/exif-tag.c",
+            "RECORDED",
+            "#define RECORDED \\ /* <=== libexif/exif-tag.c:982:986:RECORDED:0 */ \n((ExifTagTable[i].esl[ifd][EXIF_DATA_TYPE_UNCOMPRESSED_CHUNKY] != EXIF_SUPPORT_LEVEL_NOT_RECORDED) || \\\n (ExifTagTable[i].esl[ifd][EXIF_DATA_TYPE_UNCOMPRESSED_PLANAR] != EXIF_SUPPORT_LEVEL_NOT_RECORDED) || \\\n (ExifTagTable[i].esl[ifd][EXIF_DATA_TYPE_UNCOMPRESSED_YCC] != EXIF_SUPPORT_LEVEL_NOT_RECORDED) || \\\n (ExifTagTable[i].esl[ifd][EXIF_DATA_TYPE_COMPRESSED] != EXIF_SUPPORT_LEVEL_NOT_RECORDED))",
+            3
+        ],
+        [
+            "libexif/exif-content.c",
+            "exif_content_get_entry",
+            "ExifEntry * /* <=== exif_content_get_entry */ \nexif_content_get_entry (ExifContent *content, ExifTag tag)\n{\n\tunsigned int i;\n\n\tif (!content)\n\t\treturn (NULL);\n\n\tfor (i = 0; i < content->count; i++)\n\t\tif (content->entries[i]->tag == tag)\n\t\t\treturn (content->entries[i]);\n\treturn (NULL);\n}",
+            3
+        ],
+        [
+            "libexif/exif-mnote-data.c",
+            "exif_mnote_data_set_byte_order",
+            "void /* <=== exif_mnote_data_set_byte_order */ \nexif_mnote_data_set_byte_order (ExifMnoteData *d, ExifByteOrder o)\n{\n\tif (!d || !d->methods.set_byte_order) return;\n\td->methods.set_byte_order (d, o);\n}",
+            2
+        ],
+        [
+            "libexif/exif-log.c",
+            "exif_logv",
+            "void /* <=== exif_logv */ \nexif_logv (ExifLog *log, ExifLogCode code, const char *domain,\n\t   const char *format, va_list args)\n{\n\tif (!log) return;\n\tif (!log->func) return;\n\tlog->func (log, code, domain, format, args, log->data);\n}",
+            2
+        ],
+        [
+            "libexif/olympus/exif-mnote-data-olympus.c",
+            "exif_mnote_data_olympus_new",
+            "ExifMnoteData * /* <=== exif_mnote_data_olympus_new */ \nexif_mnote_data_olympus_new (ExifMem *mem)\n{\n\tExifMnoteData *d;\n\n\tif (!mem) return NULL;\n\t\n\td = exif_mem_alloc (mem, sizeof (ExifMnoteDataOlympus));\n\tif (!d) return NULL;\n\n\texif_mnote_data_construct (d, mem);\n\n\t/* Set up function pointers */\n\td->methods.free            = exif_mnote_data_olympus_free;\n\td->methods.set_byte_order  = exif_mnote_data_olympus_set_byte_order;\n\td->methods.set_offset      = exif_mnote_data_olympus_set_offset;\n\td->methods.load            = exif_mnote_data_olympus_load;\n\td->methods.save            = exif_mnote_data_olympus_save;\n\td->methods.count           = exif_mnote_data_olympus_count;\n\td->methods.get_id          = exif_mnote_data_olympus_get_id;\n\td->methods.get_name        = exif_mnote_data_olympus_get_name;\n\td->methods.get_title       = exif_mnote_data_olympus_get_title;\n\td->methods.get_description = exif_mnote_data_olympus_get_description;\n\td->methods.get_value       = exif_mnote_data_olympus_get_value;\n\n\treturn d;\n}",
+            2
+        ],
+        [
+            "libexif/exif-data.c",
+            "interpret_maker_note",
+            "static void /* <=== interpret_maker_note */ \ninterpret_maker_note(ExifData *data, const unsigned char *d, unsigned int ds)\n{\n\tint mnoteid;\n\tExifEntry* e = exif_data_get_entry (data, EXIF_TAG_MAKER_NOTE);\n\tif (!e)\n\t\treturn;\n\t\n\tif ((mnoteid = exif_mnote_data_olympus_identify (data, e)) != 0) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG,\n\t\t\t\"ExifData\", \"Olympus MakerNote variant type %d\", mnoteid);\n\t\tdata->priv->md = exif_mnote_data_olympus_new (data->priv->mem);\n\n\t} else if ((mnoteid = exif_mnote_data_canon_identify (data, e)) != 0) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG,\n\t\t\t\"ExifData\", \"Canon MakerNote variant type %d\", mnoteid);\n\t\tdata->priv->md = exif_mnote_data_canon_new (data->priv->mem, data->priv->options);\n\n\t} else if ((mnoteid = exif_mnote_data_fuji_identify (data, e)) != 0) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG,\n\t\t\t\"ExifData\", \"Fuji MakerNote variant type %d\", mnoteid);\n\t\tdata->priv->md = exif_mnote_data_fuji_new (data->priv->mem);\n\n\t/* NOTE: Must do Pentax detection last because some of the\n\t * heuristics are pretty general. */\n\t} else if ((mnoteid = exif_mnote_data_pentax_identify (data, e)) != 0) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG,\n\t\t\t\"ExifData\", \"Pentax MakerNote variant type %d\", mnoteid);\n\t\tdata->priv->md = exif_mnote_data_pentax_new (data->priv->mem);\n\t}\n\n\t/* \n\t * If we are able to interpret the maker note, do so.\n\t */\n\tif (data->priv->md) {\n\t\texif_mnote_data_log (data->priv->md, data->priv->log);\n\t\texif_mnote_data_set_byte_order (data->priv->md,\n\t\t\t\t\t\tdata->priv->order);\n\t\texif_mnote_data_set_offset (data->priv->md,\n\t\t\t\t\t    data->priv->offset_mnote);\n\t\texif_mnote_data_load (data->priv->md, d, ds);\n\t}\n}",
+            1
+        ],
+        [
+            "libexif/exif-data.c",
+            "JPEG_MARKER_APP1",
+            "#define JPEG_MARKER_APP1 0xe1 /* <=== libexif/exif-data.c:48:48:JPEG_MARKER_APP1:0 */ ",
+            1
+        ],
+        [
+            "libexif/olympus/exif-mnote-data-olympus.c",
+            "exif_mnote_data_olympus_identify",
+            "int /* <=== exif_mnote_data_olympus_identify */ \nexif_mnote_data_olympus_identify (const ExifData *ed, const ExifEntry *e)\n{\n\tint variant = exif_mnote_data_olympus_identify_variant(e->data, e->size);\n\n\tif (variant == nikonV0) {\n\t\t/* This variant needs some extra checking with the Make */\n\t\tchar value[5];\n\t\tExifEntry *em = exif_data_get_entry (ed, EXIF_TAG_MAKE);\n\t\tvariant = unrecognized;\n\n\t\tif (em) {\n\t\t\tconst char *v = exif_entry_get_value (em, value, sizeof(value));\n\t\t\tif (v && (!strncmp (v, \"Nikon\", sizeof(value)) || \n\t\t\t\t\t  !strncmp (v, \"NIKON\", sizeof(value)) ))\n\t\t\t\t/* When saved, this variant will be written out like the\n\t\t\t\t * alternative nikonV2 form above instead\n\t\t\t\t */\n\t\t\t\tvariant = nikonV0;\n\t\t}\n\t}\n\n\treturn variant;\n}",
+            2
+        ],
+        [
+            "libexif/exif-data.c",
+            "exif_data_fix",
+            "void /* <=== exif_data_fix */ \nexif_data_fix (ExifData *d)\n{\n\texif_data_foreach_content (d, fix_func, NULL);\n}",
+            1
+        ],
+        [
+            "libexif/exif-entry.c",
+            "exif_entry_new_mem",
+            "ExifEntry * /* <=== exif_entry_new_mem */ \nexif_entry_new_mem (ExifMem *mem)\n{\n\tExifEntry *e = NULL;\n\n\te = exif_mem_alloc (mem, sizeof (ExifEntry));\n\tif (!e) return NULL;\n\te->priv = exif_mem_alloc (mem, sizeof (ExifEntryPrivate));\n\tif (!e->priv) { exif_mem_free (mem, e); return NULL; }\n\te->priv->ref_count = 1;\n\n\te->priv->mem = mem;\n\texif_mem_ref (mem);\n\n\treturn e;\n}",
+            2
+        ],
+        [
+            "libexif/exif-entry.c",
+            "exif_entry_unref",
+            "void /* <=== exif_entry_unref */ \nexif_entry_unref (ExifEntry *e)\n{\n\tif (!e) return;\n\n\te->priv->ref_count--;\n\tif (!e->priv->ref_count)\n\t\texif_entry_free (e);\n}",
+            2
+        ],
+        [
+            "libexif/exif-mnote-data.c",
+            "exif_mnote_data_log",
+            "void /* <=== exif_mnote_data_log */ \nexif_mnote_data_log (ExifMnoteData *d, ExifLog *log)\n{\n\tif (!d) return;\n\texif_log_unref (d->log);\n\td->log = log;\n\texif_log_ref (log);\n}",
+            2
+        ],
+        [
+            "libexif/exif-tag.c",
+            "exif_tag_get_name_in_ifd",
+            "const char * /* <=== exif_tag_get_name_in_ifd */ \nexif_tag_get_name_in_ifd (ExifTag tag, ExifIfd ifd)\n{\n\tunsigned int i;\n\tint first;\n\n\tif (ifd >= EXIF_IFD_COUNT)\n\t\treturn NULL;\n\tfirst = exif_tag_table_first(tag);\n\tif (first < 0)\n\t\treturn NULL;\n\n\tfor (i = first; ExifTagTable[i].name; i++) {\n\t\tif (ExifTagTable[i].tag == tag) {\n\t\t   if (RECORDED)\n\t\t\t   break;\n\t\t} else\n\t\t\treturn NULL; /* Recorded tag not found in the table */\n\t}\n\treturn ExifTagTable[i].name;\n}",
+            2
+        ],
+        [
+            "libexif/pentax/exif-mnote-data-pentax.c",
+            "exif_mnote_data_pentax_identify",
+            "int /* <=== exif_mnote_data_pentax_identify */ \nexif_mnote_data_pentax_identify (const ExifData *ed, const ExifEntry *e)\n{\n\t(void) ed;  /* unused */\n\tif ((e->size >= 8) && !memcmp (e->data, \"AOC\", 4)) {\n\t\tif (((e->data[4] == 'I') && (e->data[5] == 'I')) ||\n\t\t    ((e->data[4] == 'M') && (e->data[5] == 'M')))\n\t\t\treturn pentaxV3;\n\t\telse\n\t\t\t/* Uses Casio v2 tags */\n\t\t\treturn pentaxV2;\n\t}\n\n\tif ((e->size >= 8) && !memcmp (e->data, \"QVC\", 4))\n\t\treturn casioV2;\n\n\t/* This isn't a very robust test, so make sure it's done last */\n\t/* Maybe we should additionally check for a make of Asahi or Pentax */\n\tif ((e->size >= 2) && (e->data[0] == 0x00) && (e->data[1] == 0x1b))\n\t\treturn pentaxV1;\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "libexif/exif-mnote-data.c",
+            "exif_mnote_data_set_offset",
+            "void /* <=== exif_mnote_data_set_offset */ \nexif_mnote_data_set_offset (ExifMnoteData *d, unsigned int o)\n{\n\tif (!d || !d->methods.set_offset) return;\n\td->methods.set_offset (d, o);\n}",
+            2
+        ],
+        [
+            "libexif/olympus/exif-mnote-data-olympus.c",
+            "exif_mnote_data_olympus_identify_variant",
+            "static enum OlympusVersion /* <=== exif_mnote_data_olympus_identify_variant */ \nexif_mnote_data_olympus_identify_variant (const unsigned char *buf,\n\t\tunsigned int buf_size)\n{\n\t/* Olympus, Nikon, Sanyo, Epson */\n\tif (buf_size >= 8) {\n\t\t/* Match the terminating NUL character, too */\n\t\tif (!memcmp (buf, \"OLYMPUS\", 8))\n\t\t\t   return olympusV2;\n\t\telse if (!memcmp (buf, \"OLYMP\", 6))\n\t\t\t   return olympusV1;\n\t\telse if (!memcmp (buf, \"SANYO\", 6))\n\t\t\t   return sanyoV1;\n\t\telse if (!memcmp (buf, \"EPSON\", 6))\n\t\t\t   return epsonV1;\n\t\telse if (!memcmp (buf, \"Nikon\", 6)) {\n\t\t\tswitch (buf[6]) {\n\t\t\t\tcase 1:  return nikonV1;\n\t\t\t\tcase 2:  return nikonV2;\n\t\t\t\tdefault: return 0; /* Unrecognized Nikon variant */\n\t\t\t}\n\t\t}\n\t}\n\n\t/* Another variant of Nikon */\n\tif ((buf_size >= 2) && (buf[0] == 0x00) && (buf[1] == 0x1b)) {\n\t\treturn nikonV0;\n\t}\n\n\treturn unrecognized;\n}",
+            3
+        ],
+        [
+            "libexif/exif-utils.c",
+            "exif_get_short",
+            "ExifShort /* <=== exif_get_short */ \nexif_get_short (const unsigned char *buf, ExifByteOrder order)\n{\n\treturn (exif_get_sshort (buf, order) & 0xffff);\n}",
+            1
+        ],
+        [
+            "libexif/exif-mem.h",
+            "exif_mem_free",
+            "void  exif_mem_free    (ExifMem *m, void *p); /* <=== exif_mem_free */ ",
+            1
+        ],
+        [
+            "libexif/exif-content.c",
+            "exif_content_add_entry",
+            "void /* <=== exif_content_add_entry */ \nexif_content_add_entry (ExifContent *c, ExifEntry *entry)\n{\n\tExifEntry **entries;\n\tif (!c || !c->priv || !entry || entry->parent) return;\n\n\t/* One tag can only be added once to an IFD. */\n\tif (exif_content_get_entry (c, entry->tag)) {\n\t\texif_log (c->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifContent\",\n\t\t\t\"An attempt has been made to add \"\n\t\t\t\"the tag '%s' twice to an IFD. This is against \"\n\t\t\t\"specification.\", exif_tag_get_name (entry->tag));\n\t\treturn;\n\t}\n\n\tentries = exif_mem_realloc (c->priv->mem,\n\t\tc->entries, sizeof (ExifEntry*) * (c->count + 1));\n\tif (!entries) return;\n\tentry->parent = c;\n\tentries[c->count++] = entry;\n\tc->entries = entries;\n\texif_entry_ref (entry);\n}",
+            2
+        ],
+        [
+            "libexif/exif-utils.c",
+            "exif_get_long",
+            "ExifLong /* <=== exif_get_long */ \nexif_get_long (const unsigned char *buf, ExifByteOrder order)\n{\n        return (exif_get_slong (buf, order) & 0xffffffff);\n}",
+            1
+        ],
+        [
+            "libexif/fuji/exif-mnote-data-fuji.c",
+            "exif_mnote_data_fuji_new",
+            "ExifMnoteData * /* <=== exif_mnote_data_fuji_new */ \nexif_mnote_data_fuji_new (ExifMem *mem)\n{\n\tExifMnoteData *d;\n\n\tif (!mem) return NULL;\n\n\td = exif_mem_alloc (mem, sizeof (ExifMnoteDataFuji));\n\tif (!d) return NULL;\n\n\texif_mnote_data_construct (d, mem);\n\n\t/* Set up function pointers */\n\td->methods.free            = exif_mnote_data_fuji_free;\n\td->methods.set_byte_order  = exif_mnote_data_fuji_set_byte_order;\n\td->methods.set_offset      = exif_mnote_data_fuji_set_offset;\n\td->methods.load            = exif_mnote_data_fuji_load;\n\td->methods.save            = exif_mnote_data_fuji_save;\n\td->methods.count           = exif_mnote_data_fuji_count;\n\td->methods.get_id          = exif_mnote_data_fuji_get_id;\n\td->methods.get_name        = exif_mnote_data_fuji_get_name;\n\td->methods.get_title       = exif_mnote_data_fuji_get_title;\n\td->methods.get_description = exif_mnote_data_fuji_get_description;\n\td->methods.get_value       = exif_mnote_data_fuji_get_value;\n\n\treturn d;\n}",
+            2
+        ],
+        [
+            "libexif/exif-mem.h",
+            "exif_mem_ref",
+            "void     exif_mem_ref   (ExifMem *); /* <=== exif_mem_ref */ ",
+            3
+        ],
+        [
+            "libexif/exif-log.c",
+            "exif_log_unref",
+            "void /* <=== exif_log_unref */ \nexif_log_unref (ExifLog *log)\n{\n\tif (!log) return;\n\tif (log->ref_count > 0) log->ref_count--;\n\tif (!log->ref_count) exif_log_free (log);\n}",
+            3
+        ],
+        [
+            "libexif/canon/exif-mnote-data-canon.c",
+            "exif_mnote_data_canon_identify",
+            "int /* <=== exif_mnote_data_canon_identify */ \nexif_mnote_data_canon_identify (const ExifData *ed, const ExifEntry *e)\n{\n\tchar value[8];\n\n\t(void) e;  /* unused */\n\tExifEntry *em = exif_data_get_entry (ed, EXIF_TAG_MAKE);\n\tif (!em) \n\t\treturn 0;\n\treturn !strcmp (exif_entry_get_value (em, value, sizeof (value)), \"Canon\");\n}",
+            2
+        ],
+        [
+            "libexif/exif-mem.h",
+            "exif_mem_alloc",
+            "void *exif_mem_alloc   (ExifMem *m, ExifLong s); /* <=== exif_mem_alloc */ ",
+            2
+        ],
+        [
+            "libexif/exif-data.c",
+            "CHECK_REC",
+            "#define CHECK_REC(i) \t\t\t\t\t\\ /* <=== libexif/exif-data.c:344:359:CHECK_REC:1 */ \nif ((i) == ifd) {\t\t\t\t\\\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \\\n\t\t\"ExifData\", \"Recursive entry in IFD \"\t\\\n\t\t\"'%s' detected. Skipping...\",\t\t\\\n\t\texif_ifd_get_name (i));\t\t\t\\\n\tbreak;\t\t\t\t\t\t\\\n}\t\t\t\t\t\t\t\\\nif (data->ifd[(i)]->count) {\t\t\t\t\\\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG,\t\\\n\t\t\"ExifData\", \"Attempt to load IFD \"\t\\\n\t\t\"'%s' multiple times detected. \"\t\\\n\t\t\"Skipping...\",\t\t\t\t\\\n\t\texif_ifd_get_name (i));\t\t\t\\\n\tbreak;\t\t\t\t\t\t\\\n}",
+            2
+        ],
+        [
+            "libexif/exif-utils.c",
+            "exif_get_slong",
+            "ExifSLong /* <=== exif_get_slong */ \nexif_get_slong (const unsigned char *b, ExifByteOrder order)\n{\n\tif (!b) return 0;\n        switch (order) {\n        case EXIF_BYTE_ORDER_MOTOROLA:\n                return ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);\n        case EXIF_BYTE_ORDER_INTEL:\n                return ((b[3] << 24) | (b[2] << 16) | (b[1] << 8) | b[0]);\n        }\n\n\t/* Won't be reached */\n\treturn (0);\n}",
+            2
+        ],
+        [
+            "libexif/exif-data.c",
+            "exif_data_foreach_content",
+            "void /* <=== exif_data_foreach_content */ \nexif_data_foreach_content (ExifData *data, ExifDataForeachContentFunc func,\n\t\t\t   void *user_data)\n{\n\tunsigned int i;\n\n\tif (!data || !func)\n\t\treturn;\n\n\tfor (i = 0; i < EXIF_IFD_COUNT; i++)\n\t\tfunc (data->ifd[i], user_data);\n}",
+            2
+        ],
+        [
+            "libexif/exif-format.h",
+            "exif_format_get_size",
+            "unsigned char exif_format_get_size (ExifFormat format); /* <=== exif_format_get_size */ ",
+            1
+        ],
+        [
+            "libexif/exif-tag.c",
+            "exif_tag_get_stuff",
+            "static const char * /* <=== exif_tag_get_stuff */ \nexif_tag_get_stuff (ExifTag tag, get_stuff_func func)\n{\n\t/* Search IFDs in this order, in decreasing order of number of valid tags */\n\tstatic const ExifIfd ifds[EXIF_IFD_COUNT] = {\n\t\tEXIF_IFD_EXIF,\n\t\tEXIF_IFD_0,\n\t\tEXIF_IFD_1,\n\t\tEXIF_IFD_INTEROPERABILITY,\n\t\tEXIF_IFD_GPS\n\t};\n\tint i;\n\tfor (i=0; i<EXIF_IFD_COUNT; i++) {\n\t\tconst char *result = func(tag, ifds[i]);\n\t\tif (result != NULL) {\n\t\t\treturn result;\n\t\t}\n\t}\n\treturn (const char *) NULL;\n}",
+            3
+        ],
+        [
+            "libexif/exif-tag.c",
+            "exif_tag_get_name",
+            "const char * /* <=== exif_tag_get_name */ \nexif_tag_get_name (ExifTag tag)\n{\n\treturn exif_tag_get_stuff(tag, exif_tag_get_name_in_ifd);\n}",
+            2
+        ],
+        [
+            "libexif/exif-mem.h",
+            "exif_mem_realloc",
+            "void *exif_mem_realloc (ExifMem *m, void *p, ExifLong s); /* <=== exif_mem_realloc */ ",
+            3
+        ],
+        [
+            "libexif/exif-ifd.c",
+            "exif_ifd_get_name",
+            "const char * /* <=== exif_ifd_get_name */ \nexif_ifd_get_name (ExifIfd ifd)\n{\n\tunsigned int i;\n\n\tfor (i = 0; ExifIfdTable[i].name; i++)\n\t\tif (ExifIfdTable[i].ifd == ifd)\n\t\t\tbreak;\n\n\treturn (ExifIfdTable[i].name);\n}",
+            2
+        ],
+        [
+            "libexif/exif-entry.c",
+            "exif_entry_get_value",
+            "const char * /* <=== exif_entry_get_value */ \nexif_entry_get_value (ExifEntry *e, char *val, unsigned int maxlen)\n{\n\tunsigned int i, j, k;\n\tExifShort v_short, v_short2, v_short3, v_short4;\n\tExifByte v_byte;\n\tExifRational v_rat;\n\tExifSRational v_srat;\n\tchar b[64];\n\tconst char *c;\n\tExifByteOrder o;\n\tdouble d;\n\tExifEntry *entry;\n\tstatic const struct {\n\t\tchar label[5];\n\t\tchar major, minor;\n\t} versions[] = {\n\t\t{\"0110\", 1,  1},\n\t\t{\"0120\", 1,  2},\n\t\t{\"0200\", 2,  0},\n\t\t{\"0210\", 2,  1},\n\t\t{\"0220\", 2,  2},\n\t\t{\"0221\", 2, 21},\n\t\t{\"0230\", 2,  3},\n\t\t{\"\"    , 0,  0}\n\t};\n\n\t(void) bindtextdomain (GETTEXT_PACKAGE, LOCALEDIR);\n\n\tif (!e || !e->parent || !e->parent->parent || !maxlen || !val)\n\t\treturn val;\n\n\t/* make sure the returned string is zero terminated */\n\t/* FIXME: this is inefficient in the case of long buffers and should\n\t * instead be taken care of on each write instead. */\n\tmemset (val, 0, maxlen);\n\n\t/* We need the byte order */\n\to = exif_data_get_byte_order (e->parent->parent);\n\n\t/* Sanity check */\n\tif (e->size != e->components * exif_format_get_size (e->format)) {\n\t\tsnprintf (val, maxlen, _(\"Invalid size of entry (%i, \"\n\t\t\t\"expected %li x %i).\"), e->size, e->components,\n\t\t\t\texif_format_get_size (e->format));\n\t\treturn val;\n\t}\n\n\tswitch (e->tag) {\n\tcase EXIF_TAG_USER_COMMENT:\n\n\t\t/*\n\t\t * The specification says UNDEFINED, but some\n\t\t * manufacturers don't care and use ASCII. If this is the\n\t\t * case here, only refuse to read it if there is no chance\n\t\t * of finding readable data.\n\t\t */\n\t\tif ((e->format != EXIF_FORMAT_ASCII) || \n\t\t    (e->size <= 8) ||\n\t\t    ( memcmp (e->data, \"ASCII\\0\\0\\0\"  , 8) &&\n\t\t      memcmp (e->data, \"UNICODE\\0\"    , 8) &&\n\t\t      memcmp (e->data, \"JIS\\0\\0\\0\\0\\0\", 8) &&\n\t\t      memcmp (e->data, \"\\0\\0\\0\\0\\0\\0\\0\\0\", 8)))\n\t\t\tCF (e, EXIF_FORMAT_UNDEFINED, val, maxlen);\n\n\t\t/*\n\t\t * Note that, according to the specification (V2.1, p 40),\n\t\t * the user comment field does not have to be \n\t\t * NULL terminated.\n\t\t */\n\t\tif ((e->size >= 8) && !memcmp (e->data, \"ASCII\\0\\0\\0\", 8)) {\n\t\t\tstrncpy (val, (char *) e->data + 8, MIN (e->size - 8, maxlen-1));\n\t\t\tbreak;\n\t\t}\n\t\tif ((e->size >= 8) && !memcmp (e->data, \"UNICODE\\0\", 8)) {\n\t\t\tstrncpy (val, _(\"Unsupported UNICODE string\"), maxlen-1);\n\t\t/* FIXME: use iconv to convert into the locale encoding.\n\t\t * EXIF 2.2 implies (but does not say) that this encoding is\n\t\t * UCS-2.\n\t\t */\n\t\t\tbreak;\n\t\t}\n\t\tif ((e->size >= 8) && !memcmp (e->data, \"JIS\\0\\0\\0\\0\\0\", 8)) {\n\t\t\tstrncpy (val, _(\"Unsupported JIS string\"), maxlen-1);\n\t\t/* FIXME: use iconv to convert into the locale encoding */\n\t\t\tbreak;\n\t\t}\n\n\t\t/* Check if there is really some information in the tag. */\n\t\tfor (i = 0; (i < e->size) &&\n\t\t\t    (!e->data[i] || (e->data[i] == ' ')); i++);\n\t\tif (i == e->size) break;\n\n\t\t/*\n\t\t * If we reach this point, the tag does not\n \t\t * comply with the standard but seems to contain data.\n\t\t * Print as much as possible.\n\t\t * Note: make sure we do not overwrite the final \\0 at maxlen-1\n\t\t */\n\t\texif_entry_log (e, EXIF_LOG_CODE_DEBUG,\n\t\t\t_(\"Tag UserComment contains data but is \"\n\t\t\t  \"against specification.\"));\n \t\tfor (j = 0; (i < e->size) && (j < maxlen-1); i++, j++) {\n\t\t\texif_entry_log (e, EXIF_LOG_CODE_DEBUG,\n\t\t\t\t_(\"Byte at position %i: 0x%02x\"), i, e->data[i]);\n \t\t\tval[j] = isprint (e->data[i]) ? e->data[i] : '.';\n\t\t}\n\t\tbreak;\n\n\tcase EXIF_TAG_EXIF_VERSION:\n\t\tCF (e, EXIF_FORMAT_UNDEFINED, val, maxlen);\n\t\tCC (e, 4, val, maxlen);\n\t\tstrncpy (val, _(\"Unknown Exif Version\"), maxlen-1);\n\t\tfor (i = 0; *versions[i].label; i++) {\n\t\t\tif (!memcmp (e->data, versions[i].label, 4)) {\n    \t\t\t\tsnprintf (val, maxlen,\n\t\t\t\t\t_(\"Exif Version %d.%d\"),\n\t\t\t\t\tversions[i].major,\n\t\t\t\t\tversions[i].minor);\n    \t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t\tbreak;\n\tcase EXIF_TAG_FLASH_PIX_VERSION:\n\t\tCF (e, EXIF_FORMAT_UNDEFINED, val, maxlen);\n\t\tCC (e, 4, val, maxlen);\n\t\tif (!memcmp (e->data, \"0100\", 4))\n\t\t\tstrncpy (val, _(\"FlashPix Version 1.0\"), maxlen-1);\n\t\telse if (!memcmp (e->data, \"0101\", 4))\n\t\t\tstrncpy (val, _(\"FlashPix Version 1.01\"), maxlen-1);\n\t\telse\n\t\t\tstrncpy (val, _(\"Unknown FlashPix Version\"), maxlen-1);\n\t\tbreak;\n\tcase EXIF_TAG_COPYRIGHT:\n\t\tCF (e, EXIF_FORMAT_ASCII, val, maxlen);\n\n\t\t/*\n\t\t * First part: Photographer.\n\t\t * Some cameras store a string like \"   \" here. Ignore it.\n\t\t * Remember that a corrupted tag might not be NUL-terminated\n\t\t */\n\t\tif (e->size && e->data && match_repeated_char(e->data, ' ', e->size))\n\t\t\tstrncpy (val, (char *) e->data, MIN (maxlen-1, e->size));\n\t\telse\n\t\t\tstrncpy (val, _(\"[None]\"), maxlen-1);\n\t\tstrncat (val, \" \", maxlen-1 - strlen (val));\n\t\tstrncat (val, _(\"(Photographer)\"), maxlen-1 - strlen (val));\n\n\t\t/* Second part: Editor. */\n\t\tstrncat (val, \" - \", maxlen-1 - strlen (val));\n\t\tk = 0;\n\t\tif (e->size && e->data) {\n\t\t\tconst unsigned char *tagdata = memchr(e->data, 0, e->size);\n\t\t\tif (tagdata++) {\n\t\t\t\tunsigned int editor_ofs = tagdata - e->data;\n\t\t\t\tunsigned int remaining = e->size - editor_ofs;\n\t\t\t\tif (match_repeated_char(tagdata, ' ', remaining)) {\n\t\t\t\t\tstrncat (val, (const char*)tagdata, MIN (maxlen-1 - strlen (val), remaining));\n\t\t\t\t\t++k;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif (!k)\n\t\t\tstrncat (val, _(\"[None]\"), maxlen-1 - strlen (val));\n\t\tstrncat (val, \" \", maxlen-1 - strlen (val));\n\t\tstrncat (val, _(\"(Editor)\"), maxlen-1 - strlen (val));\n\n\t\tbreak;\n\tcase EXIF_TAG_FNUMBER:\n\t\tCF (e, EXIF_FORMAT_RATIONAL, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_rat = exif_get_rational (e->data, o);\n\t\tif (!v_rat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\td = (double) v_rat.numerator / (double) v_rat.denominator;\n\t\tsnprintf (val, maxlen, \"f/%.01f\", d);\n\t\tbreak;\n\tcase EXIF_TAG_APERTURE_VALUE:\n\tcase EXIF_TAG_MAX_APERTURE_VALUE:\n\t\tCF (e, EXIF_FORMAT_RATIONAL, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_rat = exif_get_rational (e->data, o);\n\t\tif (!v_rat.denominator || (0x80000000 == v_rat.numerator)) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\td = (double) v_rat.numerator / (double) v_rat.denominator;\n\t\tsnprintf (val, maxlen, _(\"%.02f EV\"), d);\n\t\tsnprintf (b, sizeof (b), _(\" (f/%.01f)\"), pow (2, d / 2.));\n\t\tstrncat (val, b, maxlen-1 - strlen (val));\n\t\tbreak;\n\tcase EXIF_TAG_FOCAL_LENGTH:\n\t\tCF (e, EXIF_FORMAT_RATIONAL, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_rat = exif_get_rational (e->data, o);\n\t\tif (!v_rat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\n\t\t/*\n\t\t * For calculation of the 35mm equivalent,\n\t\t * Minolta cameras need a multiplier that depends on the\n\t\t * camera model.\n\t\t */\n\t\td = 0.;\n\t\tentry = exif_content_get_entry (\n\t\t\te->parent->parent->ifd[EXIF_IFD_0], EXIF_TAG_MAKE);\n\t\tif (entry && entry->data && entry->size >= 7 &&\n\t\t    !strncmp ((char *)entry->data, \"Minolta\", 7)) {\n\t\t\tentry = exif_content_get_entry (\n\t\t\t\t\te->parent->parent->ifd[EXIF_IFD_0],\n\t\t\t\t\tEXIF_TAG_MODEL);\n\t\t\tif (entry && entry->data && entry->size >= 8) {\n\t\t\t\tif (!strncmp ((char *)entry->data, \"DiMAGE 7\", 8))\n\t\t\t\t\td = 3.9;\n\t\t\t\telse if (!strncmp ((char *)entry->data, \"DiMAGE 5\", 8))\n\t\t\t\t\td = 4.9;\n\t\t\t}\n\t\t}\n\t\tif (d)\n\t\t\tsnprintf (b, sizeof (b), _(\" (35 equivalent: %.0f mm)\"),\n\t\t\t\t  (d * (double) v_rat.numerator /\n\t\t\t\t       (double) v_rat.denominator));\n\t\telse\n\t\t\tb[0] = 0;\n\n\t\td = (double) v_rat.numerator / (double) v_rat.denominator;\n\t\tsnprintf (val, maxlen, \"%.1f mm\", d);\n\t\tstrncat (val, b, maxlen-1 - strlen (val));\n\t\tbreak;\n\tcase EXIF_TAG_SUBJECT_DISTANCE:\n\t\tCF (e, EXIF_FORMAT_RATIONAL, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_rat = exif_get_rational (e->data, o);\n\t\tif (!v_rat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\td = (double) v_rat.numerator / (double) v_rat.denominator;\n\t\tsnprintf (val, maxlen, \"%.1f m\", d);\n\t\tbreak;\n\tcase EXIF_TAG_EXPOSURE_TIME:\n\t\tCF (e, EXIF_FORMAT_RATIONAL, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_rat = exif_get_rational (e->data, o);\n\t\tif (!v_rat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\td = (double) v_rat.numerator / (double) v_rat.denominator;\n\t\tif (d < 1)\n\t\t\tsnprintf (val, maxlen, _(\"1/%.0f\"), 1. / d);\n\t\telse\n\t\t\tsnprintf (val, maxlen, \"%.0f\", d);\n\t\tstrncat (val, _(\" sec.\"), maxlen-1 - strlen (val));\n\t\tbreak;\n\tcase EXIF_TAG_SHUTTER_SPEED_VALUE:\n\t\tCF (e, EXIF_FORMAT_SRATIONAL, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_srat = exif_get_srational (e->data, o);\n\t\tif (!v_srat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\td = (double) v_srat.numerator / (double) v_srat.denominator;\n\t\tsnprintf (val, maxlen, _(\"%.02f EV\"), d);\n\t\td = 1. / pow (2, d);\n\t\tif (d < 1)\n\t\t  snprintf (b, sizeof (b), _(\" (1/%.0f sec.)\"), 1. / d);\n\t\telse\n\t\t  snprintf (b, sizeof (b), _(\" (%.0f sec.)\"), d);\n\t\tstrncat (val, b, maxlen-1 - strlen (val));\n\t\tbreak;\n\tcase EXIF_TAG_BRIGHTNESS_VALUE:\n\t\tCF (e, EXIF_FORMAT_SRATIONAL, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_srat = exif_get_srational (e->data, o);\n\t\tif (!v_srat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\td = (double) v_srat.numerator / (double) v_srat.denominator;\n\t\tsnprintf (val, maxlen, _(\"%.02f EV\"), d);\n\t\tsnprintf (b, sizeof (b), _(\" (%.02f cd/m^2)\"),\n\t\t\t1. / (M_PI * 0.3048 * 0.3048) * pow (2, d));\n\t\tstrncat (val, b, maxlen-1 - strlen (val));\n\t\tbreak;\n\tcase EXIF_TAG_FILE_SOURCE:\n\t\tCF (e, EXIF_FORMAT_UNDEFINED, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_byte = e->data[0];\n\t\tif (v_byte == 3)\n\t\t\tstrncpy (val, _(\"DSC\"), maxlen-1);\n\t\telse\n\t\t\tsnprintf (val, maxlen, _(\"Internal error (unknown \"\n\t\t\t\t  \"value %i)\"), v_byte);\n\t\tbreak;\n\tcase EXIF_TAG_COMPONENTS_CONFIGURATION:\n\t\tCF (e, EXIF_FORMAT_UNDEFINED, val, maxlen);\n\t\tCC (e, 4, val, maxlen);\n\t\tfor (i = 0; i < 4; i++) {\n\t\t\tswitch (e->data[i]) {\n\t\t\tcase 0: c = _(\"-\"); break;\n\t\t\tcase 1: c = _(\"Y\"); break;\n\t\t\tcase 2: c = _(\"Cb\"); break;\n\t\t\tcase 3: c = _(\"Cr\"); break;\n\t\t\tcase 4: c = _(\"R\"); break;\n\t\t\tcase 5: c = _(\"G\"); break;\n\t\t\tcase 6: c = _(\"B\"); break;\n\t\t\tdefault: c = _(\"Reserved\"); break;\n\t\t\t}\n\t\t\tstrncat (val, c, maxlen-1 - strlen (val));\n\t\t\tif (i < 3)\n\t\t\t\tstrncat (val, \" \", maxlen-1 - strlen (val));\n\t\t}\n\t\tbreak;\n\tcase EXIF_TAG_EXPOSURE_BIAS_VALUE:\n\t\tCF (e, EXIF_FORMAT_SRATIONAL, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_srat = exif_get_srational (e->data, o);\n\t\tif (!v_srat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\td = (double) v_srat.numerator / (double) v_srat.denominator;\n\t\tsnprintf (val, maxlen, _(\"%.02f EV\"), d);\n\t\tbreak;\n\tcase EXIF_TAG_SCENE_TYPE:\n\t\tCF (e, EXIF_FORMAT_UNDEFINED, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_byte = e->data[0];\n\t\tif (v_byte == 1)\n\t\t\tstrncpy (val, _(\"Directly photographed\"), maxlen-1);\n\t\telse\n\t\t\tsnprintf (val, maxlen, _(\"Internal error (unknown \"\n\t\t\t\t  \"value %i)\"), v_byte);\n\t\tbreak;\n\tcase EXIF_TAG_YCBCR_SUB_SAMPLING:\n\t\tCF (e, EXIF_FORMAT_SHORT, val, maxlen);\n\t\tCC (e, 2, val, maxlen);\n\t\tv_short  = exif_get_short (e->data, o);\n\t\tv_short2 = exif_get_short (\n\t\t\te->data + exif_format_get_size (e->format),\n\t\t\to);\n\t\tif ((v_short == 2) && (v_short2 == 1))\n\t\t\tstrncpy (val, _(\"YCbCr4:2:2\"), maxlen-1);\n\t\telse if ((v_short == 2) && (v_short2 == 2))\n\t\t\tstrncpy (val, _(\"YCbCr4:2:0\"), maxlen-1);\n\t\telse\n\t\t\tsnprintf (val, maxlen, \"%u, %u\", v_short, v_short2);\n\t\tbreak;\n\tcase EXIF_TAG_SUBJECT_AREA:\n\t\tCF (e, EXIF_FORMAT_SHORT, val, maxlen);\n\t\tswitch (e->components) {\n\t\tcase 2:\n\t\t\tv_short  = exif_get_short (e->data, o);\n\t\t\tv_short2 = exif_get_short (e->data + 2, o);\n\t\t\tsnprintf (val, maxlen, \"(x,y) = (%i,%i)\",\n\t\t\t\t  v_short, v_short2);\n\t\t\tbreak;\n\t\tcase 3:\n\t\t\tv_short  = exif_get_short (e->data, o);\n\t\t\tv_short2 = exif_get_short (e->data + 2, o);\n\t\t\tv_short3 = exif_get_short (e->data + 4, o);\n\t\t\tsnprintf (val, maxlen, _(\"Within distance %i of \"\n\t\t\t\t\"(x,y) = (%i,%i)\"), v_short3, v_short,\n\t\t\t\tv_short2);\n\t\t\tbreak;\n\t\tcase 4:\n\t\t\tv_short  = exif_get_short (e->data, o);\n\t\t\tv_short2 = exif_get_short (e->data + 2, o);\n\t\t\tv_short3 = exif_get_short (e->data + 4, o);\n\t\t\tv_short4 = exif_get_short (e->data + 6, o);\n\t\t\tsnprintf (val, maxlen, _(\"Within rectangle \"\n\t\t\t\t\"(width %i, height %i) around \"\n\t\t\t\t\"(x,y) = (%i,%i)\"), v_short3, v_short4,\n\t\t\t\tv_short, v_short2);\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tsnprintf (val, maxlen, _(\"Unexpected number \"\n\t\t\t\t\"of components (%li, expected 2, 3, or 4).\"),\n\t\t\t\te->components);\t\n\t\t}\n\t\tbreak;\n\tcase EXIF_TAG_GPS_VERSION_ID:\n\t\t/* This is only valid in the GPS IFD */\n\t\tCF (e, EXIF_FORMAT_BYTE, val, maxlen);\n\t\tCC (e, 4, val, maxlen);\n\t\tv_byte = e->data[0];\n\t\tsnprintf (val, maxlen, \"%u\", v_byte);\n\t\tfor (i = 1; i < e->components; i++) {\n\t\t\tv_byte = e->data[i];\n\t\t\tsnprintf (b, sizeof (b), \".%u\", v_byte);\n\t\t\tstrncat (val, b, maxlen-1 - strlen (val));\n\t\t}\n\t\tbreak;\n\tcase EXIF_TAG_INTEROPERABILITY_VERSION:\n\t/* a.k.a. case EXIF_TAG_GPS_LATITUDE: */\n\t\t/* This tag occurs in EXIF_IFD_INTEROPERABILITY */\n\t\tif (e->format == EXIF_FORMAT_UNDEFINED) {\n\t\t\tstrncpy (val, (char *) e->data, MIN (maxlen-1, e->size));\n\t\t\tbreak;\n\t\t}\n\t\t/* EXIF_TAG_GPS_LATITUDE is the same numerically as\n\t\t * EXIF_TAG_INTEROPERABILITY_VERSION but in EXIF_IFD_GPS\n\t\t */\n\t\texif_entry_format_value(e, val, maxlen);\n\t\tbreak;\n\tcase EXIF_TAG_GPS_ALTITUDE_REF:\n\t\t/* This is only valid in the GPS IFD */\n\t\tCF (e, EXIF_FORMAT_BYTE, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_byte = e->data[0];\n\t\tif (v_byte == 0)\n\t\t\tstrncpy (val, _(\"Sea level\"), maxlen-1);\n\t\telse if (v_byte == 1)\n\t\t\tstrncpy (val, _(\"Sea level reference\"), maxlen-1);\n\t\telse\n\t\t\tsnprintf (val, maxlen, _(\"Internal error (unknown \"\n\t\t\t\t  \"value %i)\"), v_byte);\n\t\tbreak;\n\tcase EXIF_TAG_GPS_TIME_STAMP:\n\t\t/* This is only valid in the GPS IFD */\n\t\tCF (e, EXIF_FORMAT_RATIONAL, val, maxlen);\n\t\tCC (e, 3, val, maxlen);\n\n\t\tv_rat  = exif_get_rational (e->data, o);\n\t\tif (!v_rat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\ti = v_rat.numerator / v_rat.denominator;\n\n\t\tv_rat = exif_get_rational (e->data +\n\t\t\t\t\t     exif_format_get_size (e->format),\n\t\t\t\t\t   o);\n\t\tif (!v_rat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\tj = v_rat.numerator / v_rat.denominator;\n\n\t\tv_rat = exif_get_rational (e->data +\n\t\t\t\t\t     2*exif_format_get_size (e->format),\n\t\t\t\t\t     o);\n\t\tif (!v_rat.denominator) {\n\t\t\texif_entry_format_value(e, val, maxlen);\n\t\t\tbreak;\n\t\t}\n\t\td = (double) v_rat.numerator / (double) v_rat.denominator;\n\t\tsnprintf (val, maxlen, \"%02u:%02u:%05.2f\", i, j, d);\n\t\tbreak;\n\n\tcase EXIF_TAG_METERING_MODE:\n\tcase EXIF_TAG_COMPRESSION:\n\tcase EXIF_TAG_LIGHT_SOURCE:\n\tcase EXIF_TAG_FOCAL_PLANE_RESOLUTION_UNIT:\n\tcase EXIF_TAG_RESOLUTION_UNIT:\n\tcase EXIF_TAG_EXPOSURE_PROGRAM:\n\tcase EXIF_TAG_FLASH:\n\tcase EXIF_TAG_SUBJECT_DISTANCE_RANGE:\n\tcase EXIF_TAG_COLOR_SPACE:\n\t\tCF (e,EXIF_FORMAT_SHORT, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_short = exif_get_short (e->data, o);\n\n\t\t/* Search the tag */\n\t\tfor (i = 0; list2[i].tag && (list2[i].tag != e->tag); i++);\n\t\tif (!list2[i].tag) {\n\t\t\tsnprintf (val, maxlen, _(\"Internal error (unknown \"\n\t\t\t\t  \"value %i)\"), v_short);\n\t\t\tbreak;\n\t\t}\n\n\t\t/* Find the value */\n\t\tfor (j = 0; list2[i].elem[j].values[0] &&\n\t\t\t    (list2[i].elem[j].index < v_short); j++);\n\t\tif (list2[i].elem[j].index != v_short) {\n\t\t\tsnprintf (val, maxlen, _(\"Internal error (unknown \"\n\t\t\t\t  \"value %i)\"), v_short);\n\t\t\tbreak;\n\t\t}\n\n\t\t/* Find a short enough value */\n\t\tmemset (val, 0, maxlen);\n\t\tfor (k = 0; list2[i].elem[j].values[k]; k++) {\n\t\t\tsize_t l = strlen (_(list2[i].elem[j].values[k]));\n\t\t\tif ((maxlen > l) && (strlen (val) < l))\n\t\t\t\tstrncpy (val, _(list2[i].elem[j].values[k]), maxlen-1);\n\t\t}\n\t\tif (!val[0]) snprintf (val, maxlen, \"%i\", v_short);\n\n\t\tbreak;\n\n\tcase EXIF_TAG_PLANAR_CONFIGURATION:\n\tcase EXIF_TAG_SENSING_METHOD:\n\tcase EXIF_TAG_ORIENTATION:\n\tcase EXIF_TAG_YCBCR_POSITIONING:\n\tcase EXIF_TAG_PHOTOMETRIC_INTERPRETATION:\n\tcase EXIF_TAG_CUSTOM_RENDERED:\n\tcase EXIF_TAG_EXPOSURE_MODE:\n\tcase EXIF_TAG_WHITE_BALANCE:\n\tcase EXIF_TAG_SCENE_CAPTURE_TYPE:\n\tcase EXIF_TAG_GAIN_CONTROL:\n\tcase EXIF_TAG_SATURATION:\n\tcase EXIF_TAG_CONTRAST:\n\tcase EXIF_TAG_SHARPNESS:\n\t\tCF (e, EXIF_FORMAT_SHORT, val, maxlen);\n\t\tCC (e, 1, val, maxlen);\n\t\tv_short = exif_get_short (e->data, o);\n\n\t\t/* Search the tag */\n\t\tfor (i = 0; list[i].tag && (list[i].tag != e->tag); i++);\n\t\tif (!list[i].tag) {\n\t\t\tsnprintf (val, maxlen, _(\"Internal error (unknown \"\n\t\t\t\t  \"value %i)\"), v_short);\n\t\t\tbreak;\n\t\t}\n\n\t\t/* Find the value */\n\t\tfor (j = 0; list[i].strings[j] && (j < v_short); j++);\n\t\tif (!list[i].strings[j])\n\t\t\tsnprintf (val, maxlen, \"%i\", v_short);\n\t\telse if (!*list[i].strings[j])\n\t\t\tsnprintf (val, maxlen, _(\"Unknown value %i\"), v_short);\n\t\telse\n\t\t\tstrncpy (val, _(list[i].strings[j]), maxlen-1);\n\t\tbreak;\n\n\tcase EXIF_TAG_XP_TITLE:\n\tcase EXIF_TAG_XP_COMMENT:\n\tcase EXIF_TAG_XP_AUTHOR:\n\tcase EXIF_TAG_XP_KEYWORDS:\n\tcase EXIF_TAG_XP_SUBJECT:\n\t{\n\t\tunsigned char *utf16;\n\n\t\t/* Sanity check the size to prevent overflow */\n\t\tif (e->size+sizeof(uint16_t)+1 < e->size) break;\n\n\t\t/* The tag may not be U+0000-terminated , so make a local\n\t\t   U+0000-terminated copy before converting it */\n\t\tutf16 = exif_mem_alloc (e->priv->mem, e->size+sizeof(uint16_t)+1);\n\t\tif (!utf16) break;\n\t\tmemcpy(utf16, e->data, e->size);\n\n\t\t/* NUL terminate the string. If the size is odd (which isn't possible\n\t\t * for a valid UTF16 string), then this will overwrite the high byte of\n\t\t * the final half word, plus add a full zero NUL word at the end.\n\t\t */\n\t\tutf16[e->size] = 0;\n\t\tutf16[e->size+1] = 0;\n\t\tutf16[e->size+2] = 0;\n\n\t\t/* Warning! The texts are converted from UTF16 to UTF8 */\n\t\t/* FIXME: use iconv to convert into the locale encoding */\n\t\texif_convert_utf16_to_utf8(val, utf16, maxlen);\n\t\texif_mem_free(e->priv->mem, utf16);\n\t\tbreak;\n\t}\n\n\tdefault:\n\t\t/* Use a generic value formatting */\n\t\texif_entry_format_value(e, val, maxlen);\n\t}\n\n\treturn val;\n}",
+            3
+        ],
+        [
+            "libexif/exif-log.c",
+            "exif_log_ref",
+            "void /* <=== exif_log_ref */ \nexif_log_ref (ExifLog *log)\n{\n\tif (!log) return;\n\tlog->ref_count++;\n}",
+            3
+        ],
+        [
+            "libexif/exif-tag.c",
+            "exif_tag_table_first",
+            "static int /* <=== exif_tag_table_first */ \nexif_tag_table_first(ExifTag tag)\n{\n\tint i;\n\tstruct TagEntry *entry = bsearch(&tag, ExifTagTable,\n\t\texif_tag_table_count()-1, sizeof(struct TagEntry), match_tag);\n\tif (!entry)\n\t\treturn -1;\t/* Not found */\n\n\t/* Calculate index of found entry */\n\ti = entry - ExifTagTable;\n\n\t/* There may be other entries with the same tag number, so search\n\t * backwards to find the first\n\t */\n\twhile ((i > 0) && (ExifTagTable[i-1].tag == tag)) {\n\t\t--i;\n\t}\n\treturn i;\n}",
+            3
+        ],
+        [
+            "libexif/canon/exif-mnote-data-canon.c",
+            "exif_mnote_data_canon_new",
+            "ExifMnoteData * /* <=== exif_mnote_data_canon_new */ \nexif_mnote_data_canon_new (ExifMem *mem, ExifDataOption o)\n{\n\tExifMnoteData *d;\n\tExifMnoteDataCanon *dc;\n\n\tif (!mem) return NULL;\n\n\td = exif_mem_alloc (mem, sizeof (ExifMnoteDataCanon));\n\tif (!d)\n\t\treturn NULL;\n\n\texif_mnote_data_construct (d, mem);\n\n\t/* Set up function pointers */\n\td->methods.free            = exif_mnote_data_canon_free;\n\td->methods.set_byte_order  = exif_mnote_data_canon_set_byte_order;\n\td->methods.set_offset      = exif_mnote_data_canon_set_offset;\n\td->methods.load            = exif_mnote_data_canon_load;\n\td->methods.save            = exif_mnote_data_canon_save;\n\td->methods.count           = exif_mnote_data_canon_count;\n\td->methods.get_id          = exif_mnote_data_canon_get_id;\n\td->methods.get_name        = exif_mnote_data_canon_get_name;\n\td->methods.get_title       = exif_mnote_data_canon_get_title;\n\td->methods.get_description = exif_mnote_data_canon_get_description;\n\td->methods.get_value       = exif_mnote_data_canon_get_value;\n\n\tdc = (ExifMnoteDataCanon*)d;\n\tdc->options = o;\n\treturn d;\n}",
+            2
+        ],
+        [
+            "libexif/exif-data.c",
+            "exif_data_alloc",
+            "static void * /* <=== exif_data_alloc */ \nexif_data_alloc (ExifData *data, unsigned int i)\n{\n\tvoid *d;\n\n\tif (!data || !i) \n\t\treturn NULL;\n\n\td = exif_mem_alloc (data->priv->mem, i);\n\tif (d) \n\t\treturn d;\n\n\tEXIF_LOG_NO_MEMORY (data->priv->log, \"ExifData\", i);\n\treturn NULL;\n}",
+            1
+        ],
+        [
+            "libexif/exif-utils.c",
+            "exif_get_sshort",
+            "ExifSShort /* <=== exif_get_sshort */ \nexif_get_sshort (const unsigned char *buf, ExifByteOrder order)\n{\n\tif (!buf) return 0;\n        switch (order) {\n        case EXIF_BYTE_ORDER_MOTOROLA:\n                return ((buf[0] << 8) | buf[1]);\n        case EXIF_BYTE_ORDER_INTEL:\n                return ((buf[1] << 8) | buf[0]);\n        }\n\n\t/* Won't be reached */\n\treturn (0);\n}",
+            2
+        ],
+        [
+            "libexif/fuji/exif-mnote-data-fuji.c",
+            "exif_mnote_data_fuji_identify",
+            "int /* <=== exif_mnote_data_fuji_identify */ \nexif_mnote_data_fuji_identify (const ExifData *ed, const ExifEntry *e)\n{\n\t(void) ed;  /* unused */\n\treturn ((e->size >= 12) && !memcmp (e->data, \"FUJIFILM\", 8));\n}",
+            2
+        ],
+        [
+            "libexif/exif-data.c",
+            "level_cost",
+            "static unsigned int /* <=== level_cost */ \nlevel_cost(unsigned int n)\n{\n    static const double log_1_1 = 0.09531017980432493;\n\n\t/* Adding 0.1 protects against the case where n==1 */\n\treturn ceil(log(n + 0.1)/log_1_1);\n}",
+            2
+        ],
+        [
+            "libexif/exif-mnote-data.c",
+            "exif_mnote_data_load",
+            "void /* <=== exif_mnote_data_load */ \nexif_mnote_data_load (ExifMnoteData *d, const unsigned char *buf,\n\t\t      unsigned int buf_size)\n{\n\tif (!d || !d->methods.load) return;\n\td->methods.load (d, buf, buf_size);\n}",
+            2
+        ],
+        [
+            "libexif/exif-entry.c",
+            "exif_entry_ref",
+            "void /* <=== exif_entry_ref */ \nexif_entry_ref (ExifEntry *e)\n{\n\tif (!e) return;\n\n\te->priv->ref_count++;\n}",
+            3
+        ],
+        [
+            "libexif/exif-data.c",
+            "JPEG_MARKER_SOI",
+            "#define JPEG_MARKER_SOI  0xd8 /* <=== libexif/exif-data.c:44:44:JPEG_MARKER_SOI:0 */ ",
+            1
+        ],
+        [
+            "libexif/exif-mnote-data.c",
+            "exif_mnote_data_construct",
+            "void /* <=== exif_mnote_data_construct */ \nexif_mnote_data_construct (ExifMnoteData *d, ExifMem *mem)\n{\n\tif (!d || !mem) return;\n\tif (d->priv) return;\n\td->priv = exif_mem_alloc (mem, sizeof (ExifMnoteDataPriv));\n\tif (!d->priv) return;\n\n\td->priv->ref_count = 1;\n\n\td->mem = mem;\n\texif_mem_ref (mem);\n}",
+            3
+        ],
+        [
+            "libexif/exif-log.c",
+            "exif_log",
+            "void /* <=== exif_log */ \nexif_log (ExifLog *log, ExifLogCode code, const char *domain,\n\t  const char *format, ...)\n{\n\tva_list args;\n\n\tva_start (args, format);\n\texif_logv (log, code, domain, format, args);\n\tva_end (args);\n}",
+            1
+        ],
+        [
+            "libexif/exif-entry.c",
+            "exif_entry_free",
+            "void /* <=== exif_entry_free */ \nexif_entry_free (ExifEntry *e)\n{\n\tif (!e) return;\n\n\tif (e->priv) {\n\t\tExifMem *mem = e->priv->mem;\n\t\tif (e->data)\n\t\t\texif_mem_free (mem, e->data);\n\t\texif_mem_free (mem, e->priv);\n\t\texif_mem_free (mem, e);\n\t\texif_mem_unref (mem);\n\t}\n}",
+            3
+        ],
+        [
+            "libexif/exif-data.c",
+            "CHECK_REC",
+            "#define CHECK_REC(i) \t\t\t\t\t\\ /* <=== libexif/exif-data.c:337:352:CHECK_REC:1 */ \nif ((i) == ifd) {\t\t\t\t\\\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \\\n\t\t\"ExifData\", \"Recursive entry in IFD \"\t\\\n\t\t\"'%s' detected. Skipping...\",\t\t\\\n\t\texif_ifd_get_name (i));\t\t\t\\\n\tbreak;\t\t\t\t\t\t\\\n}\t\t\t\t\t\t\t\\\nif (data->ifd[(i)]->count) {\t\t\t\t\\\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG,\t\\\n\t\t\"ExifData\", \"Attempt to load IFD \"\t\\\n\t\t\"'%s' multiple times detected. \"\t\\\n\t\t\"Skipping...\",\t\t\t\t\\\n\t\texif_ifd_get_name (i));\t\t\t\\\n\tbreak;\t\t\t\t\t\t\\\n}",
+            2
+        ],
+        [
+            "libexif/pentax/exif-mnote-data-pentax.c",
+            "exif_mnote_data_pentax_new",
+            "ExifMnoteData * /* <=== exif_mnote_data_pentax_new */ \nexif_mnote_data_pentax_new (ExifMem *mem)\n{\n\tExifMnoteData *d;\n\n\tif (!mem) return NULL;\n\n\td = exif_mem_alloc (mem, sizeof (ExifMnoteDataPentax));\n\tif (!d) return NULL;\n\n\texif_mnote_data_construct (d, mem);\n\n\t/* Set up function pointers */\n\td->methods.free            = exif_mnote_data_pentax_free;\n\td->methods.set_byte_order  = exif_mnote_data_pentax_set_byte_order;\n\td->methods.set_offset      = exif_mnote_data_pentax_set_offset;\n\td->methods.load            = exif_mnote_data_pentax_load;\n\td->methods.save            = exif_mnote_data_pentax_save;\n\td->methods.count           = exif_mnote_data_pentax_count;\n\td->methods.get_id          = exif_mnote_data_pentax_get_id;\n\td->methods.get_name        = exif_mnote_data_pentax_get_name;\n\td->methods.get_title       = exif_mnote_data_pentax_get_title;\n\td->methods.get_description = exif_mnote_data_pentax_get_description;\n\td->methods.get_value       = exif_mnote_data_pentax_get_value;\n\n\treturn d;\n}",
+            2
+        ]
+    ],
+    "globalVars": [
+        "static const unsigned char[] ExifHeader"
+    ],
+    "importContext": [
+        "#include <libexif/canon/exif-mnote-data-canon.h>",
+        "#include <libexif/exif-mnote-data-priv.h>",
+        "#include <libexif/exif-utils.h>",
+        "#include <libexif/fuji/exif-mnote-data-fuji.h>",
+        "#include <libexif/olympus/exif-mnote-data-olympus.h>",
+        "#include <libexif/exif-mnote-data.h>",
+        "#include <libexif/exif-ifd.h>",
+        "#include <libexif/exif-loader.h>",
+        "#include <libexif/exif-log.h>",
+        "#include <math.h>",
+        "#include <stdlib.h>",
+        "#include <config.h>",
+        "#include <libexif/pentax/exif-mnote-data-pentax.h>",
+        "#include <libexif/exif-data.h>",
+        "#include <libexif/exif-system.h>",
+        "#include <stdio.h>",
+        "#include <libexif/i18n.h>",
+        "#include <string.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef uint32_t\tExifLong;",
+            "ExifLong"
+        ],
+        [
+            "typedef uint16_t\tExifShort;",
+            "ExifShort"
+        ],
+        [
+            "typedef struct _ExifData        ExifData;",
+            "ExifData"
+        ]
+    ],
+    "visitedLines_after": {
+        "libexif/exif-data.c": [
+            160,
+            161,
+            162,
+            163,
+            167,
+            168,
+            169,
+            174,
+            175,
+            176,
+            180,
+            181,
+            189,
+            190,
+            192,
+            195,
+            196,
+            197,
+            198,
+            201,
+            202,
+            203,
+            204,
+            206,
+            207,
+            208,
+            209,
+            210,
+            212,
+            213,
+            217,
+            218,
+            219,
+            220,
+            221,
+            222,
+            223,
+            224,
+            226,
+            227,
+            228,
+            230,
+            232,
+            319,
+            320,
+            321,
+            324,
+            325,
+            327,
+            328,
+            329,
+            331,
+            332,
+            333,
+            334,
+            335,
+            336,
+            339,
+            340,
+            829,
+            830,
+            831,
+            836,
+            839,
+            842,
+            843,
+            849,
+            853,
+            854,
+            857,
+            858,
+            859,
+            860,
+            864,
+            865,
+            866,
+            871,
+            879,
+            880,
+            881,
+            882,
+            883,
+            885,
+            886,
+            895,
+            899,
+            900,
+            901,
+            902,
+            905,
+            906,
+            913,
+            917,
+            923,
+            927,
+            933,
+            934,
+            935,
+            938,
+            939,
+            940,
+            941,
+            949,
+            953,
+            954,
+            955,
+            957,
+            958,
+            961,
+            962,
+            965,
+            966,
+            967,
+            969,
+            970,
+            971,
+            972,
+            973,
+            975,
+            976,
+            977,
+            978,
+            980,
+            990,
+            993,
+            994
+        ]
+    },
+    "visitedLines_before": {
+        "libexif/exif-data.c": [
+            160,
+            161,
+            162,
+            163,
+            167,
+            168,
+            169,
+            174,
+            175,
+            176,
+            180,
+            181,
+            189,
+            190,
+            192,
+            195,
+            196,
+            197,
+            198,
+            201,
+            202,
+            203,
+            204,
+            206,
+            207,
+            211,
+            212,
+            213,
+            214,
+            215,
+            216,
+            217,
+            218,
+            220,
+            221,
+            222,
+            224,
+            226,
+            313,
+            314,
+            315,
+            316,
+            318,
+            319,
+            320,
+            321,
+            325,
+            326,
+            327,
+            328,
+            329,
+            332,
+            333,
+            822,
+            823,
+            824,
+            829,
+            832,
+            835,
+            836,
+            842,
+            846,
+            847,
+            850,
+            851,
+            852,
+            853,
+            857,
+            858,
+            859,
+            864,
+            872,
+            873,
+            874,
+            875,
+            876,
+            878,
+            879,
+            888,
+            892,
+            893,
+            894,
+            895,
+            898,
+            899,
+            906,
+            910,
+            916,
+            920,
+            926,
+            927,
+            928,
+            931,
+            932,
+            933,
+            934,
+            942,
+            946,
+            947,
+            948,
+            949,
+            951,
+            955,
+            958,
+            959,
+            962,
+            963,
+            964,
+            965,
+            967,
+            968,
+            969,
+            970,
+            972,
+            982,
+            985,
+            986
+        ]
+    },
+    "visitedParams": {
+        "libexif/exif-data.c": [
+            [
+                "ExifData *data",
+                "exif_data_load_data"
+            ],
+            [
+                "ExifData *data",
+                "exif_data_load_data_entry"
+            ],
+            [
+                "ExifData *data",
+                "exif_data_load_data_thumbnail"
+            ],
+            [
+                "ExifEntry *entry",
+                "exif_data_load_data_entry"
+            ],
+            [
+                "ExifLong o",
+                "exif_data_load_data_thumbnail"
+            ],
+            [
+                "ExifLong s",
+                "exif_data_load_data_thumbnail"
+            ],
+            [
+                "const unsigned char *d",
+                "exif_data_load_data_entry"
+            ],
+            [
+                "const unsigned char *d_orig",
+                "exif_data_load_data"
+            ],
+            [
+                "unsigned int ds",
+                "exif_data_load_data"
+            ],
+            [
+                "unsigned int ds",
+                "exif_data_load_data_thumbnail"
+            ],
+            [
+                "unsigned int offset",
+                "exif_data_load_data_entry"
+            ],
+            [
+                "unsigned int size",
+                "exif_data_load_data_entry"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libexif/exif-data.c",
+            "exif_data_load_data_entry",
+            "static int /* <=== exif_data_load_data_entry */ \nexif_data_load_data_entry (ExifData *data, ExifEntry *entry,\n\t\t\t   const unsigned char *d,\n\t\t\t   unsigned int size, unsigned int offset)\n{\n\tunsigned int s, doff;\n\n\tentry->tag        = exif_get_short (d + offset + 0, data->priv->order);\n\tentry->format     = exif_get_short (d + offset + 2, data->priv->order);\n\tentry->components = exif_get_long  (d + offset + 4, data->priv->order);\n\n\t/* FIXME: should use exif_tag_get_name_in_ifd here but entry->parent \n\t * has not been set yet\n\t */\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t  \"Loading entry 0x%x ('%s')...\", entry->tag,\n\t\t  exif_tag_get_name (entry->tag));\n\n\t/* {0,1,2,4,8} x { 0x00000000 .. 0xffffffff } \n\t *   -> { 0x000000000 .. 0x7fffffff8 } */\n\ts = exif_format_get_size(entry->format) * entry->components;\n\tif ((s < entry->components) || (s == 0)){\n\t\treturn 0;\n\t}\n\n\t/*\n\t * Size? If bigger than 4 bytes, the actual data is not\n\t * in the entry but somewhere else (offset).\n\t */\n\tif (s > 4)\n\t\tdoff = exif_get_long (d + offset + 8, data->priv->order);\n\telse\n\t\tdoff = offset + 8;\n\n\t/* Sanity checks */\n\tif (doff >= size) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t  \"Tag starts past end of buffer (%u > %u)\", doff, size);\n\t\treturn 0;\n\t}\n\n\tif (s > size - doff) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t  \"Tag data goes past end of buffer (%u > %u)\", doff+s, size);\n\t\treturn 0;\n\t}\n\n\tentry->data = exif_data_alloc (data, s);\n\tif (entry->data) {\n\t\tentry->size = s;\n\t\tmemcpy (entry->data, d + doff, s);\n\t} else {\n\t\tEXIF_LOG_NO_MEMORY(data->priv->log, \"ExifData\", s);\n\t\treturn 0;\n\t}\n\n\t/* If this is the MakerNote, remember the offset */\n\tif (entry->tag == EXIF_TAG_MAKER_NOTE) {\n\t\tif (!entry->data) {\n\t\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t\t  \"MakerNote found with empty data\");\t\n\t\t} else if (entry->size > 6) {\n\t\t\texif_log (data->priv->log,\n\t\t\t\t\t       EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t\t       \"MakerNote found (%02x %02x %02x %02x \"\n\t\t\t\t\t       \"%02x %02x %02x...).\",\n\t\t\t\t\t       entry->data[0], entry->data[1], entry->data[2],\n\t\t\t\t\t       entry->data[3], entry->data[4], entry->data[5],\n\t\t\t\t\t       entry->data[6]);\n\t\t}\n\t\tdata->priv->offset_mnote = doff;\n\t}\n\treturn 1;\n}",
+            160
+        ],
+        [
+            "libexif/exif-data.c",
+            "exif_data_load_data_thumbnail",
+            "static void /* <=== exif_data_load_data_thumbnail */ \nexif_data_load_data_thumbnail (ExifData *data, const unsigned char *d,\n\t\t\t       unsigned int ds, ExifLong o, ExifLong s)\n{\n\t/* Sanity checks */\n\tif (o >= ds) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\", \"Bogus thumbnail offset (%u).\", o);\n\t\treturn;\n\t}\n\tif (s > ds - o) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\", \"Bogus thumbnail size (%u), max would be %u.\", s, ds-o);\n\t\treturn;\n\t}\n\tif (data->data) \n\t\texif_mem_free (data->priv->mem, data->data);\n\tif (!(data->data = exif_data_alloc (data, s))) {\n\t\tEXIF_LOG_NO_MEMORY (data->priv->log, \"ExifData\", s);\n\t\tdata->size = 0;\n\t\treturn;\n\t}\n\tdata->size = s;\n\tmemcpy (data->data, d + o, s);\n}",
+            319
+        ],
+        [
+            "libexif/exif-data.c",
+            "exif_data_load_data",
+            "void /* <=== exif_data_load_data */ \nexif_data_load_data (ExifData *data, const unsigned char *d_orig,\n\t\t     unsigned int ds)\n{\n\tunsigned int l;\n\tExifLong offset;\n\tExifShort n;\n\tconst unsigned char *d = d_orig;\n\tunsigned int len, fullds;\n\n\tif (!data || !data->priv || !d || !ds)\n\t\treturn;\n\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t  \"Parsing %i byte(s) EXIF data...\\n\", ds);\n\n\t/*\n\t * It can be that the data starts with the EXIF header. If it does\n\t * not, search the EXIF marker.\n\t */\n\tif (ds < 6) {\n\t\tLOG_TOO_SMALL;\n\t\treturn;\n\t}\n\tif (!memcmp (d, ExifHeader, 6)) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t  \"Found EXIF header at start.\");\n\t} else {\n\t\twhile (ds >= 3) {\n\t\t\twhile (ds && (d[0] == 0xff)) {\n\t\t\t\td++;\n\t\t\t\tds--;\n\t\t\t}\n\n\t\t\t/* JPEG_MARKER_SOI */\n\t\t\tif (ds && d[0] == JPEG_MARKER_SOI) {\n\t\t\t\td++;\n\t\t\t\tds--;\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\t/* JPEG_MARKER_APP1 */\n\t\t\tif (ds && d[0] == JPEG_MARKER_APP1)\n\t\t\t\tbreak;\n\n\t\t\t/* Skip irrelevant APP markers. The branch for APP1 must come before this,\n\t\t\t   otherwise this code block will cause APP1 to be skipped. This code path\n\t\t\t   is only relevant for files that are nonconformant to the EXIF\n\t\t\t   specification. For conformant files, the APP1 code path above will be\n\t\t\t   taken. */\n\t\t\tif (ds >= 3 && d[0] >= 0xe0 && d[0] <= 0xef) {  /* JPEG_MARKER_APPn */\n\t\t\t\td++;\n\t\t\t\tds--;\n\t\t\t\tl = (d[0] << 8) | d[1];\n\t\t\t\tif (l > ds)\n\t\t\t\t\treturn;\n\t\t\t\td += l;\n\t\t\t\tds -= l;\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\t/* Unknown marker or data. Give up. */\n\t\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA,\n\t\t\t\t  \"ExifData\", _(\"EXIF marker not found.\"));\n\t\t\treturn;\n\t\t}\n\t\tif (ds < 3) {\n\t\t\tLOG_TOO_SMALL;\n\t\t\treturn;\n\t\t}\n\t\td++;\n\t\tds--;\n\t\tlen = (d[0] << 8) | d[1];\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t  \"We have to deal with %i byte(s) of EXIF data.\",\n\t\t\t  len);\n\t\td += 2;\n\t\tds -= 2;\n\t}\n\n\t/*\n\t * Verify the exif header\n\t * (offset 2, length 6).\n\t */\n\tif (ds < 6) {\n\t\tLOG_TOO_SMALL;\n\t\treturn;\n\t}\n\tif (memcmp (d, ExifHeader, 6)) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA,\n\t\t\t  \"ExifData\", _(\"EXIF header not found.\"));\n\t\treturn;\n\t}\n\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t  \"Found EXIF header.\");\n\n\t/* Sanity check the data length */\n\tif (ds < 14)\n\t\treturn;\n\n\t/* The JPEG APP1 section can be no longer than 64 KiB (including a\n\t   16-bit length), so cap the data length to protect against overflow\n\t   in future offset calculations */\n\tfullds = ds;\n\tif (ds > 0xfffe)\n\t\tds = 0xfffe;\n\n\t/* Byte order (offset 6, length 2) */\n\tif (!memcmp (d + 6, \"II\", 2))\n\t\tdata->priv->order = EXIF_BYTE_ORDER_INTEL;\n\telse if (!memcmp (d + 6, \"MM\", 2))\n\t\tdata->priv->order = EXIF_BYTE_ORDER_MOTOROLA;\n\telse {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA,\n\t\t\t  \"ExifData\", _(\"Unknown encoding.\"));\n\t\treturn;\n\t}\n\n\t/* Fixed value */\n\tif (exif_get_short (d + 8, data->priv->order) != 0x002a)\n\t\treturn;\n\n\t/* IFD 0 offset */\n\toffset = exif_get_long (d + 10, data->priv->order);\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\", \n\t\t  \"IFD 0 at %i.\", (int) offset);\n\n\t/* ds is restricted to 16 bit above, so offset is restricted too, and offset+8 should not overflow. */\n\tif (offset > ds || offset + 6 + 2 > ds)\n\t\treturn;\n\n\t/* Parse the actual exif data (usually offset 14 from start) */\n\texif_data_load_data_content (data, EXIF_IFD_0, d + 6, ds - 6, offset, 0);\n\n\t/* IFD 1 offset */\n\tn = exif_get_short (d + 6 + offset, data->priv->order);\n\t/* offset < 2<<16, n is 16 bit at most, so this op will not overflow */\n\tif (offset + 6 + 2 + 12 * n + 4 > ds)\n\t\treturn;\n\n\toffset = exif_get_long (d + 6 + offset + 2 + 12 * n, data->priv->order);\n\tif (offset) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t  \"IFD 1 at %i.\", (int) offset);\n\n\t\t/* Sanity check. ds is ensured to be above 6 above, offset is 16bit */\n\t\tif (offset > ds - 6) {\n\t\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA,\n\t\t\t\t  \"ExifData\", \"Bogus offset of IFD1.\");\n\t\t} else {\n\t\t   exif_data_load_data_content (data, EXIF_IFD_1, d + 6, ds - 6, offset, 0);\n\t\t}\n\t}\n\n\t/*\n\t * If we got an EXIF_TAG_MAKER_NOTE, try to interpret it. Some\n\t * cameras use pointers in the maker note tag that point to the\n\t * space between IFDs. Here is the only place where we have access\n\t * to that data.\n\t */\n\tinterpret_maker_note(data, d, fullds);\n\n\t/* Fixup tags if requested */\n\tif (data->priv->options & EXIF_DATA_OPTION_FOLLOW_SPECIFICATION)\n\t\texif_data_fix (data);\n}",
+            829
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libexif/exif-data.c",
+            "exif_data_load_data_entry",
+            "static int /* <=== exif_data_load_data_entry */ \nexif_data_load_data_entry (ExifData *data, ExifEntry *entry,\n\t\t\t   const unsigned char *d,\n\t\t\t   unsigned int size, unsigned int offset)\n{\n\tunsigned int s, doff;\n\n\tentry->tag        = exif_get_short (d + offset + 0, data->priv->order);\n\tentry->format     = exif_get_short (d + offset + 2, data->priv->order);\n\tentry->components = exif_get_long  (d + offset + 4, data->priv->order);\n\n\t/* FIXME: should use exif_tag_get_name_in_ifd here but entry->parent \n\t * has not been set yet\n\t */\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t  \"Loading entry 0x%x ('%s')...\", entry->tag,\n\t\t  exif_tag_get_name (entry->tag));\n\n\t/* {0,1,2,4,8} x { 0x00000000 .. 0xffffffff } \n\t *   -> { 0x000000000 .. 0x7fffffff8 } */\n\ts = exif_format_get_size(entry->format) * entry->components;\n\tif ((s < entry->components) || (s == 0)){\n\t\treturn 0;\n\t}\n\n\t/*\n\t * Size? If bigger than 4 bytes, the actual data is not\n\t * in the entry but somewhere else (offset).\n\t */\n\tif (s > 4)\n\t\tdoff = exif_get_long (d + offset + 8, data->priv->order);\n\telse\n\t\tdoff = offset + 8;\n\n\t/* Sanity checks */\n\tif ((doff + s < doff) || (doff + s < s) || (doff + s > size)) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t  \"Tag data past end of buffer (%u > %u)\", doff+s, size);\t\n\t\treturn 0;\n\t}\n\n\tentry->data = exif_data_alloc (data, s);\n\tif (entry->data) {\n\t\tentry->size = s;\n\t\tmemcpy (entry->data, d + doff, s);\n\t} else {\n\t\tEXIF_LOG_NO_MEMORY(data->priv->log, \"ExifData\", s);\n\t\treturn 0;\n\t}\n\n\t/* If this is the MakerNote, remember the offset */\n\tif (entry->tag == EXIF_TAG_MAKER_NOTE) {\n\t\tif (!entry->data) {\n\t\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t\t  \"MakerNote found with empty data\");\t\n\t\t} else if (entry->size > 6) {\n\t\t\texif_log (data->priv->log,\n\t\t\t\t\t       EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t\t\t       \"MakerNote found (%02x %02x %02x %02x \"\n\t\t\t\t\t       \"%02x %02x %02x...).\",\n\t\t\t\t\t       entry->data[0], entry->data[1], entry->data[2],\n\t\t\t\t\t       entry->data[3], entry->data[4], entry->data[5],\n\t\t\t\t\t       entry->data[6]);\n\t\t}\n\t\tdata->priv->offset_mnote = doff;\n\t}\n\treturn 1;\n}",
+            160
+        ],
+        [
+            "libexif/exif-data.c",
+            "exif_data_load_data_thumbnail",
+            "static void /* <=== exif_data_load_data_thumbnail */ \nexif_data_load_data_thumbnail (ExifData *data, const unsigned char *d,\n\t\t\t       unsigned int ds, ExifLong o, ExifLong s)\n{\n\t/* Sanity checks */\n\tif ((o + s < o) || (o + s < s) || (o + s > ds) || (o > ds)) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t  \"Bogus thumbnail offset (%u) or size (%u).\",\n\t\t\t  o, s);\n\t\treturn;\n\t}\n\n\tif (data->data) \n\t\texif_mem_free (data->priv->mem, data->data);\n\tif (!(data->data = exif_data_alloc (data, s))) {\n\t\tEXIF_LOG_NO_MEMORY (data->priv->log, \"ExifData\", s);\n\t\tdata->size = 0;\n\t\treturn;\n\t}\n\tdata->size = s;\n\tmemcpy (data->data, d + o, s);\n}",
+            313
+        ],
+        [
+            "libexif/exif-data.c",
+            "exif_data_load_data",
+            "void /* <=== exif_data_load_data */ \nexif_data_load_data (ExifData *data, const unsigned char *d_orig,\n\t\t     unsigned int ds)\n{\n\tunsigned int l;\n\tExifLong offset;\n\tExifShort n;\n\tconst unsigned char *d = d_orig;\n\tunsigned int len, fullds;\n\n\tif (!data || !data->priv || !d || !ds)\n\t\treturn;\n\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t  \"Parsing %i byte(s) EXIF data...\\n\", ds);\n\n\t/*\n\t * It can be that the data starts with the EXIF header. If it does\n\t * not, search the EXIF marker.\n\t */\n\tif (ds < 6) {\n\t\tLOG_TOO_SMALL;\n\t\treturn;\n\t}\n\tif (!memcmp (d, ExifHeader, 6)) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t  \"Found EXIF header at start.\");\n\t} else {\n\t\twhile (ds >= 3) {\n\t\t\twhile (ds && (d[0] == 0xff)) {\n\t\t\t\td++;\n\t\t\t\tds--;\n\t\t\t}\n\n\t\t\t/* JPEG_MARKER_SOI */\n\t\t\tif (ds && d[0] == JPEG_MARKER_SOI) {\n\t\t\t\td++;\n\t\t\t\tds--;\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\t/* JPEG_MARKER_APP1 */\n\t\t\tif (ds && d[0] == JPEG_MARKER_APP1)\n\t\t\t\tbreak;\n\n\t\t\t/* Skip irrelevant APP markers. The branch for APP1 must come before this,\n\t\t\t   otherwise this code block will cause APP1 to be skipped. This code path\n\t\t\t   is only relevant for files that are nonconformant to the EXIF\n\t\t\t   specification. For conformant files, the APP1 code path above will be\n\t\t\t   taken. */\n\t\t\tif (ds >= 3 && d[0] >= 0xe0 && d[0] <= 0xef) {  /* JPEG_MARKER_APPn */\n\t\t\t\td++;\n\t\t\t\tds--;\n\t\t\t\tl = (d[0] << 8) | d[1];\n\t\t\t\tif (l > ds)\n\t\t\t\t\treturn;\n\t\t\t\td += l;\n\t\t\t\tds -= l;\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\t/* Unknown marker or data. Give up. */\n\t\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA,\n\t\t\t\t  \"ExifData\", _(\"EXIF marker not found.\"));\n\t\t\treturn;\n\t\t}\n\t\tif (ds < 3) {\n\t\t\tLOG_TOO_SMALL;\n\t\t\treturn;\n\t\t}\n\t\td++;\n\t\tds--;\n\t\tlen = (d[0] << 8) | d[1];\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t  \"We have to deal with %i byte(s) of EXIF data.\",\n\t\t\t  len);\n\t\td += 2;\n\t\tds -= 2;\n\t}\n\n\t/*\n\t * Verify the exif header\n\t * (offset 2, length 6).\n\t */\n\tif (ds < 6) {\n\t\tLOG_TOO_SMALL;\n\t\treturn;\n\t}\n\tif (memcmp (d, ExifHeader, 6)) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA,\n\t\t\t  \"ExifData\", _(\"EXIF header not found.\"));\n\t\treturn;\n\t}\n\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t  \"Found EXIF header.\");\n\n\t/* Sanity check the data length */\n\tif (ds < 14)\n\t\treturn;\n\n\t/* The JPEG APP1 section can be no longer than 64 KiB (including a\n\t   16-bit length), so cap the data length to protect against overflow\n\t   in future offset calculations */\n\tfullds = ds;\n\tif (ds > 0xfffe)\n\t\tds = 0xfffe;\n\n\t/* Byte order (offset 6, length 2) */\n\tif (!memcmp (d + 6, \"II\", 2))\n\t\tdata->priv->order = EXIF_BYTE_ORDER_INTEL;\n\telse if (!memcmp (d + 6, \"MM\", 2))\n\t\tdata->priv->order = EXIF_BYTE_ORDER_MOTOROLA;\n\telse {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA,\n\t\t\t  \"ExifData\", _(\"Unknown encoding.\"));\n\t\treturn;\n\t}\n\n\t/* Fixed value */\n\tif (exif_get_short (d + 8, data->priv->order) != 0x002a)\n\t\treturn;\n\n\t/* IFD 0 offset */\n\toffset = exif_get_long (d + 10, data->priv->order);\n\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\", \n\t\t  \"IFD 0 at %i.\", (int) offset);\n\n\t/* Sanity check the offset, being careful about overflow */\n\tif (offset > ds || offset + 6 + 2 > ds)\n\t\treturn;\n\n\t/* Parse the actual exif data (usually offset 14 from start) */\n\texif_data_load_data_content (data, EXIF_IFD_0, d + 6, ds - 6, offset, 0);\n\n\t/* IFD 1 offset */\n\tn = exif_get_short (d + 6 + offset, data->priv->order);\n\tif (offset + 6 + 2 + 12 * n + 4 > ds)\n\t\treturn;\n\n\toffset = exif_get_long (d + 6 + offset + 2 + 12 * n, data->priv->order);\n\tif (offset) {\n\t\texif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, \"ExifData\",\n\t\t\t  \"IFD 1 at %i.\", (int) offset);\n\n\t\t/* Sanity check. */\n\t\tif (offset > ds || offset + 6 > ds) {\n\t\t\texif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA,\n\t\t\t\t  \"ExifData\", \"Bogus offset of IFD1.\");\n\t\t} else {\n\t\t   exif_data_load_data_content (data, EXIF_IFD_1, d + 6, ds - 6, offset, 0);\n\t\t}\n\t}\n\n\t/*\n\t * If we got an EXIF_TAG_MAKER_NOTE, try to interpret it. Some\n\t * cameras use pointers in the maker note tag that point to the\n\t * space between IFDs. Here is the only place where we have access\n\t * to that data.\n\t */\n\tinterpret_maker_note(data, d, fullds);\n\n\t/* Fixup tags if requested */\n\tif (data->priv->options & EXIF_DATA_OPTION_FOLLOW_SPECIFICATION)\n\t\texif_data_fix (data);\n}",
+            822
+        ]
+    ]
+}

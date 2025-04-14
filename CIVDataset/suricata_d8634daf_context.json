@@ -1,0 +1,179 @@
+{
+    "calleeMethods": [
+        [
+            "src/decode.h",
+            "PKT_IS_TOSERVER",
+            "#define PKT_IS_TOSERVER(p)  (((p)->flowflags & FLOW_PKT_TOSERVER)) /* <=== src/decode.h:256:256:PKT_IS_TOSERVER:1 */ ",
+            2
+        ],
+        [
+            "src/stream-tcp-private.h",
+            "STREAMTCP_FLAG_APP_LAYER_DISABLED",
+            "#define STREAMTCP_FLAG_APP_LAYER_DISABLED           0x2000 /* <=== src/stream-tcp-private.h:186:186:STREAMTCP_FLAG_APP_LAYER_DISABLED:0 */ ",
+            2
+        ],
+        [
+            "src/stream-tcp-private.h",
+            "STREAM_BASE_OFFSET",
+            "#define STREAM_BASE_OFFSET(stream)  ((stream)->sb.stream_offset) /* <=== src/stream-tcp-private.h:130:130:STREAM_BASE_OFFSET:1 */ ",
+            2
+        ],
+        [
+            "src/stream-tcp-private.h",
+            "STREAMTCP_STREAM_FLAG_GAP",
+            "#define STREAMTCP_STREAM_FLAG_GAP               0x0001 /* <=== src/stream-tcp-private.h:195:195:STREAMTCP_STREAM_FLAG_GAP:0 */ ",
+            2
+        ],
+        [
+            "src/stream-tcp-private.h",
+            "STREAMTCP_STREAM_FLAG_TRIGGER_RAW",
+            "#define STREAMTCP_STREAM_FLAG_TRIGGER_RAW       0x0010 /* <=== src/stream-tcp-private.h:203:203:STREAMTCP_STREAM_FLAG_TRIGGER_RAW:0 */ ",
+            2
+        ],
+        [
+            "src/detect-engine-hcbd.c",
+            "DetectEngineCleanHCBDBuffers",
+            "void DetectEngineCleanHCBDBuffers(DetectEngineThreadCtx *det_ctx) /* <=== DetectEngineCleanHCBDBuffers */ \n{\n    if (det_ctx->hcbd_buffers_list_len > 0) {\n        for (int i = 0; i < det_ctx->hcbd_buffers_list_len; i++) {\n            det_ctx->hcbd[i].buffer_len = 0;\n            det_ctx->hcbd[i].offset = 0;\n        }\n    }\n    det_ctx->hcbd_buffers_list_len = 0;\n    det_ctx->hcbd_start_tx_id = 0;\n\n    return;\n}",
+            1
+        ],
+        [
+            "src/stream-tcp-private.h",
+            "STREAMTCP_STREAM_FLAG_NEW_RAW_DISABLED",
+            "#define STREAMTCP_STREAM_FLAG_NEW_RAW_DISABLED 0x0200 /* <=== src/stream-tcp-private.h:214:214:STREAMTCP_STREAM_FLAG_NEW_RAW_DISABLED:0 */ ",
+            2
+        ],
+        [
+            "src/stream-tcp-private.h",
+            "STREAM_APP_PROGRESS",
+            "#define STREAM_APP_PROGRESS(stream) (STREAM_BASE_OFFSET((stream)) + (stream)->app_progress_rel) /* <=== src/stream-tcp-private.h:131:131:STREAM_APP_PROGRESS:1 */ ",
+            2
+        ],
+        [
+            "src/decode.h",
+            "PKT_STREAM_EST",
+            "#define PKT_STREAM_EST                  (1<<6)      /**< Packet is part of establised stream */ /* <=== src/decode.h:1099:1099:PKT_STREAM_EST:0 */ ",
+            1
+        ],
+        [
+            "src/stream-tcp-reassemble.c",
+            "StreamReassembleRawUpdateProgress",
+            "void StreamReassembleRawUpdateProgress(TcpSession *ssn, Packet *p, uint64_t progress) /* <=== StreamReassembleRawUpdateProgress */ \n{\n    TcpStream *stream;\n    if (PKT_IS_TOSERVER(p)) {\n        stream = &ssn->client;\n    } else {\n        stream = &ssn->server;\n    }\n\n    if (progress > STREAM_RAW_PROGRESS(stream)) {\n        uint32_t slide = progress - STREAM_RAW_PROGRESS(stream);\n        stream->raw_progress_rel += slide;\n        stream->flags &= ~STREAMTCP_STREAM_FLAG_TRIGGER_RAW;\n\n    /* if app is active and beyond raw, sync raw to app */\n    } else if (progress == 0 &&\n            STREAM_APP_PROGRESS(stream) > STREAM_RAW_PROGRESS(stream) &&\n            !(ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED) &&\n            !(stream->flags & STREAMTCP_STREAM_FLAG_GAP))\n    {\n        /* if trigger raw is set we sync the 2 trackers */\n        if (stream->flags & STREAMTCP_STREAM_FLAG_TRIGGER_RAW)\n        {\n            uint32_t slide = STREAM_APP_PROGRESS(stream) - STREAM_RAW_PROGRESS(stream);\n            stream->raw_progress_rel += slide;\n            stream->flags &= ~STREAMTCP_STREAM_FLAG_TRIGGER_RAW;\n\n        /* otherwise mix in the tcp window */\n        } else {\n            uint64_t tcp_window = stream->window;\n            if (tcp_window > 0 && STREAM_APP_PROGRESS(stream) > tcp_window) {\n                uint64_t new_raw = STREAM_APP_PROGRESS(stream) - tcp_window;\n                if (new_raw > STREAM_RAW_PROGRESS(stream)) {\n                    uint32_t slide = new_raw - STREAM_RAW_PROGRESS(stream);\n                    stream->raw_progress_rel += slide;\n                }\n            }\n        }\n    /* app is dead */\n    } else if (progress == 0) {\n        uint64_t tcp_window = stream->window;\n        uint64_t stream_right_edge = STREAM_BASE_OFFSET(stream) + stream->sb.buf_offset;\n        if (tcp_window < stream_right_edge) {\n            uint64_t new_raw = stream_right_edge - tcp_window;\n            if (new_raw > STREAM_RAW_PROGRESS(stream)) {\n                uint32_t slide = new_raw - STREAM_RAW_PROGRESS(stream);\n                stream->raw_progress_rel += slide;\n            }\n        }\n        stream->flags &= ~STREAMTCP_STREAM_FLAG_TRIGGER_RAW;\n\n    } else {\n        SCLogDebug(\"p->pcap_cnt %\"PRIu64\": progress %\"PRIu64\" app %\"PRIu64\" raw %\"PRIu64\" tcp win %\"PRIu32,\n                p->pcap_cnt, progress, STREAM_APP_PROGRESS(stream),\n                STREAM_RAW_PROGRESS(stream), stream->window);\n    }\n\n    /* if we were told to accept no more raw data, we can mark raw as\n     * disabled now. */\n    if (stream->flags & STREAMTCP_STREAM_FLAG_NEW_RAW_DISABLED) {\n        stream->flags |= STREAMTCP_STREAM_FLAG_DISABLE_RAW;\n        SCLogDebug(\"ssn %p: STREAMTCP_STREAM_FLAG_NEW_RAW_DISABLED set, \"\n            \"now that detect ran also set STREAMTCP_STREAM_FLAG_DISABLE_RAW\", ssn);\n    }\n\n    SCLogDebug(\"stream raw progress now %\"PRIu64, STREAM_RAW_PROGRESS(stream));\n}",
+            1
+        ],
+        [
+            "src/stream-tcp-private.h",
+            "STREAM_RAW_PROGRESS",
+            "#define STREAM_RAW_PROGRESS(stream) (STREAM_BASE_OFFSET((stream)) + (stream)->raw_progress_rel) /* <=== src/stream-tcp-private.h:132:132:STREAM_RAW_PROGRESS:1 */ ",
+            2
+        ],
+        [
+            "src/stream-tcp-private.h",
+            "STREAMTCP_STREAM_FLAG_DISABLE_RAW",
+            "#define STREAMTCP_STREAM_FLAG_DISABLE_RAW 0x400 /* <=== src/stream-tcp-private.h:216:216:STREAMTCP_STREAM_FLAG_DISABLE_RAW:0 */ ",
+            2
+        ],
+        [
+            "src/util-debug.h",
+            "SCLogDebug",
+            "#define SCLogDebug(...)                 do { } while (0) /* <=== src/util-debug.h:335:335:SCLogDebug:1 */ ",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"detect-engine-analyzer.h\"",
+        "#include \"detect-engine-iponly.h\"",
+        "#include \"detect-filestore.h\"",
+        "#include \"suricata.h\"",
+        "#include \"detect-engine-address.h\"",
+        "#include \"detect-replace.h\"",
+        "#include \"util-validate.h\"",
+        "#include \"detect-engine-proto.h\"",
+        "#include \"detect-engine-payload.h\"",
+        "#include \"detect-engine-port.h\"",
+        "#include \"detect-engine-hsbd.h\"",
+        "#include \"detect.h\"",
+        "#include \"util-detect.h\"",
+        "#include \"detect-engine-alert.h\"",
+        "#include \"detect-engine-event.h\"",
+        "#include \"detect-engine-profile.h\"",
+        "#include \"app-layer.h\"",
+        "#include \"detect-engine.h\"",
+        "#include \"detect-engine-state.h\"",
+        "#include \"tests/detect.c\"",
+        "#include \"detect-flowvar.h\"",
+        "#include \"suricata-common.h\"",
+        "#include \"detect-engine-filedata.h\"",
+        "#include \"flow.h\"",
+        "#include \"detect-engine-threshold.h\"",
+        "#include \"detect-engine-prefilter.h\"",
+        "#include \"stream-tcp.h\"",
+        "#include \"detect-engine-mpm.h\"",
+        "#include \"detect-engine-siggroup.h\"",
+        "#include \"app-layer-parser.h\"",
+        "#include \"decode.h\"",
+        "#include \"detect-engine-hcbd.h\"",
+        "#include \"conf.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct Packet_\n{\n    /* Addresses, Ports and protocol\n     * these are on top so we can use\n     * the Packet as a hash key */\n    Address src;\n    Address dst;\n    union {\n        Port sp;\n        // icmp type and code of this packet\n        struct {\n            uint8_t type;\n            uint8_t code;\n        } icmp_s;\n    };\n    union {\n        Port dp;\n        // icmp type and code of the expected counterpart (for flows)\n        struct {\n            uint8_t type;\n            uint8_t code;\n        } icmp_d;\n    };\n    uint8_t proto;\n    /* make sure we can't be attacked on when the tunneled packet\n     * has the exact same tuple as the lower levels */\n    uint8_t recursion_level;\n\n    uint16_t vlan_id[2];\n    uint8_t vlan_idx;\n\n    /* flow */\n    uint8_t flowflags;\n    /* coccinelle: Packet:flowflags:FLOW_PKT_ */\n\n    /* Pkt Flags */\n    uint32_t flags;\n\n    struct Flow_ *flow;\n\n    /* raw hash value for looking up the flow, will need to modulated to the\n     * hash size still */\n    uint32_t flow_hash;\n\n    struct timeval ts;\n\n    union {\n        /* nfq stuff */\n#ifdef HAVE_NFLOG\n        NFLOGPacketVars nflog_v;\n#endif /* HAVE_NFLOG */\n#ifdef NFQ\n        NFQPacketVars nfq_v;\n#endif /* NFQ */\n#ifdef IPFW\n        IPFWPacketVars ipfw_v;\n#endif /* IPFW */\n#ifdef AF_PACKET\n        AFPPacketVars afp_v;\n#endif\n#ifdef HAVE_MPIPE\n        /* tilegx mpipe stuff */\n        MpipePacketVars mpipe_v;\n#endif\n#ifdef HAVE_NETMAP\n        NetmapPacketVars netmap_v;\n#endif\n#ifdef HAVE_PFRING\n#ifdef HAVE_PF_RING_FLOW_OFFLOAD\n        PfringPacketVars pfring_v;\n#endif\n#endif\n#ifdef WINDIVERT\n        WinDivertPacketVars windivert_v;\n#endif /* WINDIVERT */\n\n        /** libpcap vars: shared by Pcap Live mode and Pcap File mode */\n        PcapPacketVars pcap_v;\n    };\n\n    /** The release function for packet structure and data */\n    void (*ReleasePacket)(struct Packet_ *);\n    /** The function triggering bypass the flow in the capture method.\n     * Return 1 for success and 0 on error */\n    int (*BypassPacketsFlow)(struct Packet_ *);\n\n    /* pkt vars */\n    PktVar *pktvar;\n\n    /* header pointers */\n    EthernetHdr *ethh;\n\n    /* Checksum for IP packets. */\n    int32_t level3_comp_csum;\n    /* Check sum for TCP, UDP or ICMP packets */\n    int32_t level4_comp_csum;\n\n    IPV4Hdr *ip4h;\n\n    IPV6Hdr *ip6h;\n\n    /* IPv4 and IPv6 are mutually exclusive */\n    union {\n        IPV4Vars ip4vars;\n        struct {\n            IPV6Vars ip6vars;\n            IPV6ExtHdrs ip6eh;\n        };\n    };\n    /* Can only be one of TCP, UDP, ICMP at any given time */\n    union {\n        TCPVars tcpvars;\n        ICMPV4Vars icmpv4vars;\n        ICMPV6Vars icmpv6vars;\n    } l4vars;\n#define tcpvars     l4vars.tcpvars\n#define icmpv4vars  l4vars.icmpv4vars\n#define icmpv6vars  l4vars.icmpv6vars\n\n    TCPHdr *tcph;\n\n    UDPHdr *udph;\n\n    SCTPHdr *sctph;\n\n    ICMPV4Hdr *icmpv4h;\n\n    ICMPV6Hdr *icmpv6h;\n\n    PPPHdr *ppph;\n    PPPOESessionHdr *pppoesh;\n    PPPOEDiscoveryHdr *pppoedh;\n\n    GREHdr *greh;\n\n    VLANHdr *vlanh[2];\n\n    /* ptr to the payload of the packet\n     * with it's length. */\n    uint8_t *payload;\n    uint16_t payload_len;\n\n    /* IPS action to take */\n    uint8_t action;\n\n    uint8_t pkt_src;\n\n    /* storage: set to pointer to heap and extended via allocation if necessary */\n    uint32_t pktlen;\n    uint8_t *ext_pkt;\n\n    /* Incoming interface */\n    struct LiveDevice_ *livedev;\n\n    PacketAlerts alerts;\n\n    struct Host_ *host_src;\n    struct Host_ *host_dst;\n\n    /** packet number in the pcap file, matches wireshark */\n    uint64_t pcap_cnt;\n\n\n    /* engine events */\n    PacketEngineEvents events;\n\n    AppLayerDecoderEvents *app_layer_events;\n\n    /* double linked list ptrs */\n    struct Packet_ *next;\n    struct Packet_ *prev;\n\n    /** data linktype in host order */\n    int datalink;\n\n    /* tunnel/encapsulation handling */\n    struct Packet_ *root; /* in case of tunnel this is a ptr\n                           * to the 'real' packet, the one we\n                           * need to set the verdict on --\n                           * It should always point to the lowest\n                           * packet in a encapsulated packet */\n\n    /** mutex to protect access to:\n     *  - tunnel_rtv_cnt\n     *  - tunnel_tpr_cnt\n     */\n    SCMutex tunnel_mutex;\n    /* ready to set verdict counter, only set in root */\n    uint16_t tunnel_rtv_cnt;\n    /* tunnel packet ref count */\n    uint16_t tunnel_tpr_cnt;\n\n    /** tenant id for this packet, if any. If 0 then no tenant was assigned. */\n    uint32_t tenant_id;\n\n    /* The Packet pool from which this packet was allocated. Used when returning\n     * the packet to its owner's stack. If NULL, then allocated with malloc.\n     */\n    struct PktPool_ *pool;\n\n#ifdef PROFILING\n    PktProfiling *profile;\n#endif\n#ifdef HAVE_NAPATECH\n    NapatechPacketVars ntpv;\n#endif\n}\n#ifdef HAVE_MPIPE\n    /* mPIPE requires packet buffers to be aligned to 128 byte boundaries. */\n    __attribute__((aligned(128)))\n#endif\nPacket;",
+            "Packet"
+        ],
+        [
+            "typedef struct DetectEngineThreadCtx_ {\n    /** \\note multi-tenant hash lookup code from Detect() *depends*\n     *        on this beeing the first member */\n    uint32_t tenant_id;\n\n    /** ticker that is incremented once per packet. */\n    uint64_t ticker;\n\n    /* the thread to which this detection engine thread belongs */\n    ThreadVars *tv;\n\n    SigIntId *non_pf_id_array;\n    uint32_t non_pf_id_cnt; // size is cnt * sizeof(uint32_t)\n\n    uint32_t mt_det_ctxs_cnt;\n    struct DetectEngineThreadCtx_ **mt_det_ctxs;\n    HashTable *mt_det_ctxs_hash;\n\n    struct DetectEngineTenantMapping_ *tenant_array;\n    uint32_t tenant_array_size;\n\n    uint32_t (*TenantGetId)(const void *, const Packet *p);\n\n    /* detection engine variables */\n\n    uint64_t raw_stream_progress;\n\n    /** offset into the payload of the last match by:\n     *  content, pcre, etc */\n    uint32_t buffer_offset;\n    /* used by pcre match function alone */\n    uint32_t pcre_match_start_offset;\n\n    /* counter for the filestore array below -- up here for cache reasons. */\n    uint16_t filestore_cnt;\n\n    HttpReassembledBody *hcbd;\n    uint64_t hcbd_start_tx_id;\n    uint16_t hcbd_buffers_size;\n    uint16_t hcbd_buffers_list_len;\n\n    /** id for alert counter */\n    uint16_t counter_alerts;\n#ifdef PROFILING\n    uint16_t counter_mpm_list;\n    uint16_t counter_nonmpm_list;\n    uint16_t counter_fnonmpm_list;\n    uint16_t counter_match_list;\n#endif\n\n    int inspect_list; /**< list we're currently inspecting, DETECT_SM_LIST_* */\n\n    struct {\n        InspectionBuffer *buffers;\n        uint32_t buffers_size;          /**< in number of elements */\n        uint32_t to_clear_idx;\n        uint32_t *to_clear_queue;\n    } inspect;\n\n    struct {\n        /** inspection buffers for more complex case. As we can inspect multiple\n         *  buffers in parallel, we need this extra wrapper struct */\n        InspectionBufferMultipleForList *buffers;\n        uint32_t buffers_size;                      /**< in number of elements */\n        uint32_t to_clear_idx;\n        uint32_t *to_clear_queue;\n    } multi_inspect;\n\n    /* used to discontinue any more matching */\n    uint16_t discontinue_matching;\n    uint16_t flags;\n\n    /* bool: if tx_id is set, this is 1, otherwise 0 */\n    uint16_t tx_id_set;\n    /** ID of the transaction currently being inspected. */\n    uint64_t tx_id;\n    Packet *p;\n\n    SC_ATOMIC_DECLARE(int, so_far_used_by_detect);\n\n    /* holds the current recursion depth on content inspection */\n    int inspection_recursion_counter;\n\n    /** array of signature pointers we're going to inspect in the detection\n     *  loop. */\n    Signature **match_array;\n    /** size of the array in items (mem size if * sizeof(Signature *)\n     *  Only used during initialization. */\n    uint32_t match_array_len;\n    /** size in use */\n    SigIntId match_array_cnt;\n\n    RuleMatchCandidateTx *tx_candidates;\n    uint32_t tx_candidates_size;\n\n    SignatureNonPrefilterStore *non_pf_store_ptr;\n    uint32_t non_pf_store_cnt;\n\n    /** pointer to the current mpm ctx that is stored\n     *  in a rule group head -- can be either a content\n     *  or uricontent ctx. */\n    MpmThreadCtx mtc;   /**< thread ctx for the mpm */\n    MpmThreadCtx mtcu;  /**< thread ctx for uricontent mpm */\n    MpmThreadCtx mtcs;  /**< thread ctx for stream mpm */\n    PrefilterRuleStore pmq;\n\n    /** SPM thread context used for scanning. This has been cloned from the\n     * prototype held by DetectEngineCtx. */\n    SpmThreadCtx *spm_thread_ctx;\n\n    /** ip only rules ctx */\n    DetectEngineIPOnlyThreadCtx io_ctx;\n\n    /* byte jump values */\n    uint64_t *bj_values;\n\n    /* string to replace */\n    DetectReplaceList *replist;\n    /* vars to store in post match function */\n    DetectVarList *varlist;\n\n    /* Array in which the filestore keyword stores file id and tx id. If the\n     * full signature matches, these are processed by a post-match filestore\n     * function to finalize the store. */\n    struct {\n        uint32_t file_id;\n        uint64_t tx_id;\n    } filestore[DETECT_FILESTORE_MAX];\n\n    DetectEngineCtx *de_ctx;\n    /** store for keyword contexts that need a per thread storage. Per de_ctx. */\n    void **keyword_ctxs_array;\n    int keyword_ctxs_size;\n    /** store for keyword contexts that need a per thread storage. Global. */\n    int global_keyword_ctxs_size;\n    void **global_keyword_ctxs_array;\n\n    uint8_t *base64_decoded;\n    int base64_decoded_len;\n    int base64_decoded_len_max;\n\n    AppLayerDecoderEvents *decoder_events;\n    uint16_t events;\n\n#ifdef DEBUG\n    uint64_t pkt_stream_add_cnt;\n    uint64_t payload_mpm_cnt;\n    uint64_t payload_mpm_size;\n    uint64_t stream_mpm_cnt;\n    uint64_t stream_mpm_size;\n    uint64_t payload_persig_cnt;\n    uint64_t payload_persig_size;\n    uint64_t stream_persig_cnt;\n    uint64_t stream_persig_size;\n#endif\n#ifdef PROFILING\n    struct SCProfileData_ *rule_perf_data;\n    int rule_perf_data_size;\n    struct SCProfileKeywordData_ *keyword_perf_data;\n    struct SCProfileKeywordData_ **keyword_perf_data_per_list;\n    int keyword_perf_list; /**< list we're currently inspecting, DETECT_SM_LIST_* */\n    struct SCProfileSghData_ *sgh_perf_data;\n\n    struct SCProfilePrefilterData_ *prefilter_perf_data;\n    int prefilter_perf_size;\n#endif\n} DetectEngineThreadCtx;",
+            "DetectEngineThreadCtx"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/detect.c": [
+            1033,
+            1034,
+            1040,
+            1042,
+            1043,
+            1045,
+            1046,
+            1048
+        ]
+    },
+    "visitedLines_before": {
+        "src/detect.c": [
+            1033,
+            1034,
+            1040,
+            1042,
+            1043,
+            1044,
+            1046
+        ]
+    },
+    "visitedParams": {
+        "src/detect.c": [
+            [
+                "Flow * const pflow",
+                "DetectRunCleanup"
+            ],
+            [
+                "Packet *p",
+                "DetectRunCleanup"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/detect.c",
+            "DetectRunCleanup",
+            "static void DetectRunCleanup(DetectEngineThreadCtx *det_ctx, /* <=== DetectRunCleanup */ \n        Packet *p, Flow * const pflow)\n{\n    PACKET_PROFILING_DETECT_START(p, PROF_DETECT_CLEANUP);\n    /* cleanup pkt specific part of the patternmatcher */\n    PacketPatternCleanup(det_ctx);\n\n    if (pflow != NULL) {\n        /* update inspected tracker for raw reassembly */\n        if (p->proto == IPPROTO_TCP && pflow->protoctx != NULL &&\n            (p->flags & PKT_STREAM_EST))\n        {\n            StreamReassembleRawUpdateProgress(pflow->protoctx, p,\n                    det_ctx->raw_stream_progress);\n\n            DetectEngineCleanHCBDBuffers(det_ctx);\n        }\n    }\n    PACKET_PROFILING_DETECT_END(p, PROF_DETECT_CLEANUP);\n    SCReturn;\n}",
+            1033
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/detect.c",
+            "DetectRunCleanup",
+            "static void DetectRunCleanup(DetectEngineThreadCtx *det_ctx, /* <=== DetectRunCleanup */ \n        Packet *p, Flow * const pflow)\n{\n    PACKET_PROFILING_DETECT_START(p, PROF_DETECT_CLEANUP);\n    /* cleanup pkt specific part of the patternmatcher */\n    PacketPatternCleanup(det_ctx);\n\n    if (pflow != NULL) {\n        /* update inspected tracker for raw reassembly */\n        if (p->proto == IPPROTO_TCP && pflow->protoctx != NULL) {\n            StreamReassembleRawUpdateProgress(pflow->protoctx, p,\n                    det_ctx->raw_stream_progress);\n\n            DetectEngineCleanHCBDBuffers(det_ctx);\n        }\n    }\n    PACKET_PROFILING_DETECT_END(p, PROF_DETECT_CLEANUP);\n    SCReturn;\n}",
+            1033
+        ]
+    ]
+}

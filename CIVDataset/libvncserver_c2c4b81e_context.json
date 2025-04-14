@@ -1,0 +1,540 @@
+{
+    "calleeMethods": [
+        [
+            "libvncclient/tls_gnutls.c",
+            "ReadFromTLS",
+            "int /* <=== ReadFromTLS */ \nReadFromTLS(rfbClient* client, char *out, unsigned int n)\n{\n  ssize_t ret;\n\n  ret = gnutls_record_recv((gnutls_session_t)client->tlsSession, out, n);\n  if (ret >= 0) return ret;\n  if (ret == GNUTLS_E_REHANDSHAKE || ret == GNUTLS_E_AGAIN)\n  {\n    errno = EAGAIN;\n  } else\n  {\n    rfbClientLog(\"Error reading from TLS: %s.\\n\", gnutls_strerror(ret));\n    errno = EINTR;\n  }\n  return -1;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "SetTLSAnonCredential",
+            "static rfbBool /* <=== SetTLSAnonCredential */ \nSetTLSAnonCredential(rfbClient* client)\n{\n  gnutls_anon_client_credentials_t anonCred;\n  int ret;\n\n  if ((ret = gnutls_anon_allocate_client_credentials(&anonCred)) < 0 ||\n      (ret = gnutls_credentials_set((gnutls_session_t)client->tlsSession, GNUTLS_CRD_ANON, anonCred)) < 0)\n  {\n    FreeTLS(client);\n    rfbClientLog(\"Failed to create anonymous credentials: %s\", gnutls_strerror(ret));\n    return FALSE;\n  }\n  rfbClientLog(\"TLS anonymous credential created.\\n\");\n  return TRUE;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_none.c",
+            "HandleAnonTLSAuth",
+            "rfbBool HandleAnonTLSAuth(rfbClient* client)  /* <=== HandleAnonTLSAuth */ \n{\n  rfbClientLog(\"TLS is not supported.\\n\");\n  return FALSE;\n}",
+            1
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "CreateX509CertCredential",
+            "static gnutls_certificate_credentials_t /* <=== CreateX509CertCredential */ \nCreateX509CertCredential(rfbCredential *cred)\n{\n  gnutls_certificate_credentials_t x509_cred;\n  int ret;\n\n  if (!cred->x509Credential.x509CACertFile)\n  {\n    rfbClientLog(\"No CA certificate provided.\\n\");\n    return NULL;\n  }\n\n  if ((ret = gnutls_certificate_allocate_credentials(&x509_cred)) < 0)\n  {\n    rfbClientLog(\"Cannot allocate credentials: %s.\\n\", gnutls_strerror(ret));\n    return NULL;\n  }\n  if ((ret = gnutls_certificate_set_x509_trust_file(x509_cred,\n    cred->x509Credential.x509CACertFile, GNUTLS_X509_FMT_PEM)) < 0)\n  {\n    rfbClientLog(\"Cannot load CA credentials: %s.\\n\", gnutls_strerror(ret));\n    gnutls_certificate_free_credentials (x509_cred);\n    return NULL;\n  }\n  if (cred->x509Credential.x509ClientCertFile && cred->x509Credential.x509ClientKeyFile)\n  {\n    if ((ret = gnutls_certificate_set_x509_key_file(x509_cred,\n      cred->x509Credential.x509ClientCertFile, cred->x509Credential.x509ClientKeyFile,\n      GNUTLS_X509_FMT_PEM)) < 0)\n    {\n      rfbClientLog(\"Cannot load client certificate or key: %s.\\n\", gnutls_strerror(ret));\n      gnutls_certificate_free_credentials (x509_cred);\n      return NULL;\n    }\n  } else\n  {\n    rfbClientLog(\"No client certificate or key provided.\\n\");\n  }\n  if (cred->x509Credential.x509CACrlFile)\n  {\n    if ((ret = gnutls_certificate_set_x509_crl_file(x509_cred,\n      cred->x509Credential.x509CACrlFile, GNUTLS_X509_FMT_PEM)) < 0)\n    {\n      rfbClientLog(\"Cannot load CRL: %s.\\n\", gnutls_strerror(ret));\n      gnutls_certificate_free_credentials (x509_cred);\n      return NULL;\n    }\n  } else\n  {\n    rfbClientLog(\"No CRL provided.\\n\");\n  }\n  gnutls_certificate_set_dh_params (x509_cred, rfbDHParams);\n  return x509_cred;\n}",
+            2
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "FreeUserCredential",
+            "static void /* <=== FreeUserCredential */ \nFreeUserCredential(rfbCredential *cred)\n{\n  if (cred->userCredential.username) free(cred->userCredential.username);\n  if (cred->userCredential.password) free(cred->userCredential.password);\n  free(cred);\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "FreeX509Credential",
+            "static void /* <=== FreeX509Credential */ \nFreeX509Credential(rfbCredential *cred)\n{\n  if (cred->x509Credential.x509CACertFile) free(cred->x509Credential.x509CACertFile);\n  if (cred->x509Credential.x509CACrlFile) free(cred->x509Credential.x509CACrlFile);\n  if (cred->x509Credential.x509ClientCertFile) free(cred->x509Credential.x509ClientCertFile);\n  if (cred->x509Credential.x509ClientKeyFile) free(cred->x509Credential.x509ClientKeyFile);\n  free(cred);\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "WriteToTLS",
+            "int /* <=== WriteToTLS */ \nWriteToTLS(rfbClient* client, const char *buf, unsigned int n)\n{\n  unsigned int offset = 0;\n  ssize_t ret;\n\n  if (client->LockWriteToTLS)\n  {\n    if (!client->LockWriteToTLS(client))\n    {\n      rfbClientLog(\"Callback to get lock in WriteToTLS() failed\\n\");\n      return -1;\n    }\n  }\n  while (offset < n)\n  {\n    ret = gnutls_record_send((gnutls_session_t)client->tlsSession, buf+offset, (size_t)(n-offset));\n    if (ret == 0) continue;\n    if (ret < 0)\n    {\n      if (ret == GNUTLS_E_AGAIN || ret == GNUTLS_E_INTERRUPTED) continue;\n      rfbClientLog(\"Error writing to TLS: %s.\\n\", gnutls_strerror(ret));\n      if (client->UnlockWriteToTLS)\n      {\n        if (!client->UnlockWriteToTLS(client))\n          rfbClientLog(\"Callback to unlock WriteToTLS() failed\\n\");\n      }\n      return -1;\n    }\n    offset += (unsigned int)ret;\n  }\n  if (client->UnlockWriteToTLS)\n  {\n    if (!client->UnlockWriteToTLS(client))\n    {\n      rfbClientLog(\"Callback to unlock WriteToTLS() failed\\n\");\n      return -1;\n    }\n  }\n  return offset;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "MUTEX_FREE",
+            "#define MUTEX_FREE(mutex) pthread_mutex_destroy(&mutex) /* <=== libvncclient/tls_openssl.c:49:49:MUTEX_FREE:1 */ ",
+            3
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "InitializeTLS",
+            "static rfbBool /* <=== InitializeTLS */ \nInitializeTLS(void)\n{\n  int i;\n\n  if (rfbTLSInitialized) return TRUE;\n\n  mutex_buf = malloc(CRYPTO_num_locks() * sizeof(MUTEX_TYPE));\n  if (mutex_buf == NULL) {\n    rfbClientLog(\"Failed to initialized OpenSSL: memory.\\n\");\n    return (-1);\n  }\n\n  for (i = 0; i < CRYPTO_num_locks(); i++)\n    MUTEX_INIT(mutex_buf[i]);\n\n  CRYPTO_set_locking_callback(locking_function);\n  CRYPTO_set_id_callback(id_function);\n  CRYPTO_set_dynlock_create_callback(dyn_create_function);\n  CRYPTO_set_dynlock_lock_callback(dyn_lock_function);\n  CRYPTO_set_dynlock_destroy_callback(dyn_destroy_function);\n  SSL_load_error_strings();\n  SSLeay_add_ssl_algorithms();\n  RAND_load_file(\"/dev/urandom\", 1024);\n\n  rfbClientLog(\"OpenSSL version %s initialized.\\n\", SSLeay_version(SSLEAY_VERSION));\n  rfbTLSInitialized = TRUE;\n  return TRUE;\n}",
+            2
+        ],
+        [
+            "libvncserver/translate.c",
+            "PrintPixelFormat",
+            "static void /* <=== PrintPixelFormat */ \nPrintPixelFormat(rfbPixelFormat *pf)\n{\n    if (pf->bitsPerPixel == 1) {\n        rfbLog(\"  1 bpp, %s sig bit in each byte is leftmost on the screen.\\n\",\n               (pf->bigEndian ? \"most\" : \"least\"));\n    } else {\n        rfbLog(\"  %d bpp, depth %d%s\\n\",pf->bitsPerPixel,pf->depth,\n               ((pf->bitsPerPixel == 8) ? \"\"\n                : (pf->bigEndian ? \", big endian\" : \", little endian\")));\n        if (pf->trueColour) {\n            rfbLog(\"  true colour: max r %d g %d b %d, shift r %d g %d b %d\\n\",\n                   pf->redMax, pf->greenMax, pf->blueMax,\n                   pf->redShift, pf->greenShift, pf->blueShift);\n        } else {\n            rfbLog(\"  uses a colour map (not true colour).\\n\");\n        }\n    }\n}",
+            1
+        ],
+        [
+            "libvncclient/sockets.c",
+            "WaitForMessage",
+            "int WaitForMessage(rfbClient* client,unsigned int usecs) /* <=== WaitForMessage */ \n{\n  fd_set fds;\n  struct timeval timeout;\n  int num;\n\n  if (client->serverPort==-1)\n    /* playing back vncrec file */\n    return 1;\n  \n  timeout.tv_sec=(usecs/1000000);\n  timeout.tv_usec=(usecs%1000000);\n\n  FD_ZERO(&fds);\n  FD_SET(client->sock,&fds);\n\n  num=select(client->sock+1, &fds, NULL, NULL, &timeout);\n  if(num<0) {\n#ifdef WIN32\n    errno=WSAGetLastError();\n#endif\n    rfbClientLog(\"Waiting for message failed: %d (%s)\\n\",errno,strerror(errno));\n  }\n\n  return num;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "ReadVeNCryptSecurityType",
+            "static rfbBool /* <=== ReadVeNCryptSecurityType */ \nReadVeNCryptSecurityType(rfbClient* client, uint32_t *result)\n{\n    uint8_t count=0;\n    uint8_t loop=0;\n    uint8_t flag=0;\n    uint32_t tAuth[256], t;\n    char buf1[500],buf2[10];\n    uint32_t authScheme;\n\n    if (!ReadFromRFBServer(client, (char *)&count, 1)) return FALSE;\n\n    if (count==0)\n    {\n        rfbClientLog(\"List of security types is ZERO. Giving up.\\n\");\n        return FALSE;\n    }\n\n    if (count>sizeof(tAuth))\n    {\n        rfbClientLog(\"%d security types are too many; maximum is %d\\n\", count, sizeof(tAuth));\n        return FALSE;\n    }\n\n    rfbClientLog(\"We have %d security types to read\\n\", count);\n    authScheme=0;\n    /* now, we have a list of available security types to read ( uint8_t[] ) */\n    for (loop=0;loop<count;loop++)\n    {\n        if (!ReadFromRFBServer(client, (char *)&tAuth[loop], 4)) return FALSE;\n        t=rfbClientSwap32IfLE(tAuth[loop]);\n        rfbClientLog(\"%d) Received security type %d\\n\", loop, t);\n        if (flag) continue;\n        if (t==rfbVeNCryptTLSNone ||\n            t==rfbVeNCryptTLSVNC ||\n            t==rfbVeNCryptTLSPlain ||\n#ifdef LIBVNCSERVER_HAVE_SASL\n            t==rfbVeNCryptTLSSASL ||\n            t==rfbVeNCryptX509SASL ||\n#endif /*LIBVNCSERVER_HAVE_SASL */\n            t==rfbVeNCryptX509None ||\n            t==rfbVeNCryptX509VNC ||\n            t==rfbVeNCryptX509Plain)\n        {\n            flag++;\n            authScheme=t;\n            rfbClientLog(\"Selecting security type %d (%d/%d in the list)\\n\", authScheme, loop, count);\n            /* send back 4 bytes (in original byte order!) indicating which security type to use */\n            if (!WriteToRFBServer(client, (char *)&tAuth[loop], 4)) return FALSE;\n        }\n        tAuth[loop]=t;\n    }\n    if (authScheme==0)\n    {\n        memset(buf1, 0, sizeof(buf1));\n        for (loop=0;loop<count;loop++)\n        {\n            if (strlen(buf1)>=sizeof(buf1)-1) break;\n            snprintf(buf2, sizeof(buf2), (loop>0 ? \", %d\" : \"%d\"), (int)tAuth[loop]);\n            strncat(buf1, buf2, sizeof(buf1)-strlen(buf1)-1);\n        }\n        rfbClientLog(\"Unknown VeNCrypt authentication scheme from VNC server: %s\\n\",\n               buf1);\n        return FALSE;\n    }\n    *result = authScheme;\n    return TRUE;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "InitializeTLS",
+            "static rfbBool /* <=== InitializeTLS */ \nInitializeTLS(void)\n{\n  int ret;\n\n  if (rfbTLSInitialized) return TRUE;\n  if ((ret = gnutls_global_init()) < 0 ||\n      (ret = gnutls_dh_params_init(&rfbDHParams)) < 0 ||\n      (ret = gnutls_dh_params_generate2(rfbDHParams, DH_BITS)) < 0)\n  {\n    rfbClientLog(\"Failed to initialized GnuTLS: %s.\\n\", gnutls_strerror(ret));\n    return FALSE;\n  }\n  rfbClientLog(\"GnuTLS version %s initialized.\\n\", gnutls_check_version(NULL));\n  rfbTLSInitialized = TRUE;\n  return TRUE;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "InitializeTLSSession",
+            "static rfbBool /* <=== InitializeTLSSession */ \nInitializeTLSSession(rfbClient* client, rfbBool anonTLS)\n{\n  int ret;\n  const char *p;\n\n  if (client->tlsSession) return TRUE;\n\n  if ((ret = gnutls_init((gnutls_session_t*)&client->tlsSession, GNUTLS_CLIENT)) < 0)\n  {\n    rfbClientLog(\"Failed to initialized TLS session: %s.\\n\", gnutls_strerror(ret));\n    return FALSE;\n  }\n\n  if ((ret = gnutls_priority_set_direct((gnutls_session_t)client->tlsSession,\n    anonTLS ? rfbAnonTLSPriority : rfbTLSPriority, &p)) < 0)\n  {\n    rfbClientLog(\"Warning: Failed to set TLS priority: %s (%s).\\n\", gnutls_strerror(ret), p);\n  }\n\n  gnutls_transport_set_ptr((gnutls_session_t)client->tlsSession, (gnutls_transport_ptr_t)client);\n  gnutls_transport_set_push_function((gnutls_session_t)client->tlsSession, PushTLS);\n  gnutls_transport_set_pull_function((gnutls_session_t)client->tlsSession, PullTLS);\n\n  rfbClientLog(\"TLS session initialized.\\n\");\n\n  return TRUE;\n}",
+            2
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "ReadSupportedSecurityType",
+            "static rfbBool /* <=== ReadSupportedSecurityType */ \nReadSupportedSecurityType(rfbClient* client, uint32_t *result, rfbBool subAuth)\n{\n    uint8_t count=0;\n    uint8_t loop=0;\n    uint8_t flag=0;\n    rfbBool extAuthHandler;\n    uint8_t tAuth[256];\n    char buf1[500],buf2[10];\n    uint32_t authScheme;\n    rfbClientProtocolExtension* e;\n\n    if (!ReadFromRFBServer(client, (char *)&count, 1)) return FALSE;\n\n    if (count==0)\n    {\n        rfbClientLog(\"List of security types is ZERO, expecting an error to follow\\n\");\n        ReadReason(client);\n        return FALSE;\n    }\n\n    rfbClientLog(\"We have %d security types to read\\n\", count);\n    authScheme=0;\n    /* now, we have a list of available security types to read ( uint8_t[] ) */\n    for (loop=0;loop<count;loop++)\n    {\n        if (!ReadFromRFBServer(client, (char *)&tAuth[loop], 1)) return FALSE;\n        rfbClientLog(\"%d) Received security type %d\\n\", loop, tAuth[loop]);\n        if (flag) continue;\n        extAuthHandler=FALSE;\n        for (e = rfbClientExtensions; e; e = e->next) {\n            if (!e->handleAuthentication) continue;\n            uint32_t const* secType;\n            for (secType = e->securityTypes; secType && *secType; secType++) {\n                if (tAuth[loop]==*secType) {\n                    extAuthHandler=TRUE;\n                }\n            }\n        }\n        if (tAuth[loop]==rfbVncAuth || tAuth[loop]==rfbNoAuth ||\n\t\t\textAuthHandler ||\n#if defined(LIBVNCSERVER_HAVE_GNUTLS) || defined(LIBVNCSERVER_HAVE_LIBSSL)\n            tAuth[loop]==rfbVeNCrypt ||\n#endif\n#ifdef LIBVNCSERVER_HAVE_SASL\n            tAuth[loop]==rfbSASL ||\n#endif /* LIBVNCSERVER_HAVE_SASL */\n            (tAuth[loop]==rfbARD && client->GetCredential) ||\n            (!subAuth && (tAuth[loop]==rfbTLS || (tAuth[loop]==rfbVeNCrypt && client->GetCredential))))\n        {\n            if (!subAuth && client->clientAuthSchemes)\n            {\n                int i;\n                for (i=0;client->clientAuthSchemes[i];i++)\n                {\n                    if (client->clientAuthSchemes[i]==(uint32_t)tAuth[loop])\n                    {\n                        flag++;\n                        authScheme=tAuth[loop];\n                        break;\n                    }\n                }\n            }\n            else\n            {\n                flag++;\n                authScheme=tAuth[loop];\n            }\n            if (flag)\n            {\n                rfbClientLog(\"Selecting security type %d (%d/%d in the list)\\n\", authScheme, loop, count);\n                /* send back a single byte indicating which security type to use */\n                if (!WriteToRFBServer(client, (char *)&tAuth[loop], 1)) return FALSE;\n            }\n        }\n    }\n    if (authScheme==0)\n    {\n        memset(buf1, 0, sizeof(buf1));\n        for (loop=0;loop<count;loop++)\n        {\n            if (strlen(buf1)>=sizeof(buf1)-1) break;\n            snprintf(buf2, sizeof(buf2), (loop>0 ? \", %d\" : \"%d\"), (int)tAuth[loop]);\n            strncat(buf1, buf2, sizeof(buf1)-strlen(buf1)-1);\n        }\n        rfbClientLog(\"Unknown authentication scheme from VNC server: %s\\n\",\n               buf1);\n        return FALSE;\n    }\n    *result = authScheme;\n    return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncclient/tls_none.c",
+            "WriteToTLS",
+            "int WriteToTLS(rfbClient* client, const char *buf, unsigned int n) /* <=== WriteToTLS */ \n{\n  rfbClientLog(\"TLS is not supported.\\n\");\n  errno = EINTR;\n  return -1;\n}",
+            2
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "HandlePlainAuth",
+            "static rfbBool /* <=== HandlePlainAuth */ \nHandlePlainAuth(rfbClient *client)\n{\n  uint32_t ulen, ulensw;\n  uint32_t plen, plensw;\n  rfbCredential *cred;\n\n  if (!client->GetCredential)\n  {\n    rfbClientLog(\"GetCredential callback is not set.\\n\");\n    return FALSE;\n  }\n  cred = client->GetCredential(client, rfbCredentialTypeUser);\n  if (!cred)\n  {\n    rfbClientLog(\"Reading credential failed\\n\");\n    return FALSE;\n  }\n\n  ulen = (cred->userCredential.username ? strlen(cred->userCredential.username) : 0);\n  ulensw = rfbClientSwap32IfLE(ulen);\n  plen = (cred->userCredential.password ? strlen(cred->userCredential.password) : 0);\n  plensw = rfbClientSwap32IfLE(plen);\n  if (!WriteToRFBServer(client, (char *)&ulensw, 4) ||\n      !WriteToRFBServer(client, (char *)&plensw, 4))\n  {\n    FreeUserCredential(cred);\n    return FALSE;\n  }\n  if (ulen > 0)\n  {\n    if (!WriteToRFBServer(client, cred->userCredential.username, ulen))\n    {\n      FreeUserCredential(cred);\n      return FALSE;\n    }\n  }\n  if (plen > 0)\n  {\n    if (!WriteToRFBServer(client, cred->userCredential.password, plen))\n    {\n      FreeUserCredential(cred);\n      return FALSE;\n    }\n  }\n\n  FreeUserCredential(cred);\n\n  /* Handle the SecurityResult message */\n  if (!rfbHandleAuthResult(client)) return FALSE;\n\n  return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncclient/sockets.c",
+            "ReadFromRFBServer",
+            "rfbBool /* <=== ReadFromRFBServer */ \nReadFromRFBServer(rfbClient* client, char *out, unsigned int n)\n{\n#undef DEBUG_READ_EXACT\n#ifdef DEBUG_READ_EXACT\n\tchar* oout=out;\n\tint nn=n;\n\trfbClientLog(\"ReadFromRFBServer %d bytes\\n\",n);\n#endif\n\n  /* Handle attempts to write to NULL out buffer that might occur\n     when an outside malloc() fails. For instance, memcpy() to NULL\n     results in undefined behaviour and probably memory corruption.*/\n  if(!out)\n    return FALSE;\n\n  if (client->serverPort==-1) {\n    /* vncrec playing */\n    rfbVNCRec* rec = client->vncRec;\n    struct timeval tv;\n\n    if (rec->readTimestamp) {\n      rec->readTimestamp = FALSE;\n      if (!fread(&tv,sizeof(struct timeval),1,rec->file))\n        return FALSE;\n\n      tv.tv_sec = rfbClientSwap32IfLE (tv.tv_sec);\n      tv.tv_usec = rfbClientSwap32IfLE (tv.tv_usec);\n\n      if (rec->tv.tv_sec!=0 && !rec->doNotSleep) {\n        struct timeval diff;\n        diff.tv_sec = tv.tv_sec - rec->tv.tv_sec;\n        diff.tv_usec = tv.tv_usec - rec->tv.tv_usec;\n        if(diff.tv_usec<0) {\n\t  diff.tv_sec--;\n\t  diff.tv_usec+=1000000;\n        }\n#ifndef WIN32\n        sleep (diff.tv_sec);\n        usleep (diff.tv_usec);\n#else\n\tSleep (diff.tv_sec * 1000 + diff.tv_usec/1000);\n#endif\n      }\n\n      rec->tv=tv;\n    }\n    \n    return (fread(out,1,n,rec->file) != n ? FALSE : TRUE);\n  }\n  \n  if (n <= client->buffered) {\n    memcpy(out, client->bufoutptr, n);\n    client->bufoutptr += n;\n    client->buffered -= n;\n#ifdef DEBUG_READ_EXACT\n    goto hexdump;\n#endif\n    return TRUE;\n  }\n\n  memcpy(out, client->bufoutptr, client->buffered);\n\n  out += client->buffered;\n  n -= client->buffered;\n\n  client->bufoutptr = client->buf;\n  client->buffered = 0;\n\n  if (n <= RFB_BUF_SIZE) {\n\n    while (client->buffered < n) {\n      int i;\n      if (client->tlsSession)\n        i = ReadFromTLS(client, client->buf + client->buffered, RFB_BUF_SIZE - client->buffered);\n      else\n#ifdef LIBVNCSERVER_HAVE_SASL\n      if (client->saslconn)\n        i = ReadFromSASL(client, client->buf + client->buffered, RFB_BUF_SIZE - client->buffered);\n      else {\n#endif /* LIBVNCSERVER_HAVE_SASL */\n        i = read(client->sock, client->buf + client->buffered, RFB_BUF_SIZE - client->buffered);\n#ifdef WIN32\n\tif (i < 0) errno=WSAGetLastError();\n#endif\n#ifdef LIBVNCSERVER_HAVE_SASL\n      }\n#endif\n  \n      if (i <= 0) {\n\tif (i < 0) {\n\t  if (errno == EWOULDBLOCK || errno == EAGAIN) {\n\t    /* TODO:\n\t       ProcessXtEvents();\n\t    */\n\t    WaitForMessage(client, 100000);\n\t    i = 0;\n\t  } else {\n\t    rfbClientErr(\"read (%d: %s)\\n\",errno,strerror(errno));\n\t    return FALSE;\n\t  }\n\t} else {\n\t  if (errorMessageOnReadFailure) {\n\t    rfbClientLog(\"VNC server closed connection\\n\");\n\t  }\n\t  return FALSE;\n\t}\n      }\n      client->buffered += i;\n    }\n\n    memcpy(out, client->bufoutptr, n);\n    client->bufoutptr += n;\n    client->buffered -= n;\n\n  } else {\n\n    while (n > 0) {\n      int i;\n      if (client->tlsSession)\n        i = ReadFromTLS(client, out, n);\n      else\n#ifdef LIBVNCSERVER_HAVE_SASL\n      if (client->saslconn)\n        i = ReadFromSASL(client, out, n);\n      else\n#endif\n        i = read(client->sock, out, n);\n\n      if (i <= 0) {\n\tif (i < 0) {\n#ifdef WIN32\n\t  errno=WSAGetLastError();\n#endif\n\t  if (errno == EWOULDBLOCK || errno == EAGAIN) {\n\t    /* TODO:\n\t       ProcessXtEvents();\n\t    */\n\t    WaitForMessage(client, 100000);\n\t    i = 0;\n\t  } else {\n\t    rfbClientErr(\"read (%s)\\n\",strerror(errno));\n\t    return FALSE;\n\t  }\n\t} else {\n\t  if (errorMessageOnReadFailure) {\n\t    rfbClientLog(\"VNC server closed connection\\n\");\n\t  }\n\t  return FALSE;\n\t}\n      }\n      out += i;\n      n -= i;\n    }\n  }\n\n#ifdef DEBUG_READ_EXACT\nhexdump:\n  { int ii;\n    for(ii=0;ii<nn;ii++)\n      fprintf(stderr,\"%02x \",(unsigned char)oout[ii]);\n    fprintf(stderr,\"\\n\");\n  }\n#endif\n\n  return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "rfbMulM64",
+            "static uint64_t /* <=== rfbMulM64 */ \nrfbMulM64(uint64_t x, uint64_t y, uint64_t m)\n{\n  uint64_t r;\n  for(r=0;x>0;x>>=1)\n  {\n    if (x&1) r=rfbAddM64(r,y,m);\n    y=rfbAddM64(y,y,m);\n  }\n  return r;\n}",
+            3
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "HandleAnonTLSAuth",
+            "rfbBool /* <=== HandleAnonTLSAuth */ \nHandleAnonTLSAuth(rfbClient* client)\n{\n  if (!InitializeTLS() || !InitializeTLSSession(client, TRUE, NULL)) return FALSE;\n\n  if (!HandshakeTLS(client)) return FALSE;\n\n  return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "rfbClientEncryptBytes2",
+            "extern void rfbClientEncryptBytes2(unsigned char *where, const int length, unsigned char *key); /* <=== rfbClientEncryptBytes2 */ ",
+            2
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "WriteToTLS",
+            "int /* <=== WriteToTLS */ \nWriteToTLS(rfbClient* client, const char *buf, unsigned int n)\n{\n  unsigned int offset = 0;\n  ssize_t ret;\n\n  while (offset < n)\n  {\n\n    ret = SSL_write (client->tlsSession, buf + offset, (size_t)(n-offset));\n\n    if (ret < 0)\n      errno = ssl_errno (client->tlsSession, ret);\n\n    if (ret == 0) continue;\n    if (ret < 0)\n    {\n      if (errno == EAGAIN || errno == EWOULDBLOCK) continue;\n      rfbClientLog(\"Error writing to TLS: -\\n\");\n      return -1;\n    }\n    offset += (unsigned int)ret;\n  }\n  return offset;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "FreeTLS",
+            "void FreeTLS(rfbClient* client) /* <=== FreeTLS */ \n{\n  int i;\n\n  if (mutex_buf != NULL) {\n    CRYPTO_set_dynlock_create_callback(NULL);\n    CRYPTO_set_dynlock_lock_callback(NULL);\n    CRYPTO_set_dynlock_destroy_callback(NULL);\n\n    CRYPTO_set_locking_callback(NULL);\n    CRYPTO_set_id_callback(NULL);\n\n    for (i = 0; i < CRYPTO_num_locks(); i++)\n      MUTEX_FREE(mutex_buf[i]);\n    free(mutex_buf);\n    mutex_buf = NULL;\n  }\n\n  SSL_free(client->tlsSession);\n}",
+            2
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "rfbClientEncryptBytes",
+            "extern void rfbClientEncryptBytes(unsigned char* bytes, char* passwd); /* <=== rfbClientEncryptBytes */ ",
+            2
+        ],
+        [
+            "libvncclient/sockets.c",
+            "WriteToRFBServer",
+            "rfbBool /* <=== WriteToRFBServer */ \nWriteToRFBServer(rfbClient* client, char *buf, int n)\n{\n  fd_set fds;\n  int i = 0;\n  int j;\n  const char *obuf = buf;\n#ifdef LIBVNCSERVER_HAVE_SASL\n  const char *output;\n  unsigned int outputlen;\n  int err;\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n  if (client->serverPort==-1)\n    return TRUE; /* vncrec playing */\n\n  if (client->tlsSession) {\n    /* WriteToTLS() will guarantee either everything is written, or error/eof returns */\n    i = WriteToTLS(client, buf, n);\n    if (i <= 0) return FALSE;\n\n    return TRUE;\n  }\n#ifdef LIBVNCSERVER_HAVE_SASL\n  if (client->saslconn) {\n    err = sasl_encode(client->saslconn,\n                      buf, n,\n                      &output, &outputlen);\n    if (err != SASL_OK) {\n      rfbClientLog(\"Failed to encode SASL data %s\",\n                   sasl_errstring(err, NULL, NULL));\n      return FALSE;\n    }\n    obuf = output;\n    n = outputlen;\n  }\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n  while (i < n) {\n    j = write(client->sock, obuf + i, (n - i));\n    if (j <= 0) {\n      if (j < 0) {\n#ifdef WIN32\n\t errno=WSAGetLastError();\n#endif\n\tif (errno == EWOULDBLOCK ||\n#ifdef LIBVNCSERVER_ENOENT_WORKAROUND\n\t\terrno == ENOENT ||\n#endif\n\t\terrno == EAGAIN) {\n\t  FD_ZERO(&fds);\n\t  FD_SET(client->sock,&fds);\n\n\t  if (select(client->sock+1, NULL, &fds, NULL, NULL) <= 0) {\n\t    rfbClientErr(\"select\\n\");\n\t    return FALSE;\n\t  }\n\t  j = 0;\n\t} else {\n\t  rfbClientErr(\"write\\n\");\n\t  return FALSE;\n\t}\n      } else {\n\trfbClientLog(\"write failed\\n\");\n\treturn FALSE;\n      }\n    }\n    i += j;\n  }\n  return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "ssl_errno",
+            "static int /* <=== ssl_errno */ \nssl_errno (SSL *ssl, int ret)\n{\n\tswitch (SSL_get_error (ssl, ret)) {\n\tcase SSL_ERROR_NONE:\n\t\treturn 0;\n\tcase SSL_ERROR_ZERO_RETURN:\n\t\t/* this one does not map well at all */\n\t\t//d(printf (\"ssl_errno: SSL_ERROR_ZERO_RETURN\\n\"));\n\t\treturn EINVAL;\n\tcase SSL_ERROR_WANT_READ:   /* non-fatal; retry */\n\tcase SSL_ERROR_WANT_WRITE:  /* non-fatal; retry */\n\t\t//d(printf (\"ssl_errno: SSL_ERROR_WANT_[READ,WRITE]\\n\"));\n\t\treturn EAGAIN;\n\tcase SSL_ERROR_SYSCALL:\n\t\t//d(printf (\"ssl_errno: SSL_ERROR_SYSCALL\\n\"));\n\t\treturn EINTR;\n\tcase SSL_ERROR_SSL:\n\t\t//d(printf (\"ssl_errno: SSL_ERROR_SSL  <-- very useful error...riiiiight\\n\"));\n\t\treturn EINTR;\n\tdefault:\n\t\t//d(printf (\"ssl_errno: default error\\n\"));\n\t\treturn EINTR;\n\t}\n}",
+            3
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "MUTEX_INIT",
+            "#define MUTEX_INIT(mutex) {\\ /* <=== libvncclient/tls_openssl.c:43:48:MUTEX_INIT:1 */ \n\tpthread_mutexattr_t mutexAttr;\\\n\tpthread_mutexattr_init(&mutexAttr);\\\n\tpthread_mutexattr_settype(&mutexAttr, PTHREAD_MUTEX_RECURSIVE);\\\n\tpthread_mutex_init(&mutex, &mutexAttr);\\\n}",
+            3
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "PrintPixelFormat",
+            "void /* <=== PrintPixelFormat */ \nPrintPixelFormat(rfbPixelFormat *format)\n{\n  if (format->bitsPerPixel == 1) {\n    rfbClientLog(\"  Single bit per pixel.\\n\");\n    rfbClientLog(\n\t    \"  %s significant bit in each byte is leftmost on the screen.\\n\",\n\t    (format->bigEndian ? \"Most\" : \"Least\"));\n  } else {\n    rfbClientLog(\"  %d bits per pixel.\\n\",format->bitsPerPixel);\n    if (format->bitsPerPixel != 8) {\n      rfbClientLog(\"  %s significant byte first in each pixel.\\n\",\n\t      (format->bigEndian ? \"Most\" : \"Least\"));\n    }\n    if (format->trueColour) {\n      rfbClientLog(\"  TRUE colour: max red %d green %d blue %d\"\n\t\t   \", shift red %d green %d blue %d\\n\",\n\t\t   format->redMax, format->greenMax, format->blueMax,\n\t\t   format->redShift, format->greenShift, format->blueShift);\n    } else {\n      rfbClientLog(\"  Colour map (not true colour).\\n\");\n    }\n  }\n}",
+            1
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "FreeTLS",
+            "void FreeTLS(rfbClient* client) /* <=== FreeTLS */ \n{\n  if (client->tlsSession)\n  {\n    gnutls_deinit((gnutls_session_t)client->tlsSession);\n    client->tlsSession = NULL;\n  }\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_none.c",
+            "ReadFromTLS",
+            "int ReadFromTLS(rfbClient* client, char *out, unsigned int n) /* <=== ReadFromTLS */ \n{\n  rfbClientLog(\"TLS is not supported.\\n\");\n  errno = EINTR;\n  return -1;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "HandshakeTLS",
+            "static rfbBool /* <=== HandshakeTLS */ \nHandshakeTLS(rfbClient* client)\n{\n  int timeout = 15;\n  int ret;\n\nreturn TRUE;\n\n  while (timeout > 0 && (ret = SSL_do_handshake(client->tlsSession)) < 0)\n  {\n    if (ret != -1)\n    {\n      rfbClientLog(\"TLS handshake blocking.\\n\");\n#ifdef WIN32\n      Sleep(1000);\n#else\n\t  sleep(1);\n#endif\n      timeout--;\n      continue;\n    }\n    rfbClientLog(\"TLS handshake failed.\\n\");\n\n    FreeTLS(client);\n    return FALSE;\n  }\n\n  if (timeout <= 0)\n  {\n    rfbClientLog(\"TLS handshake timeout.\\n\");\n    FreeTLS(client);\n    return FALSE;\n  }\n\n  rfbClientLog(\"TLS handshake done.\\n\");\n  return TRUE;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "open_ssl_connection",
+            "static SSL * /* <=== open_ssl_connection */ \nopen_ssl_connection (rfbClient *client, int sockfd, rfbBool anonTLS, rfbCredential *cred)\n{\n  SSL_CTX *ssl_ctx = NULL;\n  SSL *ssl = NULL;\n  int n, finished = 0;\n  X509_VERIFY_PARAM *param;\n  uint8_t verify_crls = cred->x509Credential.x509CrlVerifyMode;\n\n  if (!(ssl_ctx = SSL_CTX_new(SSLv23_client_method())))\n  {\n    rfbClientLog(\"Could not create new SSL context.\\n\");\n    return NULL;\n  }\n\n  param = X509_VERIFY_PARAM_new();\n\n  /* Setup verification if not anonymous */\n  if (!anonTLS)\n  {\n    if (cred->x509Credential.x509CACertFile)\n    {\n      if (!SSL_CTX_load_verify_locations(ssl_ctx, cred->x509Credential.x509CACertFile, NULL))\n      {\n        rfbClientLog(\"Failed to load CA certificate from %s.\\n\",\n                     cred->x509Credential.x509CACertFile);\n        goto error_free_ctx;\n      }\n    } else {\n      rfbClientLog(\"Using default paths for certificate verification.\\n\");\n      SSL_CTX_set_default_verify_paths (ssl_ctx);\n    }\n\n    if (cred->x509Credential.x509CACrlFile)\n    {\n      if (!load_crls_from_file(cred->x509Credential.x509CACrlFile, ssl_ctx))\n      {\n        rfbClientLog(\"CRLs could not be loaded.\\n\");\n        goto error_free_ctx;\n      }\n      if (verify_crls == rfbX509CrlVerifyNone) verify_crls = rfbX509CrlVerifyAll;\n    }\n\n    if (cred->x509Credential.x509ClientCertFile && cred->x509Credential.x509ClientKeyFile)\n    {\n      if (SSL_CTX_use_certificate_chain_file(ssl_ctx, cred->x509Credential.x509ClientCertFile) != 1)\n      {\n        rfbClientLog(\"Client certificate could not be loaded.\\n\");\n        goto error_free_ctx;\n      }\n\n      if (SSL_CTX_use_PrivateKey_file(ssl_ctx, cred->x509Credential.x509ClientKeyFile,\n                                      SSL_FILETYPE_PEM) != 1)\n      {\n        rfbClientLog(\"Client private key could not be loaded.\\n\");\n        goto error_free_ctx;\n      }\n\n      if (SSL_CTX_check_private_key(ssl_ctx) == 0) {\n        rfbClientLog(\"Client certificate and private key do not match.\\n\");\n        goto error_free_ctx;\n      }\n    }\n\n    SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);\n\n    if (verify_crls == rfbX509CrlVerifyClient) \n      X509_VERIFY_PARAM_set_flags(param, X509_V_FLAG_CRL_CHECK);\n    else if (verify_crls == rfbX509CrlVerifyAll)\n      X509_VERIFY_PARAM_set_flags(param, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);\n\n    if(!X509_VERIFY_PARAM_set1_host(param, client->serverHost, strlen(client->serverHost)))\n    {\n      rfbClientLog(\"Could not set server name for verification.\\n\");\n      goto error_free_ctx;\n    }\n    SSL_CTX_set1_param(ssl_ctx, param);\n  }\n\n  if (!(ssl = SSL_new (ssl_ctx)))\n  {\n    rfbClientLog(\"Could not create a new SSL session.\\n\");\n    goto error_free_ctx;\n  }\n\n  /* TODO: finetune this list, take into account anonTLS bool */\n  SSL_set_cipher_list(ssl, \"ALL\");\n\n  SSL_set_fd (ssl, sockfd);\n  SSL_CTX_set_app_data (ssl_ctx, client);\n\n  do\n  {\n    n = SSL_connect(ssl);\n\t\t\n    if (n != 1) \n    {\n      if (wait_for_data(ssl, n, 1) != 1) \n      {\n        finished = 1;\n        SSL_shutdown(ssl);\n\n        goto error_free_ssl;\n      }\n    }\n  } while( n != 1 && finished != 1 );\n\n  X509_VERIFY_PARAM_free(param);\n  return ssl;\n\nerror_free_ssl:\n  SSL_free(ssl);\n\nerror_free_ctx:\n  X509_VERIFY_PARAM_free(param);\n  SSL_CTX_free(ssl_ctx);\n\n  return NULL;\n}",
+            3
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "FreeX509Credential",
+            "static void /* <=== FreeX509Credential */ \nFreeX509Credential(rfbCredential *cred)\n{\n  if (cred->x509Credential.x509CACertFile) free(cred->x509Credential.x509CACertFile);\n  if (cred->x509Credential.x509CACrlFile) free(cred->x509Credential.x509CACrlFile);\n  if (cred->x509Credential.x509ClientCertFile) free(cred->x509Credential.x509ClientCertFile);\n  if (cred->x509Credential.x509ClientKeyFile) free(cred->x509Credential.x509ClientKeyFile);\n  free(cred);\n}",
+            2
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "HandleVncAuth",
+            "static rfbBool /* <=== HandleVncAuth */ \nHandleVncAuth(rfbClient *client)\n{\n    uint8_t challenge[CHALLENGESIZE];\n    char *passwd=NULL;\n    int i;\n\n    if (!ReadFromRFBServer(client, (char *)challenge, CHALLENGESIZE)) return FALSE;\n\n    if (client->serverPort!=-1) { /* if not playing a vncrec file */\n      if (client->GetPassword)\n        passwd = client->GetPassword(client);\n\n      if ((!passwd) || (strlen(passwd) == 0)) {\n        rfbClientLog(\"Reading password failed\\n\");\n        return FALSE;\n      }\n      if (strlen(passwd) > 8) {\n        passwd[8] = '\\0';\n      }\n\n      rfbClientEncryptBytes(challenge, passwd);\n\n      /* Lose the password from memory */\n      for (i = strlen(passwd); i >= 0; i--) {\n        passwd[i] = '\\0';\n      }\n      free(passwd);\n\n      if (!WriteToRFBServer(client, (char *)challenge, CHALLENGESIZE)) return FALSE;\n    }\n\n    /* Handle the SecurityResult message */\n    if (!rfbHandleAuthResult(client)) return FALSE;\n\n    return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "HandleAnonTLSAuth",
+            "rfbBool /* <=== HandleAnonTLSAuth */ \nHandleAnonTLSAuth(rfbClient* client)\n{\n  if (!InitializeTLS() || !InitializeTLSSession(client, TRUE)) return FALSE;\n\n  if (!SetTLSAnonCredential(client)) return FALSE;\n\n  if (!HandshakeTLS(client)) return FALSE;\n\n  return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "InitializeTLSSession",
+            "static rfbBool /* <=== InitializeTLSSession */ \nInitializeTLSSession(rfbClient* client, rfbBool anonTLS, rfbCredential *cred)\n{\n  if (client->tlsSession) return TRUE;\n\n  client->tlsSession = open_ssl_connection (client, client->sock, anonTLS, cred);\n\n  if (!client->tlsSession)\n    return FALSE;\n\n  rfbClientLog(\"TLS session initialized.\\n\");\n\n  return TRUE;\n}",
+            2
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "HandleMSLogonAuth",
+            "static rfbBool /* <=== HandleMSLogonAuth */ \nHandleMSLogonAuth(rfbClient *client)\n{\n  uint64_t gen, mod, resp, priv, pub, key;\n  uint8_t username[256], password[64];\n  rfbCredential *cred;\n\n  if (!ReadFromRFBServer(client, (char *)&gen, 8)) return FALSE;\n  if (!ReadFromRFBServer(client, (char *)&mod, 8)) return FALSE;\n  if (!ReadFromRFBServer(client, (char *)&resp, 8)) return FALSE;\n  gen = rfbClientSwap64IfLE(gen);\n  mod = rfbClientSwap64IfLE(mod);\n  resp = rfbClientSwap64IfLE(resp);\n\n  if (!client->GetCredential)\n  {\n    rfbClientLog(\"GetCredential callback is not set.\\n\");\n    return FALSE;\n  }\n  rfbClientLog(\"WARNING! MSLogon security type has very low password encryption! \"\\\n    \"Use it only with SSH tunnel or trusted network.\\n\");\n  cred = client->GetCredential(client, rfbCredentialTypeUser);\n  if (!cred)\n  {\n    rfbClientLog(\"Reading credential failed\\n\");\n    return FALSE;\n  }\n\n  memset(username, 0, sizeof(username));\n  strncpy((char *)username, cred->userCredential.username, sizeof(username));\n  memset(password, 0, sizeof(password));\n  strncpy((char *)password, cred->userCredential.password, sizeof(password));\n  FreeUserCredential(cred);\n\n  srand(time(NULL));\n  priv = ((uint64_t)rand())<<32;\n  priv |= (uint64_t)rand();\n\n  pub = rfbPowM64(gen, priv, mod);\n  key = rfbPowM64(resp, priv, mod);\n  pub = rfbClientSwap64IfLE(pub);\n  key = rfbClientSwap64IfLE(key);\n\n  rfbClientEncryptBytes2(username, sizeof(username), (unsigned char *)&key);\n  rfbClientEncryptBytes2(password, sizeof(password), (unsigned char *)&key);\n\n  if (!WriteToRFBServer(client, (char *)&pub, 8)) return FALSE;\n  if (!WriteToRFBServer(client, (char *)username, sizeof(username))) return FALSE;\n  if (!WriteToRFBServer(client, (char *)password, sizeof(password))) return FALSE;\n\n  /* Handle the SecurityResult message */\n  if (!rfbHandleAuthResult(client)) return FALSE;\n\n  return TRUE;\n}",
+            1
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "HandleVeNCryptAuth",
+            "rfbBool /* <=== HandleVeNCryptAuth */ \nHandleVeNCryptAuth(rfbClient* client)\n{\n  uint8_t major, minor, status;\n  uint32_t authScheme;\n  rfbBool anonTLS;\n  rfbCredential *cred = NULL;\n  rfbBool result = TRUE;\n\n  if (!InitializeTLS()) return FALSE;\n\n  /* Read VeNCrypt version */\n  if (!ReadFromRFBServer(client, (char *)&major, 1) ||\n      !ReadFromRFBServer(client, (char *)&minor, 1))\n  {\n    return FALSE;\n  }\n  rfbClientLog(\"Got VeNCrypt version %d.%d from server.\\n\", (int)major, (int)minor);\n\n  if (major != 0 && minor != 2)\n  {\n    rfbClientLog(\"Unsupported VeNCrypt version.\\n\");\n    return FALSE;\n  }\n\n  if (!WriteToRFBServer(client, (char *)&major, 1) ||\n      !WriteToRFBServer(client, (char *)&minor, 1) ||\n      !ReadFromRFBServer(client, (char *)&status, 1))\n  {\n    return FALSE;\n  }\n\n  if (status != 0)\n  {\n    rfbClientLog(\"Server refused VeNCrypt version %d.%d.\\n\", (int)major, (int)minor);\n    return FALSE;\n  }\n\n  if (!ReadVeNCryptSecurityType(client, &authScheme)) return FALSE;\n  if (!ReadFromRFBServer(client, (char *)&status, 1) || status != 1)\n  {\n    rfbClientLog(\"Server refused VeNCrypt authentication %d (%d).\\n\", authScheme, (int)status);\n    return FALSE;\n  }\n  client->subAuthScheme = authScheme;\n\n  /* Some VeNCrypt security types are anonymous TLS, others are X509 */\n  switch (authScheme)\n  {\n    case rfbVeNCryptTLSNone:\n    case rfbVeNCryptTLSVNC:\n    case rfbVeNCryptTLSPlain:\n#ifdef LIBVNCSERVER_HAVE_SASL\n    case rfbVeNCryptTLSSASL:\n#endif /* LIBVNCSERVER_HAVE_SASL */\n      anonTLS = TRUE;\n      break;\n    default:\n      anonTLS = FALSE;\n      break;\n  }\n\n  /* Get X509 Credentials if it's not anonymous */\n  if (!anonTLS)\n  {\n\n    if (!client->GetCredential)\n    {\n      rfbClientLog(\"GetCredential callback is not set.\\n\");\n      return FALSE;\n    }\n    cred = client->GetCredential(client, rfbCredentialTypeX509);\n    if (!cred)\n    {\n      rfbClientLog(\"Reading credential failed\\n\");\n      return FALSE;\n    }\n  }\n\n  /* Start up the TLS session */\n  if (!InitializeTLSSession(client, anonTLS, cred)) result = FALSE;\n\n  if (!HandshakeTLS(client)) result = FALSE;\n\n  /* We are done here. The caller should continue with client->subAuthScheme\n   * to do actual sub authentication.\n   */\n  if (cred) FreeX509Credential(cred);\n  return result;\n}",
+            1
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "ReadReason",
+            "static void /* <=== ReadReason */ \nReadReason(rfbClient* client)\n{\n    uint32_t reasonLen;\n    char *reason;\n\n    if (!ReadFromRFBServer(client, (char *)&reasonLen, 4)) return;\n    reasonLen = rfbClientSwap32IfLE(reasonLen);\n    if(reasonLen > 1<<20) {\n      rfbClientLog(\"VNC connection failed, but sent reason length of %u exceeds limit of 1MB\",(unsigned int)reasonLen);\n      return;\n    }\n    reason = malloc(reasonLen+1);\n    if (!ReadFromRFBServer(client, reason, reasonLen)) { free(reason); return; }\n    reason[reasonLen]=0;\n    rfbClientLog(\"VNC connection failed: %s\\n\",reason);\n    free(reason);\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_none.c",
+            "FreeTLS",
+            "void FreeTLS(rfbClient* client) /* <=== FreeTLS */ \n{\n\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_openssl.c",
+            "ReadFromTLS",
+            "int /* <=== ReadFromTLS */ \nReadFromTLS(rfbClient* client, char *out, unsigned int n)\n{\n  ssize_t ret;\n\n  ret = SSL_read (client->tlsSession, out, n);\n\n  if (ret >= 0)\n    return ret;\n  else {\n    errno = ssl_errno (client->tlsSession, ret);\n\n    if (errno != EAGAIN) {\n      rfbClientLog(\"Error reading from TLS: -.\\n\");\n    }\n  }\n\n  return -1;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "ReadVeNCryptSecurityType",
+            "static rfbBool /* <=== ReadVeNCryptSecurityType */ \nReadVeNCryptSecurityType(rfbClient* client, uint32_t *result)\n{\n    uint8_t count=0;\n    uint8_t loop=0;\n    uint8_t flag=0;\n    uint32_t tAuth[256], t;\n    char buf1[500],buf2[10];\n    uint32_t authScheme;\n\n    if (!ReadFromRFBServer(client, (char *)&count, 1)) return FALSE;\n\n    if (count==0)\n    {\n        rfbClientLog(\"List of security types is ZERO. Giving up.\\n\");\n        return FALSE;\n    }\n\n    if (count>sizeof(tAuth))\n    {\n        rfbClientLog(\"%d security types are too many; maximum is %d\\n\", count, sizeof(tAuth));\n        return FALSE;\n    }\n\n    rfbClientLog(\"We have %d security types to read\\n\", count);\n    authScheme=0;\n    /* now, we have a list of available security types to read ( uint8_t[] ) */\n    for (loop=0;loop<count;loop++)\n    {\n        if (!ReadFromRFBServer(client, (char *)&tAuth[loop], 4)) return FALSE;\n        t=rfbClientSwap32IfLE(tAuth[loop]);\n        rfbClientLog(\"%d) Received security type %d\\n\", loop, t);\n        if (flag) continue;\n        if (t==rfbVeNCryptTLSNone ||\n            t==rfbVeNCryptTLSVNC ||\n            t==rfbVeNCryptTLSPlain ||\n#ifdef LIBVNCSERVER_HAVE_SASL\n            t==rfbVeNCryptTLSSASL ||\n            t==rfbVeNCryptX509SASL ||\n#endif /*LIBVNCSERVER_HAVE_SASL */\n            t==rfbVeNCryptX509None ||\n            t==rfbVeNCryptX509VNC ||\n            t==rfbVeNCryptX509Plain)\n        {\n            flag++;\n            authScheme=t;\n            rfbClientLog(\"Selecting security type %d (%d/%d in the list)\\n\", authScheme, loop, count);\n            /* send back 4 bytes (in original byte order!) indicating which security type to use */\n            if (!WriteToRFBServer(client, (char *)&tAuth[loop], 4)) return FALSE;\n        }\n        tAuth[loop]=t;\n    }\n    if (authScheme==0)\n    {\n        memset(buf1, 0, sizeof(buf1));\n        for (loop=0;loop<count;loop++)\n        {\n            if (strlen(buf1)>=sizeof(buf1)-1) break;\n            snprintf(buf2, sizeof(buf2), (loop>0 ? \", %d\" : \"%d\"), (int)tAuth[loop]);\n            strncat(buf1, buf2, sizeof(buf1)-strlen(buf1)-1);\n        }\n        rfbClientLog(\"Unknown VeNCrypt authentication scheme from VNC server: %s\\n\",\n               buf1);\n        return FALSE;\n    }\n    *result = authScheme;\n    return TRUE;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "DH_BITS",
+            "#define DH_BITS 1024 /* <=== libvncclient/tls_gnutls.c:38:38:DH_BITS:0 */ ",
+            3
+        ],
+        [
+            "libvncclient/tls_none.c",
+            "HandleVeNCryptAuth",
+            "rfbBool HandleVeNCryptAuth(rfbClient* client) /* <=== HandleVeNCryptAuth */ \n{\n  rfbClientLog(\"TLS is not supported.\\n\");\n  return FALSE;\n}",
+            1
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "rfbPowM64",
+            "static uint64_t /* <=== rfbPowM64 */ \nrfbPowM64(uint64_t b, uint64_t e, uint64_t m)\n{\n  uint64_t r;\n  for(r=1;e>0;e>>=1)\n  {\n    if(e&1) r=rfbMulM64(r,b,m);\n    b=rfbMulM64(b,b,m);\n  }\n  return r;\n}",
+            2
+        ],
+        [
+            "libvncclient/rfbproto.c",
+            "rfbHandleAuthResult",
+            "rfbBool /* <=== rfbHandleAuthResult */ \nrfbHandleAuthResult(rfbClient* client)\n{\n    uint32_t authResult=0;\n\n    if (!ReadFromRFBServer(client, (char *)&authResult, 4)) return FALSE;\n\n    authResult = rfbClientSwap32IfLE(authResult);\n\n    switch (authResult) {\n    case rfbVncAuthOK:\n      rfbClientLog(\"VNC authentication succeeded\\n\");\n      return TRUE;\n      break;\n    case rfbVncAuthFailed:\n      if (client->major==3 && client->minor>7)\n      {\n        /* we have an error following */\n        ReadReason(client);\n        return FALSE;\n      }\n      rfbClientLog(\"VNC authentication failed\\n\");\n      return FALSE;\n    case rfbVncAuthTooMany:\n      rfbClientLog(\"VNC authentication failed - too many tries\\n\");\n      return FALSE;\n    }\n\n    rfbClientLog(\"Unknown VNC authentication result: %d\\n\",\n                 (int)authResult);\n    return FALSE;\n}",
+            1
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "HandshakeTLS",
+            "static rfbBool /* <=== HandshakeTLS */ \nHandshakeTLS(rfbClient* client)\n{\n  int timeout = 15;\n  int ret;\n\n  while (timeout > 0 && (ret = gnutls_handshake((gnutls_session_t)client->tlsSession)) < 0)\n  {\n    if (!gnutls_error_is_fatal(ret))\n    {\n      rfbClientLog(\"TLS handshake blocking.\\n\");\n      sleep(1);\n      timeout--;\n      continue;\n    }\n    rfbClientLog(\"TLS handshake failed: %s.\\n\", gnutls_strerror(ret));\n\n    FreeTLS(client);\n    return FALSE;\n  }\n\n  if (timeout <= 0)\n  {\n    rfbClientLog(\"TLS handshake timeout.\\n\");\n    FreeTLS(client);\n    return FALSE;\n  }\n\n  rfbClientLog(\"TLS handshake done.\\n\");\n  return TRUE;\n}",
+            2
+        ],
+        [
+            "libvncclient/tls_gnutls.c",
+            "HandleVeNCryptAuth",
+            "rfbBool /* <=== HandleVeNCryptAuth */ \nHandleVeNCryptAuth(rfbClient* client)\n{\n  uint8_t major, minor, status;\n  uint32_t authScheme;\n  rfbBool anonTLS;\n  gnutls_certificate_credentials_t x509_cred = NULL;\n  int ret;\n\n  if (!InitializeTLS()) return FALSE;\n\n  /* Read VeNCrypt version */\n  if (!ReadFromRFBServer(client, (char *)&major, 1) ||\n      !ReadFromRFBServer(client, (char *)&minor, 1))\n  {\n    return FALSE;\n  }\n  rfbClientLog(\"Got VeNCrypt version %d.%d from server.\\n\", (int)major, (int)minor);\n\n  if (major != 0 && minor != 2)\n  {\n    rfbClientLog(\"Unsupported VeNCrypt version.\\n\");\n    return FALSE;\n  }\n\n  if (!WriteToRFBServer(client, (char *)&major, 1) ||\n      !WriteToRFBServer(client, (char *)&minor, 1) ||\n      !ReadFromRFBServer(client, (char *)&status, 1))\n  {\n    return FALSE;\n  }\n\n  if (status != 0)\n  {\n    rfbClientLog(\"Server refused VeNCrypt version %d.%d.\\n\", (int)major, (int)minor);\n    return FALSE;\n  }\n\n  if (!ReadVeNCryptSecurityType(client, &authScheme)) return FALSE;\n  if (!ReadFromRFBServer(client, (char *)&status, 1) || status != 1)\n  {\n    rfbClientLog(\"Server refused VeNCrypt authentication %d (%d).\\n\", authScheme, (int)status);\n    return FALSE;\n  }\n  client->subAuthScheme = authScheme;\n\n  /* Some VeNCrypt security types are anonymous TLS, others are X509 */\n  switch (authScheme)\n  {\n    case rfbVeNCryptTLSNone:\n    case rfbVeNCryptTLSVNC:\n    case rfbVeNCryptTLSPlain:\n#ifdef LIBVNCSERVER_HAVE_SASL\n    case rfbVeNCryptTLSSASL:\n#endif /* LIBVNCSERVER_HAVE_SASL */\n      anonTLS = TRUE;\n      break;\n    default:\n      anonTLS = FALSE;\n      break;\n  }\n\n  /* Get X509 Credentials if it's not anonymous */\n  if (!anonTLS)\n  {\n    rfbCredential *cred;\n\n    if (!client->GetCredential)\n    {\n      rfbClientLog(\"GetCredential callback is not set.\\n\");\n      return FALSE;\n    }\n    cred = client->GetCredential(client, rfbCredentialTypeX509);\n    if (!cred)\n    {\n      rfbClientLog(\"Reading credential failed\\n\");\n      return FALSE;\n    }\n\n    x509_cred = CreateX509CertCredential(cred);\n    FreeX509Credential(cred);\n    if (!x509_cred) return FALSE;\n  }\n\n  /* Start up the TLS session */\n  if (!InitializeTLSSession(client, anonTLS)) return FALSE;\n\n  if (anonTLS)\n  {\n    if (!SetTLSAnonCredential(client)) return FALSE;\n  }\n  else\n  {\n    /* Set the certificate verification callback. */\n    gnutls_certificate_set_verify_function (x509_cred, verify_certificate_callback);\n    gnutls_session_set_ptr ((gnutls_session_t)client->tlsSession, (void *)client);\n\n    if ((ret = gnutls_credentials_set((gnutls_session_t)client->tlsSession, GNUTLS_CRD_CERTIFICATE, x509_cred)) < 0)\n    {\n      rfbClientLog(\"Cannot set x509 credential: %s.\\n\", gnutls_strerror(ret));\n      FreeTLS(client);\n      return FALSE;\n    }\n  }\n\n  if (!HandshakeTLS(client)) return FALSE;\n\n  /* We are done here. The caller should continue with client->subAuthScheme\n   * to do actual sub authentication.\n   */\n  return TRUE;\n}",
+            1
+        ]
+    ],
+    "globalVars": [
+        "rfbClientProtocolExtension* rfbClientExtensions"
+    ],
+    "importContext": [
+        "#include <sys/stat.h>",
+        "#include \"zlib.c\"",
+        "#include <unistd.h>",
+        "#include \"ultra.c\"",
+        "#include \"hextile.c\"",
+        "#include <strings.h>",
+        "#include \"tight.c\"",
+        "#include <time.h>",
+        "#include <lzo/lzo1x.h>",
+        "#include \"vncauth.c\"",
+        "#include <rfb/rfbclient.h>",
+        "#include \"sasl.h\"",
+        "#include <zlib.h>",
+        "#include \"zrle.c\"",
+        "#include \"trle.c\"",
+        "#include <gcrypt.h>",
+        "#include \"rre.c\"",
+        "#include \"d3des.c\"",
+        "#include <errno.h>",
+        "#include <stdarg.h>",
+        "#include \"corre.c\"",
+        "#include <pwd.h>",
+        "#include \"minilzo.h\"",
+        "#include <sys/types.h>",
+        "#include \"tls.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef char rfbProtocolVersionMsg[13];",
+            "rfbProtocolVersionMsg"
+        ],
+        [
+            "typedef struct _rfbClient {\n\tuint8_t* frameBuffer;\n\tint width, height;\n\n\tint endianTest;\n\n\tAppData appData;\n\n\tconst char* programName;\n\tchar* serverHost;\n\tint serverPort; /**< if -1, then use file recorded by vncrec */\n\trfbBool listenSpecified;\n\tint listenPort, flashPort;\n\n\tstruct {\n\t\tint x, y, w, h;\n\t} updateRect;\n\n\t/** Note that the CoRRE encoding uses this buffer and assumes it is big enough\n\t   to hold 255 * 255 * 32 bits -> 260100 bytes.  640*480 = 307200 bytes.\n\t   Hextile also assumes it is big enough to hold 16 * 16 * 32 bits.\n\t   Tight encoding assumes BUFFER_SIZE is at least 16384 bytes. */\n\n#define RFB_BUFFER_SIZE (640*480)\n\tchar buffer[RFB_BUFFER_SIZE];\n\n\t/* rfbproto.c */\n\n\tint sock;\n\trfbBool canUseCoRRE;\n\trfbBool canUseHextile;\n\tchar *desktopName;\n\trfbPixelFormat format;\n\trfbServerInitMsg si;\n\n\t/* sockets.c */\n#define RFB_BUF_SIZE 8192\n\tchar buf[RFB_BUF_SIZE];\n\tchar *bufoutptr;\n\tint buffered;\n\n\t/* The zlib encoding requires expansion/decompression/deflation of the\n\t   compressed data in the \"buffer\" above into another, result buffer.\n\t   However, the size of the result buffer can be determined precisely\n\t   based on the bitsPerPixel, height and width of the rectangle.  We\n\t   allocate this buffer one time to be the full size of the buffer. */\n\n\t/* Ultra Encoding uses this buffer too */\n\t\n\tint ultra_buffer_size;\n\tchar *ultra_buffer;\n\n\tint raw_buffer_size;\n\tchar *raw_buffer;\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n\tz_stream decompStream;\n\trfbBool decompStreamInited;\n#endif\n\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n\t/*\n\t * Variables for the ``tight'' encoding implementation.\n\t */\n\n\t/** Separate buffer for compressed data. */\n#define ZLIB_BUFFER_SIZE 30000\n\tchar zlib_buffer[ZLIB_BUFFER_SIZE];\n\n\t/* Four independent compression streams for zlib library. */\n\tz_stream zlibStream[4];\n\trfbBool zlibStreamActive[4];\n\n\t/* Filter stuff. Should be initialized by filter initialization code. */\n\trfbBool cutZeros;\n\tint rectWidth, rectColors;\n\tchar tightPalette[256*4];\n\tuint8_t tightPrevRow[2048*3*sizeof(uint16_t)];\n\n#ifdef LIBVNCSERVER_HAVE_LIBJPEG\n\t/** JPEG decoder state (obsolete-- do not use). */\n\trfbBool jpegError;\n\n\tstruct jpeg_source_mgr* jpegSrcManager;\n\tvoid* jpegBufferPtr;\n\tsize_t jpegBufferLen;\n\n#endif\n#endif\n\n\n\t/* cursor.c */\n\t/** Holds cursor shape data when received from server. */\n\tuint8_t *rcSource, *rcMask;\n\n\t/** private data pointer */\n\trfbClientData* clientData;\n\n\trfbVNCRec* vncRec;\n\n\t/* Keyboard State support (is 'Caps Lock' set on the remote display???) */\n\tint KeyboardLedStateEnabled;\n\tint CurrentKeyboardLedState;\n\n\tint canHandleNewFBSize;\n\n\t/* hooks */\n\tHandleTextChatProc         HandleTextChat;\n\tHandleKeyboardLedStateProc HandleKeyboardLedState;\n\tHandleCursorPosProc HandleCursorPos;\n\tSoftCursorLockAreaProc SoftCursorLockArea;\n\tSoftCursorUnlockScreenProc SoftCursorUnlockScreen;\n\tGotFrameBufferUpdateProc GotFrameBufferUpdate;\n\t/** the pointer returned by GetPassword will be freed after use! */\n\tGetPasswordProc GetPassword;\n\tMallocFrameBufferProc MallocFrameBuffer;\n\tGotXCutTextProc GotXCutText;\n\tBellProc Bell;\n\n\tGotCursorShapeProc GotCursorShape;\n\tGotCopyRectProc GotCopyRect;\n\n\t/** Which messages are supported by the server\n\t * This is a *guess* for most servers.\n\t * (If we can even detect the type of server)\n\t *\n\t * If the server supports the \"rfbEncodingSupportedMessages\"\n\t * then this will be updated when the encoding is received to\n\t * accurately reflect the servers capabilities.\n\t */\n\trfbSupportedMessages supportedMessages;\n\n\t/** negotiated protocol version */\n\tint major, minor;\n\n\t/** The selected security types */\n\tuint32_t authScheme, subAuthScheme;\n\n\t/** The TLS session for Anonymous TLS and VeNCrypt */\n\tvoid* tlsSession;\n\n\t/** To support security types that requires user input (except VNC password\n\t * authentication), for example VeNCrypt and MSLogon, this callback function\n\t * must be set before the authentication. Otherwise, it implicates that the\n\t * caller application does not support it and related security types should\n\t * be bypassed.\n\t */\n\tGetCredentialProc GetCredential;\n\n\t/** The 0-terminated security types supported by the client.\n\t * Set by function SetClientAuthSchemes() */\n\tuint32_t *clientAuthSchemes;\n\n\t/** When the server is a repeater, this specifies the final destination */\n\tchar *destHost;\n\tint destPort;\n\n        /** the QoS IP DSCP for this client */\n        int QoS_DSCP;\n\n        /** hook to handle xvp server messages */\n\tHandleXvpMsgProc           HandleXvpMsg;\n\n\t/* listen.c */\n        int listenSock;\n\n\tFinishedFrameBufferUpdateProc FinishedFrameBufferUpdate;\n\n\tchar *listenAddress;\n        /* IPv6 listen socket, address and port*/\n        int listen6Sock;\n        char* listen6Address;\n        int listen6Port;\n\n        /* Output Window ID. When set, client application enables libvncclient to perform direct rendering in its window */\n        unsigned long outputWindow;\n\n\t/** Hooks for optional protection WriteToTLS() by mutex */\n\tLockWriteToTLSProc LockWriteToTLS;\n\tUnlockWriteToTLSProc UnlockWriteToTLS;\n\n        /** Hooks for custom rendering\n         *\n         * VNC rendering boils down to 3 activities:\n         * - GotCopyRect: copy an area of the framebuffer\n         * - GotFillRect: fill an area of the framebuffer with a solid color\n         * - GotBitmap: copy the bitmap in the buffer into the framebuffer\n         * The client application should either set all three of these or none!\n         */\n        GotFillRectProc GotFillRect;\n        GotBitmapProc GotBitmap;\n        /** Hook for custom JPEG decoding and rendering */\n        GotJpegProc GotJpeg;\n\n#ifdef LIBVNCSERVER_HAVE_SASL\n        sasl_conn_t *saslconn;\n        const char *saslDecoded;\n        unsigned int saslDecodedLength;\n        unsigned int saslDecodedOffset;\n        sasl_secret_t *saslSecret;\n\n        /* Callback to allow the client to choose a preferred mechanism. The string returned will\n           be freed once no longer required. */\n        GetSASLMechanismProc GetSASLMechanism;\n        GetUserProc GetUser;\n\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n#ifdef LIBVNCSERVER_HAVE_LIBZ\n#ifdef LIBVNCSERVER_HAVE_LIBJPEG\n\t/** JPEG decoder state. */\n\tvoid *tjhnd;\n\n#endif\n#endif\n} rfbClient;",
+            "rfbClient"
+        ],
+        [
+            "typedef struct _rfbClientProtocolExtension {\n\tint* encodings;\n\t/** returns TRUE if the encoding was handled */\n\trfbBool (*handleEncoding)(rfbClient* cl,\n\t\trfbFramebufferUpdateRectHeader* rect);\n\t/** returns TRUE if it handled the message */\n\trfbBool (*handleMessage)(rfbClient* cl,\n\t\t rfbServerToClientMsg* message);\n\tstruct _rfbClientProtocolExtension* next;\n\tuint32_t const* securityTypes;\n\t/** returns TRUE if it handled the authentication */\n\trfbBool (*handleAuthentication)(rfbClient* cl, uint32_t authScheme);\n} rfbClientProtocolExtension;",
+            "rfbClientProtocolExtension"
+        ],
+        [
+            "typedef struct {\n    uint8_t shared;\n}",
+            "rfbClientInitMsg"
+        ],
+        [
+            "static rfbBool",
+            "rfbBool"
+        ]
+    ],
+    "visitedLines_after": {
+        "libvncclient/rfbproto.c": [
+            994,
+            995,
+            1006,
+            1007,
+            1009,
+            1010,
+            1012,
+            1014,
+            1016,
+            1022,
+            1023,
+            1024,
+            1027,
+            1028,
+            1031,
+            1032,
+            1033,
+            1037,
+            1038,
+            1039,
+            1040,
+            1041,
+            1045,
+            1046,
+            1047,
+            1051,
+            1053,
+            1054,
+            1060,
+            1062,
+            1066,
+            1068,
+            1072,
+            1073,
+            1076,
+            1077,
+            1079,
+            1089,
+            1090,
+            1095,
+            1105,
+            1118,
+            1122,
+            1123,
+            1125,
+            1134,
+            1135,
+            1139,
+            1157,
+            1159,
+            1164,
+            1169,
+            1174,
+            1194,
+            1196,
+            1198,
+            1199,
+            1200,
+            1201,
+            1202,
+            1207,
+            1214,
+            1216,
+            1218,
+            1220,
+            1221,
+            1225,
+            1227,
+            1228,
+            1229,
+            1231,
+            1232,
+            1233,
+            1234,
+            1235,
+            1236,
+            1239,
+            1241,
+            1243,
+            1245,
+            1246,
+            1248,
+            1249,
+            1251
+        ]
+    },
+    "visitedLines_before": {
+        "libvncclient/rfbproto.c": [
+            994,
+            995,
+            1006,
+            1007,
+            1009,
+            1010,
+            1012,
+            1014,
+            1016,
+            1022,
+            1023,
+            1024,
+            1027,
+            1028,
+            1031,
+            1032,
+            1033,
+            1037,
+            1038,
+            1039,
+            1040,
+            1041,
+            1045,
+            1046,
+            1047,
+            1051,
+            1053,
+            1054,
+            1060,
+            1062,
+            1066,
+            1068,
+            1072,
+            1073,
+            1076,
+            1077,
+            1079,
+            1089,
+            1090,
+            1095,
+            1105,
+            1118,
+            1122,
+            1123,
+            1125,
+            1134,
+            1135,
+            1139,
+            1157,
+            1159,
+            1164,
+            1169,
+            1174,
+            1194,
+            1196,
+            1198,
+            1199,
+            1200,
+            1201,
+            1202,
+            1207,
+            1214,
+            1216,
+            1218,
+            1220,
+            1221,
+            1225,
+            1228,
+            1229,
+            1230,
+            1231,
+            1232,
+            1235,
+            1237,
+            1239,
+            1241,
+            1242,
+            1244,
+            1245,
+            1247
+        ]
+    },
+    "visitedParams": {
+        "libvncclient/rfbproto.c": [
+            [
+                "rfbClient* client",
+                "InitialiseRFBConnection"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libvncclient/rfbproto.c",
+            "InitialiseRFBConnection",
+            "rfbBool /* <=== InitialiseRFBConnection */ \nInitialiseRFBConnection(rfbClient* client)\n{\n  rfbProtocolVersionMsg pv;\n  int major,minor;\n  uint32_t authScheme;\n  uint32_t subAuthScheme;\n  rfbClientInitMsg ci;\n\n  /* if the connection is immediately closed, don't report anything, so\n       that pmw's monitor can make test connections */\n\n  if (client->listenSpecified)\n    errorMessageOnReadFailure = FALSE;\n\n  if (!ReadFromRFBServer(client, pv, sz_rfbProtocolVersionMsg)) return FALSE;\n  pv[sz_rfbProtocolVersionMsg]=0;\n\n  errorMessageOnReadFailure = TRUE;\n\n  pv[sz_rfbProtocolVersionMsg] = 0;\n\n  if (sscanf(pv,rfbProtocolVersionFormat,&major,&minor) != 2) {\n    rfbClientLog(\"Not a valid VNC server (%s)\\n\",pv);\n    return FALSE;\n  }\n\n\n  DefaultSupportedMessages(client);\n  client->major = major;\n  client->minor = minor;\n\n  /* fall back to viewer supported version */\n  if ((major==rfbProtocolMajorVersion) && (minor>rfbProtocolMinorVersion))\n    client->minor = rfbProtocolMinorVersion;\n\n  /* UltraVNC uses minor codes 4 and 6 for the server */\n  if (major==3 && (minor==4 || minor==6)) {\n      rfbClientLog(\"UltraVNC server detected, enabling UltraVNC specific messages\\n\",pv);\n      DefaultSupportedMessagesUltraVNC(client);\n  }\n\n  /* UltraVNC Single Click uses minor codes 14 and 16 for the server */\n  if (major==3 && (minor==14 || minor==16)) {\n     minor = minor - 10;\n     client->minor = minor;\n     rfbClientLog(\"UltraVNC Single Click server detected, enabling UltraVNC specific messages\\n\",pv);\n     DefaultSupportedMessagesUltraVNC(client);\n  }\n\n  /* TightVNC uses minor codes 5 for the server */\n  if (major==3 && minor==5) {\n      rfbClientLog(\"TightVNC server detected, enabling TightVNC specific messages\\n\",pv);\n      DefaultSupportedMessagesTightVNC(client);\n  }\n\n  /* we do not support > RFB3.8 */\n  if ((major==3 && minor>8) || major>3)\n  {\n    client->major=3;\n    client->minor=8;\n  }\n\n  rfbClientLog(\"VNC server supports protocol version %d.%d (viewer %d.%d)\\n\",\n\t  major, minor, rfbProtocolMajorVersion, rfbProtocolMinorVersion);\n\n  sprintf(pv,rfbProtocolVersionFormat,client->major,client->minor);\n\n  if (!WriteToRFBServer(client, pv, sz_rfbProtocolVersionMsg)) return FALSE;\n\n\n  /* 3.7 and onwards sends a # of security types first */\n  if (client->major==3 && client->minor > 6)\n  {\n    if (!ReadSupportedSecurityType(client, &authScheme, FALSE)) return FALSE;\n  }\n  else\n  {\n    if (!ReadFromRFBServer(client, (char *)&authScheme, 4)) return FALSE;\n    authScheme = rfbClientSwap32IfLE(authScheme);\n  }\n  \n  rfbClientLog(\"Selected Security Scheme %d\\n\", authScheme);\n  client->authScheme = authScheme;\n  \n  switch (authScheme) {\n\n  case rfbConnFailed:\n    ReadReason(client);\n    return FALSE;\n\n  case rfbNoAuth:\n    rfbClientLog(\"No authentication needed\\n\");\n\n    /* 3.8 and upwards sends a Security Result for rfbNoAuth */\n    if ((client->major==3 && client->minor > 7) || client->major>3)\n        if (!rfbHandleAuthResult(client)) return FALSE;        \n\n    break;\n\n  case rfbVncAuth:\n    if (!HandleVncAuth(client)) return FALSE;\n    break;\n\n#ifdef LIBVNCSERVER_HAVE_SASL\n  case rfbSASL:\n    if (!HandleSASLAuth(client)) return FALSE;\n    break;\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n  case rfbMSLogon:\n    if (!HandleMSLogonAuth(client)) return FALSE;\n    break;\n\n  case rfbARD:\n#ifndef LIBVNCSERVER_WITH_CLIENT_GCRYPT\n    rfbClientLog(\"GCrypt support was not compiled in\\n\");\n    return FALSE;\n#else\n    if (!HandleARDAuth(client)) return FALSE;\n#endif\n    break;\n\n  case rfbTLS:\n    if (!HandleAnonTLSAuth(client)) return FALSE;\n    /* After the TLS session is established, sub auth types are expected.\n     * Note that all following reading/writing are through the TLS session from here.\n     */\n    if (!ReadSupportedSecurityType(client, &subAuthScheme, TRUE)) return FALSE;\n    client->subAuthScheme = subAuthScheme;\n\n    switch (subAuthScheme) {\n\n      case rfbConnFailed:\n        ReadReason(client);\n        return FALSE;\n\n      case rfbNoAuth:\n        rfbClientLog(\"No sub authentication needed\\n\");\n        /* 3.8 and upwards sends a Security Result for rfbNoAuth */\n        if ((client->major==3 && client->minor > 7) || client->major>3)\n            if (!rfbHandleAuthResult(client)) return FALSE;\n        break;\n\n      case rfbVncAuth:\n        if (!HandleVncAuth(client)) return FALSE;\n        break;\n\n#ifdef LIBVNCSERVER_HAVE_SASL\n      case rfbSASL:\n        if (!HandleSASLAuth(client)) return FALSE;\n        break;\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n      default:\n        rfbClientLog(\"Unknown sub authentication scheme from VNC server: %d\\n\",\n            (int)subAuthScheme);\n        return FALSE;\n    }\n\n    break;\n\n  case rfbVeNCrypt:\n    if (!HandleVeNCryptAuth(client)) return FALSE;\n\n    switch (client->subAuthScheme) {\n\n      case rfbVeNCryptTLSNone:\n      case rfbVeNCryptX509None:\n        rfbClientLog(\"No sub authentication needed\\n\");\n        if (!rfbHandleAuthResult(client)) return FALSE;\n        break;\n\n      case rfbVeNCryptTLSVNC:\n      case rfbVeNCryptX509VNC:\n        if (!HandleVncAuth(client)) return FALSE;\n        break;\n\n      case rfbVeNCryptTLSPlain:\n      case rfbVeNCryptX509Plain:\n        if (!HandlePlainAuth(client)) return FALSE;\n        break;\n\n#ifdef LIBVNCSERVER_HAVE_SASL\n      case rfbVeNCryptX509SASL:\n      case rfbVeNCryptTLSSASL:\n        if (!HandleSASLAuth(client)) return FALSE;\n        break;\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n      default:\n        rfbClientLog(\"Unknown sub authentication scheme from VNC server: %d\\n\",\n            client->subAuthScheme);\n        return FALSE;\n    }\n\n    break;\n\n  default:\n    {\n      rfbBool authHandled=FALSE;\n      rfbClientProtocolExtension* e;\n      for (e = rfbClientExtensions; e; e = e->next) {\n        uint32_t const* secType;\n        if (!e->handleAuthentication) continue;\n        for (secType = e->securityTypes; secType && *secType; secType++) {\n          if (authScheme==*secType) {\n            if (!e->handleAuthentication(client, authScheme)) return FALSE;\n            if (!rfbHandleAuthResult(client)) return FALSE;\n            authHandled=TRUE;\n          }\n        }\n      }\n      if (authHandled) break;\n    }\n    rfbClientLog(\"Unknown authentication scheme from VNC server: %d\\n\",\n\t    (int)authScheme);\n    return FALSE;\n  }\n\n  ci.shared = (client->appData.shareDesktop ? 1 : 0);\n\n  if (!WriteToRFBServer(client,  (char *)&ci, sz_rfbClientInitMsg)) return FALSE;\n\n  if (!ReadFromRFBServer(client, (char *)&client->si, sz_rfbServerInitMsg)) return FALSE;\n\n  client->si.framebufferWidth = rfbClientSwap16IfLE(client->si.framebufferWidth);\n  client->si.framebufferHeight = rfbClientSwap16IfLE(client->si.framebufferHeight);\n  client->si.format.redMax = rfbClientSwap16IfLE(client->si.format.redMax);\n  client->si.format.greenMax = rfbClientSwap16IfLE(client->si.format.greenMax);\n  client->si.format.blueMax = rfbClientSwap16IfLE(client->si.format.blueMax);\n  client->si.nameLength = rfbClientSwap32IfLE(client->si.nameLength);\n\n  if (client->si.nameLength > 1<<20) {\n      rfbClientErr(\"Too big desktop name length sent by server: %u B > 1 MB\\n\", (unsigned int)client->si.nameLength);\n      return FALSE;\n  }\n\n  client->desktopName = malloc(client->si.nameLength + 1);\n  if (!client->desktopName) {\n    rfbClientLog(\"Error allocating memory for desktop name, %lu bytes\\n\",\n            (unsigned long)client->si.nameLength);\n    return FALSE;\n  }\n\n  if (!ReadFromRFBServer(client, client->desktopName, client->si.nameLength)) return FALSE;\n\n  client->desktopName[client->si.nameLength] = 0;\n\n  rfbClientLog(\"Desktop name \\\"%s\\\"\\n\",client->desktopName);\n\n  rfbClientLog(\"Connected to VNC server, using protocol version %d.%d\\n\",\n\t  client->major, client->minor);\n\n  rfbClientLog(\"VNC server default format:\\n\");\n  PrintPixelFormat(&client->si.format);\n\n  return TRUE;\n}",
+            994
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libvncclient/rfbproto.c",
+            "InitialiseRFBConnection",
+            "rfbBool /* <=== InitialiseRFBConnection */ \nInitialiseRFBConnection(rfbClient* client)\n{\n  rfbProtocolVersionMsg pv;\n  int major,minor;\n  uint32_t authScheme;\n  uint32_t subAuthScheme;\n  rfbClientInitMsg ci;\n\n  /* if the connection is immediately closed, don't report anything, so\n       that pmw's monitor can make test connections */\n\n  if (client->listenSpecified)\n    errorMessageOnReadFailure = FALSE;\n\n  if (!ReadFromRFBServer(client, pv, sz_rfbProtocolVersionMsg)) return FALSE;\n  pv[sz_rfbProtocolVersionMsg]=0;\n\n  errorMessageOnReadFailure = TRUE;\n\n  pv[sz_rfbProtocolVersionMsg] = 0;\n\n  if (sscanf(pv,rfbProtocolVersionFormat,&major,&minor) != 2) {\n    rfbClientLog(\"Not a valid VNC server (%s)\\n\",pv);\n    return FALSE;\n  }\n\n\n  DefaultSupportedMessages(client);\n  client->major = major;\n  client->minor = minor;\n\n  /* fall back to viewer supported version */\n  if ((major==rfbProtocolMajorVersion) && (minor>rfbProtocolMinorVersion))\n    client->minor = rfbProtocolMinorVersion;\n\n  /* UltraVNC uses minor codes 4 and 6 for the server */\n  if (major==3 && (minor==4 || minor==6)) {\n      rfbClientLog(\"UltraVNC server detected, enabling UltraVNC specific messages\\n\",pv);\n      DefaultSupportedMessagesUltraVNC(client);\n  }\n\n  /* UltraVNC Single Click uses minor codes 14 and 16 for the server */\n  if (major==3 && (minor==14 || minor==16)) {\n     minor = minor - 10;\n     client->minor = minor;\n     rfbClientLog(\"UltraVNC Single Click server detected, enabling UltraVNC specific messages\\n\",pv);\n     DefaultSupportedMessagesUltraVNC(client);\n  }\n\n  /* TightVNC uses minor codes 5 for the server */\n  if (major==3 && minor==5) {\n      rfbClientLog(\"TightVNC server detected, enabling TightVNC specific messages\\n\",pv);\n      DefaultSupportedMessagesTightVNC(client);\n  }\n\n  /* we do not support > RFB3.8 */\n  if ((major==3 && minor>8) || major>3)\n  {\n    client->major=3;\n    client->minor=8;\n  }\n\n  rfbClientLog(\"VNC server supports protocol version %d.%d (viewer %d.%d)\\n\",\n\t  major, minor, rfbProtocolMajorVersion, rfbProtocolMinorVersion);\n\n  sprintf(pv,rfbProtocolVersionFormat,client->major,client->minor);\n\n  if (!WriteToRFBServer(client, pv, sz_rfbProtocolVersionMsg)) return FALSE;\n\n\n  /* 3.7 and onwards sends a # of security types first */\n  if (client->major==3 && client->minor > 6)\n  {\n    if (!ReadSupportedSecurityType(client, &authScheme, FALSE)) return FALSE;\n  }\n  else\n  {\n    if (!ReadFromRFBServer(client, (char *)&authScheme, 4)) return FALSE;\n    authScheme = rfbClientSwap32IfLE(authScheme);\n  }\n  \n  rfbClientLog(\"Selected Security Scheme %d\\n\", authScheme);\n  client->authScheme = authScheme;\n  \n  switch (authScheme) {\n\n  case rfbConnFailed:\n    ReadReason(client);\n    return FALSE;\n\n  case rfbNoAuth:\n    rfbClientLog(\"No authentication needed\\n\");\n\n    /* 3.8 and upwards sends a Security Result for rfbNoAuth */\n    if ((client->major==3 && client->minor > 7) || client->major>3)\n        if (!rfbHandleAuthResult(client)) return FALSE;        \n\n    break;\n\n  case rfbVncAuth:\n    if (!HandleVncAuth(client)) return FALSE;\n    break;\n\n#ifdef LIBVNCSERVER_HAVE_SASL\n  case rfbSASL:\n    if (!HandleSASLAuth(client)) return FALSE;\n    break;\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n  case rfbMSLogon:\n    if (!HandleMSLogonAuth(client)) return FALSE;\n    break;\n\n  case rfbARD:\n#ifndef LIBVNCSERVER_WITH_CLIENT_GCRYPT\n    rfbClientLog(\"GCrypt support was not compiled in\\n\");\n    return FALSE;\n#else\n    if (!HandleARDAuth(client)) return FALSE;\n#endif\n    break;\n\n  case rfbTLS:\n    if (!HandleAnonTLSAuth(client)) return FALSE;\n    /* After the TLS session is established, sub auth types are expected.\n     * Note that all following reading/writing are through the TLS session from here.\n     */\n    if (!ReadSupportedSecurityType(client, &subAuthScheme, TRUE)) return FALSE;\n    client->subAuthScheme = subAuthScheme;\n\n    switch (subAuthScheme) {\n\n      case rfbConnFailed:\n        ReadReason(client);\n        return FALSE;\n\n      case rfbNoAuth:\n        rfbClientLog(\"No sub authentication needed\\n\");\n        /* 3.8 and upwards sends a Security Result for rfbNoAuth */\n        if ((client->major==3 && client->minor > 7) || client->major>3)\n            if (!rfbHandleAuthResult(client)) return FALSE;\n        break;\n\n      case rfbVncAuth:\n        if (!HandleVncAuth(client)) return FALSE;\n        break;\n\n#ifdef LIBVNCSERVER_HAVE_SASL\n      case rfbSASL:\n        if (!HandleSASLAuth(client)) return FALSE;\n        break;\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n      default:\n        rfbClientLog(\"Unknown sub authentication scheme from VNC server: %d\\n\",\n            (int)subAuthScheme);\n        return FALSE;\n    }\n\n    break;\n\n  case rfbVeNCrypt:\n    if (!HandleVeNCryptAuth(client)) return FALSE;\n\n    switch (client->subAuthScheme) {\n\n      case rfbVeNCryptTLSNone:\n      case rfbVeNCryptX509None:\n        rfbClientLog(\"No sub authentication needed\\n\");\n        if (!rfbHandleAuthResult(client)) return FALSE;\n        break;\n\n      case rfbVeNCryptTLSVNC:\n      case rfbVeNCryptX509VNC:\n        if (!HandleVncAuth(client)) return FALSE;\n        break;\n\n      case rfbVeNCryptTLSPlain:\n      case rfbVeNCryptX509Plain:\n        if (!HandlePlainAuth(client)) return FALSE;\n        break;\n\n#ifdef LIBVNCSERVER_HAVE_SASL\n      case rfbVeNCryptX509SASL:\n      case rfbVeNCryptTLSSASL:\n        if (!HandleSASLAuth(client)) return FALSE;\n        break;\n#endif /* LIBVNCSERVER_HAVE_SASL */\n\n      default:\n        rfbClientLog(\"Unknown sub authentication scheme from VNC server: %d\\n\",\n            client->subAuthScheme);\n        return FALSE;\n    }\n\n    break;\n\n  default:\n    {\n      rfbBool authHandled=FALSE;\n      rfbClientProtocolExtension* e;\n      for (e = rfbClientExtensions; e; e = e->next) {\n        uint32_t const* secType;\n        if (!e->handleAuthentication) continue;\n        for (secType = e->securityTypes; secType && *secType; secType++) {\n          if (authScheme==*secType) {\n            if (!e->handleAuthentication(client, authScheme)) return FALSE;\n            if (!rfbHandleAuthResult(client)) return FALSE;\n            authHandled=TRUE;\n          }\n        }\n      }\n      if (authHandled) break;\n    }\n    rfbClientLog(\"Unknown authentication scheme from VNC server: %d\\n\",\n\t    (int)authScheme);\n    return FALSE;\n  }\n\n  ci.shared = (client->appData.shareDesktop ? 1 : 0);\n\n  if (!WriteToRFBServer(client,  (char *)&ci, sz_rfbClientInitMsg)) return FALSE;\n\n  if (!ReadFromRFBServer(client, (char *)&client->si, sz_rfbServerInitMsg)) return FALSE;\n\n  client->si.framebufferWidth = rfbClientSwap16IfLE(client->si.framebufferWidth);\n  client->si.framebufferHeight = rfbClientSwap16IfLE(client->si.framebufferHeight);\n  client->si.format.redMax = rfbClientSwap16IfLE(client->si.format.redMax);\n  client->si.format.greenMax = rfbClientSwap16IfLE(client->si.format.greenMax);\n  client->si.format.blueMax = rfbClientSwap16IfLE(client->si.format.blueMax);\n  client->si.nameLength = rfbClientSwap32IfLE(client->si.nameLength);\n\n  /* To guard against integer wrap-around, si.nameLength is cast to 64 bit */\n  client->desktopName = malloc((uint64_t)client->si.nameLength + 1);\n  if (!client->desktopName) {\n    rfbClientLog(\"Error allocating memory for desktop name, %lu bytes\\n\",\n            (unsigned long)client->si.nameLength);\n    return FALSE;\n  }\n\n  if (!ReadFromRFBServer(client, client->desktopName, client->si.nameLength)) return FALSE;\n\n  client->desktopName[client->si.nameLength] = 0;\n\n  rfbClientLog(\"Desktop name \\\"%s\\\"\\n\",client->desktopName);\n\n  rfbClientLog(\"Connected to VNC server, using protocol version %d.%d\\n\",\n\t  client->major, client->minor);\n\n  rfbClientLog(\"VNC server default format:\\n\");\n  PrintPixelFormat(&client->si.format);\n\n  return TRUE;\n}",
+            994
+        ]
+    ]
+}

@@ -1,0 +1,966 @@
+{
+    "calleeMethods": [
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_update_mod_princ_data",
+            "krb5_error_code /* <=== krb5_dbe_update_mod_princ_data */ \nkrb5_dbe_update_mod_princ_data(krb5_context context, krb5_db_entry *entry,\n                               krb5_timestamp mod_date,\n                               krb5_const_principal mod_princ)\n{\n    krb5_tl_data tl_data;\n\n    krb5_error_code retval = 0;\n    krb5_octet *nextloc = 0;\n    char   *unparse_mod_princ = 0;\n    unsigned int unparse_mod_princ_size;\n\n    if ((retval = krb5_unparse_name(context, mod_princ, &unparse_mod_princ)))\n        return (retval);\n\n    unparse_mod_princ_size = strlen(unparse_mod_princ) + 1;\n\n    if ((nextloc = (krb5_octet *) malloc(unparse_mod_princ_size + 4))\n        == NULL) {\n        free(unparse_mod_princ);\n        return (ENOMEM);\n    }\n\n    tl_data.tl_data_type = KRB5_TL_MOD_PRINC;\n    tl_data.tl_data_length = unparse_mod_princ_size + 4;\n    tl_data.tl_data_contents = nextloc;\n\n    /* Mod Date */\n    krb5_kdb_encode_int32(mod_date, nextloc);\n\n    /* Mod Princ */\n    memcpy(nextloc + 4, unparse_mod_princ, unparse_mod_princ_size);\n\n    retval = krb5_dbe_update_tl_data(context, entry, &tl_data);\n\n    free(unparse_mod_princ);\n    free(nextloc);\n\n    return (retval);\n}",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb_cpw.c",
+            "add_key_pwd",
+            "static krb5_error_code /* <=== add_key_pwd */ \nadd_key_pwd(context, master_key, ks_tuple, ks_tuple_count, passwd,\n            db_entry, kvno)\n    krb5_context          context;\n    krb5_keyblock       * master_key;\n    krb5_key_salt_tuple * ks_tuple;\n    int                   ks_tuple_count;\n    const char          * passwd;\n    krb5_db_entry       * db_entry;\n    int                   kvno;\n{\n    krb5_error_code       retval;\n    krb5_keysalt          key_salt;\n    krb5_keyblock         key;\n    krb5_data             pwd;\n    krb5_data             afs_params = string2data(\"\\1\"), *s2k_params;\n    int                   i, j;\n    krb5_key_data         tmp_key_data;\n\n    for (i = 0; i < ks_tuple_count; i++) {\n        krb5_boolean similar;\n\n        similar = 0;\n        s2k_params = NULL;\n\n        /*\n         * We could use krb5_keysalt_iterate to replace this loop, or use\n         * krb5_keysalt_is_present for the loop below, but we want to avoid\n         * circular library dependencies.\n         */\n        for (j = 0; j < i; j++) {\n            if ((retval = krb5_c_enctype_compare(context,\n                                                 ks_tuple[i].ks_enctype,\n                                                 ks_tuple[j].ks_enctype,\n                                                 &similar)))\n                return(retval);\n\n            if (similar &&\n                (ks_tuple[j].ks_salttype == ks_tuple[i].ks_salttype))\n                break;\n        }\n\n        if (j < i)\n            continue;\n\n        if ((retval = krb5_dbe_create_key_data(context, db_entry)))\n            return(retval);\n\n        /* Convert password string to key using appropriate salt */\n        switch (key_salt.type = ks_tuple[i].ks_salttype) {\n        case KRB5_KDB_SALTTYPE_ONLYREALM: {\n            krb5_data * saltdata;\n            if ((retval = krb5_copy_data(context, krb5_princ_realm(context,\n                                                                   db_entry->princ), &saltdata)))\n                return(retval);\n\n            key_salt.data = *saltdata;\n            free(saltdata);\n        }\n            break;\n        case KRB5_KDB_SALTTYPE_NOREALM:\n            if ((retval=krb5_principal2salt_norealm(context, db_entry->princ,\n                                                    &key_salt.data)))\n                return(retval);\n            break;\n        case KRB5_KDB_SALTTYPE_NORMAL:\n            if ((retval = krb5_principal2salt(context, db_entry->princ,\n                                              &key_salt.data)))\n                return(retval);\n            break;\n        case KRB5_KDB_SALTTYPE_V4:\n            key_salt.data.length = 0;\n            key_salt.data.data = 0;\n            break;\n        case KRB5_KDB_SALTTYPE_AFS3:\n            retval = krb5int_copy_data_contents(context,\n                                                &db_entry->princ->realm,\n                                                &key_salt.data);\n            if (retval)\n                return retval;\n            s2k_params = &afs_params;\n            break;\n        case KRB5_KDB_SALTTYPE_SPECIAL:\n            retval = make_random_salt(context, &key_salt);\n            if (retval)\n                return retval;\n            break;\n        default:\n            return(KRB5_KDB_BAD_SALTTYPE);\n        }\n\n        pwd = string2data((char *)passwd);\n\n        retval = krb5_c_string_to_key_with_params(context,\n                                                  ks_tuple[i].ks_enctype,\n                                                  &pwd, &key_salt.data,\n                                                  s2k_params, &key);\n        if (retval) {\n            free(key_salt.data.data);\n            return retval;\n        }\n\n        memset(&tmp_key_data, 0, sizeof(tmp_key_data));\n        retval = krb5_dbe_encrypt_key_data(context, master_key, &key,\n                                           (const krb5_keysalt *)&key_salt,\n                                           kvno, &tmp_key_data);\n        if (key_salt.data.data)\n            free(key_salt.data.data);\n        free(key.contents);\n\n        if( retval )\n            return retval;\n\n        /* Copy the result to ensure we use db_alloc storage. */\n        retval = copy_key_data(context, &tmp_key_data,\n                               &db_entry->key_data[db_entry->n_key_data - 1]);\n        krb5_dbe_free_key_data_contents(context, &tmp_key_data);\n        if (retval)\n            return retval;\n    }\n\n    return 0;\n}",
+            3
+        ],
+        [
+            "src/include/kdb.h",
+            "KRB5_TL_MKVNO",
+            "#define KRB5_TL_MKVNO                   0x0008 /* <=== src/include/kdb.h:258:258:KRB5_TL_MKVNO:0 */ ",
+            2
+        ],
+        [
+            "src/lib/kadm5/admin_internal.h",
+            "krb5_string_to_keysalts",
+            "krb5_string_to_keysalts(const char *string, const char *tupleseps, /* <=== krb5_string_to_keysalts */ \n                        const char *ksaltseps, krb5_boolean dups,\n                        krb5_key_salt_tuple **ksaltp, krb5_int32 *nksaltp);",
+            2
+        ],
+        [
+            "src/plugins/kdb/ldap/libkdb_ldap/kdb_xdr.c",
+            "krb5_dbe_update_last_pwd_change",
+            "krb5_error_code /* <=== krb5_dbe_update_last_pwd_change */ \nkrb5_dbe_update_last_pwd_change(krb5_context context, krb5_db_entry *entry,\n                                krb5_timestamp stamp)\n{\n    krb5_tl_data        tl_data;\n    krb5_octet          buf[4]; /* this is the encoded size of an int32 */\n\n    tl_data.tl_data_type = KRB5_TL_LAST_PWD_CHANGE;\n    tl_data.tl_data_length = sizeof(buf);\n    krb5_kdb_encode_int32((krb5_int32) stamp, buf);\n    tl_data.tl_data_contents = buf;\n\n    return(krb5_dbe_update_tl_data(context, entry, &tl_data));\n}",
+            1
+        ],
+        [
+            "src/util/et/com_err.h",
+            "error_message",
+            "extern /*@observer@*//*@dependent@*/ const char * KRB5_CALLCONV error_message /* <=== error_message */ \n\t(errcode_t)",
+            3
+        ],
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "cleanup_key_data",
+            "static void cleanup_key_data(context, count, data) /* <=== cleanup_key_data */ \n    krb5_context   context;\n    int                    count;\n    krb5_key_data        * data;\n{\n    int i, j;\n\n    for (i = 0; i < count; i++)\n        for (j = 0; j < data[i].key_data_ver; j++)\n            if (data[i].key_data_length[j])\n                krb5_db_free(context, data[i].key_data_contents[j]);\n    krb5_db_free(context, data);\n}",
+            3
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_update_last_pwd_change",
+            "krb5_error_code /* <=== krb5_dbe_update_last_pwd_change */ \nkrb5_dbe_update_last_pwd_change(krb5_context context, krb5_db_entry *entry,\n                                krb5_timestamp stamp)\n{\n    krb5_tl_data tl_data;\n    krb5_octet buf[4];          /* this is the encoded size of an int32 */\n\n    tl_data.tl_data_type = KRB5_TL_LAST_PWD_CHANGE;\n    tl_data.tl_data_length = sizeof(buf);\n    krb5_kdb_encode_int32((krb5_int32) stamp, buf);\n    tl_data.tl_data_contents = buf;\n\n    return (krb5_dbe_update_tl_data(context, entry, &tl_data));\n}",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_db_update_tl_data",
+            "krb5_error_code /* <=== krb5_db_update_tl_data */ \nkrb5_db_update_tl_data(krb5_context context, krb5_int16 *n_tl_datap,\n                       krb5_tl_data **tl_datap, krb5_tl_data *new_tl_data)\n{\n    krb5_tl_data *tl_data = NULL;\n    krb5_octet *tmp;\n\n    /*\n     * Copy the new data first, so we can fail cleanly if malloc()\n     * fails.\n     */\n    if ((tmp =\n         (krb5_octet *) krb5_db_alloc(context, NULL,\n                                      new_tl_data->tl_data_length)) == NULL)\n        return (ENOMEM);\n\n    /*\n     * Find an existing entry of the specified type and point at\n     * it, or NULL if not found.\n     */\n\n    if (new_tl_data->tl_data_type != KRB5_TL_DB_ARGS) { /* db_args can be multiple */\n        for (tl_data = *tl_datap; tl_data;\n             tl_data = tl_data->tl_data_next)\n            if (tl_data->tl_data_type == new_tl_data->tl_data_type)\n                break;\n    }\n\n    /* If necessary, chain a new record in the beginning and point at it.  */\n\n    if (!tl_data) {\n        tl_data = krb5_db_alloc(context, NULL, sizeof(krb5_tl_data));\n        if (tl_data == NULL) {\n            free(tmp);\n            return (ENOMEM);\n        }\n        memset(tl_data, 0, sizeof(krb5_tl_data));\n        tl_data->tl_data_next = *tl_datap;\n        *tl_datap = tl_data;\n        (*n_tl_datap)++;\n    }\n\n    /* fill in the record */\n\n    if (tl_data->tl_data_contents)\n        krb5_db_free(context, tl_data->tl_data_contents);\n\n    tl_data->tl_data_type = new_tl_data->tl_data_type;\n    tl_data->tl_data_length = new_tl_data->tl_data_length;\n    tl_data->tl_data_contents = tmp;\n    memcpy(tmp, new_tl_data->tl_data_contents, tl_data->tl_data_length);\n\n    return (0);\n}",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_lookup_last_pwd_change",
+            "krb5_error_code /* <=== krb5_dbe_lookup_last_pwd_change */ \nkrb5_dbe_lookup_last_pwd_change(krb5_context context, krb5_db_entry *entry,\n                                krb5_timestamp *stamp)\n{\n    krb5_tl_data tl_data;\n    krb5_error_code code;\n    krb5_int32 tmp;\n\n    tl_data.tl_data_type = KRB5_TL_LAST_PWD_CHANGE;\n\n    if ((code = krb5_dbe_lookup_tl_data(context, entry, &tl_data)))\n        return (code);\n\n    if (tl_data.tl_data_length != 4) {\n        *stamp = 0;\n        return (0);\n    }\n\n    krb5_kdb_decode_int32(tl_data.tl_data_contents, tmp);\n\n    *stamp = (krb5_timestamp) tmp;\n\n    return (0);\n}",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_update_tl_data",
+            "krb5_error_code /* <=== krb5_dbe_update_tl_data */ \nkrb5_dbe_update_tl_data(krb5_context context, krb5_db_entry *entry,\n                        krb5_tl_data *new_tl_data)\n{\n    return krb5_db_update_tl_data(context, &entry->n_tl_data, &entry->tl_data,\n                                  new_tl_data);\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/server_internal.h",
+            "k5_pwqual_name",
+            "const char * /* <=== k5_pwqual_name */ \nk5_pwqual_name(krb5_context context, pwqual_handle handle);",
+            2
+        ],
+        [
+            "src/lib/krb5/krb/kerrs.c",
+            "krb5_free_error_message",
+            "void KRB5_CALLCONV /* <=== krb5_free_error_message */ \nkrb5_free_error_message(krb5_context ctx, const char *msg)\n{\n#ifdef DEBUG\n    if (ERROR_MESSAGE_DEBUG())\n        fprintf(stderr, \"krb5_free_error_message(%p, %p)\\n\", ctx, msg);\n#endif\n    if (ctx == NULL)\n        return;\n    k5_free_error(&ctx->err, msg);\n}",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_db_alloc",
+            "void   * /* <=== krb5_db_alloc */ \nkrb5_db_alloc(krb5_context kcontext, void *ptr, size_t size)\n{\n    krb5_error_code status;\n    kdb_vftabl *v;\n\n    status = get_vftabl(kcontext, &v);\n    if (status)\n        return NULL;\n    return v->alloc(kcontext, ptr, size);\n}",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_free_actkvno_list",
+            "void /* <=== krb5_dbe_free_actkvno_list */ \nkrb5_dbe_free_actkvno_list(krb5_context context, krb5_actkvno_node *val)\n{\n    krb5_actkvno_node *temp = val, *prev;\n\n    while (temp != NULL) {\n        prev = temp;\n        temp = temp->next;\n        free(prev);\n    }\n}",
+            2
+        ],
+        [
+            "src/include/kdb.h",
+            "KRB5_TL_LAST_PWD_CHANGE",
+            "#define KRB5_TL_LAST_PWD_CHANGE         0x0001 /* <=== src/include/kdb.h:249:249:KRB5_TL_LAST_PWD_CHANGE:0 */ ",
+            2
+        ],
+        [
+            "src/lib/kadm5/server_internal.h",
+            "INITIAL_HIST_KVNO",
+            "#define INITIAL_HIST_KVNO 2 /* <=== src/lib/kadm5/server_internal.h:35:35:INITIAL_HIST_KVNO:0 */ ",
+            1
+        ],
+        [
+            "src/lib/krb5/os/timeofday.c",
+            "krb5_timeofday",
+            "krb5_error_code KRB5_CALLCONV /* <=== krb5_timeofday */ \nkrb5_timeofday(krb5_context context, register krb5_timestamp *timeret)\n{\n    krb5_os_context os_ctx;\n    time_t tval;\n\n    if (context == NULL)\n        return EINVAL;\n\n    os_ctx = &context->os_context;\n    if (os_ctx->os_flags & KRB5_OS_TOFFSET_TIME) {\n        *timeret = os_ctx->time_offset;\n        return 0;\n    }\n    tval = time(0);\n    if (tval == (time_t) -1)\n        return (krb5_error_code) errno;\n    if (os_ctx->os_flags & KRB5_OS_TOFFSET_VALID)\n        tval += os_ctx->time_offset;\n    *timeret = tval;\n    return 0;\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "VALGRIND_CHECK_DEFINED",
+            "#define VALGRIND_CHECK_DEFINED(LVALUE) ((void)0) /* <=== src/lib/kadm5/srv/svr_principal.c:22:22:VALGRIND_CHECK_DEFINED:1 */ ",
+            2
+        ],
+        [
+            "src/lib/kadm5/srv/server_misc.c",
+            "passwd_check",
+            "kadm5_ret_t /* <=== passwd_check */ \npasswd_check(kadm5_server_handle_t handle, const char *password,\n             kadm5_policy_ent_t policy, krb5_principal princ)\n{\n    krb5_error_code ret;\n    pwqual_handle *h;\n    const char *polname = (policy == NULL) ? NULL : policy->policy;\n\n    if (policy != NULL) {\n        ret = check_against_policy(handle, password, policy);\n        if (ret != 0)\n            return ret;\n    }\n    for (h = handle->qual_handles; *h != NULL; h++) {\n        ret = k5_pwqual_check(handle->context, *h, password, polname, princ);\n        if (ret != 0) {\n            const char *e = krb5_get_error_message(handle->context, ret);\n            const char *modname = k5_pwqual_name(handle->context, *h);\n            char *princname;\n            if (krb5_unparse_name(handle->context, princ, &princname) != 0)\n                princname = NULL;\n            krb5_klog_syslog(LOG_ERR,\n                             _(\"password quality module %s rejected password \"\n                               \"for %s: %s\"), modname,\n                             princname ? princname : \"(can't unparse)\", e);\n            krb5_free_error_message(handle->context, e);\n            free(princname);\n            return ret;\n        }\n    }\n    return 0;\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/srv/kadm5_hook.c",
+            "k5_kadm5_hook_modify",
+            "kadm5_ret_t /* <=== k5_kadm5_hook_modify */ \nk5_kadm5_hook_modify(krb5_context context, kadm5_hook_handle *handles,\n                     int stage, kadm5_principal_ent_t princ, long mask)\n{\n    ITERATE(modify, (context, h->data, stage, princ, mask));\n    return 0;\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/server_internal.h",
+            "CHECK_HANDLE",
+            "#define CHECK_HANDLE(handle)                                    \\ /* <=== src/lib/kadm5/server_internal.h:155:158:CHECK_HANDLE:1 */ \n    GENERIC_CHECK_HANDLE(handle, KADM5_OLD_SERVER_API_VERSION,  \\\n                         KADM5_NEW_SERVER_API_VERSION)          \\\n    SERVER_CHECK_HANDLE(handle)",
+            1
+        ],
+        [
+            "src/lib/krb5/krb/kerrs.c",
+            "err_fmt_fmt",
+            "static char * /* <=== err_fmt_fmt */ \nerr_fmt_fmt(const char *err_fmt, long code, const char *msg)\n{\n    struct k5buf buf;\n    const char *p, *s;\n\n    if (err_fmt == NULL)\n        return NULL;\n\n    k5_buf_init_dynamic(&buf);\n\n    s = err_fmt;\n    while ((p = strchr(s, '%')) != NULL) {\n        k5_buf_add_len(&buf, s, p - s);\n        s = p;\n        if (p[1] == '\\0')\n            break;\n        else if (p[1] == 'M')\n            k5_buf_add(&buf, msg);\n        else if (p[1] == 'C')\n            k5_buf_add_fmt(&buf, \"%ld\", code);\n        else if (p[1] == '%')\n            k5_buf_add(&buf, \"%\");\n        else\n            k5_buf_add_fmt(&buf, \"%%%c\", p[1]);\n        s += 2;\n    }\n    k5_buf_add(&buf, s);        /* Remainder after last token */\n    return buf.data;\n}",
+            3
+        ],
+        [
+            "src/lib/kdb/kdb_cpw.c",
+            "add_key_rnd",
+            "static krb5_error_code /* <=== add_key_rnd */ \nadd_key_rnd(context, master_key, ks_tuple, ks_tuple_count, db_entry, kvno)\n    krb5_context          context;\n    krb5_keyblock       * master_key;\n    krb5_key_salt_tuple * ks_tuple;\n    int                   ks_tuple_count;\n    krb5_db_entry       * db_entry;\n    int                   kvno;\n{\n    krb5_keyblock         key;\n    int                   i, j;\n    krb5_error_code       retval;\n    krb5_key_data         tmp_key_data;\n\n    for (i = 0; i < ks_tuple_count; i++) {\n        krb5_boolean similar;\n\n        similar = 0;\n\n        /*\n         * We could use krb5_keysalt_iterate to replace this loop, or use\n         * krb5_keysalt_is_present for the loop below, but we want to avoid\n         * circular library dependencies.\n         */\n        for (j = 0; j < i; j++) {\n            if ((retval = krb5_c_enctype_compare(context,\n                                                 ks_tuple[i].ks_enctype,\n                                                 ks_tuple[j].ks_enctype,\n                                                 &similar)))\n                return(retval);\n\n            if (similar)\n                break;\n        }\n\n        if (similar)\n            continue;\n\n        if ((retval = krb5_dbe_create_key_data(context, db_entry)))\n            return retval;\n\n        /* there used to be code here to extract the old key, and derive\n           a new key from it.  Now that there's a unified prng, that isn't\n           necessary. */\n\n        /* make new key */\n        if ((retval = krb5_c_make_random_key(context, ks_tuple[i].ks_enctype,\n                                             &key)))\n            return retval;\n\n        memset( &tmp_key_data, 0, sizeof(tmp_key_data));\n        retval = krb5_dbe_encrypt_key_data(context, master_key, &key, NULL,\n                                           kvno, &tmp_key_data);\n\n        krb5_free_keyblock_contents(context, &key);\n        if( retval )\n            return retval;\n\n        /* Copy the result to ensure we use db_alloc storage. */\n        retval = copy_key_data(context, &tmp_key_data,\n                               &db_entry->key_data[db_entry->n_key_data - 1]);\n        krb5_dbe_free_key_data_contents(context, &tmp_key_data);\n        if (retval)\n            return retval;\n    }\n\n    return 0;\n}",
+            3
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_find_act_mkey",
+            "krb5_error_code /* <=== krb5_dbe_find_act_mkey */ \nkrb5_dbe_find_act_mkey(krb5_context context, krb5_actkvno_node *act_mkey_list,\n                       krb5_kvno *act_kvno, krb5_keyblock **act_mkey)\n{\n    krb5_kvno kvno;\n    krb5_error_code retval;\n    krb5_keyblock *mkey, *cur_mkey;\n    krb5_timestamp now;\n\n    if (act_mkey_list == NULL) {\n        *act_kvno = 0;\n        *act_mkey = NULL;\n        return 0;\n    }\n\n    if (context->dal_handle->master_keylist == NULL)\n        return KRB5_KDB_DBNOTINITED;\n\n    /* Find the currently active master key version. */\n    if ((retval = krb5_timeofday(context, &now)))\n        return (retval);\n    kvno = find_actkvno(act_mkey_list, now);\n\n    /* Find the corresponding master key. */\n    mkey = find_master_key(context, kvno);\n    if (mkey == NULL) {\n        /* Reload the master key list and try again. */\n        cur_mkey = &context->dal_handle->master_keylist->keyblock;\n        if (krb5_db_fetch_mkey_list(context, context->dal_handle->master_princ,\n                                    cur_mkey) == 0)\n            mkey = find_master_key(context, kvno);\n    }\n    if (mkey == NULL)\n        return KRB5_KDB_NO_MATCHING_KEY;\n\n    *act_mkey = mkey;\n    if (act_kvno != NULL)\n        *act_kvno = kvno;\n    return 0;\n}",
+            2
+        ],
+        [
+            "src/lib/kadm5/srv/server_kdb.c",
+            "kdb_get_entry",
+            "krb5_error_code /* <=== kdb_get_entry */ \nkdb_get_entry(kadm5_server_handle_t handle,\n              krb5_principal principal, krb5_db_entry **kdb_ptr,\n              osa_princ_ent_rec *adb)\n{\n    krb5_error_code ret;\n    krb5_tl_data tl_data;\n    XDR xdrs;\n    krb5_db_entry *kdb;\n\n    *kdb_ptr = NULL;\n\n    ret = krb5_db_get_principal(handle->context, principal,\n                                KRB5_KDB_FLAG_ALIAS_OK, &kdb);\n    if (ret == KRB5_KDB_NOENTRY)\n        return(KADM5_UNK_PRINC);\n    if (ret)\n        return(ret);\n\n    if (adb) {\n        memset(adb, 0, sizeof(*adb));\n\n        tl_data.tl_data_type = KRB5_TL_KADM_DATA;\n        /*\n         * XXX Currently, lookup_tl_data always returns zero; it sets\n         * tl_data->tl_data_length to zero if the type isn't found.\n         * This should be fixed...\n         */\n        if ((ret = krb5_dbe_lookup_tl_data(handle->context, kdb, &tl_data))\n            || (tl_data.tl_data_length == 0)) {\n            /* there's no admin data.  this can happen, if the admin\n               server is put into production after some principals\n               are created.  In this case, return valid admin\n               data (which is all zeros with the hist_kvno filled\n               in), and when the entry is written, the admin\n               data will get stored correctly. */\n\n            adb->admin_history_kvno = INITIAL_HIST_KVNO;\n            *kdb_ptr = kdb;\n            return(ret);\n        }\n\n        xdrmem_create(&xdrs, (caddr_t)tl_data.tl_data_contents,\n                      tl_data.tl_data_length, XDR_DECODE);\n        if (! xdr_osa_princ_ent_rec(&xdrs, adb)) {\n            xdr_destroy(&xdrs);\n            krb5_db_free_principal(handle->context, kdb);\n            return(KADM5_XDR_FAILURE);\n        }\n        xdr_destroy(&xdrs);\n    }\n\n    *kdb_ptr = kdb;\n    return(0);\n}",
+            1
+        ],
+        [
+            "src/include/k5-int.h",
+            "k5alloc",
+            "static inline void * /* <=== k5alloc */ \nk5alloc(size_t size, krb5_error_code *code)\n{\n    return k5calloc(1, size, code);\n}",
+            3
+        ],
+        [
+            "src/lib/kdb/kdb_cpw.c",
+            "preserve_old_keys",
+            "static krb5_error_code /* <=== preserve_old_keys */ \npreserve_old_keys(krb5_context context, krb5_keyblock *mkey,\n                  krb5_db_entry *dbent, int kvno, int n_key_data,\n                  krb5_key_data *key_data)\n{\n    krb5_error_code ret;\n    int i;\n\n    for (i = 0; i < n_key_data; i++) {\n        if (kvno != 0 && key_data[i].key_data_kvno != kvno)\n            continue;\n        ret = krb5_dbe_create_key_data(context, dbent);\n        if (ret)\n            return ret;\n        ret = preserve_one_old_key(context, mkey, dbent, &key_data[i],\n                                   &dbent->key_data[dbent->n_key_data - 1]);\n        if (ret)\n            return ret;\n    }\n    return 0;\n}",
+            3
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_cpw",
+            "krb5_error_code /* <=== krb5_dbe_cpw */ \nkrb5_dbe_cpw(krb5_context kcontext, krb5_keyblock *master_key,\n             krb5_key_salt_tuple *ks_tuple, int ks_tuple_count, char *passwd,\n             int new_kvno, krb5_boolean keepold, krb5_db_entry *db_entry)\n{\n    krb5_error_code status = 0;\n    kdb_vftabl *v;\n\n    status = get_vftabl(kcontext, &v);\n    if (status)\n        return status;\n    return v->change_pwd(kcontext, master_key, ks_tuple, ks_tuple_count,\n                         passwd, new_kvno, keepold, db_entry);\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/srv/server_kdb.c",
+            "kdb_free_entry",
+            "krb5_error_code /* <=== kdb_free_entry */ \nkdb_free_entry(kadm5_server_handle_t handle,\n               krb5_db_entry *kdb, osa_princ_ent_rec *adb)\n{\n    XDR xdrs;\n\n\n    if (kdb)\n        krb5_db_free_principal(handle->context, kdb);\n\n    if (adb) {\n        xdrmem_create(&xdrs, NULL, 0, XDR_FREE);\n        xdr_osa_princ_ent_rec(&xdrs, adb);\n        xdr_destroy(&xdrs);\n    }\n\n    return(0);\n}",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_db_free",
+            "void /* <=== krb5_db_free */ \nkrb5_db_free(krb5_context kcontext, void *ptr)\n{\n    krb5_error_code status;\n    kdb_vftabl *v;\n\n    status = get_vftabl(kcontext, &v);\n    if (status)\n        return;\n    v->free(kcontext, ptr);\n}",
+            2
+        ],
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "get_policy",
+            "static kadm5_ret_t /* <=== get_policy */ \nget_policy(kadm5_server_handle_t handle, const char *name,\n           kadm5_policy_ent_t policy_out, krb5_boolean *have_pol_out)\n{\n    kadm5_ret_t ret;\n\n    *have_pol_out = FALSE;\n    if (name == NULL)\n        return 0;\n    ret = kadm5_get_policy(handle->lhandle, (char *)name, policy_out);\n    if (ret == 0)\n        *have_pol_out = TRUE;\n    return (ret == KADM5_UNK_POLICY) ? 0 : ret;\n}",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "get_vftabl",
+            "static krb5_error_code /* <=== get_vftabl */ \nget_vftabl(krb5_context kcontext, kdb_vftabl **vftabl_ptr)\n{\n    krb5_error_code status;\n\n    *vftabl_ptr = NULL;\n    if (kcontext->dal_handle == NULL) {\n        status = krb5_db_setup_lib_handle(kcontext);\n        if (status)\n            return status;\n    }\n    *vftabl_ptr = &kcontext->dal_handle->lib_handle->vftabl;\n    return 0;\n}",
+            2
+        ],
+        [
+            "src/include/kdb.h",
+            "KRB5_TL_DB_ARGS",
+            "#define KRB5_TL_DB_ARGS                 0x7fff /* <=== src/include/kdb.h:274:274:KRB5_TL_DB_ARGS:0 */ ",
+            3
+        ],
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "kadm5_copy_principal",
+            "static krb5_error_code /* <=== kadm5_copy_principal */ \nkadm5_copy_principal(krb5_context context, krb5_const_principal inprinc, krb5_principal *outprinc)\n{\n    register krb5_principal tempprinc;\n    register int i, nelems;\n\n    tempprinc = (krb5_principal)krb5_db_alloc(context, NULL, sizeof(krb5_principal_data));\n\n    if (tempprinc == 0)\n        return ENOMEM;\n\n    VALGRIND_CHECK_DEFINED(*inprinc);\n    *tempprinc = *inprinc;\n\n    nelems = (int) krb5_princ_size(context, inprinc);\n    tempprinc->data = krb5_db_alloc(context, NULL, nelems * sizeof(krb5_data));\n    if (tempprinc->data == 0) {\n        krb5_db_free(context, (char *)tempprinc);\n        return ENOMEM;\n    }\n\n    for (i = 0; i < nelems; i++) {\n        unsigned int len = krb5_princ_component(context, inprinc, i)->length;\n        krb5_princ_component(context, tempprinc, i)->length = len;\n        if (((krb5_princ_component(context, tempprinc, i)->data =\n              krb5_db_alloc(context, NULL, len)) == 0) && len) {\n            while (--i >= 0)\n                krb5_db_free(context, krb5_princ_component(context, tempprinc, i)->data);\n            krb5_db_free (context, tempprinc->data);\n            krb5_db_free (context, tempprinc);\n            return ENOMEM;\n        }\n        if (len)\n            memcpy(krb5_princ_component(context, tempprinc, i)->data,\n                   krb5_princ_component(context, inprinc, i)->data, len);\n        krb5_princ_component(context, tempprinc, i)->magic = KV5M_DATA;\n    }\n\n    tempprinc->realm.data =\n        krb5_db_alloc(context, NULL, tempprinc->realm.length = inprinc->realm.length);\n    if (!tempprinc->realm.data && tempprinc->realm.length) {\n        for (i = 0; i < nelems; i++)\n            krb5_db_free(context, krb5_princ_component(context, tempprinc, i)->data);\n        krb5_db_free(context, tempprinc->data);\n        krb5_db_free(context, tempprinc);\n        return ENOMEM;\n    }\n    if (tempprinc->realm.length)\n        memcpy(tempprinc->realm.data, inprinc->realm.data,\n               inprinc->realm.length);\n\n    *outprinc = tempprinc;\n    return 0;\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/misc_free.c",
+            "kadm5_free_policy_ent",
+            "kadm5_ret_t /* <=== kadm5_free_policy_ent */ \nkadm5_free_policy_ent(void *server_handle, kadm5_policy_ent_t val)\n{\n    krb5_tl_data *tl_next;\n\n    _KADM5_CHECK_HANDLE(server_handle);\n\n    if (val == NULL)\n        return KADM5_OK;\n\n    free(val->policy);\n    free(val->allowed_keysalts);\n    for (; val->tl_data; val->tl_data = tl_next) {\n        tl_next = val->tl_data->tl_data_next;\n        free(val->tl_data->tl_data_contents);\n        free(val->tl_data);\n    }\n    memset(val, 0, sizeof(*val));\n    return KADM5_OK;\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/admin_internal.h",
+            "_KADM5_CHECK_HANDLE",
+            "#define _KADM5_CHECK_HANDLE(handle)                                     \\ /* <=== src/lib/kadm5/admin_internal.h:57:58:_KADM5_CHECK_HANDLE:1 */ \n    { int ecode; if ((ecode = _kadm5_check_handle((void *)handle))) return ecode;}",
+            2
+        ],
+        [
+            "src/util/ss/utils.c",
+            "strdup",
+            "char *strdup(s) /* <=== strdup */ \n    register char *s;\n{\n    register int len = strlen(s) + 1;\n    register char *new;\n    new = malloc(len);\n    strncpy(new, s, len);\n    return(new);\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/srv/kadm5_hook.c",
+            "ITERATE",
+            "#define ITERATE(operation, params)                                      \\ /* <=== src/lib/kadm5/srv/kadm5_hook.c:124:137:ITERATE:2 */ \n    for (; *handles; handles++) {                                       \\\n        kadm5_hook_handle h = *handles;                                 \\\n        krb5_error_code ret = 0;                                        \\\n        if (h->vt.operation) {                                          \\\n            ret = h->vt.operation params;                               \\\n        }                                                               \\\n        if (ret) {                                                      \\\n            if (stage == KADM5_HOOK_STAGE_PRECOMMIT)                    \\\n                return ret;                                             \\\n            else                                                        \\\n                log_failure(context, h->vt.name, #operation, ret);      \\\n        }                                                               \\\n    }",
+            2
+        ],
+        [
+            "src/include/k5-err.h",
+            "k5_free_error",
+            "void k5_free_error(struct errinfo *ep, const char *msg); /* <=== k5_free_error */ ",
+            3
+        ],
+        [
+            "src/include/k5-err.h",
+            "k5_get_error",
+            "const char *k5_get_error(struct errinfo *ep, long code); /* <=== k5_get_error */ ",
+            3
+        ],
+        [
+            "src/lib/kadm5/srv/server_misc.c",
+            "check_against_policy",
+            "static kadm5_ret_t /* <=== check_against_policy */ \ncheck_against_policy(kadm5_server_handle_t handle, const char *password,\n                     kadm5_policy_ent_t pol)\n{\n    int hasupper = 0, haslower = 0, hasdigit = 0, haspunct = 0, hasspec = 0;\n    int c, nclasses;\n\n    /* Check against the policy's minimum length. */\n    if (strlen(password) < (size_t)pol->pw_min_length)\n        return KADM5_PASS_Q_TOOSHORT;\n\n    /* Check against the policy's minimum number of character classes. */\n    while ((c = (unsigned char)*password++) != '\\0') {\n        if (islower(c))\n            haslower = 1;\n        else if (isupper(c))\n            hasupper = 1;\n        else if (isdigit(c))\n            hasdigit = 1;\n        else if (ispunct(c))\n            haspunct = 1;\n        else\n            hasspec = 1;\n    }\n    nclasses = hasupper + haslower + hasdigit + haspunct + hasspec;\n    if (nclasses < pol->pw_min_classes)\n        return KADM5_PASS_Q_CLASS;\n    return KADM5_OK;\n}",
+            2
+        ],
+        [
+            "src/include/k5-int.h",
+            "KRB5_OS_TOFFSET_VALID",
+            "#define KRB5_OS_TOFFSET_VALID   1 /* <=== src/include/k5-int.h:740:740:KRB5_OS_TOFFSET_VALID:0 */ ",
+            2
+        ],
+        [
+            "src/lib/kadm5/srv/server_kdb.c",
+            "kdb_get_active_mkey",
+            "krb5_error_code /* <=== kdb_get_active_mkey */ \nkdb_get_active_mkey(kadm5_server_handle_t handle, krb5_kvno *act_kvno_out,\n                    krb5_keyblock **act_mkey_out)\n{\n    krb5_error_code ret;\n    krb5_actkvno_node *active_mkey_list;\n\n    ret = krb5_dbe_fetch_act_key_list(handle->context, master_princ,\n                                      &active_mkey_list);\n    if (ret)\n        return ret;\n    ret = krb5_dbe_find_act_mkey(handle->context, active_mkey_list,\n                                 act_kvno_out, act_mkey_out);\n    krb5_dbe_free_actkvno_list(handle->context, active_mkey_list);\n    return ret;\n}",
+            1
+        ],
+        [
+            "src/include/k5-int.h",
+            "KRB5_OS_TOFFSET_TIME",
+            "#define KRB5_OS_TOFFSET_TIME    2 /* <=== src/include/k5-int.h:741:741:KRB5_OS_TOFFSET_TIME:0 */ ",
+            2
+        ],
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "apply_keysalt_policy",
+            "static kadm5_ret_t /* <=== apply_keysalt_policy */ \napply_keysalt_policy(kadm5_server_handle_t handle, const char *policy,\n                     int n_ks_tuple, krb5_key_salt_tuple *ks_tuple,\n                     int *new_n_kstp, krb5_key_salt_tuple **new_kstp)\n{\n    kadm5_ret_t ret;\n    kadm5_policy_ent_rec polent;\n    krb5_boolean have_polent;\n    int ak_n_ks_tuple = 0;\n    int new_n_ks_tuple = 0;\n    krb5_key_salt_tuple *ak_ks_tuple = NULL;\n    krb5_key_salt_tuple *new_ks_tuple = NULL;\n    krb5_key_salt_tuple *subset;\n    int i, m;\n\n    if (new_n_kstp != NULL) {\n        *new_n_kstp = 0;\n        *new_kstp = NULL;\n    }\n\n    memset(&polent, 0, sizeof(polent));\n    ret = get_policy(handle, policy, &polent, &have_polent);\n    if (ret)\n        goto cleanup;\n\n    if (polent.allowed_keysalts == NULL) {\n        /* Requested keysalts allowed or default to supported_enctypes. */\n        if (n_ks_tuple == 0) {\n            /* Default to supported_enctypes. */\n            n_ks_tuple = handle->params.num_keysalts;\n            ks_tuple = handle->params.keysalts;\n        }\n        /* Dup the requested or defaulted keysalt tuples. */\n        new_ks_tuple = malloc(n_ks_tuple * sizeof(*new_ks_tuple));\n        if (new_ks_tuple == NULL) {\n            ret = ENOMEM;\n            goto cleanup;\n        }\n        memcpy(new_ks_tuple, ks_tuple, n_ks_tuple * sizeof(*new_ks_tuple));\n        new_n_ks_tuple = n_ks_tuple;\n        ret = 0;\n        goto cleanup;\n    }\n\n    ret = krb5_string_to_keysalts(polent.allowed_keysalts,\n                                  \",\",   /* Tuple separators */\n                                  NULL,  /* Key/salt separators */\n                                  0,     /* No duplicates */\n                                  &ak_ks_tuple,\n                                  &ak_n_ks_tuple);\n    /*\n     * Malformed policy?  Shouldn't happen, but it's remotely possible\n     * someday, so we don't assert, just bail.\n     */\n    if (ret)\n        goto cleanup;\n\n    /* Check that the requested ks_tuples are within policy, if we have one. */\n    for (i = 0; i < n_ks_tuple; i++) {\n        if (!ks_tuple_present(ak_n_ks_tuple, ak_ks_tuple, &ks_tuple[i])) {\n            ret = KADM5_BAD_KEYSALTS;\n            goto cleanup;\n        }\n    }\n\n    /* Have policy but no ks_tuple input?  Output the policy. */\n    if (n_ks_tuple == 0) {\n        new_n_ks_tuple = ak_n_ks_tuple;\n        new_ks_tuple = ak_ks_tuple;\n        ak_ks_tuple = NULL;\n        goto cleanup;\n    }\n\n    /*\n     * Now filter the policy ks tuples by the requested ones so as to\n     * preserve in the requested sub-set the relative ordering from the\n     * policy.  We could optimize this (if (n_ks_tuple == ak_n_ks_tuple)\n     * then skip this), but we don't bother.\n     */\n    subset = calloc(n_ks_tuple, sizeof(*subset));\n    if (subset == NULL) {\n        ret = ENOMEM;\n        goto cleanup;\n    }\n    for (m = 0, i = 0; i < ak_n_ks_tuple && m < n_ks_tuple; i++) {\n        if (ks_tuple_present(n_ks_tuple, ks_tuple, &ak_ks_tuple[i]))\n            subset[m++] = ak_ks_tuple[i];\n    }\n    new_ks_tuple = subset;\n    new_n_ks_tuple = m;\n    ret = 0;\n\ncleanup:\n    if (have_polent)\n        kadm5_free_policy_ent(handle->lhandle, &polent);\n    free(ak_ks_tuple);\n\n    if (new_n_kstp != NULL) {\n        *new_n_kstp = new_n_ks_tuple;\n        *new_kstp = new_ks_tuple;\n    } else {\n        free(new_ks_tuple);\n    }\n    return ret;\n}",
+            1
+        ],
+        [
+            "src/lib/krb5/krb/kerrs.c",
+            "krb5_get_error_message",
+            "const char * KRB5_CALLCONV /* <=== krb5_get_error_message */ \nkrb5_get_error_message(krb5_context ctx, krb5_error_code code)\n{\n    const char *std, *custom;\n\n#ifdef DEBUG\n    if (ERROR_MESSAGE_DEBUG())\n        fprintf(stderr, \"krb5_get_error_message(%p, %ld)\\n\", ctx, (long)code);\n#endif\n    if (ctx == NULL)\n        return error_message(code);\n\n    std = k5_get_error(&ctx->err, code);\n    custom = err_fmt_fmt(ctx->err_fmt, code, std);\n    if (custom != NULL) {\n        free((char *)std);\n        return custom;\n    }\n    return std;\n}",
+            2
+        ],
+        [
+            "src/lib/kadm5/admin.h",
+            "kadm5_get_policy",
+            "kadm5_ret_t    kadm5_get_policy(void *server_handle, /* <=== kadm5_get_policy */ \n                                kadm5_policy_t policy,\n                                kadm5_policy_ent_t ent);",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "find_master_key",
+            "static krb5_keyblock * /* <=== find_master_key */ \nfind_master_key(krb5_context context, krb5_kvno kvno)\n{\n    krb5_keylist_node *n;\n\n    for (n = context->dal_handle->master_keylist; n != NULL; n = n->next) {\n        if (n->kvno == kvno)\n            return &n->keyblock;\n    }\n    return NULL;\n}",
+            3
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_db_fetch_mkey_list",
+            "krb5_error_code /* <=== krb5_db_fetch_mkey_list */ \nkrb5_db_fetch_mkey_list(krb5_context context, krb5_principal mname,\n                        const krb5_keyblock *mkey)\n{\n    kdb_vftabl *v;\n    krb5_error_code status = 0;\n    krb5_keylist_node *local_keylist;\n\n    status = get_vftabl(context, &v);\n    if (status)\n        return status;\n\n    if (!context->dal_handle->master_princ) {\n        status = krb5_copy_principal(context, mname,\n                                     &context->dal_handle->master_princ);\n        if (status)\n            return status;\n    }\n\n    status = v->fetch_master_key_list(context, mname, mkey, &local_keylist);\n    if (status == 0) {\n        free_mkey_list(context, context->dal_handle->master_keylist);\n        context->dal_handle->master_keylist = local_keylist;\n    }\n    return status;\n}",
+            3
+        ],
+        [
+            "src/lib/kadm5/server_internal.h",
+            "xdr_osa_princ_ent_rec",
+            "bool_t          xdr_osa_princ_ent_rec(XDR *xdrs, osa_princ_ent_t objp); /* <=== xdr_osa_princ_ent_rec */ ",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_fetch_act_key_list",
+            "krb5_error_code /* <=== krb5_dbe_fetch_act_key_list */ \nkrb5_dbe_fetch_act_key_list(krb5_context context, krb5_principal princ,\n                            krb5_actkvno_node **act_key_list)\n{\n    krb5_error_code retval = 0;\n    krb5_db_entry *entry;\n\n    if (act_key_list == NULL)\n        return (EINVAL);\n\n    retval = krb5_db_get_principal(context, princ, 0, &entry);\n    if (retval == KRB5_KDB_NOENTRY)\n        return KRB5_KDB_NOMASTERKEY;\n    else if (retval)\n        return retval;\n\n    retval = krb5_dbe_lookup_actkvno(context, entry, act_key_list);\n    krb5_db_free_principal(context, entry);\n    return retval;\n}",
+            2
+        ],
+        [
+            "src/lib/kadm5/srv/kadm5_hook.c",
+            "log_failure",
+            "static void /* <=== log_failure */ \nlog_failure(krb5_context context,\n            const char *name,\n            const char *function,\n            krb5_error_code ret)\n{\n    const char *e = krb5_get_error_message(context, ret);\n\n    krb5_klog_syslog(LOG_ERR, _(\"kadm5_hook %s failed postcommit %s: %s\"),\n                     name, function, e);\n    krb5_free_error_message(context, e);\n}",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "find_actkvno",
+            "static krb5_kvno /* <=== find_actkvno */ \nfind_actkvno(krb5_actkvno_node *list, krb5_timestamp now)\n{\n    /*\n     * The list is sorted in ascending order of time.  Return the kvno of the\n     * predecessor of the first entry whose time is in the future.  If\n     * (contrary to the safety checks in kdb5_util use_mkey) all of the entries\n     * are in the future, we will return the first node; if all are in the\n     * past, we will return the last node.\n     */\n    while (list->next != NULL && list->next->act_time <= now)\n        list = list->next;\n    return list->act_kvno;\n}",
+            3
+        ],
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "ks_tuple_present",
+            "static krb5_boolean /* <=== ks_tuple_present */ \nks_tuple_present(int n_ks_tuple, krb5_key_salt_tuple *ks_tuple,\n                 krb5_key_salt_tuple *looking_for)\n{\n    int i;\n\n    for (i = 0; i < n_ks_tuple; i++) {\n        if (ks_tuple[i].ks_enctype == looking_for->ks_enctype &&\n            ks_tuple[i].ks_salttype == looking_for->ks_salttype)\n            return TRUE;\n    }\n    return FALSE;\n}",
+            2
+        ],
+        [
+            "src/plugins/kdb/ldap/libkdb_ldap/kdb_xdr.c",
+            "krb5_dbe_lookup_tl_data",
+            "krb5_error_code /* <=== krb5_dbe_lookup_tl_data */ \nkrb5_dbe_lookup_tl_data(krb5_context context, krb5_db_entry *entry,\n                        krb5_tl_data *ret_tl_data)\n{\n    krb5_tl_data *tl_data;\n\n    for (tl_data = entry->tl_data; tl_data; tl_data = tl_data->tl_data_next) {\n        if (tl_data->tl_data_type == ret_tl_data->tl_data_type) {\n            *ret_tl_data = *tl_data;\n            return(0);\n        }\n    }\n\n    /* if the requested record isn't found, return zero bytes.\n       if it ever means something to have a zero-length tl_data,\n       this code and its callers will have to be changed */\n\n    ret_tl_data->tl_data_length = 0;\n    ret_tl_data->tl_data_contents = NULL;\n    return(0);\n}",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb_cpw.c",
+            "krb5_db_get_key_data_kvno",
+            "int /* <=== krb5_db_get_key_data_kvno */ \nkrb5_db_get_key_data_kvno(context, count, data)\n    krb5_context          context;\n    int                   count;\n    krb5_key_data       * data;\n{\n    int i, kvno;\n    /* Find last key version number */\n    for (kvno = i = 0; i < count; i++) {\n        if (kvno < data[i].key_data_kvno) {\n            kvno = data[i].key_data_kvno;\n        }\n    }\n    return(kvno);\n}",
+            3
+        ],
+        [
+            "src/lib/kadm5/srv/kadm5_hook.c",
+            "k5_kadm5_hook_create",
+            "kadm5_ret_t /* <=== k5_kadm5_hook_create */ \nk5_kadm5_hook_create(krb5_context context, kadm5_hook_handle *handles,\n                     int stage, kadm5_principal_ent_t princ, long mask,\n                     int n_ks_tuple, krb5_key_salt_tuple *ks_tuple,\n                     const char *newpass)\n{\n    ITERATE(create, (context, h->data,\n                     stage, princ, mask, n_ks_tuple, ks_tuple, newpass));\n    return 0;\n}",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5int_put_principal_no_log",
+            "krb5_error_code /* <=== krb5int_put_principal_no_log */ \nkrb5int_put_principal_no_log(krb5_context kcontext, krb5_db_entry *entry)\n{\n    kdb_vftabl *v;\n    krb5_error_code status;\n    char **db_args;\n\n    status = get_vftabl(kcontext, &v);\n    if (status)\n        return status;\n    if (v->put_principal == NULL)\n        return KRB5_PLUGIN_OP_NOTSUPP;\n    status = extract_db_args_from_tl_data(kcontext, &entry->tl_data,\n                                          &entry->n_tl_data,\n                                          &db_args);\n    if (status)\n        return status;\n    status = v->put_principal(kcontext, entry, db_args);\n    free_db_args(kcontext, db_args);\n    return status;\n}",
+            3
+        ],
+        [
+            "src/lib/kadm5/server_internal.h",
+            "k5_pwqual_check",
+            "k5_pwqual_check(krb5_context context, pwqual_handle handle, /* <=== k5_pwqual_check */ \n                const char *password, const char *policy_name,\n                krb5_principal princ);",
+            2
+        ],
+        [
+            "src/plugins/kdb/ldap/libkdb_ldap/kdb_xdr.c",
+            "krb5_dbe_update_tl_data",
+            "krb5_error_code /* <=== krb5_dbe_update_tl_data */ \nkrb5_dbe_update_tl_data(krb5_context context, krb5_db_entry *entry,\n                        krb5_tl_data *new_tl_data)\n{\n    krb5_tl_data        * tl_data;\n    krb5_octet          * tmp;\n\n    /* copy the new data first, so we can fail cleanly if malloc()\n       fails */\n\n    if ((tmp = (krb5_octet *) malloc(new_tl_data->tl_data_length)) == NULL)\n        return(ENOMEM);\n\n    /* Find an existing entry of the specified type and point at\n       it, or NULL if not found */\n\n    for (tl_data = entry->tl_data; tl_data; tl_data = tl_data->tl_data_next)\n        if (tl_data->tl_data_type == new_tl_data->tl_data_type)\n            break;\n\n    /* if necessary, chain a new record in the beginning and point at it */\n\n    if (!tl_data) {\n        if ((tl_data = (krb5_tl_data *) calloc(1, sizeof(krb5_tl_data)))\n            == NULL) {\n            free(tmp);\n            return(ENOMEM);\n        }\n        tl_data->tl_data_next = entry->tl_data;\n        entry->tl_data = tl_data;\n        entry->n_tl_data++;\n    }\n\n    /* fill in the record */\n\n    if (tl_data->tl_data_contents)\n        free(tl_data->tl_data_contents);\n\n    tl_data->tl_data_type = new_tl_data->tl_data_type;\n    tl_data->tl_data_length = new_tl_data->tl_data_length;\n    tl_data->tl_data_contents = tmp;\n    memcpy(tmp, new_tl_data->tl_data_contents, tl_data->tl_data_length);\n\n    return(0);\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/srv/server_kdb.c",
+            "kdb_put_entry",
+            "krb5_error_code /* <=== kdb_put_entry */ \nkdb_put_entry(kadm5_server_handle_t handle,\n              krb5_db_entry *kdb, osa_princ_ent_rec *adb)\n{\n    krb5_error_code ret;\n    krb5_int32 now;\n    XDR xdrs;\n    krb5_tl_data tl_data;\n\n    ret = krb5_timeofday(handle->context, &now);\n    if (ret)\n        return(ret);\n\n    ret = krb5_dbe_update_mod_princ_data(handle->context, kdb, now,\n                                         handle->current_caller);\n    if (ret)\n        return(ret);\n\n    xdralloc_create(&xdrs, XDR_ENCODE);\n    if(! xdr_osa_princ_ent_rec(&xdrs, adb)) {\n        xdr_destroy(&xdrs);\n        return(KADM5_XDR_FAILURE);\n    }\n    tl_data.tl_data_type = KRB5_TL_KADM_DATA;\n    tl_data.tl_data_length = xdr_getpos(&xdrs);\n    tl_data.tl_data_contents = (krb5_octet *)xdralloc_getdata(&xdrs);\n\n    ret = krb5_dbe_update_tl_data(handle->context, kdb, &tl_data);\n\n    xdr_destroy(&xdrs);\n\n    if (ret)\n        return(ret);\n\n    /* we are always updating TL data */\n    kdb->mask |= KADM5_TL_DATA;\n\n    ret = krb5_db_put_principal(handle->context, kdb);\n    if (ret)\n        return(ret);\n\n    return(0);\n}",
+            1
+        ],
+        [
+            "src/include/k5-platform.h",
+            "_",
+            "#define _(s) s /* <=== src/include/k5-platform.h:1056:1056:_:1 */ ",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_db_free_principal",
+            "void /* <=== krb5_db_free_principal */ \nkrb5_db_free_principal(krb5_context kcontext, krb5_db_entry *entry)\n{\n    krb5_error_code status = 0;\n    kdb_vftabl *v;\n\n    status = get_vftabl(kcontext, &v);\n    if (status)\n        return;\n    v->free_principal(kcontext, entry);\n}",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_lookup_actkvno",
+            "krb5_error_code /* <=== krb5_dbe_lookup_actkvno */ \nkrb5_dbe_lookup_actkvno(krb5_context context, krb5_db_entry *entry,\n                        krb5_actkvno_node **actkvno_list)\n{\n    krb5_tl_data tl_data;\n    krb5_error_code code;\n    krb5_int16 version, tmp_kvno;\n    krb5_actkvno_node *head_data = NULL, *new_data = NULL, *prev_data = NULL;\n    unsigned int num_actkvno, i;\n    krb5_octet *next_tuple;\n    krb5_kvno earliest_kvno;\n\n    memset(&tl_data, 0, sizeof(tl_data));\n    tl_data.tl_data_type = KRB5_TL_ACTKVNO;\n\n    if ((code = krb5_dbe_lookup_tl_data(context, entry, &tl_data)))\n        return (code);\n\n    if (tl_data.tl_data_contents == NULL) {\n        /*\n         * If there is no KRB5_TL_ACTKVNO data (likely because the KDB was\n         * created prior to 1.7), synthesize the list which should have been\n         * created at KDB initialization, making the earliest master key\n         * active.\n         */\n\n        /* Get the earliest master key version. */\n        if (entry->n_key_data == 0)\n            return KRB5_KDB_NOMASTERKEY;\n        earliest_kvno = entry->key_data[entry->n_key_data - 1].key_data_kvno;\n\n        head_data = malloc(sizeof(*head_data));\n        if (head_data == NULL)\n            return ENOMEM;\n        memset(head_data, 0, sizeof(*head_data));\n        head_data->act_time = 0; /* earliest time possible */\n        head_data->act_kvno = earliest_kvno;\n    } else {\n        /* get version to determine how to parse the data */\n        krb5_kdb_decode_int16(tl_data.tl_data_contents, version);\n        if (version == 1) {\n\n            /* variable size, must be at least 8 bytes */\n            if (tl_data.tl_data_length < 8)\n                return (KRB5_KDB_TRUNCATED_RECORD);\n\n            /*\n             * Find number of tuple entries, remembering to account for version\n             * field.\n             */\n            num_actkvno = (tl_data.tl_data_length - sizeof(version)) /\n                ACTKVNO_TUPLE_SIZE;\n            prev_data = NULL;\n            /* next_tuple points to first tuple entry in the tl_data_contents */\n            next_tuple = tl_data.tl_data_contents + sizeof(version);\n            for (i = 0; i < num_actkvno; i++) {\n                new_data = (krb5_actkvno_node *) malloc(sizeof(krb5_actkvno_node));\n                if (new_data == NULL) {\n                    krb5_dbe_free_actkvno_list(context, head_data);\n                    return (ENOMEM);\n                }\n                memset(new_data, 0, sizeof(krb5_actkvno_node));\n\n                /* using tmp_kvno to avoid type mismatch */\n                krb5_kdb_decode_int16(act_kvno(next_tuple), tmp_kvno);\n                new_data->act_kvno = (krb5_kvno) tmp_kvno;\n                krb5_kdb_decode_int32(act_time(next_tuple), new_data->act_time);\n\n                if (prev_data != NULL)\n                    prev_data->next = new_data;\n                else\n                    head_data = new_data;\n                prev_data = new_data;\n                next_tuple += ACTKVNO_TUPLE_SIZE;\n            }\n        } else {\n            k5_setmsg(context, KRB5_KDB_BAD_VERSION,\n                      _(\"Illegal version number for KRB5_TL_ACTKVNO %d\\n\"),\n                      version);\n            return (KRB5_KDB_BAD_VERSION);\n        }\n    }\n    *actkvno_list = head_data;\n    return (0);\n}",
+            3
+        ],
+        [
+            "src/lib/kdb/kdb_cpw.c",
+            "rekey",
+            "static krb5_error_code /* <=== rekey */ \nrekey(krb5_context context, krb5_keyblock *mkey, krb5_key_salt_tuple *ks_tuple,\n      int ks_tuple_count, const char *password, int new_kvno,\n      enum save savekeys, krb5_db_entry *db_entry)\n{\n    krb5_error_code ret;\n    krb5_key_data *key_data;\n    int n_key_data, old_kvno, save_kvno;\n\n    /* Save aside the old key data. */\n    n_key_data = db_entry->n_key_data;\n    key_data = db_entry->key_data;\n    db_entry->n_key_data = 0;\n    db_entry->key_data = NULL;\n\n    /* Make sure the new kvno is greater than the old largest kvno. */\n    old_kvno = krb5_db_get_key_data_kvno(context, n_key_data, key_data);\n    if (new_kvno < old_kvno + 1)\n        new_kvno = old_kvno + 1;\n    /* Wrap from 65535 to 1; we can only store 16-bit kvno values in key_data,\n     * and we assign special meaning to kvno 0. */\n    if (new_kvno == (1 << 16))\n        new_kvno = 1;\n\n    /* Add new keys to the front of the list. */\n    if (password != NULL) {\n        ret = add_key_pwd(context, mkey, ks_tuple, ks_tuple_count, password,\n                          db_entry, new_kvno);\n    } else {\n        ret = add_key_rnd(context, mkey, ks_tuple, ks_tuple_count, db_entry,\n                          new_kvno);\n    }\n    if (ret) {\n        cleanup_key_data(context, db_entry->n_key_data, db_entry->key_data);\n        db_entry->n_key_data = n_key_data;\n        db_entry->key_data = key_data;\n        return ret;\n    }\n\n    /* Possibly add some or all of the old keys to the back of the list. */\n    if (savekeys != DISCARD_ALL) {\n        save_kvno = (savekeys == KEEP_LAST_KVNO) ? old_kvno : 0;\n        ret = preserve_old_keys(context, mkey, db_entry, save_kvno, n_key_data,\n                                key_data);\n    }\n\n    cleanup_key_data(context, n_key_data, key_data);\n    return ret;\n}",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_db_setup_lib_handle",
+            "krb5_error_code /* <=== krb5_db_setup_lib_handle */ \nkrb5_db_setup_lib_handle(krb5_context kcontext)\n{\n    char   *library = NULL;\n    krb5_error_code status = 0;\n    db_library lib = NULL;\n    kdb5_dal_handle *dal_handle = NULL;\n\n    dal_handle = calloc((size_t) 1, sizeof(kdb5_dal_handle));\n    if (dal_handle == NULL) {\n        status = ENOMEM;\n        goto clean_n_exit;\n    }\n\n    library = kdb_get_library_name(kcontext);\n    if (library == NULL) {\n        status = KRB5_KDB_DBTYPE_NOTFOUND;\n        goto clean_n_exit;\n    }\n\n    status = kdb_find_library(kcontext, library, &lib);\n    if (status)\n        goto clean_n_exit;\n\n    dal_handle->lib_handle = lib;\n    kcontext->dal_handle = dal_handle;\n\nclean_n_exit:\n    free(library);\n\n    if (status) {\n        free(dal_handle);\n        if (lib)\n            kdb_free_library(lib);\n    }\n\n    return status;\n}",
+            3
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_update_mkvno",
+            "krb5_error_code /* <=== krb5_dbe_update_mkvno */ \nkrb5_dbe_update_mkvno(krb5_context context, krb5_db_entry *entry,\n                      krb5_kvno mkvno)\n{\n    krb5_tl_data tl_data;\n    krb5_octet buf[2]; /* this is the encoded size of an int16 */\n    krb5_int16 tmp_kvno = (krb5_int16) mkvno;\n\n    tl_data.tl_data_type = KRB5_TL_MKVNO;\n    tl_data.tl_data_length = sizeof(buf);\n    krb5_kdb_encode_int16(tmp_kvno, buf);\n    tl_data.tl_data_contents = buf;\n\n    return (krb5_dbe_update_tl_data(context, entry, &tl_data));\n}",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_db_get_principal",
+            "krb5_error_code /* <=== krb5_db_get_principal */ \nkrb5_db_get_principal(krb5_context kcontext, krb5_const_principal search_for,\n                      unsigned int flags, krb5_db_entry **entry)\n{\n    krb5_error_code status = 0;\n    kdb_vftabl *v;\n\n    *entry = NULL;\n    status = get_vftabl(kcontext, &v);\n    if (status)\n        return status;\n    if (v->get_principal == NULL)\n        return KRB5_PLUGIN_OP_NOTSUPP;\n    return v->get_principal(kcontext, search_for, flags, entry);\n}",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_db_put_principal",
+            "krb5_error_code /* <=== krb5_db_put_principal */ \nkrb5_db_put_principal(krb5_context kcontext, krb5_db_entry *entry)\n{\n    krb5_error_code status = 0;\n    kdb_incr_update_t *upd = NULL;\n    char *princ_name = NULL;\n\n    if (logging(kcontext)) {\n        upd = k5alloc(sizeof(*upd), &status);\n        if (upd == NULL)\n            goto cleanup;\n        if ((status = ulog_conv_2logentry(kcontext, entry, upd)))\n            goto cleanup;\n\n        status = krb5_unparse_name(kcontext, entry->princ, &princ_name);\n        if (status != 0)\n            goto cleanup;\n\n        upd->kdb_princ_name.utf8str_t_val = princ_name;\n        upd->kdb_princ_name.utf8str_t_len = strlen(princ_name);\n    }\n\n    status = krb5int_put_principal_no_log(kcontext, entry);\n    if (status)\n        goto cleanup;\n\n    if (logging(kcontext))\n        status = ulog_add_update(kcontext, upd);\n\ncleanup:\n    ulog_free_entries(upd, 1);\n    return status;\n}",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "krb5_dbe_lookup_tl_data",
+            "krb5_error_code /* <=== krb5_dbe_lookup_tl_data */ \nkrb5_dbe_lookup_tl_data(krb5_context context, krb5_db_entry *entry,\n                        krb5_tl_data *ret_tl_data)\n{\n    krb5_tl_data *tl_data;\n\n    for (tl_data = entry->tl_data; tl_data; tl_data = tl_data->tl_data_next) {\n        if (tl_data->tl_data_type == ret_tl_data->tl_data_type) {\n            *ret_tl_data = *tl_data;\n            return (0);\n        }\n    }\n\n    /*\n     * If the requested record isn't found, return zero bytes.  If it\n     * ever means something to have a zero-length tl_data, this code\n     * and its callers will have to be changed.\n     */\n\n    ret_tl_data->tl_data_length = 0;\n    ret_tl_data->tl_data_contents = NULL;\n    return (0);\n}",
+            2
+        ],
+        [
+            "src/lib/kdb/kdb5.c",
+            "logging",
+            "static inline krb5_boolean /* <=== logging */ \nlogging(krb5_context context)\n{\n    kdb_log_context *log_ctx = context->kdblog_context;\n\n    return log_ctx != NULL && log_ctx->iproprole == IPROP_MASTER &&\n        log_ctx->ulog != NULL;\n}",
+            3
+        ],
+        [
+            "src/include/kdb.h",
+            "KRB5_TL_MOD_PRINC",
+            "#define KRB5_TL_MOD_PRINC               0x0002 /* <=== src/include/kdb.h:250:250:KRB5_TL_MOD_PRINC:0 */ ",
+            3
+        ],
+        [
+            "src/lib/kadm5/admin_internal.h",
+            "_kadm5_check_handle",
+            "int         _kadm5_check_handle(void *handle); /* <=== _kadm5_check_handle */ ",
+            2
+        ],
+        [
+            "src/plugins/kdb/ldap/libkdb_ldap/kdb_xdr.c",
+            "krb5_dbe_lookup_last_pwd_change",
+            "krb5_error_code /* <=== krb5_dbe_lookup_last_pwd_change */ \nkrb5_dbe_lookup_last_pwd_change(krb5_context context, krb5_db_entry *entry,\n                                krb5_timestamp *stamp)\n{\n    krb5_tl_data        tl_data;\n    krb5_error_code     code;\n    krb5_int32          tmp;\n\n    tl_data.tl_data_type = KRB5_TL_LAST_PWD_CHANGE;\n\n    if ((code = krb5_dbe_lookup_tl_data(context, entry, &tl_data)))\n        return(code);\n\n    if (tl_data.tl_data_length != 4) {\n        *stamp = 0;\n        return(0);\n    }\n\n    krb5_kdb_decode_int32(tl_data.tl_data_contents, tmp);\n\n    *stamp = (krb5_timestamp) tmp;\n\n    return(0);\n}",
+            1
+        ],
+        [
+            "src/lib/kadm5/server_internal.h",
+            "ALL_PRINC_MASK",
+            "#define ALL_PRINC_MASK                                                  \\ /* <=== src/lib/kadm5/server_internal.h:131:136:ALL_PRINC_MASK:0 */ \n    (KADM5_PRINCIPAL | KADM5_PRINC_EXPIRE_TIME | KADM5_PW_EXPIRATION |  \\\n     KADM5_LAST_PWD_CHANGE | KADM5_ATTRIBUTES | KADM5_MAX_LIFE |        \\\n     KADM5_MOD_TIME | KADM5_MOD_NAME | KADM5_KVNO | KADM5_MKVNO |       \\\n     KADM5_AUX_ATTRIBUTES | KADM5_POLICY_CLR | KADM5_POLICY |           \\\n     KADM5_MAX_RLIFE | KADM5_TL_DATA | KADM5_KEY_DATA | KADM5_FAIL_AUTH_COUNT )",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb_cpw.c",
+            "krb5_dbe_crk",
+            "krb5_error_code /* <=== krb5_dbe_crk */ \nkrb5_dbe_crk(krb5_context context, krb5_keyblock *mkey,\n             krb5_key_salt_tuple *ks_tuple, int ks_tuple_count,\n             krb5_boolean keepold, krb5_db_entry *dbent)\n{\n    return rekey(context, mkey, ks_tuple, ks_tuple_count, NULL, 0,\n                 keepold ? KEEP_ALL : DISCARD_ALL, dbent);\n}",
+            1
+        ],
+        [
+            "src/lib/kdb/kdb_cpw.c",
+            "cleanup_key_data",
+            "static void /* <=== cleanup_key_data */ \ncleanup_key_data(context, count, data)\n    krb5_context          context;\n    int                   count;\n    krb5_key_data       * data;\n{\n    int i, j;\n\n    /* If data is NULL, count is always 0 */\n    if (data == NULL) return;\n\n    for (i = 0; i < count; i++) {\n        for (j = 0; j < data[i].key_data_ver; j++) {\n            if (data[i].key_data_length[j]) {\n                krb5_db_free(context, data[i].key_data_contents[j]);\n            }\n        }\n    }\n    krb5_db_free(context, data);\n}",
+            3
+        ]
+    ],
+    "globalVars": [
+        "krb5_keyblock master_keyblock"
+    ],
+    "importContext": [
+        "#include        <kadm5/admin.h>",
+        "#include        \"server_internal.h\"",
+        "#include        <kdb.h>",
+        "#include        <signal.h>",
+        "#include \"k5-int.h\"",
+        "#include <krb5/kadm5_hook_plugin.h>",
+        "#include        <sys/wait.h>",
+        "#include        <sys/time.h>",
+        "#include <valgrind/memcheck.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct _kadm5_principal_ent_t {\n    krb5_principal  principal;\n    krb5_timestamp  princ_expire_time;\n    krb5_timestamp  last_pwd_change;\n    krb5_timestamp  pw_expiration;\n    krb5_deltat     max_life;\n    krb5_principal  mod_name;\n    krb5_timestamp  mod_date;\n    krb5_flags      attributes;\n    krb5_kvno       kvno;\n    krb5_kvno       mkvno;\n    char            *policy;\n    long            aux_attributes;\n\n    /* version 2 fields */\n    krb5_deltat max_renewable_life;\n    krb5_timestamp last_success;\n    krb5_timestamp last_failed;\n    krb5_kvno fail_auth_count;\n    krb5_int16 n_key_data;\n    krb5_int16 n_tl_data;\n    krb5_tl_data *tl_data;\n    krb5_key_data *key_data;\n} kadm5_principal_ent_rec, *kadm5_principal_ent_t;",
+            "kadm5_principal_ent_t"
+        ],
+        [
+            "typedef struct _kadm5_policy_ent_t {\n    char            *policy;\n    long            pw_min_life;\n    long            pw_max_life;\n    long            pw_min_length;\n    long            pw_min_classes;\n    long            pw_history_num;\n    long            policy_refcnt;  /* no longer used */\n\n    /* version 3 fields */\n    krb5_kvno       pw_max_fail;\n    krb5_deltat     pw_failcnt_interval;\n    krb5_deltat     pw_lockout_duration;\n\n    /* version 4 fields */\n    krb5_flags      attributes;\n    krb5_deltat     max_life;\n    krb5_deltat     max_renewable_life;\n    char            *allowed_keysalts;\n    krb5_int16      n_tl_data;\n    krb5_tl_data    *tl_data;\n} kadm5_policy_ent_rec, *kadm5_policy_ent_t;",
+            "kadm5_policy_ent_rec"
+        ],
+        [
+            "typedef struct _kadm5_server_handle_t {\n    krb5_ui_4       magic_number;\n    krb5_ui_4       struct_version;\n    krb5_ui_4       api_version;\n    krb5_context    context;\n    krb5_principal  current_caller;\n    kadm5_config_params  params;\n    struct _kadm5_server_handle_t *lhandle;\n    char **db_args;\n    pwqual_handle   *qual_handles;\n    kadm5_hook_handle *hook_handles;\n} kadm5_server_handle_rec, *kadm5_server_handle_t;",
+            "kadm5_server_handle_t"
+        ],
+        [
+            "typedef long            kadm5_ret_t;",
+            "kadm5_ret_t"
+        ],
+        [
+            "typedef struct _krb5_tl_data {\n    struct _krb5_tl_data* tl_data_next;         /* NOT saved */\n    krb5_int16            tl_data_type;\n    krb5_ui_2             tl_data_length;\n    krb5_octet          * tl_data_contents;\n} krb5_tl_data;",
+            "krb5_tl_data"
+        ],
+        [
+            "typedef struct _krb5_db_entry_new {\n    krb5_magic            magic;                /* NOT saved */\n    krb5_ui_2             len;\n    krb5_ui_4             mask;                 /* members currently changed/set */\n    krb5_flags            attributes;\n    krb5_deltat           max_life;\n    krb5_deltat           max_renewable_life;\n    krb5_timestamp        expiration;           /* When the client expires */\n    krb5_timestamp        pw_expiration;        /* When its passwd expires */\n    krb5_timestamp        last_success;         /* Last successful passwd */\n    krb5_timestamp        last_failed;          /* Last failed passwd attempt */\n    krb5_kvno             fail_auth_count;      /* # of failed passwd attempt */\n    krb5_int16            n_tl_data;\n    krb5_int16            n_key_data;\n    krb5_ui_2             e_length;             /* Length of extra data */\n    krb5_octet          * e_data;               /* Extra data to be saved */\n\n    krb5_principal        princ;                /* Length, data */\n    krb5_tl_data        * tl_data;              /* Linked list */\n    krb5_key_data       * key_data;             /* Array */\n} krb5_db_entry;",
+            "krb5_db_entry"
+        ],
+        [
+            "typedef struct {\n   DWORD          dwPID;\n   PROCENUMPROC   lpProc;\n   DWORD          lParam;\n   BOOL           bEnd;\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct _osa_princ_ent_t {\n    int                         version;\n    char                        *policy;\n    long                        aux_attributes;\n    unsigned int                old_key_len;\n    unsigned int                old_key_next;\n    krb5_kvno                   admin_history_kvno;\n    osa_pw_hist_ent             *old_keys;\n} osa_princ_ent_rec, *osa_princ_ent_t;",
+            "osa_princ_ent_rec"
+        ],
+        [
+            "typedef struct __krb5_key_salt_tuple {\n    krb5_enctype        ks_enctype;\n    krb5_int32          ks_salttype;\n} krb5_key_salt_tuple;",
+            "krb5_key_salt_tuple"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/lib/kadm5/srv/svr_principal.c": [
+            370,
+            371,
+            372,
+            383,
+            387,
+            389,
+            393,
+            398,
+            399,
+            400,
+            401,
+            402,
+            403,
+            404,
+            405,
+            406,
+            407,
+            408,
+            409,
+            410,
+            411,
+            412,
+            413,
+            418,
+            420,
+            421,
+            423,
+            424,
+            425,
+            427,
+            430,
+            431,
+            432,
+            433,
+            434,
+            440,
+            441,
+            442,
+            445,
+            446,
+            447,
+            448,
+            456,
+            459,
+            460,
+            462,
+            463,
+            465,
+            467,
+            468,
+            470,
+            472,
+            473,
+            475,
+            477,
+            478,
+            480,
+            482,
+            483,
+            484,
+            485,
+            487,
+            489,
+            490,
+            492,
+            493,
+            494,
+            500,
+            501,
+            504,
+            507,
+            509,
+            510,
+            512,
+            513,
+            523,
+            524,
+            525,
+            530,
+            531,
+            534,
+            536,
+            537,
+            538,
+            539,
+            540,
+            541,
+            544,
+            545,
+            547,
+            551,
+            552,
+            555,
+            556,
+            557,
+            558,
+            567,
+            568,
+            569,
+            574,
+            578,
+            581,
+            583,
+            584,
+            585,
+            588,
+            589,
+            590,
+            591,
+            592,
+            632,
+            633,
+            634,
+            642,
+            644,
+            648,
+            649,
+            650,
+            651,
+            652,
+            653,
+            654,
+            655,
+            656,
+            657,
+            658,
+            659,
+            660,
+            661,
+            662,
+            663,
+            664,
+            665,
+            666,
+            667,
+            671,
+            672,
+            673,
+            679,
+            680,
+            681,
+            685,
+            686,
+            687,
+            688,
+            690,
+            692,
+            693,
+            694,
+            695,
+            697,
+            699,
+            703,
+            704,
+            705,
+            706,
+            707,
+            710,
+            711,
+            712,
+            713,
+            714,
+            715,
+            716,
+            717,
+            718,
+            719,
+            721,
+            722,
+            723,
+            726,
+            731,
+            732,
+            734,
+            735,
+            747,
+            748,
+            749,
+            753,
+            757,
+            759,
+            760,
+            761,
+            764,
+            765,
+            766,
+            767,
+            769,
+            771,
+            772,
+            773,
+            775,
+            776
+        ]
+    },
+    "visitedLines_before": {
+        "src/lib/kadm5/srv/svr_principal.c": [
+            370,
+            371,
+            372,
+            383,
+            387,
+            389,
+            393,
+            398,
+            399,
+            400,
+            401,
+            402,
+            403,
+            404,
+            405,
+            406,
+            408,
+            410,
+            411,
+            416,
+            418,
+            419,
+            421,
+            422,
+            423,
+            425,
+            428,
+            429,
+            430,
+            431,
+            432,
+            438,
+            439,
+            440,
+            443,
+            444,
+            445,
+            446,
+            454,
+            457,
+            458,
+            460,
+            461,
+            463,
+            465,
+            466,
+            468,
+            470,
+            471,
+            473,
+            475,
+            476,
+            478,
+            480,
+            481,
+            482,
+            483,
+            485,
+            487,
+            488,
+            490,
+            491,
+            492,
+            498,
+            499,
+            502,
+            505,
+            507,
+            508,
+            510,
+            511,
+            521,
+            522,
+            523,
+            528,
+            529,
+            532,
+            534,
+            535,
+            536,
+            537,
+            538,
+            539,
+            542,
+            543,
+            545,
+            549,
+            550,
+            553,
+            554,
+            555,
+            556,
+            565,
+            566,
+            567,
+            572,
+            576,
+            579,
+            581,
+            582,
+            583,
+            586,
+            587,
+            588,
+            589,
+            590,
+            630,
+            631,
+            632,
+            640,
+            642,
+            646,
+            647,
+            648,
+            649,
+            650,
+            651,
+            652,
+            654,
+            656,
+            657,
+            658,
+            659,
+            660,
+            661,
+            662,
+            663,
+            667,
+            668,
+            669,
+            675,
+            676,
+            677,
+            681,
+            682,
+            683,
+            684,
+            686,
+            688,
+            689,
+            690,
+            691,
+            693,
+            695,
+            699,
+            700,
+            701,
+            702,
+            703,
+            706,
+            707,
+            708,
+            709,
+            710,
+            711,
+            712,
+            713,
+            714,
+            715,
+            717,
+            718,
+            719,
+            722,
+            727,
+            728,
+            730,
+            731,
+            743,
+            744,
+            745,
+            749,
+            753,
+            755,
+            756,
+            757,
+            760,
+            761,
+            762,
+            763,
+            765,
+            767,
+            768,
+            769,
+            771,
+            772
+        ]
+    },
+    "visitedParams": {
+        "src/lib/kadm5/srv/svr_principal.c": [
+            [
+                "kadm5_principal_ent_t entry",
+                "kadm5_create_principal_3"
+            ],
+            [
+                "kadm5_principal_ent_t entry",
+                "kadm5_modify_principal"
+            ],
+            [
+                "long mask",
+                "kadm5_create_principal_3"
+            ],
+            [
+                "long mask",
+                "kadm5_modify_principal"
+            ],
+            [
+                "void *server_handle",
+                "kadm5_create_principal_3"
+            ],
+            [
+                "void *server_handle",
+                "kadm5_modify_principal"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "kadm5_create_principal_3",
+            "kadm5_ret_t /* <=== kadm5_create_principal_3 */ \nkadm5_create_principal_3(void *server_handle,\n                         kadm5_principal_ent_t entry, long mask,\n                         int n_ks_tuple, krb5_key_salt_tuple *ks_tuple,\n                         char *password)\n{\n    krb5_db_entry               *kdb;\n    osa_princ_ent_rec           adb;\n    kadm5_policy_ent_rec        polent;\n    krb5_boolean                have_polent = FALSE;\n    krb5_int32                  now;\n    krb5_tl_data                *tl_data_tail;\n    unsigned int                ret;\n    kadm5_server_handle_t handle = server_handle;\n    krb5_keyblock               *act_mkey;\n    krb5_kvno                   act_kvno;\n    int                         new_n_ks_tuple = 0;\n    krb5_key_salt_tuple         *new_ks_tuple = NULL;\n\n    CHECK_HANDLE(server_handle);\n\n    krb5_clear_error_message(handle->context);\n\n    check_1_6_dummy(entry, mask, n_ks_tuple, ks_tuple, &password);\n\n    /*\n     * Argument sanity checking, and opening up the DB\n     */\n    if (entry == NULL)\n        return EINVAL;\n    if(!(mask & KADM5_PRINCIPAL) || (mask & KADM5_MOD_NAME) ||\n       (mask & KADM5_MOD_TIME) || (mask & KADM5_LAST_PWD_CHANGE) ||\n       (mask & KADM5_MKVNO) || (mask & KADM5_AUX_ATTRIBUTES) ||\n       (mask & KADM5_LAST_SUCCESS) || (mask & KADM5_LAST_FAILED) ||\n       (mask & KADM5_FAIL_AUTH_COUNT))\n        return KADM5_BAD_MASK;\n    if ((mask & KADM5_KEY_DATA) && entry->n_key_data != 0)\n        return KADM5_BAD_MASK;\n    if((mask & KADM5_POLICY) && entry->policy == NULL)\n        return KADM5_BAD_MASK;\n    if((mask & KADM5_POLICY) && (mask & KADM5_POLICY_CLR))\n        return KADM5_BAD_MASK;\n    if((mask & ~ALL_PRINC_MASK))\n        return KADM5_BAD_MASK;\n\n    /*\n     * Check to see if the principal exists\n     */\n    ret = kdb_get_entry(handle, entry->principal, &kdb, &adb);\n\n    switch(ret) {\n    case KADM5_UNK_PRINC:\n        break;\n    case 0:\n        kdb_free_entry(handle, kdb, &adb);\n        return KADM5_DUP;\n    default:\n        return ret;\n    }\n\n    kdb = krb5_db_alloc(handle->context, NULL, sizeof(*kdb));\n    if (kdb == NULL)\n        return ENOMEM;\n    memset(kdb, 0, sizeof(*kdb));\n    memset(&adb, 0, sizeof(osa_princ_ent_rec));\n\n    /*\n     * If a policy was specified, load it.\n     * If we can not find the one specified return an error\n     */\n    if ((mask & KADM5_POLICY)) {\n        ret = get_policy(handle, entry->policy, &polent, &have_polent);\n        if (ret)\n            goto cleanup;\n    }\n    if (password) {\n        ret = passwd_check(handle, password, have_polent ? &polent : NULL,\n                           entry->principal);\n        if (ret)\n            goto cleanup;\n    }\n    /*\n     * Start populating the various DB fields, using the\n     * \"defaults\" for fields that were not specified by the\n     * mask.\n     */\n    if ((ret = krb5_timeofday(handle->context, &now)))\n        goto cleanup;\n\n    kdb->magic = KRB5_KDB_MAGIC_NUMBER;\n    kdb->len = KRB5_KDB_V1_BASE_LENGTH; /* gag me with a chainsaw */\n\n    if ((mask & KADM5_ATTRIBUTES))\n        kdb->attributes = entry->attributes;\n    else\n        kdb->attributes = handle->params.flags;\n\n    if ((mask & KADM5_MAX_LIFE))\n        kdb->max_life = entry->max_life;\n    else\n        kdb->max_life = handle->params.max_life;\n\n    if (mask & KADM5_MAX_RLIFE)\n        kdb->max_renewable_life = entry->max_renewable_life;\n    else\n        kdb->max_renewable_life = handle->params.max_rlife;\n\n    if ((mask & KADM5_PRINC_EXPIRE_TIME))\n        kdb->expiration = entry->princ_expire_time;\n    else\n        kdb->expiration = handle->params.expiration;\n\n    kdb->pw_expiration = 0;\n    if (have_polent) {\n        if(polent.pw_max_life)\n            kdb->pw_expiration = now + polent.pw_max_life;\n        else\n            kdb->pw_expiration = 0;\n    }\n    if ((mask & KADM5_PW_EXPIRATION))\n        kdb->pw_expiration = entry->pw_expiration;\n\n    kdb->last_success = 0;\n    kdb->last_failed = 0;\n    kdb->fail_auth_count = 0;\n\n    /* this is kind of gross, but in order to free the tl data, I need\n       to free the entire kdb entry, and that will try to free the\n       principal. */\n\n    if ((ret = kadm5_copy_principal(handle->context,\n                                    entry->principal, &(kdb->princ))))\n        goto cleanup;\n\n    if ((ret = krb5_dbe_update_last_pwd_change(handle->context, kdb, now)))\n        goto cleanup;\n\n    if (mask & KADM5_TL_DATA) {\n        /* splice entry->tl_data onto the front of kdb->tl_data */\n        for (tl_data_tail = entry->tl_data; tl_data_tail;\n             tl_data_tail = tl_data_tail->tl_data_next)\n        {\n            ret = krb5_dbe_update_tl_data(handle->context, kdb, tl_data_tail);\n            if( ret )\n                goto cleanup;\n        }\n    }\n\n    /*\n     * We need to have setup the TL data, so we have strings, so we can\n     * check enctype policy, which is why we check/initialize ks_tuple\n     * this late.\n     */\n    ret = apply_keysalt_policy(handle, entry->policy, n_ks_tuple, ks_tuple,\n                               &new_n_ks_tuple, &new_ks_tuple);\n    if (ret)\n        goto cleanup;\n\n    /* initialize the keys */\n\n    ret = kdb_get_active_mkey(handle, &act_kvno, &act_mkey);\n    if (ret)\n        goto cleanup;\n\n    if (mask & KADM5_KEY_DATA) {\n        /* The client requested no keys for this principal. */\n        assert(entry->n_key_data == 0);\n    } else if (password) {\n        ret = krb5_dbe_cpw(handle->context, act_mkey, new_ks_tuple,\n                           new_n_ks_tuple, password,\n                           (mask & KADM5_KVNO)?entry->kvno:1,\n                           FALSE, kdb);\n    } else {\n        /* Null password means create with random key (new in 1.8). */\n        ret = krb5_dbe_crk(handle->context, &master_keyblock,\n                           new_ks_tuple, new_n_ks_tuple, FALSE, kdb);\n    }\n    if (ret)\n        goto cleanup;\n\n    /* Record the master key VNO used to encrypt this entry's keys */\n    ret = krb5_dbe_update_mkvno(handle->context, kdb, act_kvno);\n    if (ret)\n        goto cleanup;\n\n    ret = k5_kadm5_hook_create(handle->context, handle->hook_handles,\n                               KADM5_HOOK_STAGE_PRECOMMIT, entry, mask,\n                               new_n_ks_tuple, new_ks_tuple, password);\n    if (ret)\n        goto cleanup;\n\n    /* populate the admin-server-specific fields.  In the OV server,\n       this used to be in a separate database.  Since there's already\n       marshalling code for the admin fields, to keep things simple,\n       I'm going to keep it, and make all the admin stuff occupy a\n       single tl_data record, */\n\n    adb.admin_history_kvno = INITIAL_HIST_KVNO;\n    if (mask & KADM5_POLICY) {\n        adb.aux_attributes = KADM5_POLICY;\n\n        /* this does *not* need to be strdup'ed, because adb is xdr */\n        /* encoded in osa_adb_create_princ, and not ever freed */\n\n        adb.policy = entry->policy;\n    }\n\n    /* In all cases key and the principal data is set, let the database provider know */\n    kdb->mask = mask | KADM5_KEY_DATA | KADM5_PRINCIPAL ;\n\n    /* store the new db entry */\n    ret = kdb_put_entry(handle, kdb, &adb);\n\n    (void) k5_kadm5_hook_create(handle->context, handle->hook_handles,\n                                KADM5_HOOK_STAGE_POSTCOMMIT, entry, mask,\n                                new_n_ks_tuple, new_ks_tuple, password);\n\ncleanup:\n    free(new_ks_tuple);\n    krb5_db_free_principal(handle->context, kdb);\n    if (have_polent)\n        (void) kadm5_free_policy_ent(handle->lhandle, &polent);\n    return ret;\n}",
+            370
+        ],
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "kadm5_modify_principal",
+            "kadm5_ret_t /* <=== kadm5_modify_principal */ \nkadm5_modify_principal(void *server_handle,\n                       kadm5_principal_ent_t entry, long mask)\n{\n    int                     ret, ret2, i;\n    kadm5_policy_ent_rec    pol;\n    krb5_boolean            have_pol = FALSE;\n    krb5_db_entry           *kdb;\n    krb5_tl_data            *tl_data_orig;\n    osa_princ_ent_rec       adb;\n    kadm5_server_handle_t handle = server_handle;\n\n    CHECK_HANDLE(server_handle);\n\n    krb5_clear_error_message(handle->context);\n\n    if(entry == NULL)\n        return EINVAL;\n    if((mask & KADM5_PRINCIPAL) || (mask & KADM5_LAST_PWD_CHANGE) ||\n       (mask & KADM5_MOD_TIME) || (mask & KADM5_MOD_NAME) ||\n       (mask & KADM5_MKVNO) || (mask & KADM5_AUX_ATTRIBUTES) ||\n       (mask & KADM5_KEY_DATA) || (mask & KADM5_LAST_SUCCESS) ||\n       (mask & KADM5_LAST_FAILED))\n        return KADM5_BAD_MASK;\n    if((mask & ~ALL_PRINC_MASK))\n        return KADM5_BAD_MASK;\n    if((mask & KADM5_POLICY) && entry->policy == NULL)\n        return KADM5_BAD_MASK;\n    if((mask & KADM5_POLICY) && (mask & KADM5_POLICY_CLR))\n        return KADM5_BAD_MASK;\n    if (mask & KADM5_TL_DATA) {\n        tl_data_orig = entry->tl_data;\n        while (tl_data_orig) {\n            if (tl_data_orig->tl_data_type < 256)\n                return KADM5_BAD_TL_TYPE;\n            tl_data_orig = tl_data_orig->tl_data_next;\n        }\n    }\n\n    ret = kdb_get_entry(handle, entry->principal, &kdb, &adb);\n    if (ret)\n        return(ret);\n\n    /*\n     * This is pretty much the same as create ...\n     */\n\n    if ((mask & KADM5_POLICY)) {\n        ret = get_policy(handle, entry->policy, &pol, &have_pol);\n        if (ret)\n            goto done;\n\n        /* set us up to use the new policy */\n        adb.aux_attributes |= KADM5_POLICY;\n        if (adb.policy)\n            free(adb.policy);\n        adb.policy = strdup(entry->policy);\n    }\n    if (have_pol) {\n        /* set pw_max_life based on new policy */\n        if (pol.pw_max_life) {\n            ret = krb5_dbe_lookup_last_pwd_change(handle->context, kdb,\n                                                  &(kdb->pw_expiration));\n            if (ret)\n                goto done;\n            kdb->pw_expiration += pol.pw_max_life;\n        } else {\n            kdb->pw_expiration = 0;\n        }\n    }\n\n    if ((mask & KADM5_POLICY_CLR) && (adb.aux_attributes & KADM5_POLICY)) {\n        free(adb.policy);\n        adb.policy = NULL;\n        adb.aux_attributes &= ~KADM5_POLICY;\n        kdb->pw_expiration = 0;\n    }\n\n    if ((mask & KADM5_ATTRIBUTES))\n        kdb->attributes = entry->attributes;\n    if ((mask & KADM5_MAX_LIFE))\n        kdb->max_life = entry->max_life;\n    if ((mask & KADM5_PRINC_EXPIRE_TIME))\n        kdb->expiration = entry->princ_expire_time;\n    if (mask & KADM5_PW_EXPIRATION)\n        kdb->pw_expiration = entry->pw_expiration;\n    if (mask & KADM5_MAX_RLIFE)\n        kdb->max_renewable_life = entry->max_renewable_life;\n\n    if((mask & KADM5_KVNO)) {\n        for (i = 0; i < kdb->n_key_data; i++)\n            kdb->key_data[i].key_data_kvno = entry->kvno;\n    }\n\n    if (mask & KADM5_TL_DATA) {\n        krb5_tl_data *tl;\n\n        /* may have to change the version number of the API. Updates the list with the given tl_data rather than over-writting */\n\n        for (tl = entry->tl_data; tl;\n             tl = tl->tl_data_next)\n        {\n            ret = krb5_dbe_update_tl_data(handle->context, kdb, tl);\n            if( ret )\n            {\n                goto done;\n            }\n        }\n    }\n\n    /*\n     * Setting entry->fail_auth_count to 0 can be used to manually unlock\n     * an account. It is not possible to set fail_auth_count to any other\n     * value using kadmin.\n     */\n    if (mask & KADM5_FAIL_AUTH_COUNT) {\n        if (entry->fail_auth_count != 0) {\n            ret = KADM5_BAD_SERVER_PARAMS;\n            goto done;\n        }\n\n        kdb->fail_auth_count = 0;\n    }\n\n    /* let the mask propagate to the database provider */\n    kdb->mask = mask;\n\n    ret = k5_kadm5_hook_modify(handle->context, handle->hook_handles,\n                               KADM5_HOOK_STAGE_PRECOMMIT, entry, mask);\n    if (ret)\n        goto done;\n\n    ret = kdb_put_entry(handle, kdb, &adb);\n    if (ret) goto done;\n    (void) k5_kadm5_hook_modify(handle->context, handle->hook_handles,\n                                KADM5_HOOK_STAGE_POSTCOMMIT, entry, mask);\n\n    ret = KADM5_OK;\ndone:\n    if (have_pol) {\n        ret2 = kadm5_free_policy_ent(handle->lhandle, &pol);\n        ret = ret ? ret : ret2;\n    }\n    kdb_free_entry(handle, kdb, &adb);\n    return ret;\n}",
+            632
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "kadm5_create_principal_3",
+            "kadm5_ret_t /* <=== kadm5_create_principal_3 */ \nkadm5_create_principal_3(void *server_handle,\n                         kadm5_principal_ent_t entry, long mask,\n                         int n_ks_tuple, krb5_key_salt_tuple *ks_tuple,\n                         char *password)\n{\n    krb5_db_entry               *kdb;\n    osa_princ_ent_rec           adb;\n    kadm5_policy_ent_rec        polent;\n    krb5_boolean                have_polent = FALSE;\n    krb5_int32                  now;\n    krb5_tl_data                *tl_data_tail;\n    unsigned int                ret;\n    kadm5_server_handle_t handle = server_handle;\n    krb5_keyblock               *act_mkey;\n    krb5_kvno                   act_kvno;\n    int                         new_n_ks_tuple = 0;\n    krb5_key_salt_tuple         *new_ks_tuple = NULL;\n\n    CHECK_HANDLE(server_handle);\n\n    krb5_clear_error_message(handle->context);\n\n    check_1_6_dummy(entry, mask, n_ks_tuple, ks_tuple, &password);\n\n    /*\n     * Argument sanity checking, and opening up the DB\n     */\n    if(!(mask & KADM5_PRINCIPAL) || (mask & KADM5_MOD_NAME) ||\n       (mask & KADM5_MOD_TIME) || (mask & KADM5_LAST_PWD_CHANGE) ||\n       (mask & KADM5_MKVNO) || (mask & KADM5_AUX_ATTRIBUTES) ||\n       (mask & KADM5_LAST_SUCCESS) || (mask & KADM5_LAST_FAILED) ||\n       (mask & KADM5_FAIL_AUTH_COUNT))\n        return KADM5_BAD_MASK;\n    if ((mask & KADM5_KEY_DATA) && entry->n_key_data != 0)\n        return KADM5_BAD_MASK;\n    if((mask & KADM5_POLICY) && (mask & KADM5_POLICY_CLR))\n        return KADM5_BAD_MASK;\n    if((mask & ~ALL_PRINC_MASK))\n        return KADM5_BAD_MASK;\n    if (entry == NULL)\n        return EINVAL;\n\n    /*\n     * Check to see if the principal exists\n     */\n    ret = kdb_get_entry(handle, entry->principal, &kdb, &adb);\n\n    switch(ret) {\n    case KADM5_UNK_PRINC:\n        break;\n    case 0:\n        kdb_free_entry(handle, kdb, &adb);\n        return KADM5_DUP;\n    default:\n        return ret;\n    }\n\n    kdb = krb5_db_alloc(handle->context, NULL, sizeof(*kdb));\n    if (kdb == NULL)\n        return ENOMEM;\n    memset(kdb, 0, sizeof(*kdb));\n    memset(&adb, 0, sizeof(osa_princ_ent_rec));\n\n    /*\n     * If a policy was specified, load it.\n     * If we can not find the one specified return an error\n     */\n    if ((mask & KADM5_POLICY)) {\n        ret = get_policy(handle, entry->policy, &polent, &have_polent);\n        if (ret)\n            goto cleanup;\n    }\n    if (password) {\n        ret = passwd_check(handle, password, have_polent ? &polent : NULL,\n                           entry->principal);\n        if (ret)\n            goto cleanup;\n    }\n    /*\n     * Start populating the various DB fields, using the\n     * \"defaults\" for fields that were not specified by the\n     * mask.\n     */\n    if ((ret = krb5_timeofday(handle->context, &now)))\n        goto cleanup;\n\n    kdb->magic = KRB5_KDB_MAGIC_NUMBER;\n    kdb->len = KRB5_KDB_V1_BASE_LENGTH; /* gag me with a chainsaw */\n\n    if ((mask & KADM5_ATTRIBUTES))\n        kdb->attributes = entry->attributes;\n    else\n        kdb->attributes = handle->params.flags;\n\n    if ((mask & KADM5_MAX_LIFE))\n        kdb->max_life = entry->max_life;\n    else\n        kdb->max_life = handle->params.max_life;\n\n    if (mask & KADM5_MAX_RLIFE)\n        kdb->max_renewable_life = entry->max_renewable_life;\n    else\n        kdb->max_renewable_life = handle->params.max_rlife;\n\n    if ((mask & KADM5_PRINC_EXPIRE_TIME))\n        kdb->expiration = entry->princ_expire_time;\n    else\n        kdb->expiration = handle->params.expiration;\n\n    kdb->pw_expiration = 0;\n    if (have_polent) {\n        if(polent.pw_max_life)\n            kdb->pw_expiration = now + polent.pw_max_life;\n        else\n            kdb->pw_expiration = 0;\n    }\n    if ((mask & KADM5_PW_EXPIRATION))\n        kdb->pw_expiration = entry->pw_expiration;\n\n    kdb->last_success = 0;\n    kdb->last_failed = 0;\n    kdb->fail_auth_count = 0;\n\n    /* this is kind of gross, but in order to free the tl data, I need\n       to free the entire kdb entry, and that will try to free the\n       principal. */\n\n    if ((ret = kadm5_copy_principal(handle->context,\n                                    entry->principal, &(kdb->princ))))\n        goto cleanup;\n\n    if ((ret = krb5_dbe_update_last_pwd_change(handle->context, kdb, now)))\n        goto cleanup;\n\n    if (mask & KADM5_TL_DATA) {\n        /* splice entry->tl_data onto the front of kdb->tl_data */\n        for (tl_data_tail = entry->tl_data; tl_data_tail;\n             tl_data_tail = tl_data_tail->tl_data_next)\n        {\n            ret = krb5_dbe_update_tl_data(handle->context, kdb, tl_data_tail);\n            if( ret )\n                goto cleanup;\n        }\n    }\n\n    /*\n     * We need to have setup the TL data, so we have strings, so we can\n     * check enctype policy, which is why we check/initialize ks_tuple\n     * this late.\n     */\n    ret = apply_keysalt_policy(handle, entry->policy, n_ks_tuple, ks_tuple,\n                               &new_n_ks_tuple, &new_ks_tuple);\n    if (ret)\n        goto cleanup;\n\n    /* initialize the keys */\n\n    ret = kdb_get_active_mkey(handle, &act_kvno, &act_mkey);\n    if (ret)\n        goto cleanup;\n\n    if (mask & KADM5_KEY_DATA) {\n        /* The client requested no keys for this principal. */\n        assert(entry->n_key_data == 0);\n    } else if (password) {\n        ret = krb5_dbe_cpw(handle->context, act_mkey, new_ks_tuple,\n                           new_n_ks_tuple, password,\n                           (mask & KADM5_KVNO)?entry->kvno:1,\n                           FALSE, kdb);\n    } else {\n        /* Null password means create with random key (new in 1.8). */\n        ret = krb5_dbe_crk(handle->context, &master_keyblock,\n                           new_ks_tuple, new_n_ks_tuple, FALSE, kdb);\n    }\n    if (ret)\n        goto cleanup;\n\n    /* Record the master key VNO used to encrypt this entry's keys */\n    ret = krb5_dbe_update_mkvno(handle->context, kdb, act_kvno);\n    if (ret)\n        goto cleanup;\n\n    ret = k5_kadm5_hook_create(handle->context, handle->hook_handles,\n                               KADM5_HOOK_STAGE_PRECOMMIT, entry, mask,\n                               new_n_ks_tuple, new_ks_tuple, password);\n    if (ret)\n        goto cleanup;\n\n    /* populate the admin-server-specific fields.  In the OV server,\n       this used to be in a separate database.  Since there's already\n       marshalling code for the admin fields, to keep things simple,\n       I'm going to keep it, and make all the admin stuff occupy a\n       single tl_data record, */\n\n    adb.admin_history_kvno = INITIAL_HIST_KVNO;\n    if (mask & KADM5_POLICY) {\n        adb.aux_attributes = KADM5_POLICY;\n\n        /* this does *not* need to be strdup'ed, because adb is xdr */\n        /* encoded in osa_adb_create_princ, and not ever freed */\n\n        adb.policy = entry->policy;\n    }\n\n    /* In all cases key and the principal data is set, let the database provider know */\n    kdb->mask = mask | KADM5_KEY_DATA | KADM5_PRINCIPAL ;\n\n    /* store the new db entry */\n    ret = kdb_put_entry(handle, kdb, &adb);\n\n    (void) k5_kadm5_hook_create(handle->context, handle->hook_handles,\n                                KADM5_HOOK_STAGE_POSTCOMMIT, entry, mask,\n                                new_n_ks_tuple, new_ks_tuple, password);\n\ncleanup:\n    free(new_ks_tuple);\n    krb5_db_free_principal(handle->context, kdb);\n    if (have_polent)\n        (void) kadm5_free_policy_ent(handle->lhandle, &polent);\n    return ret;\n}",
+            370
+        ],
+        [
+            "src/lib/kadm5/srv/svr_principal.c",
+            "kadm5_modify_principal",
+            "kadm5_ret_t /* <=== kadm5_modify_principal */ \nkadm5_modify_principal(void *server_handle,\n                       kadm5_principal_ent_t entry, long mask)\n{\n    int                     ret, ret2, i;\n    kadm5_policy_ent_rec    pol;\n    krb5_boolean            have_pol = FALSE;\n    krb5_db_entry           *kdb;\n    krb5_tl_data            *tl_data_orig;\n    osa_princ_ent_rec       adb;\n    kadm5_server_handle_t handle = server_handle;\n\n    CHECK_HANDLE(server_handle);\n\n    krb5_clear_error_message(handle->context);\n\n    if((mask & KADM5_PRINCIPAL) || (mask & KADM5_LAST_PWD_CHANGE) ||\n       (mask & KADM5_MOD_TIME) || (mask & KADM5_MOD_NAME) ||\n       (mask & KADM5_MKVNO) || (mask & KADM5_AUX_ATTRIBUTES) ||\n       (mask & KADM5_KEY_DATA) || (mask & KADM5_LAST_SUCCESS) ||\n       (mask & KADM5_LAST_FAILED))\n        return KADM5_BAD_MASK;\n    if((mask & ~ALL_PRINC_MASK))\n        return KADM5_BAD_MASK;\n    if((mask & KADM5_POLICY) && (mask & KADM5_POLICY_CLR))\n        return KADM5_BAD_MASK;\n    if(entry == (kadm5_principal_ent_t) NULL)\n        return EINVAL;\n    if (mask & KADM5_TL_DATA) {\n        tl_data_orig = entry->tl_data;\n        while (tl_data_orig) {\n            if (tl_data_orig->tl_data_type < 256)\n                return KADM5_BAD_TL_TYPE;\n            tl_data_orig = tl_data_orig->tl_data_next;\n        }\n    }\n\n    ret = kdb_get_entry(handle, entry->principal, &kdb, &adb);\n    if (ret)\n        return(ret);\n\n    /*\n     * This is pretty much the same as create ...\n     */\n\n    if ((mask & KADM5_POLICY)) {\n        ret = get_policy(handle, entry->policy, &pol, &have_pol);\n        if (ret)\n            goto done;\n\n        /* set us up to use the new policy */\n        adb.aux_attributes |= KADM5_POLICY;\n        if (adb.policy)\n            free(adb.policy);\n        adb.policy = strdup(entry->policy);\n    }\n    if (have_pol) {\n        /* set pw_max_life based on new policy */\n        if (pol.pw_max_life) {\n            ret = krb5_dbe_lookup_last_pwd_change(handle->context, kdb,\n                                                  &(kdb->pw_expiration));\n            if (ret)\n                goto done;\n            kdb->pw_expiration += pol.pw_max_life;\n        } else {\n            kdb->pw_expiration = 0;\n        }\n    }\n\n    if ((mask & KADM5_POLICY_CLR) && (adb.aux_attributes & KADM5_POLICY)) {\n        free(adb.policy);\n        adb.policy = NULL;\n        adb.aux_attributes &= ~KADM5_POLICY;\n        kdb->pw_expiration = 0;\n    }\n\n    if ((mask & KADM5_ATTRIBUTES))\n        kdb->attributes = entry->attributes;\n    if ((mask & KADM5_MAX_LIFE))\n        kdb->max_life = entry->max_life;\n    if ((mask & KADM5_PRINC_EXPIRE_TIME))\n        kdb->expiration = entry->princ_expire_time;\n    if (mask & KADM5_PW_EXPIRATION)\n        kdb->pw_expiration = entry->pw_expiration;\n    if (mask & KADM5_MAX_RLIFE)\n        kdb->max_renewable_life = entry->max_renewable_life;\n\n    if((mask & KADM5_KVNO)) {\n        for (i = 0; i < kdb->n_key_data; i++)\n            kdb->key_data[i].key_data_kvno = entry->kvno;\n    }\n\n    if (mask & KADM5_TL_DATA) {\n        krb5_tl_data *tl;\n\n        /* may have to change the version number of the API. Updates the list with the given tl_data rather than over-writting */\n\n        for (tl = entry->tl_data; tl;\n             tl = tl->tl_data_next)\n        {\n            ret = krb5_dbe_update_tl_data(handle->context, kdb, tl);\n            if( ret )\n            {\n                goto done;\n            }\n        }\n    }\n\n    /*\n     * Setting entry->fail_auth_count to 0 can be used to manually unlock\n     * an account. It is not possible to set fail_auth_count to any other\n     * value using kadmin.\n     */\n    if (mask & KADM5_FAIL_AUTH_COUNT) {\n        if (entry->fail_auth_count != 0) {\n            ret = KADM5_BAD_SERVER_PARAMS;\n            goto done;\n        }\n\n        kdb->fail_auth_count = 0;\n    }\n\n    /* let the mask propagate to the database provider */\n    kdb->mask = mask;\n\n    ret = k5_kadm5_hook_modify(handle->context, handle->hook_handles,\n                               KADM5_HOOK_STAGE_PRECOMMIT, entry, mask);\n    if (ret)\n        goto done;\n\n    ret = kdb_put_entry(handle, kdb, &adb);\n    if (ret) goto done;\n    (void) k5_kadm5_hook_modify(handle->context, handle->hook_handles,\n                                KADM5_HOOK_STAGE_POSTCOMMIT, entry, mask);\n\n    ret = KADM5_OK;\ndone:\n    if (have_pol) {\n        ret2 = kadm5_free_policy_ent(handle->lhandle, &pol);\n        ret = ret ? ret : ret2;\n    }\n    kdb_free_entry(handle, kdb, &adb);\n    return ret;\n}",
+            630
+        ]
+    ]
+}

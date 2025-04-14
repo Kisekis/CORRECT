@@ -1,0 +1,161 @@
+{
+    "calleeMethods": [],
+    "globalVars": [],
+    "importContext": [
+        "#include \"eap_pwd.h\"",
+        "#include <freeradius-devel/modules.h>",
+        "#include <freeradius-devel/radiusd.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct _pwd_session_t {\n    uint16_t state;\n#define PWD_STATE_ID_REQ\t\t1\n#define PWD_STATE_COMMIT\t\t2\n#define PWD_STATE_CONFIRM\t       3\n    uint16_t group_num;\n    uint32_t ciphersuite;\n    uint32_t token;\n    char peer_id[MAX_STRING_LEN];\n    size_t peer_id_len;\n    size_t mtu;\n    uint8_t *in;      /* reassembled fragments */\n    size_t in_pos;\n    size_t in_len;\n    uint8_t *out;     /* message to fragment */\n    size_t out_pos;\n    size_t out_len;\n    EC_GROUP *group;\n    EC_POINT *pwe;\n    BIGNUM *order;\n    BIGNUM *prime;\n    BIGNUM *k;\n    BIGNUM *private_value;\n    BIGNUM *peer_scalar;\n    BIGNUM *my_scalar;\n    EC_POINT *my_element;\n    EC_POINT *peer_element;\n    uint8_t my_confirm[SHA256_DIGEST_LENGTH];\n} pwd_session_t;",
+            "pwd_session_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/modules/rlm_eap/types/rlm_eap_pwd/eap_pwd.c": [
+            331,
+            335,
+            336,
+            339,
+            340,
+            341,
+            342,
+            343,
+            344,
+            345,
+            346,
+            351,
+            357,
+            358,
+            363,
+            368,
+            369,
+            370,
+            371,
+            373,
+            374,
+            377,
+            378,
+            379,
+            380,
+            384,
+            385,
+            390,
+            391,
+            392,
+            397,
+            398,
+            399,
+            403,
+            404,
+            410,
+            411,
+            412,
+            417,
+            418,
+            419,
+            420,
+            425,
+            426,
+            427,
+            438,
+            439,
+            443,
+            444,
+            447,
+            450,
+            451,
+            452,
+            453,
+            454,
+            456
+        ]
+    },
+    "visitedLines_before": {
+        "src/modules/rlm_eap/types/rlm_eap_pwd/eap_pwd.c": [
+            331,
+            335,
+            336,
+            339,
+            340,
+            341,
+            342,
+            343,
+            344,
+            345,
+            346,
+            351,
+            357,
+            358,
+            363,
+            368,
+            369,
+            370,
+            371,
+            373,
+            374,
+            376,
+            377,
+            382,
+            383,
+            384,
+            388,
+            389,
+            395,
+            396,
+            397,
+            398,
+            403,
+            404,
+            405,
+            416,
+            417,
+            421,
+            422,
+            425,
+            428,
+            429,
+            430,
+            431,
+            432,
+            434
+        ]
+    },
+    "visitedParams": {
+        "src/modules/rlm_eap/types/rlm_eap_pwd/eap_pwd.c": [
+            [
+                "BN_CTX *bnctx",
+                "process_peer_commit"
+            ],
+            [
+                "pwd_session_t *session",
+                "process_peer_commit"
+            ],
+            [
+                "size_t in_len",
+                "process_peer_commit"
+            ],
+            [
+                "uint8_t *in",
+                "process_peer_commit"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/modules/rlm_eap/types/rlm_eap_pwd/eap_pwd.c",
+            "process_peer_commit",
+            "int process_peer_commit (pwd_session_t *session, uint8_t *in, size_t in_len, BN_CTX *bnctx) /* <=== process_peer_commit */ \n{\n\tuint8_t *ptr;\n\tsize_t data_len;\n\tBIGNUM *x = NULL, *y = NULL, *cofactor = NULL;\n\tEC_POINT *K = NULL, *point = NULL;\n\tint res = 1;\n\n\tif (((session->peer_scalar = BN_new()) == NULL) ||\n\t    ((session->k = BN_new()) == NULL) ||\n\t    ((cofactor = BN_new()) == NULL) ||\n\t    ((x = BN_new()) == NULL) ||\n\t    ((y = BN_new()) == NULL) ||\n\t    ((point = EC_POINT_new(session->group)) == NULL) ||\n\t    ((K = EC_POINT_new(session->group)) == NULL) ||\n\t    ((session->peer_element = EC_POINT_new(session->group)) == NULL)) {\n\t\tDEBUG2(\"pwd: failed to allocate room to process peer's commit\");\n\t\tgoto finish;\n\t}\n\n\tif (!EC_GROUP_get_cofactor(session->group, cofactor, NULL)) {\n\t\tDEBUG2(\"pwd: unable to get group co-factor\");\n\t\tgoto finish;\n\t}\n\n\t/* element, x then y, followed by scalar */\n\tptr = (uint8_t *)in;\n\tdata_len = BN_num_bytes(session->prime);\n\n\t/*\n\t *\tDid the peer send enough data?\n\t */\n\tif (in_len < (2 * data_len + BN_num_bytes(session->order))) {\n\t\tDEBUG(\"pwd: Invalid commit packet\");\n\t\tgoto finish;\n\t}\n\n\tBN_bin2bn(ptr, data_len, x);\n\tptr += data_len;\n\tBN_bin2bn(ptr, data_len, y);\n\tptr += data_len;\n\n\tdata_len = BN_num_bytes(session->order);\n\tBN_bin2bn(ptr, data_len, session->peer_scalar);\n\n\t/* validate received scalar */\n\tif (BN_is_zero(session->peer_scalar) ||\n\t    BN_is_one(session->peer_scalar) ||\n\t    BN_cmp(session->peer_scalar, session->order) >= 0) {\n\t\tERROR(\"Peer's scalar is not within the allowed range\");\n\t\tgoto finish;\n\t}\n\n\tif (!EC_POINT_set_affine_coordinates_GFp(session->group, session->peer_element, x, y, bnctx)) {\n\t\tDEBUG2(\"pwd: unable to get coordinates of peer's element\");\n\t\tgoto finish;\n\t}\n\n\t/* validate received element */\n\tif (!EC_POINT_is_on_curve(session->group, session->peer_element, bn_ctx) ||\n\t    EC_POINT_is_at_infinity(session->group, session->peer_element)) {\n\t\tERROR(\"Peer's element is not a point on the elliptic curve\");\n\t\tgoto finish;\n\t}\n\n\t/* check to ensure peer's element is not in a small sub-group */\n\tif (BN_cmp(cofactor, BN_value_one())) {\n\t\tif (!EC_POINT_mul(session->group, point, NULL, session->peer_element, cofactor, NULL)) {\n\t\t\tDEBUG2(\"pwd: unable to multiply element by co-factor\");\n\t\t\tgoto finish;\n\t\t}\n\n\t\tif (EC_POINT_is_at_infinity(session->group, point)) {\n\t\t\tDEBUG2(\"pwd: peer's element is in small sub-group\");\n\t\t\tgoto finish;\n\t\t}\n\t}\n\n\t/* detect reflection attacks */\n\tif (BN_cmp(session->peer_scalar, session->my_scalar) == 0 ||\n\t    EC_POINT_cmp(session->group, session->peer_element, session->my_element, bn_ctx) == 0) {\n\t\tERROR(\"Reflection attack detected\");\n\t\tgoto finish;\n\t}\n\n\t/* compute the shared key, k */\n\tif ((!EC_POINT_mul(session->group, K, NULL, session->pwe, session->peer_scalar, bnctx)) ||\n\t    (!EC_POINT_add(session->group, K, K, session->peer_element, bnctx)) ||\n\t    (!EC_POINT_mul(session->group, K, NULL, K, session->private_value, bnctx))) {\n\t\tDEBUG2(\"pwd: unable to compute shared key, k\");\n\t\tgoto finish;\n\t}\n\n\t/* ensure that the shared key isn't in a small sub-group */\n\tif (BN_cmp(cofactor, BN_value_one())) {\n\t\tif (!EC_POINT_mul(session->group, K, NULL, K, cofactor, NULL)) {\n\t\t\tDEBUG2(\"pwd: unable to multiply k by co-factor\");\n\t\t\tgoto finish;\n\t\t}\n\t}\n\n\t/*\n\t * This check is strictly speaking just for the case above where\n\t * co-factor > 1 but it was suggested that even though this is probably\n\t * never going to happen it is a simple and safe check \"just to be\n\t * sure\" so let's be safe.\n\t */\n\tif (EC_POINT_is_at_infinity(session->group, K)) {\n\t\tDEBUG2(\"pwd: k is point-at-infinity!\");\n\t\tgoto finish;\n\t}\n\n\tif (!EC_POINT_get_affine_coordinates_GFp(session->group, K, session->k, NULL, bnctx)) {\n\t\tDEBUG2(\"pwd: unable to get shared secret from K\");\n\t\tgoto finish;\n\t}\n\tres = 0;\n\nfinish:\n\tEC_POINT_clear_free(K);\n\tEC_POINT_clear_free(point);\n\tBN_clear_free(cofactor);\n\tBN_clear_free(x);\n\tBN_clear_free(y);\n\n\treturn res;\n}",
+            331
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/modules/rlm_eap/types/rlm_eap_pwd/eap_pwd.c",
+            "process_peer_commit",
+            "int process_peer_commit (pwd_session_t *session, uint8_t *in, size_t in_len, BN_CTX *bnctx) /* <=== process_peer_commit */ \n{\n\tuint8_t *ptr;\n\tsize_t data_len;\n\tBIGNUM *x = NULL, *y = NULL, *cofactor = NULL;\n\tEC_POINT *K = NULL, *point = NULL;\n\tint res = 1;\n\n\tif (((session->peer_scalar = BN_new()) == NULL) ||\n\t    ((session->k = BN_new()) == NULL) ||\n\t    ((cofactor = BN_new()) == NULL) ||\n\t    ((x = BN_new()) == NULL) ||\n\t    ((y = BN_new()) == NULL) ||\n\t    ((point = EC_POINT_new(session->group)) == NULL) ||\n\t    ((K = EC_POINT_new(session->group)) == NULL) ||\n\t    ((session->peer_element = EC_POINT_new(session->group)) == NULL)) {\n\t\tDEBUG2(\"pwd: failed to allocate room to process peer's commit\");\n\t\tgoto finish;\n\t}\n\n\tif (!EC_GROUP_get_cofactor(session->group, cofactor, NULL)) {\n\t\tDEBUG2(\"pwd: unable to get group co-factor\");\n\t\tgoto finish;\n\t}\n\n\t/* element, x then y, followed by scalar */\n\tptr = (uint8_t *)in;\n\tdata_len = BN_num_bytes(session->prime);\n\n\t/*\n\t *\tDid the peer send enough data?\n\t */\n\tif (in_len < (2 * data_len + BN_num_bytes(session->order))) {\n\t\tDEBUG(\"pwd: Invalid commit packet\");\n\t\tgoto finish;\n\t}\n\n\tBN_bin2bn(ptr, data_len, x);\n\tptr += data_len;\n\tBN_bin2bn(ptr, data_len, y);\n\tptr += data_len;\n\n\tdata_len = BN_num_bytes(session->order);\n\tBN_bin2bn(ptr, data_len, session->peer_scalar);\n\n\tif (!EC_POINT_set_affine_coordinates_GFp(session->group, session->peer_element, x, y, bnctx)) {\n\t\tDEBUG2(\"pwd: unable to get coordinates of peer's element\");\n\t\tgoto finish;\n\t}\n\n\t/* check to ensure peer's element is not in a small sub-group */\n\tif (BN_cmp(cofactor, BN_value_one())) {\n\t\tif (!EC_POINT_mul(session->group, point, NULL, session->peer_element, cofactor, NULL)) {\n\t\t\tDEBUG2(\"pwd: unable to multiply element by co-factor\");\n\t\t\tgoto finish;\n\t\t}\n\n\t\tif (EC_POINT_is_at_infinity(session->group, point)) {\n\t\t\tDEBUG2(\"pwd: peer's element is in small sub-group\");\n\t\t\tgoto finish;\n\t\t}\n\t}\n\n\t/* compute the shared key, k */\n\tif ((!EC_POINT_mul(session->group, K, NULL, session->pwe, session->peer_scalar, bnctx)) ||\n\t    (!EC_POINT_add(session->group, K, K, session->peer_element, bnctx)) ||\n\t    (!EC_POINT_mul(session->group, K, NULL, K, session->private_value, bnctx))) {\n\t\tDEBUG2(\"pwd: unable to compute shared key, k\");\n\t\tgoto finish;\n\t}\n\n\t/* ensure that the shared key isn't in a small sub-group */\n\tif (BN_cmp(cofactor, BN_value_one())) {\n\t\tif (!EC_POINT_mul(session->group, K, NULL, K, cofactor, NULL)) {\n\t\t\tDEBUG2(\"pwd: unable to multiply k by co-factor\");\n\t\t\tgoto finish;\n\t\t}\n\t}\n\n\t/*\n\t * This check is strictly speaking just for the case above where\n\t * co-factor > 1 but it was suggested that even though this is probably\n\t * never going to happen it is a simple and safe check \"just to be\n\t * sure\" so let's be safe.\n\t */\n\tif (EC_POINT_is_at_infinity(session->group, K)) {\n\t\tDEBUG2(\"pwd: k is point-at-infinity!\");\n\t\tgoto finish;\n\t}\n\n\tif (!EC_POINT_get_affine_coordinates_GFp(session->group, K, session->k, NULL, bnctx)) {\n\t\tDEBUG2(\"pwd: unable to get shared secret from K\");\n\t\tgoto finish;\n\t}\n\tres = 0;\n\nfinish:\n\tEC_POINT_clear_free(K);\n\tEC_POINT_clear_free(point);\n\tBN_clear_free(cofactor);\n\tBN_clear_free(x);\n\tBN_clear_free(y);\n\n\treturn res;\n}",
+            331
+        ]
+    ]
+}

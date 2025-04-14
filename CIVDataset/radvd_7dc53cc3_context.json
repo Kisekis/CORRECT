@@ -1,0 +1,187 @@
+{
+    "calleeMethods": [
+        [
+            "radvd.h",
+            "USER_HZ",
+            "#define USER_HZ 100 /* <=== radvd.h:35:35:USER_HZ:0 */ ",
+            3
+        ],
+        [
+            "privsep-linux.c",
+            "privsep_init",
+            "int /* <=== privsep_init */ \nprivsep_init(void)\n{\n\tint pipefds[2];\n\tpid_t pid;\n\n\tif (privsep_enabled())\n\t\treturn 0;\n\n\tif (pipe(pipefds) != 0) {\n\t\tflog(LOG_ERR, \"Couldn't create privsep pipe.\");\n\t\treturn (-1);\n\t}\n\n\tpid = fork();\n\tif (pid == -1) {\n\t\tflog(LOG_ERR, \"Couldn't fork for privsep.\");\n\t\treturn (-1);\n\t}\n\n\tif (pid == 0) {\n\t\tint nullfd;\n\n\t\t/* This will be the privileged child */\n\t\tclose(pipefds[1]);\n\t\tpfd = pipefds[0];\n\n\t\t/* Detach from stdio */\n\t\tnullfd = open(\"/dev/null\", O_RDONLY);\n\t\tif (nullfd < 0) {\n\t\t\tperror(\"/dev/null\");\n\t\t\tclose(pfd);\n\t\t\t_exit(1);\n\t\t}\n\t\tdup2(nullfd, 0);\n\t\tdup2(nullfd, 1);\n\t\t/* XXX: we'll keep stderr open in debug mode for better logging */\n\t\tif (get_debuglevel() == 0)\n\t\t\tdup2(nullfd, 2);\n\n\t\tprivsep_read_loop();\n\t\tclose(pfd);\n\t\tflog(LOG_ERR, \"Exiting, privsep_read_loop is complete.\\n\");\n\t\t_exit(0);\n\t}\n\n\t/* Continue execution (will drop privileges soon) */\n\tclose(pipefds[0]);\n\tpfd = pipefds[1];\n\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "log.c",
+            "flog",
+            "void /* <=== flog */ \nflog(int prio, char *format, ...)\n{\n\tva_list ap;\n\tint res;\n\n\tva_start(ap, format);\n\tres = vlog(prio, format, ap);\n\tva_end(ap);\n\n\t/* XXX: should we do something if res < 0.. */\n}",
+            2
+        ],
+        [
+            "radvd.h",
+            "set_interface_var",
+            "int set_interface_var(const char *, const char *, const char *, uint32_t); /* <=== set_interface_var */ ",
+            3
+        ],
+        [
+            "defaults.h",
+            "MAX_AdvRetransTimer",
+            "#define MAX_AdvRetransTimer\t\t3600000 /* <=== defaults.h:123:123:MAX_AdvRetransTimer:0 */ ",
+            3
+        ],
+        [
+            "defaults.h",
+            "MAX_AdvReachableTime",
+            "#define MAX_AdvReachableTime\t\t3600000 /* 1 hour in milliseconds */ /* <=== defaults.h:120:120:MAX_AdvReachableTime:0 */ ",
+            3
+        ],
+        [
+            "radvd.h",
+            "readn",
+            "ssize_t readn(int fd, void *buf, size_t count); /* <=== readn */ ",
+            3
+        ],
+        [
+            "defaults.h",
+            "MIN_AdvRetransTimer",
+            "#define MIN_AdvRetransTimer\t\t10 /* <=== defaults.h:122:122:MIN_AdvRetransTimer:0 */ ",
+            3
+        ],
+        [
+            "privsep-linux.c",
+            "privsep_read_loop",
+            "void /* <=== privsep_read_loop */ \nprivsep_read_loop(void)\n{\n\tstruct privsep_command cmd;\n\tint ret;\n\n\twhile (1) {\n\t\tret = readn(pfd, &cmd, sizeof(cmd));\n\t\tif (ret <= 0) {\n\t\t\t/* Error or EOF, give up */\n\t\t\tif (ret < 0) {\n\t\t\t\tflog(LOG_ERR, \"Exiting, privsep_read_loop had readn error: %s\\n\",\n\t\t\t\t     strerror(errno));\n\t\t\t} else {\n\t\t\t\tflog(LOG_ERR, \"Exiting, privsep_read_loop had readn return 0 bytes\\n\");\n\t\t\t}\n\t\t\tclose(pfd);\n\t\t\t_exit(0);\n\t\t}\n\t\tif (ret != sizeof(cmd)) {\n\t\t\t/* Short read, ignore */\n\t\t\treturn;\n\t\t}\n\n\t\tcmd.iface[IFNAMSIZ-1] = '\\0';\n\n\t\tswitch(cmd.type) {\n\n\t\tcase SET_INTERFACE_LINKMTU:\n\t\t\tif (cmd.val < MIN_AdvLinkMTU || cmd.val > MAX_AdvLinkMTU) {\n\t\t\t\tflog(LOG_ERR, \"(privsep) %s: LinkMTU (%u) is not within the defined bounds, ignoring\", cmd.iface, cmd.val);\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tret = set_interface_var(cmd.iface, PROC_SYS_IP6_LINKMTU, \"LinkMTU\", cmd.val);\n\t\t\tbreak;\n\n\t\tcase SET_INTERFACE_CURHLIM:\n\t\t\tif (cmd.val < MIN_AdvCurHopLimit || cmd.val > MAX_AdvCurHopLimit) {\n\t\t\t\tflog(LOG_ERR, \"(privsep) %s: CurHopLimit (%u) is not within the defined bounds, ignoring\", cmd.iface, cmd.val);\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tret = set_interface_var(cmd.iface, PROC_SYS_IP6_CURHLIM, \"CurHopLimit\", cmd.val);\n\t\t\tbreak;\n\n\t\tcase SET_INTERFACE_REACHTIME:\n\t\t\tif (cmd.val < MIN_AdvReachableTime || cmd.val > MAX_AdvReachableTime) {\n\t\t\t\tflog(LOG_ERR, \"(privsep) %s: BaseReachableTimer (%u) is not within the defined bounds, ignoring\", cmd.iface, cmd.val);\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tret = set_interface_var(cmd.iface, PROC_SYS_IP6_BASEREACHTIME_MS, \"BaseReachableTimer (ms)\", cmd.val);\n\t\t\tif (ret == 0)\n\t\t\t\tbreak;\n\t\t\tset_interface_var(cmd.iface, PROC_SYS_IP6_BASEREACHTIME, \"BaseReachableTimer\", cmd.val / 1000);\n\t\t\tbreak;\n\n\t\tcase SET_INTERFACE_RETRANSTIMER:\n\t\t\tif (cmd.val < MIN_AdvRetransTimer || cmd.val > MAX_AdvRetransTimer) {\n\t\t\t\tflog(LOG_ERR, \"(privsep) %s: RetransTimer (%u) is not within the defined bounds, ignoring\", cmd.iface, cmd.val);\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tret = set_interface_var(cmd.iface, PROC_SYS_IP6_RETRANSTIMER_MS, \"RetransTimer (ms)\", cmd.val);\n\t\t\tif (ret == 0)\n\t\t\t\tbreak;\n\t\t\tset_interface_var(cmd.iface, PROC_SYS_IP6_RETRANSTIMER, \"RetransTimer\", cmd.val / 1000 * USER_HZ); /* XXX user_hz */\n\t\t\tbreak;\n\n\t\tdefault:\n\t\t\t/* Bad command */\n\t\t\tbreak;\n\t\t}\n\t}\n}",
+            2
+        ],
+        [
+            "defaults.h",
+            "MAX_AdvCurHopLimit",
+            "#define MAX_AdvCurHopLimit\t\t255 /* <=== defaults.h:126:126:MAX_AdvCurHopLimit:0 */ ",
+            3
+        ],
+        [
+            "privsep-linux.c",
+            "privsep_enabled",
+            "int /* <=== privsep_enabled */ \nprivsep_enabled(void)\n{\n\tif (pfd < 0)\n\t\treturn 0;\n\treturn 1;\n}",
+            2
+        ],
+        [
+            "defaults.h",
+            "MIN_AdvLinkMTU",
+            "#define\tMIN_AdvLinkMTU\t\t\t1280 /* <=== defaults.h:116:116:MIN_AdvLinkMTU:0 */ ",
+            3
+        ],
+        [
+            "defaults.h",
+            "MIN_AdvCurHopLimit",
+            "#define MIN_AdvCurHopLimit\t\t2 /* <=== defaults.h:125:125:MIN_AdvCurHopLimit:0 */ ",
+            3
+        ],
+        [
+            "defaults.h",
+            "MIN_AdvReachableTime",
+            "#define MIN_AdvReachableTime\t\t100 /* <=== defaults.h:119:119:MIN_AdvReachableTime:0 */ ",
+            3
+        ],
+        [
+            "log.c",
+            "get_debuglevel",
+            "int /* <=== get_debuglevel */ \nget_debuglevel(void)\n{\n\treturn debug_level;\n}",
+            2
+        ],
+        [
+            "log.c",
+            "vlog",
+            "static int /* <=== vlog */ \nvlog(int prio, char *format, va_list ap)\n{\n\tchar tstamp[64], buff[1024];\n\tstruct tm *tm;\n\ttime_t current;\n\n\tvsnprintf(buff, sizeof(buff), format, ap);\n\n\tswitch (log_method) {\n\t\tcase L_NONE:\n\t\t\tbreak;\n\t\tcase L_SYSLOG:\n\t\t\tsyslog(prio, \"%s\", buff);\n\t\t\tbreak;\n\t\tcase L_STDERR_SYSLOG:\n\t\t\tsyslog(prio, \"%s\", buff);\n\t\t\tif (prio > LOG_ERR) /* fall through for messages with high priority */\n\t\t\t\tbreak;\n\t\tcase L_STDERR:\n\t\t\tcurrent = time(NULL);\n\t\t\ttm = localtime(&current);\n\t\t\t(void) strftime(tstamp, sizeof(tstamp), LOG_TIME_FORMAT, tm);\n\n\t\t\tfprintf(stderr, \"[%s] %s: %s\\n\", tstamp, log_ident, buff);\n    \t\t\tfflush(stderr);\n\t\t\tbreak;\n\t\tcase L_LOGFILE:\n\t\t\tcurrent = time(NULL);\n\t\t\ttm = localtime(&current);\n\t\t\t(void) strftime(tstamp, sizeof(tstamp), LOG_TIME_FORMAT, tm);\n\n\t\t\tfprintf(log_file_fd, \"[%s] %s: %s\\n\", tstamp, log_ident, buff);\n    \t\t\tfflush(log_file_fd);\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tfprintf(stderr, \"%s: unknown logging method: %d\\n\", log_ident, log_method);\n\t\t\tlog_method = L_NONE;\n\t\t\treturn (-1);\n\t}\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "defaults.h",
+            "MAX_AdvLinkMTU",
+            "#define\tMAX_AdvLinkMTU\t\t\t131072 /* <=== defaults.h:117:117:MAX_AdvLinkMTU:0 */ ",
+            3
+        ],
+        [
+            "radvd.c",
+            "OPTIONS_STR",
+            "#define OPTIONS_STR \"d:C:l:m:p:t:u:vhcs\" /* <=== radvd.c:125:125:OPTIONS_STR:0 */ ",
+            1
+        ]
+    ],
+    "globalVars": [
+        "char* pname"
+    ],
+    "importContext": [
+        "#include <poll.h>",
+        "#include \"netlink.h\"",
+        "#include \"pathnames.h\"",
+        "#include \"radvd.h\"",
+        "#include \"config.h\"",
+        "#include \"includes.h\""
+    ],
+    "typeDefs": [],
+    "visitedLines_after": {
+        "radvd.c": [
+            98,
+            99,
+            106,
+            107,
+            109,
+            114,
+            129,
+            132,
+            188,
+            270,
+            271,
+            273,
+            274,
+            275
+        ]
+    },
+    "visitedLines_before": {
+        "radvd.c": [
+            98,
+            99,
+            106,
+            107,
+            109,
+            114,
+            129,
+            132,
+            188,
+            270,
+            271,
+            273,
+            274
+        ]
+    },
+    "visitedParams": {
+        "radvd.c": [
+            [
+                "char *argv[]",
+                "main"
+            ],
+            [
+                "int argc",
+                "main"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "radvd.c",
+            "main",
+            "int /* <=== main */ \nmain(int argc, char *argv[])\n{\n\tchar pidstr[16];\n\tssize_t ret;\n\tint c, log_method;\n\tchar *logfile, *pidfile;\n\tint facility, fd;\n\tchar *username = NULL;\n\tchar *chrootdir = NULL;\n\tint configtest = 0;\n\tint singleprocess = 0;\n#ifdef HAVE_GETOPT_LONG\n\tint opt_idx;\n#endif\n\n\tpname = ((pname=strrchr(argv[0],'/')) != NULL)?pname+1:argv[0];\n\n\tsrand((unsigned int)time(NULL));\n\n\tlog_method = L_STDERR_SYSLOG;\n\tlogfile = PATH_RADVD_LOG;\n\tconf_file = PATH_RADVD_CONF;\n\tfacility = LOG_FACILITY;\n\tpidfile = PATH_RADVD_PID;\n\n\t/* parse args */\n#define OPTIONS_STR \"d:C:l:m:p:t:u:vhcs\"\n#ifdef HAVE_GETOPT_LONG\n\twhile ((c = getopt_long(argc, argv, OPTIONS_STR, prog_opt, &opt_idx)) > 0)\n#else\n\twhile ((c = getopt(argc, argv, OPTIONS_STR)) > 0)\n#endif\n\t{\n\t\tswitch (c) {\n\t\tcase 'C':\n\t\t\tconf_file = optarg;\n\t\t\tbreak;\n\t\tcase 'd':\n\t\t\tset_debuglevel(atoi(optarg));\n\t\t\tbreak;\n\t\tcase 'f':\n\t\t\tfacility = atoi(optarg);\n\t\t\tbreak;\n\t\tcase 'l':\n\t\t\tlogfile = optarg;\n\t\t\tbreak;\n\t\tcase 'p':\n\t\t\tpidfile = optarg;\n\t\t\tbreak;\n\t\tcase 'm':\n\t\t\tif (!strcmp(optarg, \"syslog\"))\n\t\t\t{\n\t\t\t\tlog_method = L_SYSLOG;\n\t\t\t}\n\t\t\telse if (!strcmp(optarg, \"stderr_syslog\"))\n\t\t\t{\n\t\t\t\tlog_method = L_STDERR_SYSLOG;\n\t\t\t}\n\t\t\telse if (!strcmp(optarg, \"stderr\"))\n\t\t\t{\n\t\t\t\tlog_method = L_STDERR;\n\t\t\t}\n\t\t\telse if (!strcmp(optarg, \"logfile\"))\n\t\t\t{\n\t\t\t\tlog_method = L_LOGFILE;\n\t\t\t}\n\t\t\telse if (!strcmp(optarg, \"none\"))\n\t\t\t{\n\t\t\t\tlog_method = L_NONE;\n\t\t\t}\n\t\t\telse\n\t\t\t{\n\t\t\t\tfprintf(stderr, \"%s: unknown log method: %s\\n\", pname, optarg);\n\t\t\t\texit(1);\n\t\t\t}\n\t\t\tbreak;\n\t\tcase 't':\n\t\t\tchrootdir = strdup(optarg);\n\t\t\tbreak;\n\t\tcase 'u':\n\t\t\tusername = strdup(optarg);\n\t\t\tbreak;\n\t\tcase 'v':\n\t\t\tversion();\n\t\t\tbreak;\n\t\tcase 'c':\n\t\t\tconfigtest = 1;\n\t\t\tbreak;\n\t\tcase 's':\n\t\t\tsingleprocess = 1;\n\t\t\tbreak;\n\t\tcase 'h':\n\t\t\tusage();\n#ifdef HAVE_GETOPT_LONG\n\t\tcase ':':\n\t\t\tfprintf(stderr, \"%s: option %s: parameter expected\\n\", pname,\n\t\t\t\tprog_opt[opt_idx].name);\n\t\t\texit(1);\n#endif\n\t\tcase '?':\n\t\t\texit(1);\n\t\t}\n\t}\n\n\tif (chrootdir) {\n\t\tif (!username) {\n\t\t\tfprintf(stderr, \"Chroot as root is not safe, exiting\\n\");\n\t\t\texit(1);\n\t\t}\n\n\t\tif (chroot(chrootdir) == -1) {\n\t\t\tperror(\"chroot\");\n\t\t\texit (1);\n\t\t}\n\n\t\tif (chdir(\"/\") == -1) {\n\t\t\tperror(\"chdir\");\n\t\t\texit (1);\n\t\t}\n\t\t/* username will be switched later */\n\t}\n\n\tif (configtest) {\n\t\tlog_method = L_STDERR;\n\t}\n\n\tif (log_open(log_method, pname, logfile, facility) < 0) {\n\t\tperror(\"log_open\");\n\t\texit(1);\n\t}\n\n\tif (!configtest) {\n\t\tflog(LOG_INFO, \"version %s started\", VERSION);\n\t}\n\n\t/* get a raw socket for sending and receiving ICMPv6 messages */\n\tsock = open_icmpv6_socket();\n\tif (sock < 0) {\n\t\tperror(\"open_icmpv6_socket\");\n\t\texit(1);\n\t}\n\n\t/* check that 'other' cannot write the file\n         * for non-root, also that self/own group can't either\n         */\n\tif (check_conffile_perm(username, conf_file) < 0) {\n\t\tif (get_debuglevel() == 0) {\n\t\t\tflog(LOG_ERR, \"Exiting, permissions on conf_file invalid.\\n\");\n\t\t\texit(1);\n\t\t}\n\t\telse\n\t\t\tflog(LOG_WARNING, \"Insecure file permissions, but continuing anyway\");\n\t}\n\n\t/* if we know how to do it, check whether forwarding is enabled */\n\tif (check_ip6_forwarding()) {\n\t\tflog(LOG_WARNING, \"IPv6 forwarding seems to be disabled, but continuing anyway.\");\n\t}\n\n\t/* parse config file */\n\tif (readin_config(conf_file) < 0) {\n\t\tflog(LOG_ERR, \"Exiting, failed to read config file.\\n\");\n\t\texit(1);\n\t}\n\n\tif (configtest) {\n\t\tfprintf(stderr, \"Syntax OK\\n\");\n\t\texit(0);\n\t}\n\n\t/* drop root privileges if requested. */\n\tif (username) {\n\t\tif (!singleprocess) {\n\t\t \tdlog(LOG_DEBUG, 3, \"Initializing privsep\");\n\t\t\tif (privsep_init() < 0) {\n\t\t\t\tperror(\"Failed to initialize privsep.\");\n\t\t\t\texit(1);\n\t\t\t}\n\t\t}\n\n\t\tif (drop_root_privileges(username) < 0) {\n\t\t\tperror(\"drop_root_privileges\");\n\t\t\texit(1);\n\t\t}\n\t}\n\n\tif ((fd = open(pidfile, O_RDONLY, 0)) > 0)\n\t{\n\t\tret = read(fd, pidstr, sizeof(pidstr) - 1);\n\t\tif (ret < 0)\n\t\t{\n\t\t\tflog(LOG_ERR, \"cannot read radvd pid file, terminating: %s\", strerror(errno));\n\t\t\texit(1);\n\t\t}\n\t\tpidstr[ret] = '\\0';\n\t\tif (!kill((pid_t)atol(pidstr), 0))\n\t\t{\n\t\t\tflog(LOG_ERR, \"radvd already running, terminating.\");\n\t\t\texit(1);\n\t\t}\n\t\tclose(fd);\n\t\tfd = open(pidfile, O_CREAT|O_TRUNC|O_WRONLY, 0644);\n\t}\n\telse\t/* FIXME: not atomic if pidfile is on an NFS mounted volume */\n\t\tfd = open(pidfile, O_CREAT|O_EXCL|O_WRONLY, 0644);\n\n\tif (fd < 0)\n\t{\n\t\tflog(LOG_ERR, \"cannot create radvd pid file, terminating: %s\", strerror(errno));\n\t\texit(1);\n\t}\n\n\t/*\n\t * okay, config file is read in, socket and stuff is setup, so\n\t * lets fork now...\n\t */\n\n\tif (get_debuglevel() == 0) {\n\n\t\t/* Detach from controlling terminal */\n\t\tif (daemon(0, 0) < 0)\n\t\t\tperror(\"daemon\");\n\n\t\t/* close old logfiles, including stderr */\n\t\tlog_close();\n\n\t\t/* reopen logfiles, but don't log to stderr unless explicitly requested */\n\t\tif (log_method == L_STDERR_SYSLOG)\n\t\t\tlog_method = L_SYSLOG;\n\t\tif (log_open(log_method, pname, logfile, facility) < 0) {\n\t\t\tperror(\"log_open\");\n\t\t\texit(1);\n\t\t}\n\n\t}\n\n\t/*\n\t *\tconfig signal handlers\n\t */\n\tsignal(SIGHUP, sighup_handler);\n\tsignal(SIGTERM, sigterm_handler);\n\tsignal(SIGINT, sigint_handler);\n\tsignal(SIGUSR1, sigusr1_handler);\n\n\tsnprintf(pidstr, sizeof(pidstr), \"%ld\\n\", (long)getpid());\n\n\tret = write(fd, pidstr, strlen(pidstr));\n\tif (ret != strlen(pidstr))\n\t{\n\t\tflog(LOG_ERR, \"cannot write radvd pid file, terminating: %s\", strerror(errno));\n\t\texit(1);\n\t}\n\n\tclose(fd);\n\n\tconfig_interface();\n\tkickoff_adverts();\n\tmain_loop();\n\tstop_adverts();\n\tunlink(pidfile);\n\n\treturn 0;\n}",
+            98
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "radvd.c",
+            "main",
+            "int /* <=== main */ \nmain(int argc, char *argv[])\n{\n\tchar pidstr[16];\n\tssize_t ret;\n\tint c, log_method;\n\tchar *logfile, *pidfile;\n\tint facility, fd;\n\tchar *username = NULL;\n\tchar *chrootdir = NULL;\n\tint configtest = 0;\n\tint singleprocess = 0;\n#ifdef HAVE_GETOPT_LONG\n\tint opt_idx;\n#endif\n\n\tpname = ((pname=strrchr(argv[0],'/')) != NULL)?pname+1:argv[0];\n\n\tsrand((unsigned int)time(NULL));\n\n\tlog_method = L_STDERR_SYSLOG;\n\tlogfile = PATH_RADVD_LOG;\n\tconf_file = PATH_RADVD_CONF;\n\tfacility = LOG_FACILITY;\n\tpidfile = PATH_RADVD_PID;\n\n\t/* parse args */\n#define OPTIONS_STR \"d:C:l:m:p:t:u:vhcs\"\n#ifdef HAVE_GETOPT_LONG\n\twhile ((c = getopt_long(argc, argv, OPTIONS_STR, prog_opt, &opt_idx)) > 0)\n#else\n\twhile ((c = getopt(argc, argv, OPTIONS_STR)) > 0)\n#endif\n\t{\n\t\tswitch (c) {\n\t\tcase 'C':\n\t\t\tconf_file = optarg;\n\t\t\tbreak;\n\t\tcase 'd':\n\t\t\tset_debuglevel(atoi(optarg));\n\t\t\tbreak;\n\t\tcase 'f':\n\t\t\tfacility = atoi(optarg);\n\t\t\tbreak;\n\t\tcase 'l':\n\t\t\tlogfile = optarg;\n\t\t\tbreak;\n\t\tcase 'p':\n\t\t\tpidfile = optarg;\n\t\t\tbreak;\n\t\tcase 'm':\n\t\t\tif (!strcmp(optarg, \"syslog\"))\n\t\t\t{\n\t\t\t\tlog_method = L_SYSLOG;\n\t\t\t}\n\t\t\telse if (!strcmp(optarg, \"stderr_syslog\"))\n\t\t\t{\n\t\t\t\tlog_method = L_STDERR_SYSLOG;\n\t\t\t}\n\t\t\telse if (!strcmp(optarg, \"stderr\"))\n\t\t\t{\n\t\t\t\tlog_method = L_STDERR;\n\t\t\t}\n\t\t\telse if (!strcmp(optarg, \"logfile\"))\n\t\t\t{\n\t\t\t\tlog_method = L_LOGFILE;\n\t\t\t}\n\t\t\telse if (!strcmp(optarg, \"none\"))\n\t\t\t{\n\t\t\t\tlog_method = L_NONE;\n\t\t\t}\n\t\t\telse\n\t\t\t{\n\t\t\t\tfprintf(stderr, \"%s: unknown log method: %s\\n\", pname, optarg);\n\t\t\t\texit(1);\n\t\t\t}\n\t\t\tbreak;\n\t\tcase 't':\n\t\t\tchrootdir = strdup(optarg);\n\t\t\tbreak;\n\t\tcase 'u':\n\t\t\tusername = strdup(optarg);\n\t\t\tbreak;\n\t\tcase 'v':\n\t\t\tversion();\n\t\t\tbreak;\n\t\tcase 'c':\n\t\t\tconfigtest = 1;\n\t\t\tbreak;\n\t\tcase 's':\n\t\t\tsingleprocess = 1;\n\t\t\tbreak;\n\t\tcase 'h':\n\t\t\tusage();\n#ifdef HAVE_GETOPT_LONG\n\t\tcase ':':\n\t\t\tfprintf(stderr, \"%s: option %s: parameter expected\\n\", pname,\n\t\t\t\tprog_opt[opt_idx].name);\n\t\t\texit(1);\n#endif\n\t\tcase '?':\n\t\t\texit(1);\n\t\t}\n\t}\n\n\tif (chrootdir) {\n\t\tif (!username) {\n\t\t\tfprintf(stderr, \"Chroot as root is not safe, exiting\\n\");\n\t\t\texit(1);\n\t\t}\n\n\t\tif (chroot(chrootdir) == -1) {\n\t\t\tperror(\"chroot\");\n\t\t\texit (1);\n\t\t}\n\n\t\tif (chdir(\"/\") == -1) {\n\t\t\tperror(\"chdir\");\n\t\t\texit (1);\n\t\t}\n\t\t/* username will be switched later */\n\t}\n\n\tif (configtest) {\n\t\tlog_method = L_STDERR;\n\t}\n\n\tif (log_open(log_method, pname, logfile, facility) < 0) {\n\t\tperror(\"log_open\");\n\t\texit(1);\n\t}\n\n\tif (!configtest) {\n\t\tflog(LOG_INFO, \"version %s started\", VERSION);\n\t}\n\n\t/* get a raw socket for sending and receiving ICMPv6 messages */\n\tsock = open_icmpv6_socket();\n\tif (sock < 0) {\n\t\tperror(\"open_icmpv6_socket\");\n\t\texit(1);\n\t}\n\n\t/* check that 'other' cannot write the file\n         * for non-root, also that self/own group can't either\n         */\n\tif (check_conffile_perm(username, conf_file) < 0) {\n\t\tif (get_debuglevel() == 0) {\n\t\t\tflog(LOG_ERR, \"Exiting, permissions on conf_file invalid.\\n\");\n\t\t\texit(1);\n\t\t}\n\t\telse\n\t\t\tflog(LOG_WARNING, \"Insecure file permissions, but continuing anyway\");\n\t}\n\n\t/* if we know how to do it, check whether forwarding is enabled */\n\tif (check_ip6_forwarding()) {\n\t\tflog(LOG_WARNING, \"IPv6 forwarding seems to be disabled, but continuing anyway.\");\n\t}\n\n\t/* parse config file */\n\tif (readin_config(conf_file) < 0) {\n\t\tflog(LOG_ERR, \"Exiting, failed to read config file.\\n\");\n\t\texit(1);\n\t}\n\n\tif (configtest) {\n\t\tfprintf(stderr, \"Syntax OK\\n\");\n\t\texit(0);\n\t}\n\n\t/* drop root privileges if requested. */\n\tif (username) {\n\t\tif (!singleprocess) {\n\t\t \tdlog(LOG_DEBUG, 3, \"Initializing privsep\");\n\t\t \tif (privsep_init() < 0)\n\t\t\t\tperror(\"Failed to initialize privsep.\");\n\t\t}\n\n\t\tif (drop_root_privileges(username) < 0) {\n\t\t\tperror(\"drop_root_privileges\");\n\t\t\texit(1);\n\t\t}\n\t}\n\n\tif ((fd = open(pidfile, O_RDONLY, 0)) > 0)\n\t{\n\t\tret = read(fd, pidstr, sizeof(pidstr) - 1);\n\t\tif (ret < 0)\n\t\t{\n\t\t\tflog(LOG_ERR, \"cannot read radvd pid file, terminating: %s\", strerror(errno));\n\t\t\texit(1);\n\t\t}\n\t\tpidstr[ret] = '\\0';\n\t\tif (!kill((pid_t)atol(pidstr), 0))\n\t\t{\n\t\t\tflog(LOG_ERR, \"radvd already running, terminating.\");\n\t\t\texit(1);\n\t\t}\n\t\tclose(fd);\n\t\tfd = open(pidfile, O_CREAT|O_TRUNC|O_WRONLY, 0644);\n\t}\n\telse\t/* FIXME: not atomic if pidfile is on an NFS mounted volume */\n\t\tfd = open(pidfile, O_CREAT|O_EXCL|O_WRONLY, 0644);\n\n\tif (fd < 0)\n\t{\n\t\tflog(LOG_ERR, \"cannot create radvd pid file, terminating: %s\", strerror(errno));\n\t\texit(1);\n\t}\n\n\t/*\n\t * okay, config file is read in, socket and stuff is setup, so\n\t * lets fork now...\n\t */\n\n\tif (get_debuglevel() == 0) {\n\n\t\t/* Detach from controlling terminal */\n\t\tif (daemon(0, 0) < 0)\n\t\t\tperror(\"daemon\");\n\n\t\t/* close old logfiles, including stderr */\n\t\tlog_close();\n\n\t\t/* reopen logfiles, but don't log to stderr unless explicitly requested */\n\t\tif (log_method == L_STDERR_SYSLOG)\n\t\t\tlog_method = L_SYSLOG;\n\t\tif (log_open(log_method, pname, logfile, facility) < 0) {\n\t\t\tperror(\"log_open\");\n\t\t\texit(1);\n\t\t}\n\n\t}\n\n\t/*\n\t *\tconfig signal handlers\n\t */\n\tsignal(SIGHUP, sighup_handler);\n\tsignal(SIGTERM, sigterm_handler);\n\tsignal(SIGINT, sigint_handler);\n\tsignal(SIGUSR1, sigusr1_handler);\n\n\tsnprintf(pidstr, sizeof(pidstr), \"%ld\\n\", (long)getpid());\n\n\tret = write(fd, pidstr, strlen(pidstr));\n\tif (ret != strlen(pidstr))\n\t{\n\t\tflog(LOG_ERR, \"cannot write radvd pid file, terminating: %s\", strerror(errno));\n\t\texit(1);\n\t}\n\n\tclose(fd);\n\n\tconfig_interface();\n\tkickoff_adverts();\n\tmain_loop();\n\tstop_adverts();\n\tunlink(pidfile);\n\n\treturn 0;\n}",
+            98
+        ]
+    ]
+}

@@ -1,0 +1,169 @@
+{
+    "calleeMethods": [
+        [
+            "u2f-host/devs.c",
+            "get_device",
+            "struct u2fdevice * /* <=== get_device */ \nget_device (u2fh_devs * devs, unsigned id)\n{\n  struct u2fdevice *dev;\n  for (dev = devs->first; dev != NULL; dev = dev->next)\n    {\n      if (dev->id == id)\n\t{\n\t  return dev;\n\t}\n    }\n  return NULL;\n}",
+            2
+        ],
+        [
+            "u2f-host/u2fmisc.c",
+            "u2fh_sendrecv",
+            "u2fh_rc /* <=== u2fh_sendrecv */ \nu2fh_sendrecv (u2fh_devs * devs, unsigned index, uint8_t cmd,\n\t       const unsigned char *send, uint16_t sendlen,\n\t       unsigned char *recv, size_t * recvlen)\n{\n  int datasent = 0;\n  int sequence = 0;\n  struct u2fdevice *dev = get_device (devs, index);\n\n  if (!dev)\n    {\n      return U2FH_NO_U2F_DEVICE;\n    }\n\n  while (sendlen > datasent)\n    {\n      U2FHID_FRAME frame = { 0 };\n      {\n\tint len = sendlen - datasent;\n\tunsigned int maxlen;\n\tunsigned char *data;\n\tframe.cid = dev->cid;\n\tif (datasent == 0)\n\t  {\n\t    frame.init.cmd = cmd;\n\t    frame.init.bcnth = (sendlen >> 8) & 0xff;\n\t    frame.init.bcntl = sendlen & 0xff;\n\t    data = frame.init.data;\n\t    maxlen = sizeof (frame.init.data);\n\t  }\n\telse\n\t  {\n\t    frame.cont.seq = sequence++;\n\t    data = frame.cont.data;\n\t    maxlen = sizeof (frame.cont.data);\n\t  }\n\tif (len > maxlen)\n\t  {\n\t    len = maxlen;\n\t  }\n\tmemcpy (data, send + datasent, len);\n\tdatasent += len;\n      }\n\n      {\n\tunsigned char data[sizeof (U2FHID_FRAME) + 1];\n\tint len;\n\t/* FIXME: add report as first byte, is report 0 correct? */\n\tdata[0] = 0;\n\tmemcpy (data + 1, &frame, sizeof (U2FHID_FRAME));\n\tif (debug)\n\t  {\n\t    fprintf (stderr, \"USB send: \");\n\t    dumpHex (data, 0, sizeof (U2FHID_FRAME));\n\t  }\n\n\tlen = hid_write (dev->devh, data, sizeof (U2FHID_FRAME) + 1);\n\tif (debug)\n\t  fprintf (stderr, \"USB write returned %d\\n\", len);\n\tif (len < 0)\n\t  return U2FH_TRANSPORT_ERROR;\n\tif (sizeof (U2FHID_FRAME) + 1 != len)\n\t  return U2FH_TRANSPORT_ERROR;\n      }\n    }\n\n  {\n    U2FHID_FRAME frame;\n    unsigned char data[HID_RPT_SIZE];\n    int len = HID_RPT_SIZE;\n    unsigned int maxlen = *recvlen;\n    int recvddata = 0;\n    unsigned short datalen;\n    int timeout = HID_TIMEOUT;\n    int rc = 0;\n\n    do\n      {\n\ttimeout = HID_TIMEOUT;\n\trc = 0;\n\n\twhile (rc == 0)\n\t  {\n\t    if (debug)\n\t      {\n\t\tfprintf (stderr, \"now trying with timeout %d\\n\", timeout);\n\t      }\n\t    rc = hid_read_timeout (dev->devh, data, len, timeout);\n\t    timeout *= 2;\n\t    if (timeout > HID_MAX_TIMEOUT)\n\t      {\n\t\trc = -2;\n\t\tbreak;\n\t      }\n\t  }\n\n\tif (debug)\n\t  {\n\t    fprintf (stderr, \"USB read rc read %d\\n\", len);\n\t    if (rc > 0)\n\t      {\n\t\tfprintf (stderr, \"USB recv: \");\n\t\tdumpHex (data, 0, rc);\n\t      }\n\t  }\n\tif (rc < 0)\n\t  {\n\t    return U2FH_TRANSPORT_ERROR;\n\t  }\n\n\tmemcpy (&frame, data, HID_RPT_SIZE);\n      }\n    while (frame.cid == dev->cid && frame.init.cmd == CTAPHID_KEEPALIVE);\n\n    if (frame.cid != dev->cid || frame.init.cmd != cmd)\n      {\n\treturn U2FH_TRANSPORT_ERROR;\n      }\n    datalen = frame.init.bcnth << 8 | frame.init.bcntl;\n    if (datalen + datalen % HID_RPT_SIZE > maxlen)\n      {\n\treturn U2FH_TRANSPORT_ERROR;\n      }\n    memcpy (recv, frame.init.data, sizeof (frame.init.data));\n    recvddata = sizeof (frame.init.data);\n\n    sequence = 0;\n    while (datalen > recvddata)\n      {\n\ttimeout = HID_TIMEOUT;\n\trc = 0;\n\twhile (rc == 0)\n\t  {\n\t    if (debug)\n\t      {\n\t\tfprintf (stderr, \"now trying with timeout %d\\n\", timeout);\n\t      }\n\t    rc = hid_read_timeout (dev->devh, data, len, timeout);\n\t    timeout *= 2;\n\t    if (timeout > HID_MAX_TIMEOUT)\n\t      {\n\t\trc = -2;\n\t\tbreak;\n\t      }\n\t  }\n\tif (debug)\n\t  {\n\t    fprintf (stderr, \"USB read rc read %d\\n\", len);\n\t    if (rc > 0)\n\t      {\n\t\tfprintf (stderr, \"USB recv: \");\n\t\tdumpHex (data, 0, rc);\n\t      }\n\t  }\n\tif (rc < 0)\n\t  {\n\t    return U2FH_TRANSPORT_ERROR;\n\t  }\n\n\tmemcpy (&frame, data, HID_RPT_SIZE);\n\tif (frame.cid != dev->cid || frame.cont.seq != sequence++)\n\t  {\n\t    fprintf (stderr, \"bar: %d %d %d %d\\n\", frame.cid, dev->cid,\n\t\t     frame.cont.seq, sequence);\n\t    return U2FH_TRANSPORT_ERROR;\n\t  }\n\tif (recvddata + sizeof (frame.cont.data) > maxlen)\n\t  {\n\t    return U2FH_TRANSPORT_ERROR;\n\t  }\n\tmemcpy (recv + recvddata, frame.cont.data, sizeof (frame.cont.data));\n\trecvddata += sizeof (frame.cont.data);\n      }\n    *recvlen = datalen;\n  }\n  return U2FH_OK;\n}",
+            1
+        ],
+        [
+            "u2f-host/inc/u2f_hid.h",
+            "CID_BROADCAST",
+            "#define CID_BROADCAST           0xffffffff\t// Broadcast channel id /* <=== u2f-host/inc/u2f_hid.h:45:45:CID_BROADCAST:0 */ ",
+            1
+        ],
+        [
+            "u2f-host/u2fmisc.c",
+            "HID_MAX_TIMEOUT",
+            "#define HID_MAX_TIMEOUT 4096 /* <=== u2f-host/u2fmisc.c:27:27:HID_MAX_TIMEOUT:0 */ ",
+            2
+        ],
+        [
+            "u2f-host/u2fmisc.c",
+            "HID_TIMEOUT",
+            "#define HID_TIMEOUT 2 /* <=== u2f-host/u2fmisc.c:26:26:HID_TIMEOUT:0 */ ",
+            2
+        ],
+        [
+            "u2f-host/internal.h",
+            "CTAPHID_KEEPALIVE",
+            "#define CTAPHID_KEEPALIVE        (TYPE_INIT | 0x3b)\t// Keepalive response /* <=== u2f-host/internal.h:66:66:CTAPHID_KEEPALIVE:0 */ ",
+            2
+        ],
+        [
+            "u2f-host/u2fmisc.c",
+            "dumpHex",
+            "static void /* <=== dumpHex */ \ndumpHex (unsigned char *data, int offs, int len)\n{\n  int i;\n  for (i = offs; i < len; i++)\n    {\n      fprintf (stderr, \"%02x\", data[i] & 0xFF);\n    }\n  fprintf (stderr, \"\\n\");\n}",
+            2
+        ],
+        [
+            "u2f-host/inc/u2f_hid.h",
+            "HID_RPT_SIZE",
+            "#define HID_RPT_SIZE            64\t// Default size of raw HID report /* <=== u2f-host/inc/u2f_hid.h:41:41:HID_RPT_SIZE:0 */ ",
+            2
+        ],
+        [
+            "u2f-host/inc/u2f_hid.h",
+            "U2FHID_INIT",
+            "#define U2FHID_INIT         (TYPE_INIT | 0x06)\t// Channel initialization /* <=== u2f-host/inc/u2f_hid.h:95:95:U2FHID_INIT:0 */ ",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <string.h>",
+        "#include <windows.h>",
+        "#include <winternl.h>",
+        "#include <sal.h>",
+        "#include <linux/hidraw.h>",
+        "#include <stdio.h>",
+        "#include <unistd.h>",
+        "#include <stdlib.h>",
+        "#include <winerror.h>",
+        "#include <fcntl.h>",
+        "#include <sys/ioctl.h>",
+        "#include <config.h>",
+        "#include \"internal.h\"",
+        "#include <bcrypt.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct\n  {\n    uint8_t nonce[INIT_NONCE_SIZE];\t// Client application nonce\n    uint32_t cid;\t\t// Channel identifier  \n    uint8_t versionInterface;\t// Interface version\n    uint8_t versionMajor;\t// Major version number\n    uint8_t versionMinor;\t// Minor version number\n    uint8_t versionBuild;\t// Build version number\n    uint8_t capFlags;\t\t// Capabilities flags  \n  }",
+            "U2FHID_INIT_RESP"
+        ],
+        [
+            "struct u2fh_devs\n{\n  unsigned max_id;\n  struct u2fdevice *first;\n}",
+            "u2fh_devs"
+        ],
+        [
+            "struct u2fdevice\n{\n  struct u2fdevice *next;\n  hid_device *devh;\n  unsigned id;\n  uint32_t cid;\n  char *device_string;\n  char *device_path;\n  int skipped;\n  uint8_t versionInterface;\t// Interface version\n  uint8_t versionMajor;\t\t// Major version number\n  uint8_t versionMinor;\t\t// Minor version number\n  uint8_t versionBuild;\t\t// Build version number\n  uint8_t capFlags;\t\t// Capabilities flags\n}",
+            "u2fdevice"
+        ]
+    ],
+    "visitedLines_after": {
+        "u2f-host/devs.c": [
+            289,
+            290,
+            293,
+            294,
+            298,
+            299,
+            301,
+            302,
+            303,
+            305,
+            307,
+            309,
+            313,
+            315,
+            318,
+            319,
+            320,
+            321,
+            322,
+            323,
+            324,
+            325,
+            326,
+            327,
+            333
+        ]
+    },
+    "visitedLines_before": {
+        "u2f-host/devs.c": [
+            289,
+            290,
+            293,
+            294,
+            298,
+            299,
+            301,
+            302,
+            303,
+            305,
+            306,
+            308,
+            310,
+            311,
+            312,
+            313,
+            314,
+            315,
+            321
+        ]
+    },
+    "visitedParams": {
+        "u2f-host/devs.c": [
+            [
+                "struct u2fdevice *dev",
+                "init_device"
+            ],
+            [
+                "u2fh_devs * devs",
+                "init_device"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "u2f-host/devs.c",
+            "init_device",
+            "static int /* <=== init_device */ \ninit_device (u2fh_devs * devs, struct u2fdevice *dev)\n{\n  unsigned char resp[1024];\n  unsigned char nonce[8];\n  if (obtain_nonce(nonce) != 0)\n    {\n      return U2FH_TRANSPORT_ERROR;\n    }\n  size_t resplen = sizeof (resp);\n  dev->cid = CID_BROADCAST;\n\n  if (u2fh_sendrecv\n      (devs, dev->id, U2FHID_INIT, nonce, sizeof (nonce), resp,\n       &resplen) == U2FH_OK)\n    {\n      int offs = sizeof (nonce);\n      /* the response has to be atleast 17 bytes, if it's more we discard that */\n      if (resplen < 17)\n\t{\n\t  return U2FH_SIZE_ERROR;\n\t}\n\n      /* incoming and outgoing nonce has to match */\n      if (memcmp (nonce, resp, sizeof (nonce)) != 0)\n\t{\n\t  return U2FH_TRANSPORT_ERROR;\n\t}\n\n      dev->cid =\n\tresp[offs] << 24 | resp[offs + 1] << 16 | resp[offs +\n\t\t\t\t\t\t       2] << 8 | resp[offs +\n\t\t\t\t\t\t\t\t      3];\n      offs += 4;\n      dev->versionInterface = resp[offs++];\n      dev->versionMajor = resp[offs++];\n      dev->versionMinor = resp[offs++];\n      dev->versionBuild = resp[offs++];\n      dev->capFlags = resp[offs++];\n    }\n  else\n    {\n      return U2FH_TRANSPORT_ERROR;\n    }\n  return U2FH_OK;\n}",
+            289
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "u2f-host/devs.c",
+            "init_device",
+            "static int /* <=== init_device */ \ninit_device (u2fh_devs * devs, struct u2fdevice *dev)\n{\n  unsigned char resp[1024];\n  unsigned char nonce[8];\n  if (obtain_nonce(nonce) != 0)\n    {\n      return U2FH_TRANSPORT_ERROR;\n    }\n  size_t resplen = sizeof (resp);\n  dev->cid = CID_BROADCAST;\n\n  if (u2fh_sendrecv\n      (devs, dev->id, U2FHID_INIT, nonce, sizeof (nonce), resp,\n       &resplen) == U2FH_OK)\n    {\n      U2FHID_INIT_RESP initresp;\n      if (resplen > sizeof (initresp))\n\t{\n\t  return U2FH_MEMORY_ERROR;\n\t}\n      memcpy (&initresp, resp, resplen);\n      dev->cid = initresp.cid;\n      dev->versionInterface = initresp.versionInterface;\n      dev->versionMajor = initresp.versionMajor;\n      dev->versionMinor = initresp.versionMinor;\n      dev->capFlags = initresp.capFlags;\n    }\n  else\n    {\n      return U2FH_TRANSPORT_ERROR;\n    }\n  return U2FH_OK;\n}",
+            289
+        ]
+    ]
+}

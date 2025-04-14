@@ -1,0 +1,611 @@
+{
+    "calleeMethods": [
+        [
+            "src/lib/pci_virtio_sock.c",
+            "set_credit_update_required",
+            "static void set_credit_update_required(struct pci_vtsock_softc *sc, /* <=== set_credit_update_required */ \n\t\t\t\t       struct pci_vtsock_sock *sock)\n{\n\tif (sock->credit_update_required) return;\n\tsock->credit_update_required = true;\n\tsc->rx_kick_pending = true;\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_OP_RW",
+            "#define VIRTIO_VSOCK_OP_RW 5 /* <=== src/lib/pci_virtio_sock.c:109:109:VIRTIO_VSOCK_OP_RW:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "SHUTDOWN_RST_DELAY",
+            "#define SHUTDOWN_RST_DELAY\t30 /* <=== src/lib/pci_virtio_sock.c:73:73:SHUTDOWN_RST_DELAY:0 */ ",
+            3
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "PPRINTF",
+            "#define PPRINTF(params) do { if (0) { printf params;  fflush(stdout); } } while(0) /* <=== src/lib/pci_virtio_sock.c:129:129:PPRINTF:1 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_OP_INVALID",
+            "#define VIRTIO_VSOCK_OP_INVALID 0 /* <=== src/lib/pci_virtio_sock.c:102:102:VIRTIO_VSOCK_OP_INVALID:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "REPLY_RING_EMPTY",
+            "#define REPLY_RING_EMPTY(sc) (sc->reply_cons == sc->reply_prod) /* <=== src/lib/pci_virtio_sock.c:332:332:REPLY_RING_EMPTY:1 */ ",
+            3
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "handle_write",
+            "static int handle_write(struct pci_vtsock_softc *sc, /* <=== handle_write */ \n\t\t\tstruct pci_vtsock_sock *sock,\n\t\t\tuint32_t len, struct iovec *iov, int iov_len)\n{\n\tssize_t num;\n\n\tif (sock_is_buffering(sock)) {\n\t\treturn buffer_write(sock, len, iov, iov_len);\n\t}\n\n\tnum = writev(sock->fd, iov, iov_len);\n\tif (num == -1) {\n\t\tif (errno == EPIPE) {\n\t\t\t/* Assume EOF and shutdown */\n\t\t\tPPRINTF((\"TX: writev fd=%d failed with EPIPE => SHUTDOWN_RX\\n\", sock->fd));\n\t\t\tshutdown_local_sock(\"TX\", sock, VIRTIO_VSOCK_FLAG_SHUTDOWN_RX);\n\t\t\tsend_response_sock(sc, VIRTIO_VSOCK_OP_SHUTDOWN,\n\t\t\t\t\t   sock->local_shutdown, sock);\n\t\t\treturn 0;\n\t\t} else if (errno == EAGAIN) {\n\t\t\tnum = 0;\n\t\t} else {\n\t\t\tPPRINTF((\"TX: writev fd=%d failed with %d %s\\n\", sock->fd,\n\t\t\t\t errno, strerror(errno)));\n\t\t\treturn -1;\n\t\t}\n\t}\n\n\tDPRINTF((\"TX: wrote %zd/%\"PRId32\" bytes\\n\", num, len));\n\tsock->fwd_cnt += num;\n\tif (num == len) {\n\t\treturn 1;\n\t} else { /* Buffer the rest */\n\t\tsize_t pulled = iovec_pull(&iov, &iov_len, NULL, (size_t)num);\n\t\tassert(pulled == (size_t)num);\n\t\treturn buffer_write(sock, len - (uint32_t)num, iov, iov_len);\n\t}\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_OP_CREDIT_UPDATE",
+            "#define VIRTIO_VSOCK_OP_CREDIT_UPDATE 6 /* <=== src/lib/pci_virtio_sock.c:111:111:VIRTIO_VSOCK_OP_CREDIT_UPDATE:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "send_response_common",
+            "static void send_response_common(struct pci_vtsock_softc *sc, /* <=== send_response_common */ \n\t\t\t\t struct vsock_addr local_addr,\n\t\t\t\t struct vsock_addr peer_addr,\n\t\t\t\t uint16_t op, uint16_t type, uint32_t flags,\n\t\t\t\t uint32_t buf_alloc, uint32_t fwd_cnt)\n{\n\tstruct virtio_sock_hdr *hdr;\n\tint slot;\n\n\tassert(op != VIRTIO_VSOCK_OP_RW);\n\tassert(flags == 0 || op == VIRTIO_VSOCK_OP_SHUTDOWN);\n\n\tpthread_mutex_lock(&sc->reply_mtx);\n\n\tslot = sc->reply_prod++;\n\tif (sc->reply_prod == VTSOCK_REPLYRINGSZ)\n\t\tsc->reply_prod = 0;\n\tDPRINTF((\"TX: QUEUING REPLY IN SLOT %x (prod %x, cons %x)\\n\",\n\t\t slot, sc->reply_prod, sc->reply_cons));\n\t/*\n\t * We have just incremented reply_prod above but we hold the\n\t * lock so the consumer cannot have caught us up. Hence for\n\t * the ring to appear empty it must actually have just overflowed.\n\t */\n\tassert(!REPLY_RING_EMPTY(sc));\n\n\thdr = &sc->reply_ring[slot];\n\n\thdr->src_cid = local_addr.cid;\n\thdr->src_port = local_addr.port;\n\n\thdr->dst_cid = peer_addr.cid;\n\thdr->dst_port = peer_addr.port;\n\n\thdr->len = 0;\n\thdr->type = type;\n\thdr->op = op;\n\thdr->flags = flags;\n\n\thdr->buf_alloc = buf_alloc;\n\thdr->fwd_cnt = fwd_cnt;\n\n\tdprint_header(hdr, 0, \"TX\");\n\n\tpthread_mutex_unlock(&sc->reply_mtx);\n\n\tsc->rx_kick_pending = true;\n}",
+            2
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "dprint_iovec",
+            "static void dprint_iovec(struct iovec *iov, int iovec_len, const char *ctx) /* <=== dprint_iovec */ \n{\n\tint i;\n\tif (!pci_vtsock_debug) return;\n\tDPRINTF((\"%s: IOV:%p ELEMS:%d\\n\", ctx, (void *)iov, iovec_len));\n\tfor (i = 0; i < iovec_len; i++)\n\t\tDPRINTF((\"%s:  %d = %zu @ %p\\n\",\n\t\t\t ctx, i, iov[i].iov_len, (void *)iov[i].iov_base));\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "send_response_sock",
+            "static void send_response_sock(struct pci_vtsock_softc *sc, /* <=== send_response_sock */ \n\t\t\t\t uint16_t op, uint32_t flags,\n\t\t\t\t const struct pci_vtsock_sock *sock)\n{\n\tsend_response_common(sc, sock->local_addr, sock->peer_addr,\n\t\t\t     op, VIRTIO_VSOCK_TYPE_STREAM, flags,\n\t\t\t     sock->buf_alloc, sock->fwd_cnt);\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "set_socket_options",
+            "static int set_socket_options(struct pci_vtsock_sock *s) /* <=== set_socket_options */ \n{\n\tint rc, buf_alloc = (int)s->buf_alloc;\n\tsocklen_t opt_len;\n\n\trc = setsockopt(s->fd, SOL_SOCKET, SO_SNDBUF,\n\t\t\t&buf_alloc, sizeof(buf_alloc));\n\tif ( rc < 0 ) {\n\t\tDPRINTF((\"Failed to set SO_SNDBUF on fd %d: %s\\n\",\n\t\t\t s->fd, strerror(errno)));\n\t\treturn rc;\n\t}\n\n\trc = setsockopt(s->fd, SOL_SOCKET, SO_RCVBUF,\n\t\t\t&buf_alloc, sizeof(buf_alloc));\n\tif ( rc < 0 ) {\n\t\tDPRINTF((\"Failed to set SO_RCVBUF on fd %d: %s\\n\",\n\t\t\t s->fd, strerror(errno)));\n\t\treturn rc;\n\t}\n\n\topt_len = sizeof(buf_alloc);\n\trc = getsockopt(s->fd, SOL_SOCKET, SO_SNDBUF,\n\t\t\t&buf_alloc, &opt_len);\n\tif ( rc < 0 ) {\n\t\tDPRINTF((\"Failed to get SO_SNDBUF on fd %d: %s\\n\",\n\t\t\t s->fd, strerror(errno)));\n\t\treturn rc;\n\t}\n\t/* If we didn't get what we asked for then expose this to the other end */\n\tif (buf_alloc < (int)s->buf_alloc) {\n\t\tPPRINTF((\"fd %d SO_SNDBUF is 0x%x not 0x%x as requested, clamping\\n\",\n\t\t\t s->fd, buf_alloc, s->buf_alloc));\n\t\ts->buf_alloc = (uint32_t)buf_alloc;\n\t}\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "src/include/xhyve/xhyve.h",
+            "paddr_guest2host",
+            "void *paddr_guest2host(uintptr_t addr, size_t len); /* <=== paddr_guest2host */ ",
+            2
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_OP_RST",
+            "#define VIRTIO_VSOCK_OP_RST 3 /* <=== src/lib/pci_virtio_sock.c:106:106:VIRTIO_VSOCK_OP_RST:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_FLAG_SHUTDOWN_RX",
+            "#define VIRTIO_VSOCK_FLAG_SHUTDOWN_RX (1U<<0) /* Peer will not receive any more data */ /* <=== src/lib/pci_virtio_sock.c:116:116:VIRTIO_VSOCK_FLAG_SHUTDOWN_RX:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VTSOCK_MAXSEGS",
+            "#define VTSOCK_MAXSEGS\t\t32 /* <=== src/lib/pci_virtio_sock.c:65:65:VTSOCK_MAXSEGS:0 */ ",
+            1
+        ],
+        [
+            "src/lib/virtio.c",
+            "_vq_record",
+            "static inline void /* <=== _vq_record */ \n_vq_record(int i, volatile struct virtio_desc *vd, struct iovec *iov, int n_iov,\n\tuint16_t *flags)\n{\n\tif (i >= n_iov)\n\t\treturn;\n\tiov[i].iov_base = paddr_guest2host(vd->vd_addr, vd->vd_len);\n\tiov[i].iov_len = vd->vd_len;\n\tif (flags != NULL)\n\t\tflags[i] = vd->vd_flags;\n}",
+            2
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "send_response_nosock",
+            "static void send_response_nosock(struct pci_vtsock_softc *sc, uint16_t op, /* <=== send_response_nosock */ \n\t\t\t\t uint16_t type,\n\t\t\t\t struct vsock_addr local_addr,\n\t\t\t\t struct vsock_addr peer_addr)\n{\n\tsend_response_common(sc, local_addr, peer_addr,\n\t\t\t     op, type, 0, 0, 0);\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_OP_CREDIT_REQUEST",
+            "#define VIRTIO_VSOCK_OP_CREDIT_REQUEST 7 /* <=== src/lib/pci_virtio_sock.c:113:113:VIRTIO_VSOCK_OP_CREDIT_REQUEST:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL",
+            "#define VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL (VIRTIO_VSOCK_FLAG_SHUTDOWN_RX|VIRTIO_VSOCK_FLAG_SHUTDOWN_TX) /* <=== src/lib/pci_virtio_sock.c:118:118:VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_FLAG_SHUTDOWN_TX",
+            "#define VIRTIO_VSOCK_FLAG_SHUTDOWN_TX (1U<<1) /* Peer will not transmit any more data */ /* <=== src/lib/pci_virtio_sock.c:117:117:VIRTIO_VSOCK_FLAG_SHUTDOWN_TX:0 */ ",
+            1
+        ],
+        [
+            "src/lib/virtio.c",
+            "VQ_MAX_DESCRIPTORS",
+            "#define\tVQ_MAX_DESCRIPTORS\t512\t/* see below */ /* <=== src/lib/virtio.c:208:208:VQ_MAX_DESCRIPTORS:0 */ ",
+            2
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "put_sock",
+            "static void put_sock(struct pci_vtsock_sock *s) /* <=== put_sock */ \n{\n\tint err = pthread_mutex_unlock(&s->mtx);\n\tassert(err == 0);\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "shutdown_peer_local_fd",
+            "static void shutdown_peer_local_fd(struct pci_vtsock_sock *s, uint32_t mode, /* <=== shutdown_peer_local_fd */ \n\t\t\t\t       const char *ctx)\n{\n\tint rc;\n\tint how;\n\tconst char *how_str;\n\tuint32_t new = mode | s->peer_shutdown;\n\tuint32_t set = s->peer_shutdown ^ new;\n\tuint32_t new_local = s->local_shutdown;\n\n\tassert((mode & ~VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL) == 0);\n\tassert(mode != 0);\n\n\tDPRINTF((\"%s: PEER CUR %\"PRIx32\", MODE %\"PRIx32\", NEW %\"PRIx32\", SET %\"PRIx32\"\\n\",\n\t\t ctx, s->peer_shutdown, mode, new, set));\n\n\tswitch (set) {\n\tcase 0:\n\t\treturn;\n\tcase VIRTIO_VSOCK_FLAG_SHUTDOWN_TX:\n\t\tif (sock_is_buffering(s))\n\t\t{\n\t\t\tPPRINTF((\"%s: fd: %d SHUT_WR while buffering, deferring local shutdown\\n\", ctx, s->fd));\n\t\t\thow = 0;\n\t\t\thow_str = \"none\";\n\t\t} else  {\n\t\t\thow = SHUT_WR;\n\t\t\thow_str = \"SHUT_WR\";\n\t\t\tnew_local |= VIRTIO_VSOCK_FLAG_SHUTDOWN_RX;\n\t\t}\n\t\tbreak;\n\tcase VIRTIO_VSOCK_FLAG_SHUTDOWN_RX:\n\t\thow = SHUT_RD;\n\t\thow_str = \"SHUT_RD\";\n\t\tnew_local = s->local_shutdown | VIRTIO_VSOCK_FLAG_SHUTDOWN_TX;\n\t\tbreak;\n\tcase VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL:\n\t\tif (sock_is_buffering(s)) {\n\t\t\tPPRINTF((\"%s: fd: %d SHUT_RDWR while buffering, deferring local SHUT_WR\\n\", ctx, s->fd));\n\t\t\thow = SHUT_RD;\n\t\t\thow_str = \"SHUT_RD\";\n\t\t\tnew_local |= VIRTIO_VSOCK_FLAG_SHUTDOWN_TX;\n\t\t} else {\n\t\t\thow = SHUT_RDWR;\n\t\t\thow_str = \"SHUT_RDWR\";\n\t\t\tnew_local |= VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL;\n\t\t}\n\t\tbreak;\n\tdefault:\n\t\tabort();\n\t}\n\n\tif (how) {\n\t\trc = shutdown(s->fd, how);\n\t\tDPRINTF((\"%s: shutdown_peer: shutdown(%d, %s)\\n\", ctx, s->fd, how_str));\n\t\tif (rc < 0 && errno != ENOTCONN) {\n\t\t\tDPRINTF((\"%s: shutdown(%d, %s) for peer shutdown failed: %s\\n\",\n\t\t\t\t ctx, s->fd, how_str, strerror(errno)));\n\t\t\tabort();\n\t\t}\n\t}\n\n\ts->local_shutdown = new_local;\n\ts->peer_shutdown = new;\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "kick_tx",
+            "static void kick_tx(struct pci_vtsock_softc *sc, const char *why) /* <=== kick_tx */ \n{\n\tchar dummy;\n\tssize_t nr;\n\tnr = write(sc->tx_kick_fd, &dummy, 1);\n\tassert(nr == 1);\n\tDPRINTF((\"TX: kicked tx thread: %s\\n\", why));\n}",
+            2
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_OP_RESPONSE",
+            "#define VIRTIO_VSOCK_OP_RESPONSE 2 /* <=== src/lib/pci_virtio_sock.c:105:105:VIRTIO_VSOCK_OP_RESPONSE:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "DPRINTF",
+            "#define DPRINTF(params) do { if (pci_vtsock_debug) { printf params; fflush(stdout); } } while(0) /* <=== src/lib/pci_virtio_sock.c:127:127:DPRINTF:1 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_OP_SHUTDOWN",
+            "#define VIRTIO_VSOCK_OP_SHUTDOWN 4 /* <=== src/lib/pci_virtio_sock.c:107:107:VIRTIO_VSOCK_OP_SHUTDOWN:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "connect_sock",
+            "static struct pci_vtsock_sock *connect_sock(struct pci_vtsock_softc *sc, /* <=== connect_sock */ \n\t\t\t\t\t    struct vsock_addr local_addr,\n\t\t\t\t\t    struct vsock_addr peer_addr,\n\t\t\t\t\t    uint32_t peer_buf_alloc,\n\t\t\t\t\t    uint32_t peer_fwd_cnt)\n{\n\tstruct pci_vtsock_sock *s;\n\tstruct sockaddr_un un;\n\tint rc, fd = -1;\n\n\ts = alloc_sock(sc);\n\tif (s == NULL) {\n\t\tDPRINTF((\"TX: No available socks\\n\"));\n\t\tgoto err;\n\t}\n\n\tDPRINTF((\"TX: Assigned sock %ld at %p\\n\",\n\t\t s - &sc->socks[0], (void *)s));\n\n\tbzero(&un, sizeof(un));\n\n\tun.sun_len = 0; /* Unused? */\n\tun.sun_family = AF_UNIX;\n\trc = snprintf(un.sun_path, sizeof(un.sun_path),\n\t\t     \"%s/\"PRIaddr, sc->path, FMTADDR(local_addr));\n\tif (rc < 0) {\n\t\tDPRINTF((\"TX: Failed to format socket path\\n\"));\n\t\tgoto err;\n\t}\n\n\tfd = socket(AF_UNIX, SOCK_STREAM, 0);\n\tif (fd < 0) {\n\t\tDPRINTF((\"TX: socket failed for %s: %s\\n\",\n\t\t\t un.sun_path, strerror(errno)));\n\t\tgoto err;\n\t}\n\n\tif (fd >= FD_SETSIZE) {\n\t\tDPRINTF((\"TX: socket fd %d > FD_SETSIZE %d\\n\", fd, FD_SETSIZE));\n\t\tgoto err;\n\t}\n\n\trc = connect(fd, (struct sockaddr *)&un, sizeof(un));\n\tif (rc < 0) {\n\t\tDPRINTF((\"TX: connect failed for %s: %s\\n\",\n\t\t\t un.sun_path, strerror(errno)));\n\t\tgoto err;\n\t}\n\n\trc = fcntl(fd, F_SETFL, O_NONBLOCK);\n\tif (rc < 0) {\n\t\tDPRINTF((\"TX: O_NONBLOCK failed for %s: %s\\n\",\n\t\t\t un.sun_path, strerror(errno)));\n\t\tgoto err;\n\t}\n\n\tDPRINTF((\"TX: Socket path %s opened on fd %d\\n\", un.sun_path, fd));\n\n\ts->fd = fd;\n\ts->peer_addr = peer_addr;\n\ts->local_addr = local_addr;\n\n\ts->peer_buf_alloc = peer_buf_alloc;\n\ts->peer_fwd_cnt = peer_fwd_cnt;\n\n\trc = set_socket_options(s);\n\tif (rc < 0) goto err;\n\n\tPPRINTF((\"TX: SOCK connected (%d) \"PRIaddr\" <=> \"PRIaddr\"\\n\",\n\t\t s->fd, FMTADDR(s->local_addr), FMTADDR(s->peer_addr)));\n\ts->state = SOCK_CONNECTED;\n\n\treturn s;\n\nerr:\n\tif (fd >= 0) close(fd);\n\tif (s) {\n\t\tpthread_rwlock_wrlock(&sc->list_rwlock);\n\t\tfree_sock(sc, s);\n\t\tpthread_rwlock_unlock(&sc->list_rwlock);\n\t}\n\treturn NULL;\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "iovec_pull",
+            "static size_t iovec_pull(struct iovec **iov, int *iov_len, void *buf, size_t bytes) /* <=== iovec_pull */ \n{\n\tsize_t res = 0;\n\n\t//DPRINTF((\"iovec_pull %zd bytes into %p. iov=%p, iov_len=%d\\n\",\n\t//\t bytes, (void *)buf, (void *)*iov, *iov_len));\n\n\twhile (res < bytes && *iov_len) {\n\t\tsize_t c = (bytes - res) < (*iov)[0].iov_len ? (bytes - res) : (*iov)[0].iov_len;\n\n\t\t//DPRINTF((\"Copy %zd/%zd bytes from base=%p to buf=%p\\n\",\n\t\t//\t c, (*iov)[0].iov_len, (void*)(*iov)[0].iov_base, (void*)buf));\n\n\t\tif (buf) memcpy(buf, (*iov)[0].iov_base, c);\n\n\t\t(*iov)[0].iov_len -= c;\n\t\t(*iov)[0].iov_base = (char *)(*iov)[0].iov_base + c;\n\n\t\t//DPRINTF((\"iov %p is now %zd bytes at %p\\n\", (void *)*iov,\n\t\t//\t (*iov)[0].iov_len, (void *)(*iov)[0].iov_base));\n\n\t\tif ((*iov)[0].iov_len == 0) {\n\t\t\t(*iov)++;\n\t\t\t(*iov_len)--;\n\t\t\t//DPRINTF((\"iov elem consumed, now iov=%p, iov_len=%d\\n\", (void *)*iov, *iov_len));\n\t\t}\n\n\t\tif (buf) buf = (char *)buf + c;\n\t\t//DPRINTF((\"buf now %p\\n\", (void *)buf));\n\n\t\tres += c;\n\t}\n\t//DPRINTF((\"iovec_pull pulled %zd/%zd bytes\\n\", res, bytes));\n\n\treturn res;\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "lookup_sock",
+            "static struct pci_vtsock_sock *lookup_sock(struct pci_vtsock_softc *sc, /* <=== lookup_sock */ \n\t\t\t\t\t   uint16_t type,\n\t\t\t\t\t   struct vsock_addr local_addr,\n\t\t\t\t\t   struct vsock_addr peer_addr)\n{\n\tstruct pci_vtsock_sock *s;\n\n\tassert(type == VIRTIO_VSOCK_TYPE_STREAM);\n\n\tpthread_rwlock_rdlock(&sc->list_rwlock);\n\tLIST_FOREACH(s, &sc->inuse_list, list) {\n\t\tget_sock(s);\n\n\t\tif ((s->state == SOCK_CONNECTED || s->state == SOCK_CONNECTING) &&\n\t\t    s->peer_addr.cid == peer_addr.cid &&\n\t\t    s->peer_addr.port == peer_addr.port &&\n\t\t    s->local_addr.cid == local_addr.cid &&\n\t\t    s->local_addr.port == local_addr.port) {\n\t\t\tgoto found;\n\t\t}\n\n\t\tput_sock(s);\n\t}\n\n\ts = NULL;\n\nfound:\n\tpthread_rwlock_unlock(&sc->list_rwlock);\n\treturn s;\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_TYPE_STREAM",
+            "#define VIRTIO_VSOCK_TYPE_STREAM 1 /* <=== src/lib/pci_virtio_sock.c:100:100:VIRTIO_VSOCK_TYPE_STREAM:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "buffer_write",
+            "static int buffer_write(struct pci_vtsock_sock *sock, /* <=== buffer_write */ \n\t\t\tuint32_t len, struct iovec *iov, int iov_len)\n{\n\tsize_t nr;\n\tif (len > WRITE_BUF_LENGTH - sock->write_buf_tail) {\n\t\tDPRINTF((\"TX: fd %d unable to buffer write of 0x%\"PRIx32\" bytes,\"\n\t\t\t \" buffer use 0x%x/0x%x, 0x%x remaining\\n\",\n\t\t\t sock->fd, len, sock->write_buf_tail,\n\t\t\t WRITE_BUF_LENGTH,\n\t\t\t WRITE_BUF_LENGTH - sock->write_buf_tail));\n\t\treturn -1;\n\t}\n\n\tnr = iovec_pull(&iov, &iov_len,\n\t\t\t&sock->write_buf[sock->write_buf_tail], len);\n\tassert(nr == len);\n\tassert(iov_len == 0);\n\n\tsock->write_buf_tail += nr;\n\tDPRINTF((\"TX: fd %d buffered 0x%\"PRIx32\" bytes (0x%x/0x%x)\\n\",\n\t\t sock->fd, len, sock->write_buf_tail, WRITE_BUF_LENGTH));\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "kick_rx",
+            "static void kick_rx(struct pci_vtsock_softc *sc, const char *why) /* <=== kick_rx */ \n{\n\tchar dummy;\n\tssize_t nr;\n\tsc->rx_kick_pending = false;\n\tnr = write(sc->rx_kick_fd, &dummy, 1);\n\tassert(nr == 1);\n\tDPRINTF((\"RX: kicked rx thread: %s\\n\", why));\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "close_sock",
+            "static void close_sock(struct pci_vtsock_softc *sc,  struct pci_vtsock_sock *s, /* <=== close_sock */ \n\t\t       const char *ctx)\n{\n\tif (!s) return;\n\tDPRINTF((\"%s: Closing sock %p\\n\", ctx, (void *)s));\n\n\tshutdown_peer_local_fd(s, VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL, ctx);\n\n\ts->state = SOCK_CLOSING_TX;\n\tkick_tx(sc, \"sock closed\");\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VTSOCK_REPLYRINGSZ",
+            "#define VTSOCK_REPLYRINGSZ (2*VTSOCK_RINGSZ) /* <=== src/lib/pci_virtio_sock.c:314:314:VTSOCK_REPLYRINGSZ:0 */ ",
+            3
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "get_sock",
+            "static struct pci_vtsock_sock *get_sock(struct pci_vtsock_sock *s) /* <=== get_sock */ \n{\n\tint err = pthread_mutex_lock(&s->mtx);\n\tassert(err == 0);\n\treturn s;\n}",
+            2
+        ],
+        [
+            "src/lib/virtio.c",
+            "vq_relchain",
+            "void /* <=== vq_relchain */ \nvq_relchain(struct vqueue_info *vq, uint16_t idx, uint32_t iolen)\n{\n\tuint16_t uidx, mask;\n\tvolatile struct vring_used *vuh;\n\tvolatile struct virtio_used *vue;\n\n\t/*\n\t * Notes:\n\t *  - mask is N-1 where N is a power of 2 so computes x % N\n\t *  - vuh points to the \"used\" data shared with guest\n\t *  - vue points to the \"used\" ring entry we want to update\n\t *  - head is the same value we compute in vq_iovecs().\n\t *\n\t * (I apologize for the two fields named vu_idx; the\n\t * virtio spec calls the one that vue points to, \"id\"...)\n\t */\n\tmask = vq->vq_qsize - 1;\n\tvuh = vq->vq_used;\n\n\tuidx = vuh->vu_idx;\n\tvue = &vuh->vu_ring[uidx++ & mask];\n\tvue->vu_idx = idx;\n\tvue->vu_tlen = iolen;\n\tvuh->vu_idx = uidx;\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "WRITE_BUF_LENGTH",
+            "#define WRITE_BUF_LENGTH (128*1024) /* <=== src/lib/pci_virtio_sock.c:156:156:WRITE_BUF_LENGTH:0 */ ",
+            3
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "dprint_chain",
+            "static void dprint_chain(struct iovec *iov, int iovec_len, const char *ctx) /* <=== dprint_chain */ \n{\n\tint i;\n\tif (!pci_vtsock_debug) return;\n\tDPRINTF((\"%s: CHAIN:%p ELEMS:%d\\n\", ctx, (void *)iov, iovec_len));\n\tfor (i = 0; i < iovec_len; i++)\n\t\tDPRINTF((\"%s:  %d = %zu @ %p\\n\",\n\t\t\t ctx, i, iov[i].iov_len, (void *)iov[i].iov_base));\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "sock_is_buffering",
+            "static bool sock_is_buffering(struct pci_vtsock_sock *sock) /* <=== sock_is_buffering */ \n{\n\treturn sock->write_buf_tail > 0;\n}",
+            2
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "alloc_sock",
+            "static struct pci_vtsock_sock *alloc_sock(struct pci_vtsock_softc *sc) /* <=== alloc_sock */ \n{\n\tstruct pci_vtsock_sock *s;\n\n\tpthread_rwlock_wrlock(&sc->list_rwlock);\n\ts = LIST_FIRST(&sc->free_list);\n\tif (s) {\n\t\tget_sock(s);\n\t\tLIST_REMOVE(s, list);\n\t\tLIST_INSERT_HEAD(&sc->inuse_list, s, list);\n\t\ts->state = SOCK_CONNECTING;\n\t}\n\tpthread_rwlock_unlock(&sc->list_rwlock);\n\n\tif (!s) return NULL;\n\n\ts->buf_alloc = WRITE_BUF_LENGTH;\n\ts->fwd_cnt = 0;\n\n\ts->peer_buf_alloc = 0;\n\ts->peer_fwd_cnt = 0;\n\ts->rx_cnt = 0;\n\ts->credit_update_required = false;\n\n\ts->local_shutdown = 0;\n\ts->peer_shutdown = 0;\n\n\ts->write_buf_head = s->write_buf_tail = 0;\n\n\treturn s;\n}",
+            2
+        ],
+        [
+            "src/lib/virtio.c",
+            "vq_getchain",
+            "int /* <=== vq_getchain */ \nvq_getchain(struct vqueue_info *vq, uint16_t *pidx, struct iovec *iov,\n\tint n_iov, uint16_t *flags)\n{\n\tint i;\n\tu_int ndesc, n_indir;\n\tu_int idx, next;\n\tvolatile struct virtio_desc *vdir, *vindir, *vp;\n\tstruct virtio_softc *vs;\n\tconst char *name;\n\n\tvs = vq->vq_vs;\n\tname = vs->vs_vc->vc_name;\n\n\t/*\n\t * Note: it's the responsibility of the guest not to\n\t * update vq->vq_avail->va_idx until all of the descriptors\n         * the guest has written are valid (including all their\n         * vd_next fields and vd_flags).\n\t *\n\t * Compute (last_avail - va_idx) in integers mod 2**16.  This is\n\t * the number of descriptors the device has made available\n\t * since the last time we updated vq->vq_last_avail.\n\t *\n\t * We just need to do the subtraction as an unsigned int,\n\t * then trim off excess bits.\n\t */\n\tidx = vq->vq_last_avail;\n\tndesc = (uint16_t)((u_int)vq->vq_avail->va_idx - idx);\n\tif (ndesc == 0)\n\t\treturn (0);\n\tif (ndesc > vq->vq_qsize) {\n\t\t/* XXX need better way to diagnose issues */\n\t\tfprintf(stderr,\n\t\t    \"%s: ndesc (%u) out of range, driver confused?\\r\\n\",\n\t\t    name, (u_int)ndesc);\n\t\treturn (-1);\n\t}\n\n\t/*\n\t * Now count/parse \"involved\" descriptors starting from\n\t * the head of the chain.\n\t *\n\t * To prevent loops, we could be more complicated and\n\t * check whether we're re-visiting a previously visited\n\t * index, but we just abort if the count gets excessive.\n\t */\n\t*pidx = next = vq->vq_avail->va_ring[idx & (vq->vq_qsize - 1)];\n\tvq->vq_last_avail++;\n\tfor (i = 0; i < VQ_MAX_DESCRIPTORS; next = vdir->vd_next) {\n\t\tif (next >= vq->vq_qsize) {\n\t\t\tfprintf(stderr,\n\t\t\t    \"%s: descriptor index %u out of range, \"\n\t\t\t    \"driver confused?\\r\\n\",\n\t\t\t    name, next);\n\t\t\treturn (-1);\n\t\t}\n\t\tvdir = &vq->vq_desc[next];\n\t\tif ((vdir->vd_flags & VRING_DESC_F_INDIRECT) == 0) {\n\t\t\t_vq_record(i, vdir, iov, n_iov, flags);\n\t\t\ti++;\n\t\t} else if ((vs->vs_vc->vc_hv_caps &\n\t\t    VIRTIO_RING_F_INDIRECT_DESC) == 0) {\n\t\t\tfprintf(stderr,\n\t\t\t    \"%s: descriptor has forbidden INDIRECT flag, \"\n\t\t\t    \"driver confused?\\r\\n\",\n\t\t\t    name);\n\t\t\treturn (-1);\n\t\t} else {\n\t\t\tn_indir = vdir->vd_len / 16;\n\t\t\tif ((vdir->vd_len & 0xf) || n_indir == 0) {\n\t\t\t\tfprintf(stderr,\n\t\t\t\t    \"%s: invalid indir len 0x%x, \"\n\t\t\t\t    \"driver confused?\\r\\n\",\n\t\t\t\t    name, (u_int)vdir->vd_len);\n\t\t\t\treturn (-1);\n\t\t\t}\n\t\t\tvindir = paddr_guest2host(vdir->vd_addr, vdir->vd_len);\n\t\t\t/*\n\t\t\t * Indirects start at the 0th, then follow\n\t\t\t * their own embedded \"next\"s until those run\n\t\t\t * out.  Each one's indirect flag must be off\n\t\t\t * (we don't really have to check, could just\n\t\t\t * ignore errors...).\n\t\t\t */\n\t\t\tnext = 0;\n\t\t\tfor (;;) {\n\t\t\t\tvp = &vindir[next];\n\t\t\t\tif (vp->vd_flags & VRING_DESC_F_INDIRECT) {\n\t\t\t\t\tfprintf(stderr,\n\t\t\t\t\t    \"%s: indirect desc has INDIR flag,\"\n\t\t\t\t\t    \" driver confused?\\r\\n\",\n\t\t\t\t\t    name);\n\t\t\t\t\treturn (-1);\n\t\t\t\t}\n\t\t\t\t_vq_record(i, vp, iov, n_iov, flags);\n\t\t\t\tif (++i > VQ_MAX_DESCRIPTORS)\n\t\t\t\t\tgoto loopy;\n\t\t\t\tif ((vp->vd_flags & VRING_DESC_F_NEXT) == 0)\n\t\t\t\t\tbreak;\n\t\t\t\tnext = vp->vd_next;\n\t\t\t\tif (next >= n_indir) {\n\t\t\t\t\tfprintf(stderr,\n\t\t\t\t\t    \"%s: invalid next %u > %u, \"\n\t\t\t\t\t    \"driver confused?\\r\\n\",\n\t\t\t\t\t    name, (u_int)next, n_indir);\n\t\t\t\t\treturn (-1);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif ((vdir->vd_flags & VRING_DESC_F_NEXT) == 0)\n\t\t\treturn (i);\n\t}\nloopy:\n\tfprintf(stderr,\n\t    \"%s: descriptor loop? count > %d - driver confused?\\r\\n\",\n\t    name, i);\n\treturn (-1);\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "dprint_header",
+            "static void dprint_header(struct virtio_sock_hdr *hdr, bool tx, const char *ctx) /* <=== dprint_header */ \n{\n\tif (!pci_vtsock_debug) return;\n\tassert(hdr->op < nitems(opnames));\n\n\tDPRINTF((\"%s: %sSRC:\"PRIaddr\" DST:\"PRIaddr\"\\n\",\n\t\t ctx, tx ? \"<=\" : \"=>\",\n\t\t hdr->src_cid, hdr->src_port, hdr->dst_cid, hdr->dst_port));\n\tDPRINTF((\"%s:   LEN:%08\"PRIx32\" TYPE:%04\"PRIx16\" OP:%\"PRId16\"=%s\\n\",\n\t\t ctx, hdr->len, hdr->type, hdr->op,\n\t\t opnames[hdr->op] ? opnames[hdr->op] : \"<unknown>\"));\n\tDPRINTF((\"%s:  FLAGS:%08\"PRIx32\" BUF_ALLOC:%08\"PRIx32\" FWD_CNT:%08\"PRIx32\"\\n\",\n\t\t ctx, hdr->flags, hdr->buf_alloc, hdr->fwd_cnt));\n}",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "free_sock",
+            "static void free_sock(struct pci_vtsock_softc *sc, struct pci_vtsock_sock *s) /* <=== free_sock */ \n{\n\tLIST_REMOVE(s, list);\n\ts->state = SOCK_FREE;\n\n\tLIST_INSERT_HEAD(&sc->free_list, s, list);\n\n\tput_sock(s);\n}",
+            2
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "shutdown_local_sock",
+            "static void shutdown_local_sock(const char *ctx, /* <=== shutdown_local_sock */ \n\t\t\t\tstruct pci_vtsock_sock *s,\n\t\t\t\tuint32_t mode)\n{\n\tuint32_t new, set;\n\n\tassert((mode & ~VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL) == 0);\n\n\tif (s->state != SOCK_CONNECTED) return;\n\n\tassert(s->local_shutdown != VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL);\n\n\tDPRINTF((\"%s: fd %d: LOCAL SHUTDOWN 0x%\"PRIx32\" (0x%\"PRIx32\")\\n\",\n\t\t ctx, s->fd, mode, s->peer_shutdown));\n\n\tnew = mode | s->local_shutdown;\n\tset = s->local_shutdown ^ new;\n\ts->local_shutdown = new;\n\n\tDPRINTF((\"%s: setting 0x%\"PRIx32\" mode is now 0x%\"PRIx32\" (peer 0x%\"PRIx32\")\\n\",\n\t\t ctx, set, s->local_shutdown, s->peer_shutdown));\n\n\tif (s->local_shutdown & VIRTIO_VSOCK_FLAG_SHUTDOWN_RX && s->write_buf_tail > 0) {\n\t\tPPRINTF((\"%s: discarding %d bytes from buffer\\n\", ctx,\n\t\t\t s->write_buf_tail - s->write_buf_head));\n\t\ts->write_buf_tail = s->write_buf_head = 0;\n\t}\n\n\tif (s->local_shutdown == VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL)\n\t\ts->rst_deadline = time(NULL) + SHUTDOWN_RST_DELAY;\n}",
+            2
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VIRTIO_VSOCK_OP_REQUEST",
+            "#define VIRTIO_VSOCK_OP_REQUEST 1 /* <=== src/lib/pci_virtio_sock.c:104:104:VIRTIO_VSOCK_OP_REQUEST:0 */ ",
+            1
+        ],
+        [
+            "src/lib/pci_virtio_sock.c",
+            "VMADDR_CID_HOST",
+            "#define VMADDR_CID_HOST 2 /* <=== src/lib/pci_virtio_sock.c:343:343:VMADDR_CID_HOST:0 */ ",
+            1
+        ]
+    ],
+    "globalVars": [
+        "static int pci_vtsock_debug"
+    ],
+    "importContext": [
+        "#include <sys/queue.h>",
+        "#include <stdio.h>",
+        "#include <sys/un.h>",
+        "#include <sys/time.h>",
+        "#include <stdbool.h>",
+        "#include <errno.h>",
+        "#include <sys/types.h>",
+        "#include <xhyve/xhyve.h>",
+        "#include <fcntl.h>",
+        "#include <strings.h>",
+        "#include <xhyve/virtio.h>",
+        "#include <sys/socket.h>",
+        "#include <unistd.h>",
+        "#include <stdint.h>",
+        "#include <inttypes.h>",
+        "#include <sys/uio.h>",
+        "#include <xhyve/pci_emul.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct pci_vtsock_sock {\n\tpthread_mutex_t mtx;\n\n\t/* Either on softc->free_list or softc->inuse_list */\n\tLIST_ENTRY(pci_vtsock_sock) list;\n\n\t/* For tx and rx thread local use respectively */\n\tLIST_ENTRY(pci_vtsock_sock) tx_queue;\n\tLIST_ENTRY(pci_vtsock_sock) rx_queue;\n\n\t/*\n\t * To allocate a sock:\n\t *\n\t *   Take list_rwlock for writing\n\t *\n\t *     Grab a sock from head of free_list\n\t *\n\t *     If a FREE sock is found take its lock before removing it\n\t *     from the list and setting its state to CONNECTING.\n\t *\n\t *     Add the sock to inuse_list.\n\t *\n\t *   Drop list_rwlock\n\t *\n\t * To free a sock:\n\t *\n\t *   Set state to CLOSING_TX and kick the tx thread[*].\n\t *\n\t * Then the following will happen:\n\t *\n\t * ,-TX thread:\n\t * |\n\t * | The TX loop will take list_rwlock for reading (as part of\n\t * | its normal start of loop processing) and:\n\t * |\n\t * |   Take the socket's lock and discover state == CLOSING_TX\n\t * |\n\t * |   Set state == CLOSING_RX\n\t * |\n\t * |   Note that an RX kick is needed\n\t * |\n         * | Release list_rwlock\n\t * |\n\t * `-Kick the rx thread if required\n\t *\n\t * ,-RX thread:\n\t * |\n\t * | The RX loop will take list_rwlock for reading (as part of\n\t * | its normal start of loop processing) and:\n\t * |\n\t * |   Take the socket's lock and discover state == CLOSING_RX\n\t * |\n\t * |   Put the socket on a local \"to be closed\" queue\n\t * |\n         * | Release list_rwlock\n\t * |\n\t * | If there a sockets to be closed, take list_rwlock for\n\t * | writing, and for each socket:\n\t * |\n\t * |   close the fd, set state == FREE\n\t * |\n\t * |   remove socket from inuse_list, add to free_list\n\t * |\n\t * |   drop the socket's lock\n\t * |\n\t * `-Drop list_rwlock\n\t *\n\t * [*] Callers in the TX loop (only) may when closing a socket\n\t * choose to skip the initial CLOSING_TX state (which exists\n\t * only to ensure that the fd is not current in the tx select,\n\t * which it cannot be if the TX thread is doing the close) and\n\t * go straight to CLOSING_RX kicking the rx thread instead. If\n\t * the close is initiated by the RX thread (or anywhere else)\n\t * then it must go through the full\n\t * CLOSING_TX->CLOSING_RX->FREE path.\n\t */\n\tenum {\n\t\tSOCK_FREE, /* Initial state */\n\t\tSOCK_CONNECTING,\n\t\tSOCK_CONNECTED,\n\t\tSOCK_CLOSING_TX,\n\t\tSOCK_CLOSING_RX,\n\t} state;\n\t/* fd is:\n\t *   >= 0\tWhen state == CONNECTED,\n\t *     -1\tOtherwise\n\t */\n\tint fd;\n\tuint16_t port_generation;\n\t/* valid when SOCK_CONNECTED only */\n\tuint32_t local_shutdown, peer_shutdown;\n\ttime_t rst_deadline; /* When local_shutdown==ALL, expect RST before */\n\n\tstruct vsock_addr local_addr;\n\tstruct vsock_addr peer_addr;\n\n\tuint32_t buf_alloc;\n\tuint32_t fwd_cnt;\n\n\tbool credit_update_required;\n\tuint32_t rx_cnt; /* Amount we have sent to the peer */\n\tuint32_t peer_buf_alloc; /* From the peer */\n\tuint32_t peer_fwd_cnt; /* From the peer */\n\n\t/* Write buffer. We do not update fwd_cnt until we drain the _whole_ buffer */\n\tuint8_t write_buf[WRITE_BUF_LENGTH];\n\tunsigned int write_buf_head, write_buf_tail;\n}",
+            "pci_vtsock_sock"
+        ],
+        [
+            "struct vqueue_info {\n\t/* size of this queue (a power of 2) */\n\tuint16_t vq_qsize;\n\t/* called instead of vc_notify, if not NULL */\n\tvoid (*vq_notify)(void *, struct vqueue_info *);\n\t/* backpointer to softc */\n\tstruct virtio_softc *vq_vs;\n\t/* we're the num'th queue in the softc */\n\tuint16_t vq_num;\n\t/* flags (see above) */\n\tuint16_t vq_flags;\n\t/* a recent value of vq_avail->va_idx */\n\tuint16_t vq_last_avail;\n\t/* saved vq_used->vu_idx; see vq_endchains */\n\tuint16_t vq_save_used;\n\t/* MSI-X index, or VIRTIO_MSI_NO_VECTOR */\n\tuint16_t vq_msix_idx;\n\t/* PFN of virt queue (not shifted!) */\n\tuint32_t vq_pfn;\n\t/* descriptor array */\n\tvolatile struct virtio_desc *vq_desc;\n\t/* the \"avail\" ring */\n\tvolatile struct vring_avail *vq_avail;\n\t/* the \"used\" ring */\n\tvolatile struct vring_used *vq_used;\n}",
+            "vqueue_info"
+        ],
+        [
+            "struct pci_vtsock_softc {\n\tstruct virtio_softc vssc_vs;\n\tpthread_mutex_t vssc_mtx;\n\tchar *path;\n\tstruct vqueue_info vssc_vqs[VTSOCK_QUEUES];\n\tstruct vtsock_config vssc_cfg;\n\n\t/* list_mtx protects free_list and inuse_list heads */\n\tpthread_rwlock_t list_rwlock;\n\tstruct sock_list_head free_list, inuse_list;\n\tstruct pci_vtsock_sock socks[VTSOCK_MAXSOCKS];\n\n\tstruct pci_vtsock_forward fwds[VTSOCK_MAXFWDS];\n\tint nr_fwds;\n\n\tpthread_t tx_thread;\n\tint tx_kick_fd, tx_wake_fd; /* Write to kick, select on wake */\n\tbool rx_kick_pending;\n\tint connect_fd; /* */\n\n\tpthread_t rx_thread;\n\tint rx_kick_fd, rx_wake_fd; /* Write to kick, select on wake */\n\n\tpthread_mutex_t reply_mtx;\n#define VTSOCK_REPLYRINGSZ (2*VTSOCK_RINGSZ)\n\tstruct virtio_sock_hdr reply_ring[VTSOCK_REPLYRINGSZ];\n\tint reply_prod, reply_cons;\n\t/*\n\t * If reply_prod == reply_cons then the ring is empty,\n\t * otherwise there is data in it.\n\t *\n\t * If the ring is not empty then there MUST always be a 1 slot\n\t * buffer between the producer and the consumer pointers\n\t * (i.e. the ring size is effectively one less than expected).\n\t *\n\t * If this invariant is violated and we consume the final free\n\t * slot then reply_prod would have caught up to reply_cons and\n\t * the ring would be considered empty rather than\n\t * full. Therefore we consider the ring full when:\n\t *\n\t *    (reply_prod + 1) % VTSOCK_REPLYRINGSZ == reply_cons.\n\t */\n#define REPLY_RING_EMPTY(sc) (sc->reply_cons == sc->reply_prod)\n//#define REPLY_RING_FULL(sc) ((sc->reply_prod + 1) % VTSOCK_REPLYRINGSZ == sc->reply_cons)\n}",
+            "pci_vtsock_softc"
+        ],
+        [
+            "struct virtio_sock_hdr {\n\tuint64_t src_cid;\n\tuint64_t dst_cid;\n\tuint32_t src_port;\n\tuint32_t dst_port;\n\tuint32_t len;\n#define VIRTIO_VSOCK_TYPE_STREAM 1\n\tuint16_t type;\n#define VIRTIO_VSOCK_OP_INVALID 0\n\t/* Connect operations */\n#define VIRTIO_VSOCK_OP_REQUEST 1\n#define VIRTIO_VSOCK_OP_RESPONSE 2\n#define VIRTIO_VSOCK_OP_RST 3\n#define VIRTIO_VSOCK_OP_SHUTDOWN 4\n\t/* To send payload */\n#define VIRTIO_VSOCK_OP_RW 5\n\t/* Tell the peer our credit info */\n#define VIRTIO_VSOCK_OP_CREDIT_UPDATE 6\n\t/* Request the peer to send the credit info to us */\n#define VIRTIO_VSOCK_OP_CREDIT_REQUEST 7\n\tuint16_t op;\n\tuint32_t flags;\n#define VIRTIO_VSOCK_FLAG_SHUTDOWN_RX (1U<<0) /* Peer will not receive any more data */\n#define VIRTIO_VSOCK_FLAG_SHUTDOWN_TX (1U<<1) /* Peer will not transmit any more data */\n#define VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL (VIRTIO_VSOCK_FLAG_SHUTDOWN_RX|VIRTIO_VSOCK_FLAG_SHUTDOWN_TX)\n\tuint32_t buf_alloc;\n\tuint32_t fwd_cnt;\n}",
+            "virtio_sock_hdr"
+        ],
+        [
+            "struct iovec",
+            "iovec"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/lib/pci_virtio_sock.c": [
+            1113,
+            1114,
+            1117,
+            1118,
+            1123,
+            1124,
+            1129,
+            1131,
+            1133,
+            1137,
+            1138,
+            1140,
+            1142,
+            1144,
+            1145,
+            1146,
+            1147,
+            1148,
+            1149,
+            1150,
+            1151,
+            1152,
+            1154,
+            1155,
+            1156,
+            1158,
+            1162,
+            1163,
+            1164,
+            1165,
+            1167,
+            1168,
+            1169,
+            1172,
+            1173,
+            1174,
+            1177,
+            1178,
+            1179,
+            1182,
+            1185,
+            1186,
+            1190,
+            1191,
+            1195,
+            1196,
+            1197,
+            1199,
+            1200,
+            1201,
+            1202,
+            1203,
+            1207,
+            1208,
+            1212,
+            1213,
+            1214,
+            1217,
+            1218,
+            1222,
+            1224,
+            1225,
+            1226,
+            1229,
+            1231,
+            1232,
+            1233,
+            1234,
+            1237,
+            1238,
+            1239,
+            1243,
+            1244,
+            1248,
+            1249,
+            1253,
+            1254,
+            1259,
+            1264,
+            1267,
+            1270,
+            1274,
+            1275,
+            1278,
+            1279,
+            1283,
+            1284,
+            1287,
+            1288,
+            1291,
+            1292,
+            1293,
+            1294,
+            1295,
+            1299,
+            1300,
+            1301,
+            1304,
+            1305,
+            1310,
+            1312,
+            1315,
+            1316,
+            1317,
+            1320,
+            1321,
+            1325,
+            1326,
+            1330,
+            1331,
+            1336,
+            1337,
+            1339,
+            1340,
+            1341,
+            1342,
+            1344,
+            1345,
+            1346,
+            1348,
+            1349,
+            1350
+        ]
+    },
+    "visitedLines_before": {
+        "src/lib/pci_virtio_sock.c": [
+            1113,
+            1114,
+            1117,
+            1118,
+            1123,
+            1124,
+            1126,
+            1128,
+            1132,
+            1133,
+            1135,
+            1137,
+            1139,
+            1140,
+            1141,
+            1142,
+            1143,
+            1144,
+            1145,
+            1146,
+            1147,
+            1149,
+            1150,
+            1151,
+            1153,
+            1157,
+            1158,
+            1159,
+            1160,
+            1162,
+            1163,
+            1164,
+            1167,
+            1168,
+            1169,
+            1172,
+            1173,
+            1174,
+            1177,
+            1180,
+            1181,
+            1185,
+            1186,
+            1190,
+            1191,
+            1192,
+            1194,
+            1195,
+            1196,
+            1197,
+            1198,
+            1202,
+            1203,
+            1207,
+            1208,
+            1209,
+            1212,
+            1213,
+            1217,
+            1219,
+            1220,
+            1221,
+            1224,
+            1226,
+            1227,
+            1228,
+            1229,
+            1232,
+            1233,
+            1234,
+            1238,
+            1239,
+            1243,
+            1244,
+            1248,
+            1249,
+            1254,
+            1259,
+            1262,
+            1265,
+            1269,
+            1270,
+            1273,
+            1274,
+            1278,
+            1279,
+            1282,
+            1283,
+            1286,
+            1287,
+            1288,
+            1289,
+            1290,
+            1294,
+            1295,
+            1296,
+            1299,
+            1300,
+            1305,
+            1307,
+            1310,
+            1311,
+            1312,
+            1315,
+            1316,
+            1320,
+            1321,
+            1325,
+            1326,
+            1331,
+            1332,
+            1334,
+            1335,
+            1336,
+            1337,
+            1339,
+            1340,
+            1341,
+            1343,
+            1344,
+            1345
+        ]
+    },
+    "visitedParams": {
+        "src/lib/pci_virtio_sock.c": [
+            [
+                "struct vqueue_info *vq",
+                "pci_vtsock_proc_tx"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/lib/pci_virtio_sock.c",
+            "pci_vtsock_proc_tx",
+            "static void pci_vtsock_proc_tx(struct pci_vtsock_softc *sc, /* <=== pci_vtsock_proc_tx */ \n\t\t\t       struct vqueue_info *vq)\n{\n\tstruct pci_vtsock_sock *sock;\n\tstruct iovec iov_array[VTSOCK_MAXSEGS], *iov = iov_array;\n\tuint16_t idx, flags[VTSOCK_MAXSEGS];\n\tstruct virtio_sock_hdr hdr;\n\tint iovec_len;\n\tsize_t pulled;\n\n\tiovec_len = vq_getchain(vq, &idx, iov, VTSOCK_MAXSEGS, flags);\n\tif (iovec_len < 0) {\n\t\tfprintf(stderr, \"TX: failed to get chain at idx %\"PRIx16\"\\n\", idx);\n\t\treturn;\n\t}\n\n\tassert(iovec_len <= VTSOCK_MAXSEGS);\n\n\tDPRINTF((\"TX: chain with %d buffers at idx %\"PRIx16\"\\n\",\n\t\t iovec_len, idx));\n\tdprint_chain(iov, iovec_len, \"TX\");\n\t//assert(iov[0].iov_len >= sizeof(*hdr));\n\t//hdr = iov[0].iov_base;\n\n\tpulled = iovec_pull(&iov, &iovec_len, &hdr, sizeof(hdr));\n\tassert(pulled == sizeof(hdr));\n\n\tdprint_header(&hdr, 1, \"TX\");\n\n\tdprint_iovec(iov, iovec_len, \"TX\");\n\n\tif (hdr.src_cid != sc->vssc_cfg.guest_cid ||\n\t    hdr.dst_cid != VMADDR_CID_HOST ||\n\t    hdr.type != VIRTIO_VSOCK_TYPE_STREAM) {\n\t\tDPRINTF((\"TX: Bad src/dst address/type\\n\"));\n\t\tsend_response_nosock(sc, VIRTIO_VSOCK_OP_RST,\n\t\t\t\t     hdr.type,\n\t\t\t\t     (struct vsock_addr) {\n\t\t\t\t\t     .cid = hdr.dst_cid,\n\t\t\t\t\t     .port =hdr.dst_port\n\t\t\t\t     },\n\t\t\t\t     (struct vsock_addr) {\n\t\t\t\t\t     .cid = hdr.src_cid,\n\t\t\t\t\t     .port =hdr.src_port\n\t\t\t\t     });\n\t\tvq_relchain(vq, idx, 0);\n\t\treturn;\n\t}\n\n\tsock = lookup_sock(sc, VIRTIO_VSOCK_TYPE_STREAM,\n\t\t\t   (struct vsock_addr) {\n\t\t\t\t   .cid = hdr.dst_cid,\n\t\t\t\t\t   .port =hdr.dst_port\n\t\t\t   },\n\t\t\t   (struct vsock_addr) {\n\t\t\t\t   .cid = hdr.src_cid,\n\t\t\t\t\t   .port =hdr.src_port\n\t\t\t   });\n\n\tif (sock) {\n\t\tsock->peer_buf_alloc = hdr.buf_alloc;\n\t\tsock->peer_fwd_cnt = hdr.fwd_cnt;\n\t}\n\n\tswitch (hdr.op) {\n\tcase VIRTIO_VSOCK_OP_INVALID:\n\t\tPPRINTF((\"TX: => INVALID\\n\"));\n\t\tgoto do_rst;\n\n\tcase VIRTIO_VSOCK_OP_REQUEST:\n\t\t/* Attempt to (re)connect existing sock? Naughty! */\n\t\t/* Or is it -- what are the semantics? */\n\t\tif (sock) {\n\t\t\tPPRINTF((\"TX: Attempt to reconnect sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\n\t\tif (hdr.dst_cid == sc->vssc_cfg.guest_cid) {\n\t\t\tPPRINTF((\"TX: Attempt to connect back to guest\\n!\"));\n\t\t\tgoto do_rst;\n\t\t}\n\n\t\tsock = connect_sock(sc,\n\t\t\t\t    (struct vsock_addr){\n\t\t\t\t\t    .cid = hdr.dst_cid, .port = hdr.dst_port\n\t\t\t\t    },\n\t\t\t\t    (struct vsock_addr){\n\t\t\t\t\t    .cid = hdr.src_cid, .port = hdr.src_port\n\t\t\t\t    }, hdr.buf_alloc, hdr.fwd_cnt);\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: Failed to open sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\n\t\tsend_response_sock(sc, VIRTIO_VSOCK_OP_RESPONSE, 0, sock);\n\t\tvq_relchain(vq, idx, 0);\n\t\t/* No rx kick required, send_response_sock did one */\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_RESPONSE:\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: RESPONSE to non-existent sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTING) {\n\t\t\tPPRINTF((\"TX: RESPONSE to non-connecting sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tPPRINTF((\"TX: SOCK connected (%d) \"PRIaddr\" <=> \"PRIaddr\"\\n\",\n\t\t\t sock->fd, FMTADDR(sock->local_addr), FMTADDR(sock->peer_addr)));\n\t\tsock->state = SOCK_CONNECTED;\n\t\tvq_relchain(vq, idx, 0);\n\t\tkick_rx(sc, \"new outgoing sock\");\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_RST:\n\t\t/* No response */\n\t\tif (!sock)\n\t\t\tPPRINTF((\"TX: RST to non-existent sock\\n\"));\n\t\tclose_sock(sc, sock, \"TX\");\n\t\tvq_relchain(vq, idx, 0);\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_SHUTDOWN:\n\t\tif (!sock) {\n\t\t\tDPRINTF((\"TX: SHUTDOWN to non-existent sock \"PRIcid\".\"PRIport\"\\n\",\n\t\t\t\t hdr.dst_cid, hdr.dst_port));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTED) {\n\t\t\tPPRINTF((\"TX: SHUTDOWN to non-connected sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (hdr.flags & ~VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL) {\n\t\t\tPPRINTF((\"TX: SHUTDOWN with reserved flags %\"PRIx32\"\\n\",\n\t\t\t\t hdr.flags));\n\t\t\tgoto do_rst; /* ??? */\n\t\t}\n\t\tif (!(hdr.flags & VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL)) {\n\t\t\tPPRINTF((\"TX: SHUTDOWN with no flags %\"PRIx32\"\\n\",\n\t\t\t\t hdr.flags));\n\t\t\tgoto do_rst; /* ??? */\n\t\t}\n\n\t\tshutdown_peer_local_fd(sock, hdr.flags, \"TX\");\n\n\t\t/* If the peer is now SHUTDOWN_ALL then we should send\n\t\t * a RST to the peer to finalise the shutdown.\n\t\t */\n\t\tif (sock->peer_shutdown == VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL)\n\t\t\tgoto do_rst;\n\n\t\tvq_relchain(vq, idx, 0);\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_RW:\n\t{\n\t\tint rc;\n\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: RW with no sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTED) {\n\t\t\tPPRINTF((\"TX: RW to non-connected sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->peer_shutdown & VIRTIO_VSOCK_FLAG_SHUTDOWN_TX) {\n\t\t\tPPRINTF((\"TX: RW to socket with peer_shutdown.TX\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->local_shutdown & VIRTIO_VSOCK_FLAG_SHUTDOWN_RX) {\n\t\t\tPPRINTF((\"TX: RW to socket with local_shutdown.RX\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\trc = handle_write(sc, sock, hdr.len, iov, iovec_len);\n\t\tif (rc < 0) goto do_rst;\n\t\tvq_relchain(vq, idx, 0);\n\t\tif (rc == 1)\n\t\t\tset_credit_update_required(sc, sock);\n\t\tbreak;\n\t}\n\n\tcase VIRTIO_VSOCK_OP_CREDIT_UPDATE:\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: CREDIT_UPDATE to non-existent sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTED) {\n\t\t\tPPRINTF((\"TX: CREDIT_UPDATE to non-connected sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\t/* No response needed, we updated above */\n\t\tvq_relchain(vq, idx, 0);\n\t\t/* But kick rx thread to attempt to send more */\n\t\tsc->rx_kick_pending = true;\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_CREDIT_REQUEST:\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: CREDIT_REQUEST to non-existent sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTED) {\n\t\t\tPPRINTF((\"TX: CREDIT_REQUEST to non-connected sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tvq_relchain(vq, idx, 0);\n\t\tset_credit_update_required(sc, sock);\n\t\tbreak;\n\t}\n\n\tif (sock)\n\t\tput_sock(sock);\n\n\treturn;\n\ndo_rst:\n\tif (sock)\n\t\tsend_response_sock(sc, VIRTIO_VSOCK_OP_RST, 0, sock);\n\telse\n\t\tsend_response_nosock(sc, VIRTIO_VSOCK_OP_RST, hdr.type,\n\t\t\t\t     (struct vsock_addr) {\n\t\t\t\t\t     .cid = hdr.dst_cid,\n\t\t\t\t\t     .port =hdr.dst_port\n\t\t\t\t     },\n\t\t\t\t     (struct vsock_addr) {\n\t\t\t\t\t     .cid = hdr.src_cid,\n\t\t\t\t\t     .port =hdr.src_port\n\t\t\t\t     });\n\tvq_relchain(vq, idx, 0);\n\tclose_sock(sc, sock, \"TX\");\n\tif (sock) put_sock(sock);\n\treturn;\n}",
+            1113
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/lib/pci_virtio_sock.c",
+            "pci_vtsock_proc_tx",
+            "static void pci_vtsock_proc_tx(struct pci_vtsock_softc *sc, /* <=== pci_vtsock_proc_tx */ \n\t\t\t       struct vqueue_info *vq)\n{\n\tstruct pci_vtsock_sock *sock;\n\tstruct iovec iov_array[VTSOCK_MAXSEGS], *iov = iov_array;\n\tuint16_t idx, flags[VTSOCK_MAXSEGS];\n\tstruct virtio_sock_hdr hdr;\n\tint iovec_len;\n\tsize_t pulled;\n\n\tiovec_len = vq_getchain(vq, &idx, iov, VTSOCK_MAXSEGS, flags);\n\tassert(iovec_len <= VTSOCK_MAXSEGS);\n\n\tDPRINTF((\"TX: chain with %d buffers at idx %\"PRIx16\"\\n\",\n\t\t iovec_len, idx));\n\tdprint_chain(iov, iovec_len, \"TX\");\n\t//assert(iov[0].iov_len >= sizeof(*hdr));\n\t//hdr = iov[0].iov_base;\n\n\tpulled = iovec_pull(&iov, &iovec_len, &hdr, sizeof(hdr));\n\tassert(pulled == sizeof(hdr));\n\n\tdprint_header(&hdr, 1, \"TX\");\n\n\tdprint_iovec(iov, iovec_len, \"TX\");\n\n\tif (hdr.src_cid != sc->vssc_cfg.guest_cid ||\n\t    hdr.dst_cid != VMADDR_CID_HOST ||\n\t    hdr.type != VIRTIO_VSOCK_TYPE_STREAM) {\n\t\tDPRINTF((\"TX: Bad src/dst address/type\\n\"));\n\t\tsend_response_nosock(sc, VIRTIO_VSOCK_OP_RST,\n\t\t\t\t     hdr.type,\n\t\t\t\t     (struct vsock_addr) {\n\t\t\t\t\t     .cid = hdr.dst_cid,\n\t\t\t\t\t     .port =hdr.dst_port\n\t\t\t\t     },\n\t\t\t\t     (struct vsock_addr) {\n\t\t\t\t\t     .cid = hdr.src_cid,\n\t\t\t\t\t     .port =hdr.src_port\n\t\t\t\t     });\n\t\tvq_relchain(vq, idx, 0);\n\t\treturn;\n\t}\n\n\tsock = lookup_sock(sc, VIRTIO_VSOCK_TYPE_STREAM,\n\t\t\t   (struct vsock_addr) {\n\t\t\t\t   .cid = hdr.dst_cid,\n\t\t\t\t\t   .port =hdr.dst_port\n\t\t\t   },\n\t\t\t   (struct vsock_addr) {\n\t\t\t\t   .cid = hdr.src_cid,\n\t\t\t\t\t   .port =hdr.src_port\n\t\t\t   });\n\n\tif (sock) {\n\t\tsock->peer_buf_alloc = hdr.buf_alloc;\n\t\tsock->peer_fwd_cnt = hdr.fwd_cnt;\n\t}\n\n\tswitch (hdr.op) {\n\tcase VIRTIO_VSOCK_OP_INVALID:\n\t\tPPRINTF((\"TX: => INVALID\\n\"));\n\t\tgoto do_rst;\n\n\tcase VIRTIO_VSOCK_OP_REQUEST:\n\t\t/* Attempt to (re)connect existing sock? Naughty! */\n\t\t/* Or is it -- what are the semantics? */\n\t\tif (sock) {\n\t\t\tPPRINTF((\"TX: Attempt to reconnect sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\n\t\tif (hdr.dst_cid == sc->vssc_cfg.guest_cid) {\n\t\t\tPPRINTF((\"TX: Attempt to connect back to guest\\n!\"));\n\t\t\tgoto do_rst;\n\t\t}\n\n\t\tsock = connect_sock(sc,\n\t\t\t\t    (struct vsock_addr){\n\t\t\t\t\t    .cid = hdr.dst_cid, .port = hdr.dst_port\n\t\t\t\t    },\n\t\t\t\t    (struct vsock_addr){\n\t\t\t\t\t    .cid = hdr.src_cid, .port = hdr.src_port\n\t\t\t\t    }, hdr.buf_alloc, hdr.fwd_cnt);\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: Failed to open sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\n\t\tsend_response_sock(sc, VIRTIO_VSOCK_OP_RESPONSE, 0, sock);\n\t\tvq_relchain(vq, idx, 0);\n\t\t/* No rx kick required, send_response_sock did one */\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_RESPONSE:\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: RESPONSE to non-existent sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTING) {\n\t\t\tPPRINTF((\"TX: RESPONSE to non-connecting sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tPPRINTF((\"TX: SOCK connected (%d) \"PRIaddr\" <=> \"PRIaddr\"\\n\",\n\t\t\t sock->fd, FMTADDR(sock->local_addr), FMTADDR(sock->peer_addr)));\n\t\tsock->state = SOCK_CONNECTED;\n\t\tvq_relchain(vq, idx, 0);\n\t\tkick_rx(sc, \"new outgoing sock\");\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_RST:\n\t\t/* No response */\n\t\tif (!sock)\n\t\t\tPPRINTF((\"TX: RST to non-existent sock\\n\"));\n\t\tclose_sock(sc, sock, \"TX\");\n\t\tvq_relchain(vq, idx, 0);\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_SHUTDOWN:\n\t\tif (!sock) {\n\t\t\tDPRINTF((\"TX: SHUTDOWN to non-existent sock \"PRIcid\".\"PRIport\"\\n\",\n\t\t\t\t hdr.dst_cid, hdr.dst_port));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTED) {\n\t\t\tPPRINTF((\"TX: SHUTDOWN to non-connected sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (hdr.flags & ~VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL) {\n\t\t\tPPRINTF((\"TX: SHUTDOWN with reserved flags %\"PRIx32\"\\n\",\n\t\t\t\t hdr.flags));\n\t\t\tgoto do_rst; /* ??? */\n\t\t}\n\t\tif (!(hdr.flags & VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL)) {\n\t\t\tPPRINTF((\"TX: SHUTDOWN with no flags %\"PRIx32\"\\n\",\n\t\t\t\t hdr.flags));\n\t\t\tgoto do_rst; /* ??? */\n\t\t}\n\n\t\tshutdown_peer_local_fd(sock, hdr.flags, \"TX\");\n\n\t\t/* If the peer is now SHUTDOWN_ALL then we should send\n\t\t * a RST to the peer to finalise the shutdown.\n\t\t */\n\t\tif (sock->peer_shutdown == VIRTIO_VSOCK_FLAG_SHUTDOWN_ALL)\n\t\t\tgoto do_rst;\n\n\t\tvq_relchain(vq, idx, 0);\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_RW:\n\t{\n\t\tint rc;\n\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: RW with no sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTED) {\n\t\t\tPPRINTF((\"TX: RW to non-connected sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->peer_shutdown & VIRTIO_VSOCK_FLAG_SHUTDOWN_TX) {\n\t\t\tPPRINTF((\"TX: RW to socket with peer_shutdown.TX\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->local_shutdown & VIRTIO_VSOCK_FLAG_SHUTDOWN_RX) {\n\t\t\tPPRINTF((\"TX: RW to socket with local_shutdown.RX\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\trc = handle_write(sc, sock, hdr.len, iov, iovec_len);\n\t\tif (rc < 0) goto do_rst;\n\t\tvq_relchain(vq, idx, 0);\n\t\tif (rc == 1)\n\t\t\tset_credit_update_required(sc, sock);\n\t\tbreak;\n\t}\n\n\tcase VIRTIO_VSOCK_OP_CREDIT_UPDATE:\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: CREDIT_UPDATE to non-existent sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTED) {\n\t\t\tPPRINTF((\"TX: CREDIT_UPDATE to non-connected sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\t/* No response needed, we updated above */\n\t\tvq_relchain(vq, idx, 0);\n\t\t/* But kick rx thread to attempt to send more */\n\t\tsc->rx_kick_pending = true;\n\t\tbreak;\n\n\tcase VIRTIO_VSOCK_OP_CREDIT_REQUEST:\n\t\tif (!sock) {\n\t\t\tPPRINTF((\"TX: CREDIT_REQUEST to non-existent sock\\n\"));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tif (sock->state != SOCK_CONNECTED) {\n\t\t\tPPRINTF((\"TX: CREDIT_REQUEST to non-connected sock (state %d)\\n\",\n\t\t\t\t sock->state));\n\t\t\tgoto do_rst;\n\t\t}\n\t\tvq_relchain(vq, idx, 0);\n\t\tset_credit_update_required(sc, sock);\n\t\tbreak;\n\t}\n\n\tif (sock)\n\t\tput_sock(sock);\n\n\treturn;\n\ndo_rst:\n\tif (sock)\n\t\tsend_response_sock(sc, VIRTIO_VSOCK_OP_RST, 0, sock);\n\telse\n\t\tsend_response_nosock(sc, VIRTIO_VSOCK_OP_RST, hdr.type,\n\t\t\t\t     (struct vsock_addr) {\n\t\t\t\t\t     .cid = hdr.dst_cid,\n\t\t\t\t\t     .port =hdr.dst_port\n\t\t\t\t     },\n\t\t\t\t     (struct vsock_addr) {\n\t\t\t\t\t     .cid = hdr.src_cid,\n\t\t\t\t\t     .port =hdr.src_port\n\t\t\t\t     });\n\tvq_relchain(vq, idx, 0);\n\tclose_sock(sc, sock, \"TX\");\n\tif (sock) put_sock(sock);\n\treturn;\n}",
+            1113
+        ]
+    ]
+}

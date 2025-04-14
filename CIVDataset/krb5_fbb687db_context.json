@@ -1,0 +1,300 @@
+{
+    "calleeMethods": [
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c",
+            "crypto_cert_free_matching_data",
+            "void /* <=== crypto_cert_free_matching_data */ \ncrypto_cert_free_matching_data(krb5_context context,\n                               pkinit_cert_matching_data *md)\n{\n    int i;\n\n    if (md == NULL)\n        return;\n    free(md->subject_dn);\n    free(md->issuer_dn);\n    for (i = 0; md->sans != NULL && md->sans[i] != NULL; i++)\n        krb5_free_principal(context, md->sans[i]);\n    free(md->sans);\n    free(md);\n}",
+            1
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto.h",
+            "PKINIT_EKU_MSSCLOGIN",
+            "#define PKINIT_EKU_MSSCLOGIN            0x40000000 /* <=== src/plugins/preauth/pkinit/pkinit_crypto.h:82:82:PKINIT_EKU_MSSCLOGIN:0 */ ",
+            2
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c",
+            "X509_NAME_oneline_ex",
+            "static char * /* <=== X509_NAME_oneline_ex */ \nX509_NAME_oneline_ex(X509_NAME * a,\n                     char *buf,\n                     unsigned int *size,\n                     unsigned long flag)\n{\n    BIO *out = NULL;\n\n    out = BIO_new(BIO_s_mem ());\n    if (X509_NAME_print_ex(out, a, 0, flag) > 0) {\n        if (buf != NULL && (*size) >  (unsigned int) BIO_number_written(out)) {\n            memset(buf, 0, *size);\n            BIO_read(out, buf, (int) BIO_number_written(out));\n        }\n        else {\n            *size = BIO_number_written(out);\n        }\n    }\n    BIO_free(out);\n    return (buf);\n}",
+            1
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.h",
+            "DN_BUF_LEN",
+            "#define DN_BUF_LEN  256 /* <=== src/plugins/preauth/pkinit/pkinit_crypto_openssl.h:55:55:DN_BUF_LEN:0 */ ",
+            1
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto.h",
+            "PKINIT_EKU_CLIENTAUTH",
+            "#define PKINIT_EKU_CLIENTAUTH           0x20000000 /* <=== src/plugins/preauth/pkinit/pkinit_crypto.h:83:83:PKINIT_EKU_CLIENTAUTH:0 */ ",
+            2
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c",
+            "rfc2253_name",
+            "static krb5_error_code /* <=== rfc2253_name */ \nrfc2253_name(X509_NAME *name, char **str_out)\n{\n    BIO *b = NULL;\n    char *str;\n\n    *str_out = NULL;\n    b = BIO_new(BIO_s_mem());\n    if (b == NULL)\n        return ENOMEM;\n    if (X509_NAME_print_ex(b, name, 0, XN_FLAG_SEP_COMMA_PLUS) < 0)\n        goto error;\n    str = calloc(BIO_number_written(b) + 1, 1);\n    if (str == NULL)\n        goto error;\n    BIO_read(b, str, BIO_number_written(b));\n    BIO_free(b);\n    *str_out = str;\n    return 0;\n\nerror:\n    BIO_free(b);\n    return ENOMEM;\n}",
+            1
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c",
+            "crypto_retrieve_X509_sans",
+            "static krb5_error_code /* <=== crypto_retrieve_X509_sans */ \ncrypto_retrieve_X509_sans(krb5_context context,\n                          pkinit_plg_crypto_context plgctx,\n                          pkinit_req_crypto_context reqctx,\n                          X509 *cert,\n                          krb5_principal **princs_ret,\n                          krb5_principal **upn_ret,\n                          unsigned char ***dns_ret)\n{\n    krb5_error_code retval = EINVAL;\n    char buf[DN_BUF_LEN];\n    int p = 0, u = 0, d = 0, ret = 0, l;\n    krb5_principal *princs = NULL;\n    krb5_principal *upns = NULL;\n    unsigned char **dnss = NULL;\n    unsigned int i, num_found = 0, num_sans = 0;\n    X509_EXTENSION *ext = NULL;\n    GENERAL_NAMES *ialt = NULL;\n    GENERAL_NAME *gen = NULL;\n\n    if (princs_ret != NULL)\n        *princs_ret = NULL;\n    if (upn_ret != NULL)\n        *upn_ret = NULL;\n    if (dns_ret != NULL)\n        *dns_ret = NULL;\n\n    if (princs_ret == NULL && upn_ret == NULL && dns_ret == NULL) {\n        pkiDebug(\"%s: nowhere to return any values!\\n\", __FUNCTION__);\n        return retval;\n    }\n\n    if (cert == NULL) {\n        pkiDebug(\"%s: no certificate!\\n\", __FUNCTION__);\n        return retval;\n    }\n\n    X509_NAME_oneline(X509_get_subject_name(cert),\n                      buf, sizeof(buf));\n    pkiDebug(\"%s: looking for SANs in cert = %s\\n\", __FUNCTION__, buf);\n\n    l = X509_get_ext_by_NID(cert, NID_subject_alt_name, -1);\n    if (l < 0)\n        return 0;\n\n    if (!(ext = X509_get_ext(cert, l)) || !(ialt = X509V3_EXT_d2i(ext))) {\n        pkiDebug(\"%s: found no subject alt name extensions\\n\", __FUNCTION__);\n        goto cleanup;\n    }\n    num_sans = sk_GENERAL_NAME_num(ialt);\n\n    pkiDebug(\"%s: found %d subject alt name extension(s)\\n\", __FUNCTION__,\n             num_sans);\n\n    /* OK, we're likely returning something. Allocate return values */\n    if (princs_ret != NULL) {\n        princs = calloc(num_sans + 1, sizeof(krb5_principal));\n        if (princs == NULL) {\n            retval = ENOMEM;\n            goto cleanup;\n        }\n    }\n    if (upn_ret != NULL) {\n        upns = calloc(num_sans + 1, sizeof(krb5_principal));\n        if (upns == NULL) {\n            retval = ENOMEM;\n            goto cleanup;\n        }\n    }\n    if (dns_ret != NULL) {\n        dnss = calloc(num_sans + 1, sizeof(*dnss));\n        if (dnss == NULL) {\n            retval = ENOMEM;\n            goto cleanup;\n        }\n    }\n\n    for (i = 0; i < num_sans; i++) {\n        krb5_data name = { 0, 0, NULL };\n\n        gen = sk_GENERAL_NAME_value(ialt, i);\n        switch (gen->type) {\n        case GEN_OTHERNAME:\n            name.length = gen->d.otherName->value->value.sequence->length;\n            name.data = (char *)gen->d.otherName->value->value.sequence->data;\n            if (princs != NULL &&\n                OBJ_cmp(plgctx->id_pkinit_san,\n                        gen->d.otherName->type_id) == 0) {\n#ifdef DEBUG_ASN1\n                print_buffer_bin((unsigned char *)name.data, name.length,\n                                 \"/tmp/pkinit_san\");\n#endif\n                ret = k5int_decode_krb5_principal_name(&name, &princs[p]);\n                if (ret) {\n                    pkiDebug(\"%s: failed decoding pkinit san value\\n\",\n                             __FUNCTION__);\n                } else {\n                    p++;\n                    num_found++;\n                }\n            } else if (upns != NULL &&\n                       OBJ_cmp(plgctx->id_ms_san_upn,\n                               gen->d.otherName->type_id) == 0) {\n                /* Prevent abuse of embedded null characters. */\n                if (memchr(name.data, '\\0', name.length))\n                    break;\n                ret = krb5_parse_name_flags(context, name.data,\n                                            KRB5_PRINCIPAL_PARSE_ENTERPRISE,\n                                            &upns[u]);\n                if (ret) {\n                    pkiDebug(\"%s: failed parsing ms-upn san value\\n\",\n                             __FUNCTION__);\n                } else {\n                    u++;\n                    num_found++;\n                }\n            } else {\n                pkiDebug(\"%s: unrecognized othername oid in SAN\\n\",\n                         __FUNCTION__);\n                continue;\n            }\n\n            break;\n        case GEN_DNS:\n            if (dnss != NULL) {\n                /* Prevent abuse of embedded null characters. */\n                if (memchr(gen->d.dNSName->data, '\\0', gen->d.dNSName->length))\n                    break;\n                pkiDebug(\"%s: found dns name = %s\\n\", __FUNCTION__,\n                         gen->d.dNSName->data);\n                dnss[d] = (unsigned char *)\n                    strdup((char *)gen->d.dNSName->data);\n                if (dnss[d] == NULL) {\n                    pkiDebug(\"%s: failed to duplicate dns name\\n\",\n                             __FUNCTION__);\n                } else {\n                    d++;\n                    num_found++;\n                }\n            }\n            break;\n        default:\n            pkiDebug(\"%s: SAN type = %d expecting %d\\n\", __FUNCTION__,\n                     gen->type, GEN_OTHERNAME);\n        }\n    }\n    sk_GENERAL_NAME_pop_free(ialt, GENERAL_NAME_free);\n\n    retval = 0;\n    if (princs != NULL && *princs != NULL) {\n        *princs_ret = princs;\n        princs = NULL;\n    }\n    if (upns != NULL && *upns != NULL) {\n        *upn_ret = upns;\n        upns = NULL;\n    }\n    if (dnss != NULL && *dnss != NULL) {\n        *dns_ret = dnss;\n        dnss = NULL;\n    }\n\ncleanup:\n    for (i = 0; princs != NULL && princs[i] != NULL; i++)\n        krb5_free_principal(context, princs[i]);\n    free(princs);\n    for (i = 0; upns != NULL && upns[i] != NULL; i++)\n        krb5_free_principal(context, upns[i]);\n    free(upns);\n    for (i = 0; dnss != NULL && dnss[i] != NULL; i++)\n        free(dnss[i]);\n    free(dnss);\n    return retval;\n}",
+            1
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c",
+            "ku_reject",
+            "#define ku_reject(c, u)                                                 \\ /* <=== src/plugins/preauth/pkinit/pkinit_crypto_openssl.c:240:241:ku_reject:2 */ \n    (((c)->ex_flags & EXFLAG_KUSAGE) && !((c)->ex_kusage & (u)))",
+            2
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit.h",
+            "pkiDebug",
+            "static inline void pkiDebug (const char *fmt, ...) { } /* <=== pkiDebug */ ",
+            2
+        ],
+        [
+            "src/util/ss/utils.c",
+            "strdup",
+            "char *strdup(s) /* <=== strdup */ \n    register char *s;\n{\n    register int len = strlen(s) + 1;\n    register char *new;\n    new = malloc(len);\n    strncpy(new, s, len);\n    return(new);\n}",
+            1
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c",
+            "crypto_retrieve_X509_key_usage",
+            "static krb5_error_code /* <=== crypto_retrieve_X509_key_usage */ \ncrypto_retrieve_X509_key_usage(krb5_context context,\n                               pkinit_plg_crypto_context plgcctx,\n                               pkinit_req_crypto_context reqcctx,\n                               X509 *x,\n                               unsigned int *ret_ku_bits,\n                               unsigned int *ret_eku_bits)\n{\n    krb5_error_code retval = 0;\n    int i;\n    unsigned int eku_bits = 0, ku_bits = 0;\n    ASN1_BIT_STRING *usage = NULL;\n\n    if (ret_ku_bits == NULL && ret_eku_bits == NULL)\n        return EINVAL;\n\n    if (ret_eku_bits)\n        *ret_eku_bits = 0;\n    else {\n        pkiDebug(\"%s: EKUs not requested, not checking\\n\", __FUNCTION__);\n        goto check_kus;\n    }\n\n    /* Start with Extended Key usage */\n    i = X509_get_ext_by_NID(x, NID_ext_key_usage, -1);\n    if (i >= 0) {\n        EXTENDED_KEY_USAGE *eku;\n\n        eku = X509_get_ext_d2i(x, NID_ext_key_usage, NULL, NULL);\n        if (eku) {\n            for (i = 0; i < sk_ASN1_OBJECT_num(eku); i++) {\n                ASN1_OBJECT *certoid;\n                certoid = sk_ASN1_OBJECT_value(eku, i);\n                if ((OBJ_cmp(certoid, plgcctx->id_pkinit_KPClientAuth)) == 0)\n                    eku_bits |= PKINIT_EKU_PKINIT;\n                else if ((OBJ_cmp(certoid, OBJ_nid2obj(NID_ms_smartcard_login))) == 0)\n                    eku_bits |= PKINIT_EKU_MSSCLOGIN;\n                else if ((OBJ_cmp(certoid, OBJ_nid2obj(NID_client_auth))) == 0)\n                    eku_bits |= PKINIT_EKU_CLIENTAUTH;\n                else if ((OBJ_cmp(certoid, OBJ_nid2obj(NID_email_protect))) == 0)\n                    eku_bits |= PKINIT_EKU_EMAILPROTECTION;\n            }\n            EXTENDED_KEY_USAGE_free(eku);\n        }\n    }\n    pkiDebug(\"%s: returning eku 0x%08x\\n\", __FUNCTION__, eku_bits);\n    *ret_eku_bits = eku_bits;\n\ncheck_kus:\n    /* Now the Key Usage bits */\n    if (ret_ku_bits)\n        *ret_ku_bits = 0;\n    else {\n        pkiDebug(\"%s: KUs not requested, not checking\\n\", __FUNCTION__);\n        goto out;\n    }\n\n    /* Make sure usage exists before checking bits */\n    X509_check_ca(x);\n    usage = X509_get_ext_d2i(x, NID_key_usage, NULL, NULL);\n    if (usage) {\n        if (!ku_reject(x, X509v3_KU_DIGITAL_SIGNATURE))\n            ku_bits |= PKINIT_KU_DIGITALSIGNATURE;\n        if (!ku_reject(x, X509v3_KU_KEY_ENCIPHERMENT))\n            ku_bits |= PKINIT_KU_KEYENCIPHERMENT;\n        ASN1_BIT_STRING_free(usage);\n    }\n\n    pkiDebug(\"%s: returning ku 0x%08x\\n\", __FUNCTION__, ku_bits);\n    *ret_ku_bits = ku_bits;\n    retval = 0;\nout:\n    return retval;\n}",
+            1
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto.h",
+            "PKINIT_KU_DIGITALSIGNATURE",
+            "#define PKINIT_KU_DIGITALSIGNATURE      0x80000000 /* <=== src/plugins/preauth/pkinit/pkinit_crypto.h:74:74:PKINIT_KU_DIGITALSIGNATURE:0 */ ",
+            2
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.h",
+            "DN_BUF_LEN",
+            "#define DN_BUF_LEN  256 /* <=== src/plugins/preauth/pkinit/pkinit_crypto_openssl.h:55:55:DN_BUF_LEN:0 */ ",
+            2
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto.h",
+            "PKINIT_EKU_EMAILPROTECTION",
+            "#define PKINIT_EKU_EMAILPROTECTION      0x10000000 /* <=== src/plugins/preauth/pkinit/pkinit_crypto.h:84:84:PKINIT_EKU_EMAILPROTECTION:0 */ ",
+            2
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto.h",
+            "PKINIT_KU_KEYENCIPHERMENT",
+            "#define PKINIT_KU_KEYENCIPHERMENT       0x40000000 /* <=== src/plugins/preauth/pkinit/pkinit_crypto.h:75:75:PKINIT_KU_KEYENCIPHERMENT:0 */ ",
+            2
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit.h",
+            "__FUNCTION__",
+            "#define __FUNCTION__ __func__ /* <=== src/plugins/preauth/pkinit/pkinit.h:96:96:__FUNCTION__:0 */ ",
+            2
+        ],
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto.h",
+            "PKINIT_EKU_PKINIT",
+            "#define PKINIT_EKU_PKINIT               0x80000000 /* <=== src/plugins/preauth/pkinit/pkinit_crypto.h:81:81:PKINIT_EKU_PKINIT:0 */ ",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"pkinit_crypto_openssl.h\"",
+        "#include <arpa/inet.h>",
+        "#include <dlfcn.h>",
+        "#include \"k5-buf.h\"",
+        "#include <dirent.h>",
+        "#include <openssl/cms.h>",
+        "#include <unistd.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct {\n   DWORD          dwPID;\n   PROCENUMPROC   lpProc;\n   DWORD          lParam;\n   BOOL           bEnd;\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct _pkinit_plg_crypto_context *pkinit_plg_crypto_context;",
+            "pkinit_plg_crypto_context"
+        ],
+        [
+            "typedef struct _pkinit_req_crypto_context *pkinit_req_crypto_context;",
+            "pkinit_req_crypto_context"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c": [
+            5083,
+            5084,
+            5085,
+            5086,
+            5087,
+            5088,
+            5089,
+            5090,
+            5091,
+            5093,
+            5094,
+            5095,
+            5096,
+            5097,
+            5098,
+            5100,
+            5101,
+            5102,
+            5103,
+            5104,
+            5108,
+            5109,
+            5110,
+            5112,
+            5113,
+            5114,
+            5115,
+            5116,
+            5117,
+            5118,
+            5119,
+            5120,
+            5122,
+            5123,
+            5124,
+            5125,
+            5126,
+            5127,
+            5128,
+            5129,
+            5130,
+            5131,
+            5132,
+            5133,
+            5134,
+            5135,
+            5136,
+            5137,
+            5138,
+            5139,
+            5140,
+            5141,
+            5143,
+            5144,
+            5145,
+            5146,
+            5147,
+            5148,
+            5149,
+            5150,
+            5151,
+            5154,
+            5155,
+            5158,
+            5159
+        ]
+    },
+    "visitedLines_before": {
+        "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c": [
+            5083,
+            5084,
+            5085,
+            5086,
+            5087,
+            5088,
+            5089,
+            5090,
+            5091,
+            5093,
+            5094,
+            5095,
+            5096,
+            5097,
+            5098,
+            5100,
+            5102,
+            5103,
+            5107,
+            5108,
+            5109,
+            5110,
+            5111,
+            5112,
+            5116,
+            5117,
+            5118,
+            5119,
+            5120,
+            5121,
+            5123,
+            5125,
+            5126,
+            5127,
+            5129,
+            5130,
+            5131,
+            5132,
+            5133,
+            5134,
+            5135,
+            5136,
+            5137,
+            5138,
+            5139,
+            5140,
+            5141,
+            5142,
+            5143,
+            5144,
+            5145,
+            5146,
+            5147,
+            5148,
+            5149,
+            5150,
+            5151,
+            5152,
+            5153,
+            5154,
+            5156,
+            5157,
+            5158,
+            5159,
+            5160,
+            5161,
+            5162,
+            5163,
+            5164,
+            5167,
+            5168,
+            5171,
+            5172
+        ]
+    },
+    "visitedParams": {
+        "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c": [
+            [
+                "X509 *cert",
+                "get_matching_data"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c",
+            "get_matching_data",
+            "static krb5_error_code /* <=== get_matching_data */ \nget_matching_data(krb5_context context,\n                  pkinit_plg_crypto_context plg_cryptoctx,\n                  pkinit_req_crypto_context req_cryptoctx, X509 *cert,\n                  pkinit_cert_matching_data **md_out)\n{\n    krb5_error_code ret = ENOMEM;\n    pkinit_cert_matching_data *md = NULL;\n    krb5_principal *pkinit_sans = NULL, *upn_sans = NULL;\n    size_t i, j;\n\n    *md_out = NULL;\n\n    md = calloc(1, sizeof(*md));\n    if (md == NULL)\n        goto cleanup;\n\n    ret = rfc2253_name(X509_get_subject_name(cert), &md->subject_dn);\n    if (ret)\n        goto cleanup;\n    ret = rfc2253_name(X509_get_issuer_name(cert), &md->issuer_dn);\n    if (ret)\n        goto cleanup;\n\n    /* Get the SAN data. */\n    ret = crypto_retrieve_X509_sans(context, plg_cryptoctx, req_cryptoctx,\n                                    cert, &pkinit_sans, &upn_sans, NULL);\n    if (ret)\n        goto cleanup;\n\n    j = 0;\n    if (pkinit_sans != NULL) {\n        for (i = 0; pkinit_sans[i] != NULL; i++)\n            j++;\n    }\n    if (upn_sans != NULL) {\n        for (i = 0; upn_sans[i] != NULL; i++)\n            j++;\n    }\n    if (j != 0) {\n        md->sans = calloc((size_t)j+1, sizeof(*md->sans));\n        if (md->sans == NULL) {\n            ret = ENOMEM;\n            goto cleanup;\n        }\n        j = 0;\n        if (pkinit_sans != NULL) {\n            for (i = 0; pkinit_sans[i] != NULL; i++)\n                md->sans[j++] = pkinit_sans[i];\n            free(pkinit_sans);\n        }\n        if (upn_sans != NULL) {\n            for (i = 0; upn_sans[i] != NULL; i++)\n                md->sans[j++] = upn_sans[i];\n            free(upn_sans);\n        }\n        md->sans[j] = NULL;\n    } else\n        md->sans = NULL;\n\n    /* Get the KU and EKU data. */\n    ret = crypto_retrieve_X509_key_usage(context, plg_cryptoctx,\n                                         req_cryptoctx, cert, &md->ku_bits,\n                                         &md->eku_bits);\n    if (ret)\n        goto cleanup;\n\n    *md_out = md;\n    md = NULL;\n\ncleanup:\n    crypto_cert_free_matching_data(context, md);\n    return ret;\n}",
+            5083
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/plugins/preauth/pkinit/pkinit_crypto_openssl.c",
+            "get_matching_data",
+            "static krb5_error_code /* <=== get_matching_data */ \nget_matching_data(krb5_context context,\n                  pkinit_plg_crypto_context plg_cryptoctx,\n                  pkinit_req_crypto_context req_cryptoctx, X509 *cert,\n                  pkinit_cert_matching_data **md_out)\n{\n    krb5_error_code ret = ENOMEM;\n    pkinit_cert_matching_data *md = NULL;\n    krb5_principal *pkinit_sans = NULL, *upn_sans = NULL;\n    size_t i, j;\n    char buf[DN_BUF_LEN];\n    unsigned int bufsize = sizeof(buf);\n\n    *md_out = NULL;\n\n    md = calloc(1, sizeof(*md));\n    if (md == NULL)\n        goto cleanup;\n\n    /* Get the subject name (in rfc2253 format). */\n    X509_NAME_oneline_ex(X509_get_subject_name(cert), buf, &bufsize,\n                         XN_FLAG_SEP_COMMA_PLUS);\n    md->subject_dn = strdup(buf);\n    if (md->subject_dn == NULL) {\n        ret = ENOMEM;\n        goto cleanup;\n    }\n\n    /* Get the issuer name (in rfc2253 format). */\n    X509_NAME_oneline_ex(X509_get_issuer_name(cert), buf, &bufsize,\n                         XN_FLAG_SEP_COMMA_PLUS);\n    md->issuer_dn = strdup(buf);\n    if (md->issuer_dn == NULL) {\n        ret = ENOMEM;\n        goto cleanup;\n    }\n\n    /* Get the SAN data. */\n    ret = crypto_retrieve_X509_sans(context, plg_cryptoctx, req_cryptoctx,\n                                    cert, &pkinit_sans, &upn_sans, NULL);\n    if (ret)\n        goto cleanup;\n\n    j = 0;\n    if (pkinit_sans != NULL) {\n        for (i = 0; pkinit_sans[i] != NULL; i++)\n            j++;\n    }\n    if (upn_sans != NULL) {\n        for (i = 0; upn_sans[i] != NULL; i++)\n            j++;\n    }\n    if (j != 0) {\n        md->sans = calloc((size_t)j+1, sizeof(*md->sans));\n        if (md->sans == NULL) {\n            ret = ENOMEM;\n            goto cleanup;\n        }\n        j = 0;\n        if (pkinit_sans != NULL) {\n            for (i = 0; pkinit_sans[i] != NULL; i++)\n                md->sans[j++] = pkinit_sans[i];\n            free(pkinit_sans);\n        }\n        if (upn_sans != NULL) {\n            for (i = 0; upn_sans[i] != NULL; i++)\n                md->sans[j++] = upn_sans[i];\n            free(upn_sans);\n        }\n        md->sans[j] = NULL;\n    } else\n        md->sans = NULL;\n\n    /* Get the KU and EKU data. */\n    ret = crypto_retrieve_X509_key_usage(context, plg_cryptoctx,\n                                         req_cryptoctx, cert, &md->ku_bits,\n                                         &md->eku_bits);\n    if (ret)\n        goto cleanup;\n\n    *md_out = md;\n    md = NULL;\n\ncleanup:\n    crypto_cert_free_matching_data(context, md);\n    return ret;\n}",
+            5087
+        ]
+    ]
+}

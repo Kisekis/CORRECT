@@ -1,0 +1,204 @@
+{
+    "calleeMethods": [
+        [
+            "psutil/arch/aix/ifaddrs.c",
+            "getifaddrs",
+            "int getifaddrs(struct ifaddrs **ifap) /* <=== getifaddrs */ \n{\n    int sd, ifsize;\n    char *ccp, *ecp;\n    struct ifconf ifc;\n    struct ifreq *ifr;\n    struct ifaddrs *cifa = NULL; /* current */\n    struct ifaddrs *pifa = NULL; /* previous */\n    const size_t IFREQSZ = sizeof(struct ifreq);\n    int fam;\n\n    *ifap = NULL;\n\n    sd = socket(AF_INET, SOCK_DGRAM, 0);\n    if (sd == -1)\n        goto error;\n\n    /* find how much memory to allocate for the SIOCGIFCONF call */\n    if (ioctl(sd, SIOCGSIZIFCONF, (caddr_t)&ifsize) < 0)\n        goto error;\n\n    ifc.ifc_req = (struct ifreq *) calloc(1, ifsize);\n    if (ifc.ifc_req == NULL)\n        goto error;\n    ifc.ifc_len = ifsize;\n\n    if (ioctl(sd, SIOCGIFCONF, &ifc) < 0)\n        goto error;\n\n    ccp = (char *)ifc.ifc_req;\n    ecp = ccp + ifsize;\n\n    while (ccp < ecp) {\n\n        ifr = (struct ifreq *) ccp;\n        ifsize = sizeof(ifr->ifr_name) + SIZE(ifr->ifr_addr);\n        fam = ifr->ifr_addr.sa_family;\n\n        if (fam == AF_INET || fam == AF_INET6) {\n            cifa = (struct ifaddrs *) calloc(1, sizeof(struct ifaddrs));\n            if (cifa == NULL)\n                goto error;\n            cifa->ifa_next = NULL;\n\n            if (pifa == NULL) *ifap = cifa; /* first one */\n            else pifa->ifa_next = cifa;\n\n            cifa->ifa_name = strdup(ifr->ifr_name);\n            if (cifa->ifa_name == NULL)\n                goto error;\n            cifa->ifa_flags = 0;\n            cifa->ifa_dstaddr = NULL;\n\n            cifa->ifa_addr = sa_dup(&ifr->ifr_addr);\n            if (cifa->ifa_addr == NULL)\n                goto error;\n\n            if (fam == AF_INET) {\n                if (ioctl(sd, SIOCGIFNETMASK, ifr, IFREQSZ) < 0)\n                    goto error;\n                cifa->ifa_netmask = sa_dup(&ifr->ifr_addr);\n                if (cifa->ifa_netmask == NULL)\n                    goto error;\n            }\n\n            if (0 == ioctl(sd, SIOCGIFFLAGS, ifr)) /* optional */\n                cifa->ifa_flags = ifr->ifr_flags;\n\n            if (fam == AF_INET) {\n                if (ioctl(sd, SIOCGIFDSTADDR, ifr, IFREQSZ) < 0) {\n                    if (0 == ioctl(sd, SIOCGIFBRDADDR, ifr, IFREQSZ)) {\n                        cifa->ifa_dstaddr = sa_dup(&ifr->ifr_addr);\n                        if (cifa->ifa_dstaddr == NULL)\n                            goto error;\n                    }\n                }\n                else {\n                    cifa->ifa_dstaddr = sa_dup(&ifr->ifr_addr);\n                    if (cifa->ifa_dstaddr == NULL)\n                        goto error;\n                }\n            }\n            pifa = cifa;\n        }\n\n        ccp += ifsize;\n    }\n    free(ifc.ifc_req);\n    close(sd);\n    return 0;\nerror:\n    if (ifc.ifc_req != NULL)\n        free(ifc.ifc_req);\n    if (sd != -1)\n        close(sd);\n    freeifaddrs(*ifap);\n    return (-1);\n}",
+            1
+        ],
+        [
+            "psutil/arch/solaris/v10/ifaddrs.c",
+            "freeifaddrs",
+            "void freeifaddrs (struct ifaddrs *ifp) /* <=== freeifaddrs */ \n{\n    if (NULL == ifp) return;\n    free(ifp->ifa_name);\n    free(ifp->ifa_addr);\n    free(ifp->ifa_netmask);\n    free(ifp->ifa_dstaddr);\n    freeifaddrs(ifp->ifa_next);\n    free(ifp);\n}",
+            2
+        ],
+        [
+            "psutil/arch/aix/ifaddrs.c",
+            "SIZE",
+            "#define SIZE(p) MAX((p).sa_len,sizeof(p)) /* <=== psutil/arch/aix/ifaddrs.c:24:24:SIZE:1 */ ",
+            2
+        ],
+        [
+            "psutil/arch/solaris/v10/ifaddrs.c",
+            "sa_dup",
+            "static struct sockaddr * /* <=== sa_dup */ \nsa_dup (struct sockaddr_storage *sa1)\n{\n    struct sockaddr *sa2;\n    size_t sz = sizeof(struct sockaddr_storage);\n    sa2 = (struct sockaddr *) calloc(1,sz);\n    memcpy(sa2,sa1,sz);\n    return(sa2);\n}",
+            2
+        ],
+        [
+            "psutil/arch/aix/ifaddrs.c",
+            "sa_dup",
+            "static struct sockaddr * /* <=== sa_dup */ \nsa_dup(struct sockaddr *sa1)\n{\n    struct sockaddr *sa2;\n    size_t sz = sa1->sa_len;\n    sa2 = (struct sockaddr *) calloc(1, sz);\n    if (sa2 == NULL)\n        return NULL;\n    memcpy(sa2, sa1, sz);\n    return sa2;\n}",
+            2
+        ],
+        [
+            "psutil/_psutil_posix.c",
+            "psutil_convert_ipaddr",
+            "static PyObject * /* <=== psutil_convert_ipaddr */ \npsutil_convert_ipaddr(struct sockaddr *addr, int family) {\n    char buf[NI_MAXHOST];\n    int err;\n    int addrlen;\n    size_t n;\n    size_t len;\n    const char *data;\n    char *ptr;\n\n    if (addr == NULL) {\n        Py_INCREF(Py_None);\n        return Py_None;\n    }\n    else if (family == AF_INET || family == AF_INET6) {\n        if (family == AF_INET)\n            addrlen = sizeof(struct sockaddr_in);\n        else\n            addrlen = sizeof(struct sockaddr_in6);\n        err = getnameinfo(addr, addrlen, buf, sizeof(buf), NULL, 0,\n                          NI_NUMERICHOST);\n        if (err != 0) {\n            // XXX we get here on FreeBSD when processing 'lo' / AF_INET6\n            // broadcast. Not sure what to do other than returning None.\n            // ifconfig does not show anything BTW.\n            //PyErr_Format(PyExc_RuntimeError, gai_strerror(err));\n            //return NULL;\n            Py_INCREF(Py_None);\n            return Py_None;\n        }\n        else {\n            return Py_BuildValue(\"s\", buf);\n        }\n    }\n#ifdef PSUTIL_LINUX\n    else if (family == AF_PACKET) {\n        struct sockaddr_ll *lladdr = (struct sockaddr_ll *)addr;\n        len = lladdr->sll_halen;\n        data = (const char *)lladdr->sll_addr;\n    }\n#elif defined(PSUTIL_BSD) || defined(PSUTIL_OSX)\n    else if (addr->sa_family == AF_LINK) {\n        // Note: prior to Python 3.4 socket module does not expose\n        // AF_LINK so we'll do.\n        struct sockaddr_dl *dladdr = (struct sockaddr_dl *)addr;\n        len = dladdr->sdl_alen;\n        data = LLADDR(dladdr);\n    }\n#endif\n    else {\n        // unknown family\n        Py_INCREF(Py_None);\n        return Py_None;\n    }\n\n    // AF_PACKET or AF_LINK\n    if (len > 0) {\n        ptr = buf;\n        for (n = 0; n < len; ++n) {\n            sprintf(ptr, \"%02x:\", data[n] & 0xff);\n            ptr += 3;\n        }\n        *--ptr = '\\0';\n        return Py_BuildValue(\"s\", buf);\n    }\n    else {\n        Py_INCREF(Py_None);\n        return Py_None;\n    }\n}",
+            1
+        ],
+        [
+            "psutil/arch/solaris/v10/ifaddrs.c",
+            "getifaddrs",
+            "int getifaddrs (struct ifaddrs **ifap) /* <=== getifaddrs */ \n{\n    int sd = -1;\n    char *ccp, *ecp;\n    struct lifconf ifc;\n    struct lifreq *ifr;\n    struct lifnum lifn;\n    struct ifaddrs *cifa = NULL; /* current */\n    struct ifaddrs *pifa = NULL; /* previous */\n    const size_t IFREQSZ = sizeof(struct lifreq);\n\n    sd = socket(AF_INET, SOCK_STREAM, 0);\n    if (sd < 0)\n        goto error;\n\n    ifc.lifc_buf = NULL;\n    *ifap = NULL;\n    /* find how much memory to allocate for the SIOCGLIFCONF call */\n    lifn.lifn_family = AF_UNSPEC;\n    lifn.lifn_flags = 0;\n    if (ioctl(sd, SIOCGLIFNUM, &lifn) < 0)\n        goto error;\n\n    /* Sun and Apple code likes to pad the interface count here in case interfaces\n     * are coming up between calls */\n    lifn.lifn_count += 4;\n\n    ifc.lifc_family = AF_UNSPEC;\n    ifc.lifc_len = lifn.lifn_count * sizeof(struct lifreq);\n    ifc.lifc_buf = calloc(1, ifc.lifc_len);\n    if (ioctl(sd, SIOCGLIFCONF, &ifc) < 0)\n        goto error;\n\n    ccp = (char *)ifc.lifc_req;\n    ecp = ccp + ifc.lifc_len;\n\n    while (ccp < ecp) {\n\n        ifr = (struct lifreq *) ccp;\n        cifa = (struct ifaddrs *) calloc(1, sizeof(struct ifaddrs));\n        cifa->ifa_next = NULL;\n        cifa->ifa_name = strdup(ifr->lifr_name);\n\n        if (pifa == NULL) *ifap = cifa; /* first one */\n        else pifa->ifa_next = cifa;\n\n        if (ioctl(sd, SIOCGLIFADDR, ifr, IFREQSZ) < 0)\n            goto error;\n        cifa->ifa_addr = sa_dup(&ifr->lifr_addr);\n\n        if (ioctl(sd, SIOCGLIFNETMASK, ifr, IFREQSZ) < 0)\n            goto error;\n        cifa->ifa_netmask = sa_dup(&ifr->lifr_addr);\n\n        cifa->ifa_flags = 0;\n        cifa->ifa_dstaddr = NULL;\n\n        if (0 == ioctl(sd, SIOCGLIFFLAGS, ifr)) /* optional */\n            cifa->ifa_flags = ifr->lifr_flags;\n\n        if (ioctl(sd, SIOCGLIFDSTADDR, ifr, IFREQSZ) < 0) {\n            if (0 == ioctl(sd, SIOCGLIFBRDADDR, ifr, IFREQSZ))\n                cifa->ifa_dstaddr = sa_dup(&ifr->lifr_addr);\n        }\n        else cifa->ifa_dstaddr = sa_dup(&ifr->lifr_addr);\n\n        pifa = cifa;\n        ccp += IFREQSZ;\n    }\n    free(ifc.lifc_buf);\n    close(sd);\n    return 0;\nerror:\n    if (ifc.lifc_buf != NULL)\n        free(ifc.lifc_buf);\n    if (sd != -1)\n        close(sd);\n    freeifaddrs(*ifap);\n    return (-1);\n}",
+            1
+        ],
+        [
+            "psutil/arch/aix/ifaddrs.c",
+            "freeifaddrs",
+            "void freeifaddrs(struct ifaddrs *ifp) /* <=== freeifaddrs */ \n{\n    if (NULL == ifp) return;\n    free(ifp->ifa_name);\n    free(ifp->ifa_addr);\n    free(ifp->ifa_netmask);\n    free(ifp->ifa_dstaddr);\n    freeifaddrs(ifp->ifa_next);\n    free(ifp);\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <sys/sockio.h>",
+        "#include <net/if.h>",
+        "#include <signal.h>",
+        "#include <stdlib.h>",
+        "#include <sys/ioctl.h>",
+        "#include <sys/resource.h>",
+        "#include <ifaddrs.h>",
+        "#include \"arch/aix/ifaddrs.h\"",
+        "#include <net/if_media.h>",
+        "#include <netinet/in.h>",
+        "#include \"arch/solaris/v10/ifaddrs.h\"",
+        "#include <errno.h>",
+        "#include <linux/if_packet.h>",
+        "#include <netdb.h>",
+        "#include <sys/types.h>",
+        "#include <linux/types.h>",
+        "#include <net/if_dl.h>",
+        "#include <Python.h>",
+        "#include <sys/socket.h>",
+        "#include \"_psutil_common.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct ifaddrs {\n    struct ifaddrs  *ifa_next;\n    char            *ifa_name;\n    unsigned int     ifa_flags;\n    struct sockaddr *ifa_addr;\n    struct sockaddr *ifa_netmask;\n    struct sockaddr *ifa_dstaddr;\n}",
+            "ifaddrs"
+        ]
+    ],
+    "visitedLines_after": {
+        "psutil/_psutil_posix.c": [
+            260,
+            265,
+            266,
+            267,
+            268,
+            269,
+            270,
+            272,
+            274,
+            279,
+            280,
+            282,
+            283,
+            286,
+            288,
+            290,
+            291,
+            294,
+            295,
+            296,
+            297,
+            299,
+            300,
+            301,
+            302,
+            305,
+            306,
+            307,
+            308,
+            311,
+            313,
+            314,
+            315,
+            316,
+            317,
+            318,
+            319,
+            320,
+            323,
+            325,
+            327,
+            328,
+            329,
+            330,
+            331,
+            341,
+            343,
+            344,
+            345
+        ]
+    },
+    "visitedLines_before": {
+        "psutil/_psutil_posix.c": [
+            260,
+            265,
+            266,
+            267,
+            268,
+            269,
+            270,
+            272,
+            274,
+            279,
+            280,
+            282,
+            283,
+            286,
+            288,
+            290,
+            291,
+            294,
+            295,
+            296,
+            297,
+            299,
+            300,
+            301,
+            302,
+            305,
+            306,
+            307,
+            308,
+            311,
+            313,
+            314,
+            315,
+            316,
+            317,
+            318,
+            319,
+            320,
+            323,
+            325,
+            327,
+            328,
+            329,
+            330,
+            331,
+            341,
+            343,
+            344,
+            345
+        ]
+    },
+    "visitedParams": {},
+    "vulnerableMethods_after": [
+        [
+            "psutil/_psutil_posix.c",
+            "psutil_net_if_addrs",
+            "static PyObject* /* <=== psutil_net_if_addrs */ \npsutil_net_if_addrs(PyObject* self, PyObject* args) {\n    struct ifaddrs *ifaddr, *ifa;\n    int family;\n\n    PyObject *py_retlist = PyList_New(0);\n    PyObject *py_tuple = NULL;\n    PyObject *py_address = NULL;\n    PyObject *py_netmask = NULL;\n    PyObject *py_broadcast = NULL;\n    PyObject *py_ptp = NULL;\n\n    if (py_retlist == NULL)\n        return NULL;\n    if (getifaddrs(&ifaddr) == -1) {\n        PyErr_SetFromErrno(PyExc_OSError);\n        goto error;\n    }\n\n    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {\n        if (!ifa->ifa_addr)\n            continue;\n        family = ifa->ifa_addr->sa_family;\n        py_address = psutil_convert_ipaddr(ifa->ifa_addr, family);\n        // If the primary address can't be determined just skip it.\n        // I've never seen this happen on Linux but I did on FreeBSD.\n        if (py_address == Py_None)\n            continue;\n        if (py_address == NULL)\n            goto error;\n        py_netmask = psutil_convert_ipaddr(ifa->ifa_netmask, family);\n        if (py_netmask == NULL)\n            goto error;\n\n        if (ifa->ifa_flags & IFF_BROADCAST) {\n            py_broadcast = psutil_convert_ipaddr(ifa->ifa_broadaddr, family);\n            Py_INCREF(Py_None);\n            py_ptp = Py_None;\n        }\n        else if (ifa->ifa_flags & IFF_POINTOPOINT) {\n            py_ptp = psutil_convert_ipaddr(ifa->ifa_dstaddr, family);\n            Py_INCREF(Py_None);\n            py_broadcast = Py_None;\n        }\n        else {\n            Py_INCREF(Py_None);\n            Py_INCREF(Py_None);\n            py_broadcast = Py_None;\n            py_ptp = Py_None;\n        }\n\n        if ((py_broadcast == NULL) || (py_ptp == NULL))\n            goto error;\n        py_tuple = Py_BuildValue(\n            \"(siOOOO)\",\n            ifa->ifa_name,\n            family,\n            py_address,\n            py_netmask,\n            py_broadcast,\n            py_ptp\n        );\n\n        if (! py_tuple)\n            goto error;\n        if (PyList_Append(py_retlist, py_tuple))\n            goto error;\n        Py_CLEAR(py_tuple);\n        Py_CLEAR(py_address);\n        Py_CLEAR(py_netmask);\n        Py_CLEAR(py_broadcast);\n        Py_CLEAR(py_ptp);\n    }\n\n    freeifaddrs(ifaddr);\n    return py_retlist;\n\nerror:\n    if (ifaddr != NULL)\n        freeifaddrs(ifaddr);\n    Py_DECREF(py_retlist);\n    Py_XDECREF(py_tuple);\n    Py_XDECREF(py_address);\n    Py_XDECREF(py_netmask);\n    Py_XDECREF(py_broadcast);\n    Py_XDECREF(py_ptp);\n    return NULL;\n}",
+            260
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "psutil/_psutil_posix.c",
+            "psutil_net_if_addrs",
+            "static PyObject* /* <=== psutil_net_if_addrs */ \npsutil_net_if_addrs(PyObject* self, PyObject* args) {\n    struct ifaddrs *ifaddr, *ifa;\n    int family;\n\n    PyObject *py_retlist = PyList_New(0);\n    PyObject *py_tuple = NULL;\n    PyObject *py_address = NULL;\n    PyObject *py_netmask = NULL;\n    PyObject *py_broadcast = NULL;\n    PyObject *py_ptp = NULL;\n\n    if (py_retlist == NULL)\n        return NULL;\n    if (getifaddrs(&ifaddr) == -1) {\n        PyErr_SetFromErrno(PyExc_OSError);\n        goto error;\n    }\n\n    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {\n        if (!ifa->ifa_addr)\n            continue;\n        family = ifa->ifa_addr->sa_family;\n        py_address = psutil_convert_ipaddr(ifa->ifa_addr, family);\n        // If the primary address can't be determined just skip it.\n        // I've never seen this happen on Linux but I did on FreeBSD.\n        if (py_address == Py_None)\n            continue;\n        if (py_address == NULL)\n            goto error;\n        py_netmask = psutil_convert_ipaddr(ifa->ifa_netmask, family);\n        if (py_netmask == NULL)\n            goto error;\n\n        if (ifa->ifa_flags & IFF_BROADCAST) {\n            py_broadcast = psutil_convert_ipaddr(ifa->ifa_broadaddr, family);\n            Py_INCREF(Py_None);\n            py_ptp = Py_None;\n        }\n        else if (ifa->ifa_flags & IFF_POINTOPOINT) {\n            py_ptp = psutil_convert_ipaddr(ifa->ifa_dstaddr, family);\n            Py_INCREF(Py_None);\n            py_broadcast = Py_None;\n        }\n        else {\n            Py_INCREF(Py_None);\n            Py_INCREF(Py_None);\n            py_broadcast = Py_None;\n            py_ptp = Py_None;\n        }\n\n        if ((py_broadcast == NULL) || (py_ptp == NULL))\n            goto error;\n        py_tuple = Py_BuildValue(\n            \"(siOOOO)\",\n            ifa->ifa_name,\n            family,\n            py_address,\n            py_netmask,\n            py_broadcast,\n            py_ptp\n        );\n\n        if (! py_tuple)\n            goto error;\n        if (PyList_Append(py_retlist, py_tuple))\n            goto error;\n        Py_DECREF(py_tuple);\n        Py_DECREF(py_address);\n        Py_DECREF(py_netmask);\n        Py_DECREF(py_broadcast);\n        Py_DECREF(py_ptp);\n    }\n\n    freeifaddrs(ifaddr);\n    return py_retlist;\n\nerror:\n    if (ifaddr != NULL)\n        freeifaddrs(ifaddr);\n    Py_DECREF(py_retlist);\n    Py_XDECREF(py_tuple);\n    Py_XDECREF(py_address);\n    Py_XDECREF(py_netmask);\n    Py_XDECREF(py_broadcast);\n    Py_XDECREF(py_ptp);\n    return NULL;\n}",
+            260
+        ]
+    ]
+}

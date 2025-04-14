@@ -1,0 +1,86 @@
+{
+    "calleeMethods": [
+        [
+            "include/linux/tnum.h",
+            "tnum_is_const",
+            "static inline bool tnum_is_const(struct tnum a) /* <=== tnum_is_const */ \n{\n\treturn !a.mask;\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/slab.h>",
+        "#include <linux/bpf_types.h>",
+        "#include <linux/kernel.h>",
+        "#include <linux/vmalloc.h>",
+        "#include <net/netlink.h>",
+        "#include <linux/file.h>",
+        "#include <linux/types.h>",
+        "#include <linux/bpf.h>",
+        "#include <linux/bpf_verifier.h>",
+        "#include <linux/stringify.h>",
+        "#include \"disasm.h\"",
+        "#include <linux/filter.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct bpf_reg_state {\n\tenum bpf_reg_type type;\n\tunion {\n\t\t/* valid when type == PTR_TO_PACKET */\n\t\tu16 range;\n\n\t\t/* valid when type == CONST_PTR_TO_MAP | PTR_TO_MAP_VALUE |\n\t\t *   PTR_TO_MAP_VALUE_OR_NULL\n\t\t */\n\t\tstruct bpf_map *map_ptr;\n\t};\n\t/* Fixed part of pointer offset, pointer types only */\n\ts32 off;\n\t/* For PTR_TO_PACKET, used to find other pointers with the same variable\n\t * offset, so they can share range knowledge.\n\t * For PTR_TO_MAP_VALUE_OR_NULL this is used to share which map value we\n\t * came from, when one is tested for != NULL.\n\t */\n\tu32 id;\n\t/* Ordering of fields matters.  See states_equal() */\n\t/* For scalar types (SCALAR_VALUE), this represents our knowledge of\n\t * the actual value.\n\t * For pointer types, this represents the variable part of the offset\n\t * from the pointed-to object, and is shared with all bpf_reg_states\n\t * with the same id as us.\n\t */\n\tstruct tnum var_off;\n\t/* Used to determine if any memory access using this register will\n\t * result in a bad access.\n\t * These refer to the same value as var_off, not necessarily the actual\n\t * contents of the register.\n\t */\n\ts64 smin_value; /* minimum possible (s64)value */\n\ts64 smax_value; /* maximum possible (s64)value */\n\tu64 umin_value; /* minimum possible (u64)value */\n\tu64 umax_value; /* maximum possible (u64)value */\n\t/* This field must be last, for states_equal() reasons. */\n\tenum bpf_reg_liveness live;\n}",
+            "bpf_reg_state"
+        ],
+        [
+            "struct bpf_verifier_state {\n\tstruct bpf_reg_state regs[MAX_BPF_REG];\n\tstruct bpf_verifier_state *parent;\n\tint allocated_stack;\n\tstruct bpf_stack_state *stack;\n}",
+            "bpf_verifier_state"
+        ],
+        [
+            "struct bpf_verifier_env {\n\tstruct bpf_prog *prog;\t\t/* eBPF program being verified */\n\tconst struct bpf_verifier_ops *ops;\n\tstruct bpf_verifier_stack_elem *head; /* stack of verifier states to be processed */\n\tint stack_size;\t\t\t/* number of states to be processed */\n\tbool strict_alignment;\t\t/* perform strict pointer alignment checks */\n\tstruct bpf_verifier_state *cur_state; /* current verifier state */\n\tstruct bpf_verifier_state_list **explored_states; /* search pruning optimization */\n\tconst struct bpf_ext_analyzer_ops *dev_ops; /* device analyzer ops */\n\tstruct bpf_map *used_maps[MAX_USED_MAPS]; /* array of map's used by eBPF program */\n\tu32 used_map_cnt;\t\t/* number of used maps */\n\tu32 id_gen;\t\t\t/* used to generate unique reg IDs */\n\tbool allow_ptr_leaks;\n\tbool seen_direct_write;\n\tstruct bpf_insn_aux_data *insn_aux_data; /* array of per-insn state */\n\n\tstruct bpf_verifer_log log;\n}",
+            "bpf_verifier_env"
+        ]
+    ],
+    "visitedLines_after": {
+        "kernel/bpf/verifier.c": [
+            1279,
+            1283,
+            1284,
+            1287,
+            1300,
+            1306
+        ]
+    },
+    "visitedLines_before": {
+        "kernel/bpf/verifier.c": [
+            1279,
+            1283,
+            1284,
+            1287,
+            1300
+        ]
+    },
+    "visitedParams": {
+        "kernel/bpf/verifier.c": [
+            [
+                "int regno",
+                "check_stack_boundary"
+            ],
+            [
+                "struct bpf_verifier_env *env",
+                "check_stack_boundary"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "kernel/bpf/verifier.c",
+            "check_stack_boundary",
+            "static int check_stack_boundary(struct bpf_verifier_env *env, int regno, /* <=== check_stack_boundary */ \n\t\t\t\tint access_size, bool zero_size_allowed,\n\t\t\t\tstruct bpf_call_arg_meta *meta)\n{\n\tstruct bpf_verifier_state *state = env->cur_state;\n\tstruct bpf_reg_state *regs = state->regs;\n\tint off, i, slot, spi;\n\n\tif (regs[regno].type != PTR_TO_STACK) {\n\t\t/* Allow zero-byte read from NULL, regardless of pointer type */\n\t\tif (zero_size_allowed && access_size == 0 &&\n\t\t    register_is_null(regs[regno]))\n\t\t\treturn 0;\n\n\t\tverbose(env, \"R%d type=%s expected=%s\\n\", regno,\n\t\t\treg_type_str[regs[regno].type],\n\t\t\treg_type_str[PTR_TO_STACK]);\n\t\treturn -EACCES;\n\t}\n\n\t/* Only allow fixed-offset stack reads */\n\tif (!tnum_is_const(regs[regno].var_off)) {\n\t\tchar tn_buf[48];\n\n\t\ttnum_strn(tn_buf, sizeof(tn_buf), regs[regno].var_off);\n\t\tverbose(env, \"invalid variable stack read R%d var_off=%s\\n\",\n\t\t\tregno, tn_buf);\n\t\treturn -EACCES;\n\t}\n\toff = regs[regno].off + regs[regno].var_off.value;\n\tif (off >= 0 || off < -MAX_BPF_STACK || off + access_size > 0 ||\n\t    access_size < 0 || (access_size == 0 && !zero_size_allowed)) {\n\t\tverbose(env, \"invalid stack type R%d off=%d access_size=%d\\n\",\n\t\t\tregno, off, access_size);\n\t\treturn -EACCES;\n\t}\n\n\tif (env->prog->aux->stack_depth < -off)\n\t\tenv->prog->aux->stack_depth = -off;\n\n\tif (meta && meta->raw_mode) {\n\t\tmeta->access_size = access_size;\n\t\tmeta->regno = regno;\n\t\treturn 0;\n\t}\n\n\tfor (i = 0; i < access_size; i++) {\n\t\tslot = -(off + i) - 1;\n\t\tspi = slot / BPF_REG_SIZE;\n\t\tif (state->allocated_stack <= slot ||\n\t\t    state->stack[spi].slot_type[slot % BPF_REG_SIZE] !=\n\t\t\tSTACK_MISC) {\n\t\t\tverbose(env, \"invalid indirect read from stack off %d+%d size %d\\n\",\n\t\t\t\toff, i, access_size);\n\t\t\treturn -EACCES;\n\t\t}\n\t}\n\treturn 0;\n}",
+            1279
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "kernel/bpf/verifier.c",
+            "check_stack_boundary",
+            "static int check_stack_boundary(struct bpf_verifier_env *env, int regno, /* <=== check_stack_boundary */ \n\t\t\t\tint access_size, bool zero_size_allowed,\n\t\t\t\tstruct bpf_call_arg_meta *meta)\n{\n\tstruct bpf_verifier_state *state = env->cur_state;\n\tstruct bpf_reg_state *regs = state->regs;\n\tint off, i, slot, spi;\n\n\tif (regs[regno].type != PTR_TO_STACK) {\n\t\t/* Allow zero-byte read from NULL, regardless of pointer type */\n\t\tif (zero_size_allowed && access_size == 0 &&\n\t\t    register_is_null(regs[regno]))\n\t\t\treturn 0;\n\n\t\tverbose(env, \"R%d type=%s expected=%s\\n\", regno,\n\t\t\treg_type_str[regs[regno].type],\n\t\t\treg_type_str[PTR_TO_STACK]);\n\t\treturn -EACCES;\n\t}\n\n\t/* Only allow fixed-offset stack reads */\n\tif (!tnum_is_const(regs[regno].var_off)) {\n\t\tchar tn_buf[48];\n\n\t\ttnum_strn(tn_buf, sizeof(tn_buf), regs[regno].var_off);\n\t\tverbose(env, \"invalid variable stack read R%d var_off=%s\\n\",\n\t\t\tregno, tn_buf);\n\t}\n\toff = regs[regno].off + regs[regno].var_off.value;\n\tif (off >= 0 || off < -MAX_BPF_STACK || off + access_size > 0 ||\n\t    access_size < 0 || (access_size == 0 && !zero_size_allowed)) {\n\t\tverbose(env, \"invalid stack type R%d off=%d access_size=%d\\n\",\n\t\t\tregno, off, access_size);\n\t\treturn -EACCES;\n\t}\n\n\tif (env->prog->aux->stack_depth < -off)\n\t\tenv->prog->aux->stack_depth = -off;\n\n\tif (meta && meta->raw_mode) {\n\t\tmeta->access_size = access_size;\n\t\tmeta->regno = regno;\n\t\treturn 0;\n\t}\n\n\tfor (i = 0; i < access_size; i++) {\n\t\tslot = -(off + i) - 1;\n\t\tspi = slot / BPF_REG_SIZE;\n\t\tif (state->allocated_stack <= slot ||\n\t\t    state->stack[spi].slot_type[slot % BPF_REG_SIZE] !=\n\t\t\tSTACK_MISC) {\n\t\t\tverbose(env, \"invalid indirect read from stack off %d+%d size %d\\n\",\n\t\t\t\toff, i, access_size);\n\t\t\treturn -EACCES;\n\t\t}\n\t}\n\treturn 0;\n}",
+            1279
+        ]
+    ]
+}

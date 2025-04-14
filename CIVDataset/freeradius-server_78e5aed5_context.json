@@ -1,0 +1,300 @@
+{
+    "calleeMethods": [
+        [
+            "src/main/log.c",
+            "radlog",
+            "int radlog(int lvl, const char *msg, ...) /* <=== radlog */ \n{\n\tva_list ap;\n\tint r;\n\n\tva_start(ap, msg);\n\tr = vradlog(lvl, msg, ap);\n\tva_end(ap);\n\n\treturn r;\n}",
+            1
+        ],
+        [
+            "src/modules/rlm_eap/radeapclient.c",
+            "radlog",
+            "int radlog(int lvl, const char *msg, ...) /* <=== radlog */ \n{\n\tva_list ap;\n\tint r;\n\n\tr = lvl; /* shut up compiler */\n\n\tva_start(ap, msg);\n\tr = vfprintf(stderr, msg, ap);\n\tva_end(ap);\n\tfputc('\\n', stderr);\n\n\treturn r;\n}",
+            1
+        ],
+        [
+            "src/lib/valuepair.c",
+            "pairmake",
+            "VALUE_PAIR *pairmake(const char *attribute, const char *value, int operator) /* <=== pairmake */ \n{\n\tDICT_ATTR\t*da;\n\tVALUE_PAIR\t*vp;\n\tchar            *tc, *ts;\n\tsigned char     tag;\n\tint             found_tag;\n\tchar\t\tbuffer[64];\n\tconst char\t*attrname = attribute;\n\n\t/*\n\t *    Check for tags in 'Attribute:Tag' format.\n\t */\n\tfound_tag = 0;\n\ttag = 0;\n\n\tts = strrchr(attribute, ':');\n\tif (ts && !ts[1]) {\n\t\tfr_strerror_printf(\"Invalid tag for attribute %s\", attribute);\n\t\treturn NULL;\n\t}\n\n\tif (ts && ts[1]) {\n\t\tstrlcpy(buffer, attribute, sizeof(buffer));\n\t\tattrname = buffer;\n\t\tts = strrchr(attrname, ':');\n\n\t         /* Colon found with something behind it */\n\t         if (ts[1] == '*' && ts[2] == 0) {\n\t\t         /* Wildcard tag for check items */\n\t\t         tag = TAG_ANY;\n\t\t\t *ts = 0;\n\t\t } else if ((ts[1] >= '0') && (ts[1] <= '9')) {\n\t\t         /* It's not a wild card tag */\n\t\t         tag = strtol(ts + 1, &tc, 0);\n\t\t\t if (tc && !*tc && TAG_VALID_ZERO(tag))\n\t\t\t\t *ts = 0;\n\t\t\t else tag = 0;\n\t\t } else {\n\t\t\t fr_strerror_printf(\"Invalid tag for attribute %s\", attribute);\n\t\t\t return NULL;\n\t\t }\n\t\t found_tag = 1;\n\t}\n\n\t/*\n\t *\tIt's not found in the dictionary, so we use\n\t *\tanother method to create the attribute.\n\t */\n\tif ((da = dict_attrbyname(attrname)) == NULL) {\n\t\treturn pairmake_any(attrname, value, operator);\n\t}\n\n\tif ((vp = pairalloc(da)) == NULL) {\n\t\tfr_strerror_printf(\"out of memory\");\n\t\treturn NULL;\n\t}\n\tvp->operator = (operator == 0) ? T_OP_EQ : operator;\n\n\t/*      Check for a tag in the 'Merit' format of:\n\t *      :Tag:Value.  Print an error if we already found\n\t *      a tag in the Attribute.\n\t */\n\n\tif (value && (*value == ':' && da->flags.has_tag)) {\n\t        /* If we already found a tag, this is invalid */\n\t        if(found_tag) {\n\t\t\tfr_strerror_printf(\"Duplicate tag %s for attribute %s\",\n\t\t\t\t   value, vp->name);\n\t\t\tDEBUG(\"Duplicate tag %s for attribute %s\\n\",\n\t\t\t\t   value, vp->name);\n\t\t        pairbasicfree(vp);\n\t\t\treturn NULL;\n\t\t}\n\t        /* Colon found and attribute allows a tag */\n\t        if (value[1] == '*' && value[2] == ':') {\n\t\t       /* Wildcard tag for check items */\n\t\t       tag = TAG_ANY;\n\t\t       value += 3;\n\t\t} else {\n\t               /* Real tag */\n\t\t       tag = strtol(value + 1, &tc, 0);\n\t\t       if (tc && *tc==':' && TAG_VALID_ZERO(tag))\n\t\t\t    value = tc + 1;\n\t\t       else tag = 0;\n\t\t}\n\t\tfound_tag = 1;\n\t}\n\n\tif (found_tag) {\n\t  vp->flags.tag = tag;\n\t}\n\n\tswitch (vp->operator) {\n\tdefault:\n\t\tbreak;\n\n\t\t/*\n\t\t *      For =* and !* operators, the value is irrelevant\n\t\t *      so we return now.\n\t\t */\n\tcase T_OP_CMP_TRUE:\n\tcase T_OP_CMP_FALSE:\n\t\tvp->vp_strvalue[0] = '\\0';\n\t\tvp->length = 0;\n\t        return vp;\n\t\tbreak;\n\n\t\t/*\n\t\t *\tRegular expression comparison of integer attributes\n\t\t *\tdoes a STRING comparison of the names of their\n\t\t *\tinteger attributes.\n\t\t */\n\tcase T_OP_REG_EQ:\t/* =~ */\n\tcase T_OP_REG_NE:\t/* !~ */\n\t\tif (!value) {\n\t\t\tfr_strerror_printf(\"No regular expression found in %s\",\n\t\t\t\t\t   vp->name);\n\t\t        pairbasicfree(vp);\n\t\t\treturn NULL;\n\t\t}\n\t  \n\t\tstrlcpy(vp->vp_strvalue, value, sizeof(vp->vp_strvalue));\n\t\tvp->length = strlen(vp->vp_strvalue);\n\t\t/*\n\t\t *\tIf anything goes wrong, this is a run-time error,\n\t\t *\tnot a compile-time error.\n\t\t */\n\t\treturn vp;\n\n\t}\n\n\t/*\n\t *\tFIXME: if (strcasecmp(attribute, vp->name) != 0)\n\t *\tthen the user MAY have typed in the attribute name\n\t *\tas Vendor-%d-Attr-%d, and the value MAY be octets.\n\t *\n\t *\tWe probably want to fix pairparsevalue to accept\n\t *\toctets as values for any attribute.\n\t */\n\tif (value && (pairparsevalue(vp, value) == NULL)) {\n\t\tpairbasicfree(vp);\n\t\treturn NULL;\n\t}\n\n\treturn vp;\n}",
+            1
+        ],
+        [
+            "src/lib/valuepair.c",
+            "paircreate",
+            "VALUE_PAIR *paircreate(int attr, int type) /* <=== paircreate */ \n{\n\tVALUE_PAIR\t*vp;\n\tDICT_ATTR\t*da;\n\n\tda = dict_attrbyvalue(attr);\n\tif ((vp = pairalloc(da)) == NULL) {\n\t\tfr_strerror_printf(\"out of memory\");\n\t\treturn NULL;\n\t}\n\tvp->operator = T_OP_EQ;\n\n\t/*\n\t *\tIt isn't in the dictionary: update the name.\n\t */\n\tif (!da) return paircreate_raw(attr, type, vp);\n\n\treturn vp;\n}",
+            3
+        ],
+        [
+            "src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c",
+            "EAPTLS_ISSUER",
+            "#define EAPTLS_ISSUER\t\t(3) /* <=== src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c:508:508:EAPTLS_ISSUER:0 */ ",
+            1
+        ],
+        [
+            "src/lib/valuepair.c",
+            "pairalloc",
+            "VALUE_PAIR *pairalloc(DICT_ATTR *da) /* <=== pairalloc */ \n{\n\tsize_t name_len = 0;\n\tVALUE_PAIR *vp;\n\n\t/*\n\t *\tNot in the dictionary: the name is allocated AFTER\n\t *\tthe VALUE_PAIR struct.\n\t */\n\tif (!da) name_len = FR_VP_NAME_PAD;\n\n\tvp = malloc(sizeof(*vp) + name_len);\n\tif (!vp) return NULL;\n\tmemset(vp, 0, sizeof(*vp));\n\n\tif (da) {\n\t\tvp->attribute = da->attr;\n\t\tvp->vendor = da->vendor;\n\t\tvp->type = da->type;\n\t\tvp->name = da->name;\n\t\tvp->flags = da->flags;\n\t} else {\n\t\tvp->attribute = 0;\n\t\tvp->vendor = 0;\n\t\tvp->type = PW_TYPE_OCTETS;\n\t\tvp->name = NULL;\n\t\tmemset(&vp->flags, 0, sizeof(vp->flags));\n\t\tvp->flags.unknown_attr = 1;\n\t}\n\n\tswitch (vp->type) {\n\t\tcase PW_TYPE_BYTE:\n\t\t\tvp->length = 1;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_SHORT:\n\t\t\tvp->length = 2;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_INTEGER:\n\t\tcase PW_TYPE_IPADDR:\n\t\tcase PW_TYPE_DATE:\n\t\tcase PW_TYPE_SIGNED:\n\t\t\tvp->length = 4;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_IFID:\n\t\t\tvp->length = sizeof(vp->vp_ifid);\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_IPV6ADDR:\n\t\t\tvp->length = sizeof(vp->vp_ipv6addr);\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_IPV6PREFIX:\n\t\t\tvp->length = sizeof(vp->vp_ipv6prefix);\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_ETHERNET:\n\t\t\tvp->length = sizeof(vp->vp_ether);\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_TLV:\n\t\t\tvp->vp_tlv = NULL;\n\t\t\tvp->length = 0;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_COMBO_IP:\n\t\tdefault:\n\t\t\tvp->length = 0;\n\t\t\tbreak;\n\t}\n\n\treturn vp;\n}",
+            2
+        ],
+        [
+            "src/lib/valuepair.c",
+            "getint",
+            "static uint32_t getint(const char *value, char **end) /* <=== getint */ \n{\n\tif ((value[0] == '0') && (value[1] == 'x')) {\n\t\treturn strtoul(value, end, 16);\n\t}\n\n\treturn strtoul(value, end, 10);\n}",
+            3
+        ],
+        [
+            "src/lib/valuepair.c",
+            "pairadd",
+            "void pairadd(VALUE_PAIR **first, VALUE_PAIR *add) /* <=== pairadd */ \n{\n\tVALUE_PAIR *i;\n\n\tif (!add) return;\n\n\tif (*first == NULL) {\n\t\t*first = add;\n\t\treturn;\n\t}\n\tfor(i = *first; i->next; i = i->next)\n\t\t;\n\ti->next = add;\n}",
+            1
+        ],
+        [
+            "src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c",
+            "EAPTLS_CN",
+            "#define EAPTLS_CN\t\t(4) /* <=== src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c:509:509:EAPTLS_CN:0 */ ",
+            1
+        ],
+        [
+            "src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c",
+            "EAPTLS_EXPIRATION",
+            "#define EAPTLS_EXPIRATION\t(1) /* <=== src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c:506:506:EAPTLS_EXPIRATION:0 */ ",
+            1
+        ],
+        [
+            "src/main/valuepair.c",
+            "radius_pairmake",
+            "VALUE_PAIR *radius_pairmake(REQUEST *request, VALUE_PAIR **vps, /* <=== radius_pairmake */ \n\t\t\t    const char *attribute, const char *value,\n\t\t\t    int operator)\n{\n\tVALUE_PAIR *vp;\n\n\trequest = request;\t/* -Wunused */\n\n\tvp = pairmake(attribute, value, operator);\n\tif (!vp) return NULL;\n\n\tif (vps) pairadd(vps, vp);\n\n\treturn vp;\n}",
+            1
+        ],
+        [
+            "src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c",
+            "EAPTLS_SUBJECT",
+            "#define EAPTLS_SUBJECT\t\t(2) /* <=== src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c:507:507:EAPTLS_SUBJECT:0 */ ",
+            1
+        ],
+        [
+            "src/main/log.c",
+            "vradlog",
+            "int vradlog(int lvl, const char *fmt, va_list ap) /* <=== vradlog */ \n{\n\tstruct main_config_t *myconfig = &mainconfig;\n\tunsigned char *p;\n\tchar buffer[8192];\n\tint len;\n\n\t/*\n\t *\tNOT debugging, and trying to log debug messages.\n\t *\n\t *\tThrow the message away.\n\t */\n\tif (!debug_flag && (lvl == L_DBG)) {\n\t\treturn 0;\n\t}\n\n\t/*\n\t *\tIf we don't want any messages, then\n\t *\tthrow them away.\n\t */\n\tif (myconfig->radlog_dest == RADLOG_NULL) {\n\t\treturn 0;\n\t}\n\n\t*buffer = '\\0';\n\tlen = 0;\n\n\t/*\n\t *\tDon't print timestamps to syslog, it does that for us.\n\t *\tDon't print timestamps for low levels of debugging.\n\t *\n\t *\tPrint timestamps for non-debugging, and for high levels\n\t *\tof debugging.\n\t */\n\tif ((myconfig->radlog_dest != RADLOG_SYSLOG) &&\n\t    (debug_flag != 1) && (debug_flag != 2)) {\n\t\tconst char *s;\n\t\ttime_t timeval;\n\n\t\ttimeval = time(NULL);\n\t\tCTIME_R(&timeval, buffer + len, sizeof(buffer) - len - 1);\n\n\t\ts = fr_int2str(levels, (lvl & ~L_CONS), \": \");\n\n\t\tstrcat(buffer, s);\n\t\tlen = strlen(buffer);\n\t}\n\n\tvsnprintf(buffer + len, sizeof(buffer) - len - 1, fmt, ap);\n\n\t/*\n\t *\tFilter out characters not in Latin-1.\n\t */\n\tfor (p = (unsigned char *)buffer; *p != '\\0'; p++) {\n\t\tif (*p == '\\r' || *p == '\\n')\n\t\t\t*p = ' ';\n\t\telse if (*p == '\\t') continue;\n\t\telse if (*p < 32 || (*p >= 128 && *p <= 160))\n\t\t\t*p = '?';\n\t}\n\tstrcat(buffer, \"\\n\");\n\n\tswitch (myconfig->radlog_dest) {\n\n#ifdef HAVE_SYSLOG_H\n\tcase RADLOG_SYSLOG:\n\t\tswitch(lvl & ~L_CONS) {\n\t\t\tcase L_DBG:\n\t\t\t\tlvl = LOG_DEBUG;\n\t\t\t\tbreak;\n\t\t\tcase L_AUTH:\n\t\t\t\tlvl = LOG_NOTICE;\n\t\t\t\tbreak;\n\t\t\tcase L_PROXY:\n\t\t\t\tlvl = LOG_NOTICE;\n\t\t\t\tbreak;\n\t\t\tcase L_ACCT:\n\t\t\t\tlvl = LOG_NOTICE;\n\t\t\t\tbreak;\n\t\t\tcase L_INFO:\n\t\t\t\tlvl = LOG_INFO;\n\t\t\t\tbreak;\n\t\t\tcase L_ERR:\n\t\t\t\tlvl = LOG_ERR;\n\t\t\t\tbreak;\n\t\t}\n\t\tsyslog(lvl, \"%s\", buffer);\n\t\tbreak;\n#endif\n\n\tcase RADLOG_FILES:\n\tcase RADLOG_STDOUT:\n\tcase RADLOG_STDERR:\n\t\twrite(myconfig->radlog_fd, buffer, strlen(buffer));\n\t\tbreak;\n\n\tdefault:\n\tcase RADLOG_NULL:\t/* should have been caught above */\n\t\tbreak;\n\t}\n\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "src/lib/valuepair.c",
+            "gettime",
+            "static int gettime(const char *valstr, time_t *date) /* <=== gettime */ \n{\n\tint\t\ti;\n\ttime_t\t\tt;\n\tstruct tm\t*tm, s_tm;\n\tchar\t\tbuf[64];\n\tchar\t\t*p;\n\tchar\t\t*f[4];\n\tchar            *tail = '\\0';\n\n\t/*\n\t * Test for unix timestamp date\n\t */\n\t*date = strtoul(valstr, &tail, 10);\n\tif (*tail == '\\0') {\n\t\treturn 0;\n\t}\n\n\ttm = &s_tm;\n\tmemset(tm, 0, sizeof(*tm));\n\ttm->tm_isdst = -1;\t/* don't know, and don't care about DST */\n\n\tstrlcpy(buf, valstr, sizeof(buf));\n\n\tp = buf;\n\tf[0] = mystrtok(&p, \" \\t\");\n\tf[1] = mystrtok(&p, \" \\t\");\n\tf[2] = mystrtok(&p, \" \\t\");\n\tf[3] = mystrtok(&p, \" \\t\"); /* may, or may not, be present */\n\tif (!f[0] || !f[1] || !f[2]) return -1;\n\n\t/*\n\t *\tThe time has a colon, where nothing else does.\n\t *\tSo if we find it, bubble it to the back of the list.\n\t */\n\tif (f[3]) {\n\t\tfor (i = 0; i < 3; i++) {\n\t\t\tif (strchr(f[i], ':')) {\n\t\t\t\tp = f[3];\n\t\t\t\tf[3] = f[i];\n\t\t\t\tf[i] = p;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t}\n\n\t/*\n\t *  The month is text, which allows us to find it easily.\n\t */\n\ttm->tm_mon = 12;\n\tfor (i = 0; i < 3; i++) {\n\t\tif (isalpha( (int) *f[i])) {\n\t\t\t/*\n\t\t\t *  Bubble the month to the front of the list\n\t\t\t */\n\t\t\tp = f[0];\n\t\t\tf[0] = f[i];\n\t\t\tf[i] = p;\n\n\t\t\tfor (i = 0; i < 12; i++) {\n\t\t\t\tif (strncasecmp(months[i], f[0], 3) == 0) {\n\t\t\t\t\ttm->tm_mon = i;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\t/* month not found? */\n\tif (tm->tm_mon == 12) return -1;\n\n\t/*\n\t *  The year may be in f[1], or in f[2]\n\t */\n\ttm->tm_year = atoi(f[1]);\n\ttm->tm_mday = atoi(f[2]);\n\n\tif (tm->tm_year >= 1900) {\n\t\ttm->tm_year -= 1900;\n\n\t} else {\n\t\t/*\n\t\t *  We can't use 2-digit years any more, they make it\n\t\t *  impossible to tell what's the day, and what's the year.\n\t\t */\n\t\tif (tm->tm_mday < 1900) return -1;\n\n\t\t/*\n\t\t *  Swap the year and the day.\n\t\t */\n\t\ti = tm->tm_year;\n\t\ttm->tm_year = tm->tm_mday - 1900;\n\t\ttm->tm_mday = i;\n\t}\n\n\t/*\n\t *  If the day is out of range, die.\n\t */\n\tif ((tm->tm_mday < 1) || (tm->tm_mday > 31)) {\n\t\treturn -1;\n\t}\n\n\t/*\n\t *\tThere may be %H:%M:%S.  Parse it in a hacky way.\n\t */\n\tif (f[3]) {\n\t\tf[0] = f[3];\t/* HH */\n\t\tf[1] = strchr(f[0], ':'); /* find : separator */\n\t\tif (!f[1]) return -1;\n\n\t\t*(f[1]++) = '\\0'; /* nuke it, and point to MM:SS */\n\n\t\tf[2] = strchr(f[1], ':'); /* find : separator */\n\t\tif (f[2]) {\n\t\t  *(f[2]++) = '\\0';\t/* nuke it, and point to SS */\n\t\t  tm->tm_sec = atoi(f[2]);\n\t\t}\t\t\t/* else leave it as zero */\n\n\t\ttm->tm_hour = atoi(f[0]);\n\t\ttm->tm_min = atoi(f[1]);\n\t}\n\n\t/*\n\t *  Returns -1 on error.\n\t */\n\tt = mktime(tm);\n\tif (t == (time_t) -1) return -1;\n\n\t*date = t;\n\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "src/lib/valuepair.c",
+            "pairbasicfree",
+            "void pairbasicfree(VALUE_PAIR *pair) /* <=== pairbasicfree */ \n{\n\tif (pair->type == PW_TYPE_TLV) free(pair->vp_tlv);\n\t/* clear the memory here */\n\tmemset(pair, 0, sizeof(*pair));\n\tfree(pair);\n}",
+            2
+        ],
+        [
+            "src/lib/valuepair.c",
+            "check_for_whitespace",
+            "static int check_for_whitespace(const char *value) /* <=== check_for_whitespace */ \n{\n\twhile (*value) {\n\t\tif (!isspace((int) *value)) return 0;\n\n\t\tvalue++;\n\t}\n\n\treturn 1;\n}",
+            3
+        ],
+        [
+            "src/lib/valuepair.c",
+            "pairmake_any",
+            "static VALUE_PAIR *pairmake_any(const char *attribute, const char *value, /* <=== pairmake_any */ \n\t\t\t\tint operator)\n{\n\tint\t\tattr, vendor;\n\tsize_t\t\tsize;\n\tconst char\t*p = attribute;\n\tchar\t\t*q;\n\tVALUE_PAIR\t*vp;\n\n\t/*\n\t *\tUnknown attributes MUST be of type 'octets'\n\t */\n\tif (value && (strncasecmp(value, \"0x\", 2) != 0)) {\n\t\tfr_strerror_printf(\"Unknown attribute \\\"%s\\\" requires a hex string, not \\\"%s\\\"\", attribute, value);\n\t\treturn NULL;\n\t}\n\n\tvendor = 0;\n\n\t/*\n\t *\tPull off vendor prefix first.\n\t */\n\tif (strncasecmp(p, \"Attr-\", 5) != 0) {\n\t\tif (strncasecmp(p, \"Vendor-\", 7) == 0) {\n\t\t\tvendor = (int) strtol(p + 7, &q, 10);\n\t\t\tif ((vendor == 0) || (vendor > 65535)) {\n\t\t\t\tfr_strerror_printf(\"Invalid vendor value in attribute name \\\"%s\\\"\", attribute);\n\t\t\t\treturn NULL;\n\t\t\t}\n\n\t\t\tp = q;\n\n\t\t} else {\t/* must be vendor name */\n\t\t\tchar buffer[256];\n\n\t\t\tq = strchr(p, '-');\n\n\t\t\tif (!q) {\n\t\t\t\tfr_strerror_printf(\"Invalid vendor name in attribute name \\\"%s\\\"\", attribute);\n\t\t\t\treturn NULL;\n\t\t\t}\n\n\t\t\tif ((size_t) (q - p) >= sizeof(buffer)) {\n\t\t\t\tfr_strerror_printf(\"Vendor name too long in attribute name \\\"%s\\\"\", attribute);\n\t\t\t\treturn NULL;\n\t\t\t}\n\n\t\t\tmemcpy(buffer, p, (q - p));\n\t\t\tbuffer[q - p] = '\\0';\n\n\t\t\tvendor = dict_vendorbyname(buffer);\n\t\t\tif (!vendor) {\n\t\t\t\tfr_strerror_printf(\"Unknown vendor name in attribute name \\\"%s\\\"\", attribute);\n\t\t\t\treturn NULL;\n\t\t\t}\n\n\t\t\tp = q;\n\t\t}\n\n\t\tif (*p != '-') {\n\t\t\tfr_strerror_printf(\"Invalid text following vendor definition in attribute name \\\"%s\\\"\", attribute);\n\t\t\treturn NULL;\n\t\t}\n\t\tp++;\n\t}\n\n\t/*\n\t *\tAttr-%d\n\t */\n\tif (strncasecmp(p, \"Attr-\", 5) != 0) {\n\t\tfr_strerror_printf(\"Invalid format in attribute name \\\"%s\\\"\", attribute);\n\t\treturn NULL;\n\t}\n\n\tattr = strtol(p + 5, &q, 10);\n\n\t/*\n\t *\tInvalid, or trailing text after number.\n\t */\n\tif ((attr == 0) || *q) {\n\t\tfr_strerror_printf(\"Invalid value in attribute name \\\"%s\\\"\", attribute);\n\t\treturn NULL;\n\t}\n\n\t/*\n\t *\tDouble-check the size of attr.\n\t */\n\tif (vendor) {\n\t\tDICT_VENDOR *dv = dict_vendorbyvalue(vendor);\n\n\t\tif (!dv) {\n\t\t\tif (attr > 255) {\n\t\t\tattr_error:\n\t\t\t\tfr_strerror_printf(\"Invalid attribute number in attribute name \\\"%s\\\"\", attribute);\n\t\t\t\treturn NULL;\n\t\t\t}\n\n\t\t} else switch (dv->type) {\n\t\t\tcase 1:\n\t\t\t\tif (attr > 255) goto attr_error;\n\t\t\t\tbreak;\n\n\t\t\tcase 2:\n\t\t\t\tif (attr > 65535) goto attr_error;\n\t\t\t\tbreak;\n\n\t\t\tcase 4:\t/* Internal limitations! */\n\t\t\t\tif (attr > 65535) goto attr_error;\n\t\t\t\tbreak;\n\n\t\t\tdefault:\n\t\t\t\tfr_strerror_printf(\"Internal sanity check failed\");\n\t\t\t\treturn NULL;\n\t\t}\n\t}\n\n\tattr |= vendor << 16;\n\n\t/*\n\t *\tWe've now parsed the attribute properly, Let's create\n\t *\tit.  This next stop also looks the attribute up in the\n\t *\tdictionary, and creates the appropriate type for it.\n\t */\n\tif ((vp = paircreate(attr, PW_TYPE_OCTETS)) == NULL) {\n\t\tfr_strerror_printf(\"out of memory\");\n\t\treturn NULL;\n\t}\n\n\tvp->operator = (operator == 0) ? T_OP_EQ : operator;\n\tif (!value) return vp;\n\n\tsize = strlen(value + 2);\n\n\t/*\n\t *\tWe may be reading something like Attr-5.  i.e.\n\t *\twho-ever wrote the text didn't understand it, but we\n\t *\tdo.\n\t */\n\tswitch (vp->type) {\n\tdefault:\n\t\tif (size == (vp->length * 2)) break;\n\t\tvp->type = PW_TYPE_OCTETS;\n\t\t/* FALL-THROUGH */\n\t\t\n\tcase PW_TYPE_OCTETS:\n\tcase PW_TYPE_ABINARY:\n\t\tvp->length = size >> 1;\n\t\tif (vp->length > sizeof(vp->vp_octets)) {\n\t\t\tvp->length = sizeof(vp->vp_octets);\n\t\t}\n\t\tbreak;\n\n\tcase PW_TYPE_STRING:\n\t\tvp->length = size >> 1;\n\t\tmemset(&vp->vp_strvalue, 0, sizeof(vp->vp_strvalue));\n\t\tif (vp->length >= sizeof(vp->vp_strvalue)) {\n\t\t\tvp->length = sizeof(vp->vp_strvalue) - 1;\n\t\t}\n\t\tbreak;\n\t}\n\n\tif (fr_hex2bin(value + 2, vp->vp_octets, size) != vp->length) {\n\t\tfr_strerror_printf(\"Invalid hex string\");\n\t\tfree(vp);\n\t\treturn NULL;\n\t}\n\n\t/*\n\t *\tMove contents around based on type.  This is\n\t *\tto work around the historical use of \"lvalue\".\n\t */\n\tswitch (vp->type) {\n\tcase PW_TYPE_DATE:\n\tcase PW_TYPE_IPADDR:\n\tcase PW_TYPE_INTEGER:\n\t\tmemcpy(&vp->lvalue, vp->vp_octets, sizeof(vp->lvalue));\n\t\tvp->vp_strvalue[0] = '\\0';\n\t\tbreak;\n\t\t\n\tdefault:\n\t\tbreak;\n\t}\n       \n\treturn vp;\n}",
+            2
+        ],
+        [
+            "src/lib/valuepair.c",
+            "pairparsevalue",
+            "VALUE_PAIR *pairparsevalue(VALUE_PAIR *vp, const char *value) /* <=== pairparsevalue */ \n{\n\tchar\t\t*p, *s=0;\n\tconst char\t*cp, *cs;\n\tint\t\tx;\n\tsize_t\t\tlength;\n\tDICT_VALUE\t*dval;\n\n\tif (!value) return NULL;\n\n\t/*\n\t *\tEven for integers, dates and ip addresses we\n\t *\tkeep the original string in vp->vp_strvalue.\n\t */\n\tif (vp->type != PW_TYPE_TLV) {\n\t\tstrlcpy(vp->vp_strvalue, value, sizeof(vp->vp_strvalue));\n\t\tvp->length = strlen(vp->vp_strvalue);\n\t}\n\n\tswitch(vp->type) {\n\t\tcase PW_TYPE_STRING:\n\t\t\t/*\n\t\t\t *\tDo escaping here\n\t\t\t */\n\t\t\tp = vp->vp_strvalue;\n\t\t\tcp = value;\n\t\t\tlength = 0;\n\n\t\t\twhile (*cp && (length < (sizeof(vp->vp_strvalue) - 1))) {\n\t\t\t\tchar c = *cp++;\n\n\t\t\t\tif (c == '\\\\') {\n\t\t\t\t\tswitch (*cp) {\n\t\t\t\t\tcase 'r':\n\t\t\t\t\t\tc = '\\r';\n\t\t\t\t\t\tcp++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase 'n':\n\t\t\t\t\t\tc = '\\n';\n\t\t\t\t\t\tcp++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase 't':\n\t\t\t\t\t\tc = '\\t';\n\t\t\t\t\t\tcp++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase '\"':\n\t\t\t\t\t\tc = '\"';\n\t\t\t\t\t\tcp++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase '\\'':\n\t\t\t\t\t\tc = '\\'';\n\t\t\t\t\t\tcp++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase '\\\\':\n\t\t\t\t\t\tc = '\\\\';\n\t\t\t\t\t\tcp++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase '`':\n\t\t\t\t\t\tc = '`';\n\t\t\t\t\t\tcp++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase '\\0':\n\t\t\t\t\t\tc = '\\\\'; /* no cp++ */\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tif ((cp[0] >= '0') &&\n\t\t\t\t\t\t    (cp[0] <= '9') &&\n\t\t\t\t\t\t    (cp[1] >= '0') &&\n\t\t\t\t\t\t    (cp[1] <= '9') &&\n\t\t\t\t\t\t    (cp[2] >= '0') &&\n\t\t\t\t\t\t    (cp[2] <= '9') &&\n\t\t\t\t\t\t    (sscanf(cp, \"%3o\", &x) == 1)) {\n\t\t\t\t\t\t\tc = x;\n\t\t\t\t\t\t\tcp += 3;\n\t\t\t\t\t\t} /* else just do '\\\\' */\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\t*p++ = c;\n\t\t\t\tlength++;\n\t\t\t}\n\t\t\tvp->vp_strvalue[length] = '\\0';\n\t\t\tvp->length = length;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_IPADDR:\n\t\t\t/*\n\t\t\t *\tIt's a comparison, not a real IP.\n\t\t\t */\n\t\t\tif ((vp->operator == T_OP_REG_EQ) ||\n\t\t\t    (vp->operator == T_OP_REG_NE)) {\n\t\t\t\tbreak;\n\t\t\t}\n\n\t\t\t/*\n\t\t\t *\tFIXME: complain if hostname\n\t\t\t *\tcannot be resolved, or resolve later!\n\t\t\t */\n\t\t\ts = NULL;\n\t\t\tif ((p = strrchr(value, '+')) != NULL && !p[1]) {\n\t\t\t\tcs = s = strdup(value);\n\t\t\t\tif (!s) return NULL;\n\t\t\t\tp = strrchr(s, '+');\n\t\t\t\t*p = 0;\n\t\t\t\tvp->flags.addport = 1;\n\t\t\t} else {\n\t\t\t\tp = NULL;\n\t\t\t\tcs = value;\n\t\t\t}\n\n\t\t\t{\n\t\t\t\tfr_ipaddr_t ipaddr;\n\n\t\t\t\tif (ip_hton(cs, AF_INET, &ipaddr) < 0) {\n\t\t\t\t\tfr_strerror_printf(\"Failed to find IP address for %s\", cs);\n\t\t\t\t\tfree(s);\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\n\t\t\t\tvp->vp_ipaddr = ipaddr.ipaddr.ip4addr.s_addr;\n\t\t\t}\n\t\t\tfree(s);\n\t\t\tvp->length = 4;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_BYTE:\n\t\t\tvp->length = 1;\n\n\t\t\t/*\n\t\t\t *\tNote that ALL integers are unsigned!\n\t\t\t */\n\t\t\tvp->vp_integer = getint(value, &p);\n\t\t\tif (!*p) {\n\t\t\t\tif (vp->vp_integer > 255) {\n\t\t\t\t\tfr_strerror_printf(\"Byte value \\\"%s\\\" is larger than 255\", value);\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif (check_for_whitespace(p)) break;\n\t\t\tgoto check_for_value;\n\n\t\tcase PW_TYPE_SHORT:\n\t\t\t/*\n\t\t\t *\tNote that ALL integers are unsigned!\n\t\t\t */\n\t\t\tvp->vp_integer = getint(value, &p);\n\t\t\tvp->length = 2;\n\t\t\tif (!*p) {\n\t\t\t\tif (vp->vp_integer > 65535) {\n\t\t\t\t\tfr_strerror_printf(\"Byte value \\\"%s\\\" is larger than 65535\", value);\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif (check_for_whitespace(p)) break;\n\t\t\tgoto check_for_value;\n\n\t\tcase PW_TYPE_INTEGER:\n\t\t\t/*\n\t\t\t *\tNote that ALL integers are unsigned!\n\t\t\t */\n\t\t\tvp->vp_integer = getint(value, &p);\n\t\t\tvp->length = 4;\n\t\t\tif (!*p) break;\n\t\t\tif (check_for_whitespace(p)) break;\n\n\tcheck_for_value:\n\t\t\t/*\n\t\t\t *\tLook for the named value for the given\n\t\t\t *\tattribute.\n\t\t\t */\n\t\t\tif ((dval = dict_valbyname(vp->attribute, value)) == NULL) {\n\t\t\t\tfr_strerror_printf(\"Unknown value %s for attribute %s\",\n\t\t\t\t\t   value, vp->name);\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t\tvp->vp_integer = dval->value;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_DATE:\n\t\t  \t{\n\t\t\t\t/*\n\t\t\t\t *\ttime_t may be 64 bits, whule vp_date\n\t\t\t\t *\tMUST be 32-bits.  We need an\n\t\t\t\t *\tintermediary variable to handle\n\t\t\t\t *\tthe conversions.\n\t\t\t\t */\n\t\t\t\ttime_t date;\n\n\t\t\t\tif (gettime(value, &date) < 0) {\n\t\t\t\t\tfr_strerror_printf(\"failed to parse time string \"\n\t\t\t\t\t\t   \"\\\"%s\\\"\", value);\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\n\t\t\t\tvp->vp_date = date;\n\t\t\t}\n\t\t\tvp->length = 4;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_ABINARY:\n#ifdef ASCEND_BINARY\n\t\t\tif (strncasecmp(value, \"0x\", 2) == 0) {\n\t\t\t\tvp->type = PW_TYPE_OCTETS;\n\t\t\t\tgoto do_octets;\n\t\t\t}\n\n\t\t  \tif (ascend_parse_filter(vp) < 0 ) {\n\t\t\t\tchar buffer[256];\n\n\t\t\t\tsnprintf(buffer, sizeof(buffer), \"failed to parse Ascend binary attribute: %s\", fr_strerror());\n\t\t\t\tfr_strerror_printf(\"%s\", buffer);\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t\tbreak;\n\n\t\t\t/*\n\t\t\t *\tIf Ascend binary is NOT defined,\n\t\t\t *\tthen fall through to raw octets, so that\n\t\t\t *\tthe user can at least make them by hand...\n\t\t\t */\n\tdo_octets:\n#endif\n\t\t\t/* raw octets: 0x01020304... */\n\t\tcase PW_TYPE_OCTETS:\n\t\t\tif (strncasecmp(value, \"0x\", 2) == 0) {\n\t\t\t\tuint8_t *us;\n\t\t\t\tcp = value + 2;\n\t\t\t\tus = vp->vp_octets;\n\t\t\t\tvp->length = 0;\n\n\n\t\t\t\t/*\n\t\t\t\t *\tThere is only one character,\n\t\t\t\t *\tdie.\n\t\t\t\t */\n\t\t\t\tif ((strlen(cp) & 0x01) != 0) {\n\t\t\t\t\tfr_strerror_printf(\"Hex string is not an even length string.\");\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\n\n\t\t\t\twhile (*cp &&\n\t\t\t\t       (vp->length < MAX_STRING_LEN)) {\n\t\t\t\t\tunsigned int tmp;\n\n\t\t\t\t\tif (sscanf(cp, \"%02x\", &tmp) != 1) {\n\t\t\t\t\t\tfr_strerror_printf(\"Non-hex characters at %c%c\", cp[0], cp[1]);\n\t\t\t\t\t\treturn NULL;\n\t\t\t\t\t}\n\n\t\t\t\t\tcp += 2;\n\t\t\t\t\t*(us++) = tmp;\n\t\t\t\t\tvp->length++;\n\t\t\t\t}\n\t\t\t}\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_IFID:\n\t\t\tif (ifid_aton(value, (void *) &vp->vp_ifid) == NULL) {\n\t\t\t\tfr_strerror_printf(\"failed to parse interface-id \"\n\t\t\t\t\t   \"string \\\"%s\\\"\", value);\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t\tvp->length = 8;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_IPV6ADDR:\n\t\t\t{\n\t\t\t\tfr_ipaddr_t ipaddr;\n\n\t\t\t\tif (ip_hton(value, AF_INET6, &ipaddr) < 0) {\n\t\t\t\t\tchar buffer[1024];\n\n\t\t\t\t\tstrlcpy(buffer, fr_strerror(), sizeof(buffer));\n\n\t\t\t\t\tfr_strerror_printf(\"failed to parse IPv6 address \"\n                                                           \"string \\\"%s\\\": %s\", value, buffer);\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\t\t\t\tvp->vp_ipv6addr = ipaddr.ipaddr.ip6addr;\n\t\t\t\tvp->length = 16; /* length of IPv6 address */\n\t\t\t}\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_IPV6PREFIX:\n\t\t\tp = strchr(value, '/');\n\t\t\tif (!p || ((p - value) >= 256)) {\n\t\t\t\tfr_strerror_printf(\"invalid IPv6 prefix \"\n\t\t\t\t\t   \"string \\\"%s\\\"\", value);\n\t\t\t\treturn NULL;\n\t\t\t} else {\n\t\t\t\tunsigned int prefix;\n\t\t\t\tchar buffer[256], *eptr;\n\n\t\t\t\tmemcpy(buffer, value, p - value);\n\t\t\t\tbuffer[p - value] = '\\0';\n\n\t\t\t\tif (inet_pton(AF_INET6, buffer, vp->vp_octets + 2) <= 0) {\n\t\t\t\t\tfr_strerror_printf(\"failed to parse IPv6 address \"\n\t\t\t\t\t\t   \"string \\\"%s\\\"\", value);\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\n\t\t\t\tprefix = strtoul(p + 1, &eptr, 10);\n\t\t\t\tif ((prefix > 128) || *eptr) {\n\t\t\t\t\tfr_strerror_printf(\"failed to parse IPv6 address \"\n\t\t\t\t\t\t   \"string \\\"%s\\\"\", value);\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\t\t\t\tvp->vp_octets[1] = prefix;\n\t\t\t}\n\t\t\tvp->vp_octets[0] = '\\0';\n\t\t\tvp->length = 16 + 2;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_ETHERNET:\n\t\t\t{\n\t\t\t\tconst char *c1, *c2;\n\n\t\t\t\tlength = 0;\n\t\t\t\tcp = value;\n\t\t\t\twhile (*cp) {\n\t\t\t\t\tif (cp[1] == ':') {\n\t\t\t\t\t\tc1 = hextab;\n\t\t\t\t\t\tc2 = memchr(hextab, tolower((int) cp[0]), 16);\n\t\t\t\t\t\tcp += 2;\n\t\t\t\t\t} else if ((cp[1] != '\\0') &&\n\t\t\t\t\t\t   ((cp[2] == ':') ||\n\t\t\t\t\t\t    (cp[2] == '\\0'))) {\n\t\t\t\t\t\t   c1 = memchr(hextab, tolower((int) cp[0]), 16);\n\t\t\t\t\t\t   c2 = memchr(hextab, tolower((int) cp[1]), 16);\n\t\t\t\t\t\t   cp += 2;\n\t\t\t\t\t\t   if (*cp == ':') cp++;\n\t\t\t\t\t} else {\n\t\t\t\t\t\tc1 = c2 = NULL;\n\t\t\t\t\t}\n\t\t\t\t\tif (!c1 || !c2 || (length >= sizeof(vp->vp_ether))) {\n\t\t\t\t\t\tfr_strerror_printf(\"failed to parse Ethernet address \\\"%s\\\"\", value);\n\t\t\t\t\t\treturn NULL;\n\t\t\t\t\t}\n\t\t\t\t\tvp->vp_ether[length] = ((c1-hextab)<<4) + (c2-hextab);\n\t\t\t\t\tlength++;\n\t\t\t\t}\n\t\t\t}\n\t\t\tvp->length = 6;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_COMBO_IP:\n\t\t\tif (inet_pton(AF_INET6, value, vp->vp_strvalue) > 0) {\n\t\t\t\tvp->type = PW_TYPE_IPV6ADDR;\n\t\t\t\tvp->length = 16; /* length of IPv6 address */\n\t\t\t\tvp->vp_strvalue[vp->length] = '\\0';\n\n\t\t\t} else {\n\t\t\t\tfr_ipaddr_t ipaddr;\n\n\t\t\t\tif (ip_hton(value, AF_INET, &ipaddr) < 0) {\n\t\t\t\t\tfr_strerror_printf(\"Failed to find IPv4 address for %s\", value);\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\n\t\t\t\tvp->type = PW_TYPE_IPADDR;\n\t\t\t\tvp->vp_ipaddr = ipaddr.ipaddr.ip4addr.s_addr;\n\t\t\t\tvp->length = 4;\n\t\t\t}\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_SIGNED: /* Damned code for 1 WiMAX attribute */\n\t\t\tvp->vp_signed = (int32_t) strtol(value, &p, 10);\n\t\t\tvp->length = 4;\n\t\t\tbreak;\n\n\t\tcase PW_TYPE_TLV: /* don't use this! */\n\t\t\tif (strncasecmp(value, \"0x\", 2) != 0) {\n\t\t\t\tfr_strerror_printf(\"Invalid TLV specification\");\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t\tlength = strlen(value + 2) / 2;\n\t\t\tif (vp->length < length) {\n\t\t\t\tfree(vp->vp_tlv);\n\t\t\t\tvp->vp_tlv = NULL;\n\t\t\t}\n\t\t\tvp->vp_tlv = malloc(length);\n\t\t\tif (!vp->vp_tlv) {\n\t\t\t\tfr_strerror_printf(\"No memory\");\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t\tif (fr_hex2bin(value + 2, vp->vp_tlv,\n\t\t\t\t       length) != length) {\n\t\t\t\tfr_strerror_printf(\"Invalid hex data in TLV\");\n\t\t\t\treturn NULL;\n\t\t\t}\n\t\t\tvp->length = length;\n\t\t\tbreak;\n\n\t\t\t/*\n\t\t\t *  Anything else.\n\t\t\t */\n\t\tdefault:\n\t\t\tfr_strerror_printf(\"unknown attribute type %d\", vp->type);\n\t\t\treturn NULL;\n\t}\n\n\treturn vp;\n}",
+            2
+        ],
+        [
+            "src/lib/valuepair.c",
+            "FR_VP_NAME_PAD",
+            "#define FR_VP_NAME_PAD (32) /* <=== src/lib/valuepair.c:58:58:FR_VP_NAME_PAD:0 */ ",
+            3
+        ]
+    ],
+    "globalVars": [
+        "static const char *[6][2] cert_attr_names"
+    ],
+    "importContext": [
+        "#include <openssl/evp.h>",
+        "#include <freeradius-devel/autoconf.h>",
+        "#include \"config.h\"",
+        "#include <openssl/x509.h>",
+        "#include <sys/stat.h>",
+        "#include <freeradius-devel/ident.h>",
+        "#include \"rlm_eap_tls.h\"",
+        "#include <openssl/ocsp.h>",
+        "#include <openssl/rand.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct eap_tls_conf {\n\tchar\t\t*private_key_password;\n\tchar\t\t*private_key_file;\n\tchar\t\t*certificate_file;\n\tchar\t\t*random_file;\n\tchar\t\t*ca_path;\n\tchar\t\t*ca_file;\n\tchar\t\t*dh_file;\n\tchar\t\t*rsa_file;\n\tchar\t\t*make_cert_command;\n\tint\t\trsa_key;\n\tint\t\tdh_key;\n\tint\t\trsa_key_length;\n\tint\t\tdh_key_length;\n\tint\t\tverify_depth;\n\tint\t\tfile_type;\n\tint\t\tinclude_length;\n\n\t/*\n\t *\tAlways < 4096 (due to radius limit), 0 by default = 2048\n\t */\n\tint\t\tfragment_size;\n\tint\t\tcheck_crl;\n\tint\t\tallow_expired_crl;\n\tchar\t\t*check_cert_cn;\n\tchar\t\t*cipher_list;\n\tchar\t\t*check_cert_issuer;\n\n        int     \tsession_cache_enable;\n        int     \tsession_timeout;\n        int     \tsession_cache_size;\n\tchar\t\t*session_id_name;\n\tchar\t\tsession_context_id[SSL_MAX_SSL_SESSION_ID_LENGTH];\n\ttime_t\t\tsession_last_flushed;\n\n\tchar\t\t*verify_tmp_dir;\n\tchar\t\t*verify_client_cert_cmd;\n\n#ifdef HAVE_OPENSSL_OCSP_H\n\t/*\n\t * OCSP Configuration\n\t */\n\tint\t\tocsp_enable;\n\tint\t\tocsp_override_url;\n\tchar\t\t*ocsp_url;\n\tint\t\tocsp_use_nonce;\n\tint\t\tocsp_timeout;\n\tint\t\tocsp_softfail;\n#endif\n\n#if OPENSSL_VERSION_NUMBER >= 0x0090800fL\n#ifndef OPENSSL_NO_ECDH\n\tchar\t\t*ecdh_curve;\n#endif\n#endif\n} EAP_TLS_CONF;",
+            "EAP_TLS_CONF"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c": [
+            537,
+            550,
+            558,
+            559,
+            560,
+            562,
+            568,
+            587,
+            593,
+            610,
+            611,
+            612,
+            613,
+            614,
+            615,
+            625,
+            626,
+            627,
+            633,
+            634,
+            635,
+            644,
+            645,
+            646,
+            697,
+            698,
+            705,
+            733,
+            734,
+            735,
+            736,
+            744,
+            745,
+            746,
+            747,
+            749,
+            751,
+            752,
+            753,
+            754,
+            769,
+            775,
+            779,
+            797,
+            798,
+            799,
+            800,
+            805,
+            806,
+            807,
+            808,
+            809,
+            810,
+            811,
+            812,
+            814,
+            818,
+            829,
+            830,
+            831,
+            832,
+            833,
+            835
+        ]
+    },
+    "visitedLines_before": {
+        "src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c": [
+            537,
+            550,
+            558,
+            559,
+            560,
+            562,
+            568,
+            587,
+            593,
+            610,
+            611,
+            612,
+            613,
+            614,
+            615,
+            625,
+            626,
+            627,
+            633,
+            634,
+            635,
+            644,
+            645,
+            646,
+            697,
+            698,
+            705,
+            733,
+            734,
+            735,
+            736,
+            744,
+            745,
+            746,
+            747,
+            749,
+            751,
+            752,
+            753,
+            754,
+            769,
+            775,
+            779,
+            797,
+            798,
+            799,
+            800,
+            805,
+            806,
+            807,
+            808,
+            809,
+            810,
+            811,
+            812,
+            814,
+            818,
+            829,
+            830,
+            831,
+            832,
+            833,
+            835
+        ]
+    },
+    "visitedParams": {
+        "src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c": [
+            [
+                "X509_STORE_CTX *ctx",
+                "cbtls_verify"
+            ],
+            [
+                "int ok",
+                "cbtls_verify"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c",
+            "cbtls_verify",
+            "static int cbtls_verify(int ok, X509_STORE_CTX *ctx) /* <=== cbtls_verify */ \n{\n\tchar subject[1024]; /* Used for the subject name */\n\tchar issuer[1024]; /* Used for the issuer name */\n\tchar common_name[1024];\n\tchar cn_str[1024];\n\tchar buf[64];\n\tEAP_HANDLER *handler = NULL;\n\tX509 *client_cert;\n\tX509 *issuer_cert;\n\tSSL *ssl;\n\tint err, depth, lookup, loc;\n\tEAP_TLS_CONF *conf;\n\tint my_ok = ok;\n\tREQUEST *request;\n\tASN1_INTEGER *sn = NULL;\n\tASN1_TIME *asn_time = NULL;\n#ifdef HAVE_OPENSSL_OCSP_H\n\tX509_STORE *ocsp_store = NULL;\n#endif\n\n\tclient_cert = X509_STORE_CTX_get_current_cert(ctx);\n\terr = X509_STORE_CTX_get_error(ctx);\n\tdepth = X509_STORE_CTX_get_error_depth(ctx);\n\n\tlookup = depth;\n\n\t/*\n\t *\tLog client/issuing cert.  If there's an error, log\n\t *\tissuing cert.\n\t */\n\tif ((lookup > 1) && !my_ok) lookup = 1;\n\n\t/*\n\t * Retrieve the pointer to the SSL of the connection currently treated\n\t * and the application specific data stored into the SSL object.\n\t */\n\tssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());\n\thandler = (EAP_HANDLER *)SSL_get_ex_data(ssl, 0);\n\trequest = handler->request;\n\tconf = (EAP_TLS_CONF *)SSL_get_ex_data(ssl, 1);\n#ifdef HAVE_OPENSSL_OCSP_H\n\tocsp_store = (X509_STORE *)SSL_get_ex_data(ssl, 2);\n#endif\n\n\n\t/*\n\t *\tGet the Serial Number\n\t */\n\tbuf[0] = '\\0';\n\tsn = X509_get_serialNumber(client_cert);\n\n\t/*\n\t *\tFor this next bit, we create the attributes *only* if\n\t *\twe're at the client or issuing certificate.\n\t */\n\tif ((lookup <= 1) && sn && (sn->length < (sizeof(buf) / 2))) {\n\t\tchar *p = buf;\n\t\tint i;\n\n\t\tfor (i = 0; i < sn->length; i++) {\n\t\t\tsprintf(p, \"%02x\", (unsigned int)sn->data[i]);\n\t\t\tp += 2;\n\t\t}\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_SERIAL][lookup], buf, T_OP_SET));\n\t}\n\n\n\t/*\n\t *\tGet the Expiration Date\n\t */\n\tbuf[0] = '\\0';\n\tasn_time = X509_get_notAfter(client_cert);\n\tif ((lookup <= 1) && asn_time && (asn_time->length < sizeof(buf))) {\n\t\tmemcpy(buf, (char*) asn_time->data, asn_time->length);\n\t\tbuf[asn_time->length] = '\\0';\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_EXPIRATION][lookup], buf, T_OP_SET));\n\t}\n\n\t/*\n\t *\tGet the Subject & Issuer\n\t */\n\tsubject[0] = issuer[0] = '\\0';\n\tX509_NAME_oneline(X509_get_subject_name(client_cert), subject,\n\t\t\t  sizeof(subject));\n\tsubject[sizeof(subject) - 1] = '\\0';\n\tif ((lookup <= 1) && subject[0] && (strlen(subject) < MAX_STRING_LEN)) {\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_SUBJECT][lookup], subject, T_OP_SET));\n\t}\n\n\tX509_NAME_oneline(X509_get_issuer_name(ctx->current_cert), issuer,\n\t\t\t  sizeof(issuer));\n\tissuer[sizeof(issuer) - 1] = '\\0';\n\tif ((lookup <= 1) && issuer[0] && (strlen(issuer) < MAX_STRING_LEN)) {\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_ISSUER][lookup], issuer, T_OP_SET));\n\t}\n\n\t/*\n\t *\tGet the Common Name, if there is a subject.\n\t */\n\tX509_NAME_get_text_by_NID(X509_get_subject_name(client_cert),\n\t\t\t\t  NID_commonName, common_name, sizeof(common_name));\n\tcommon_name[sizeof(common_name) - 1] = '\\0';\n\tif ((lookup <= 1) && common_name[0] && subject[0] && (strlen(common_name) < MAX_STRING_LEN)) {\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_CN][lookup], common_name, T_OP_SET));\n\t}\n\n#ifdef GEN_EMAIL\n\t/*\n\t *\tGet the RFC822 Subject Alternative Name\n\t */\n\tloc = X509_get_ext_by_NID(client_cert, NID_subject_alt_name, 0);\n\tif (lookup <= 1 && loc >= 0) {\n\t\tX509_EXTENSION *ext = NULL;\n\t\tGENERAL_NAMES *names = NULL;\n\t\tint i;\n\n\t\tif ((ext = X509_get_ext(client_cert, loc)) &&\n\t\t    (names = X509V3_EXT_d2i(ext))) {\n\t\t\tfor (i = 0; i < sk_GENERAL_NAME_num(names); i++) {\n\t\t\t\tGENERAL_NAME *name = sk_GENERAL_NAME_value(names, i);\n\n\t\t\t\tswitch (name->type) {\n\t\t\t\tcase GEN_EMAIL:\n\t\t\t\t\tif (ASN1_STRING_length(name->d.rfc822Name) >= MAX_STRING_LEN)\n\t\t\t\t\t\tbreak;\n\n\t\t\t\t\tpairadd(&handler->certs,\n\t\t\t\t\t\tpairmake(cert_attr_names[EAPTLS_SAN_EMAIL][lookup],\n\t\t\t\t\t\t\t ASN1_STRING_data(name->d.rfc822Name), T_OP_SET));\n\t\t\t\t\tbreak;\n\t\t\t\tdefault:\n\t\t\t\t\t/* XXX TODO handle other SAN types */\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif (names != NULL)\n\t\t\tsk_GENERAL_NAME_free(names);\n\t}\n#endif\t/* GEN_EMAIL */\n\n\t/*\n\t *\tIf the CRL has expired, that might still be OK.\n\t */\n\tif (!my_ok &&\n\t    (conf->allow_expired_crl) &&\n\t    (err == X509_V_ERR_CRL_HAS_EXPIRED)) {\n\t\tmy_ok = 1;\n\t\tX509_STORE_CTX_set_error( ctx, 0 );\n\t}\n\n\tif (!my_ok) {\n\t\tconst char *p = X509_verify_cert_error_string(err);\n\t\tradlog(L_ERR,\"--> verify error:num=%d:%s\\n\",err, p);\n\t\tradius_pairmake(request, &request->packet->vps,\n\t\t\t\t\"Module-Failure-Message\", p, T_OP_SET);\n\t\treturn my_ok;\n\t}\n\n\tswitch (ctx->error) {\n\n\tcase X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT:\n\t\tradlog(L_ERR, \"issuer= %s\\n\", issuer);\n\t\tbreak;\n\tcase X509_V_ERR_CERT_NOT_YET_VALID:\n\tcase X509_V_ERR_ERROR_IN_CERT_NOT_BEFORE_FIELD:\n\t\tradlog(L_ERR, \"notBefore=\");\n#if 0\n\t\tASN1_TIME_print(bio_err, X509_get_notBefore(ctx->current_cert));\n#endif\n\t\tbreak;\n\tcase X509_V_ERR_CERT_HAS_EXPIRED:\n\tcase X509_V_ERR_ERROR_IN_CERT_NOT_AFTER_FIELD:\n\t\tradlog(L_ERR, \"notAfter=\");\n#if 0\n\t\tASN1_TIME_print(bio_err, X509_get_notAfter(ctx->current_cert));\n#endif\n\t\tbreak;\n\t}\n\n\t/*\n\t *\tIf we're at the actual client cert, apply additional\n\t *\tchecks.\n\t */\n\tif (depth == 0) {\n\t\t/*\n\t\t *\tIf the conf tells us to, check cert issuer\n\t\t *\tagainst the specified value and fail\n\t\t *\tverification if they don't match.\n\t\t */\n\t\tif (conf->check_cert_issuer &&\n\t\t    (strcmp(issuer, conf->check_cert_issuer) != 0)) {\n\t\t\tradlog(L_AUTH, \"rlm_eap_tls: Certificate issuer (%s) does not match specified value (%s)!\", issuer, conf->check_cert_issuer);\n \t\t\tmy_ok = 0;\n \t\t}\n\n\t\t/*\n\t\t *\tIf the conf tells us to, check the CN in the\n\t\t *\tcert against xlat'ed value, but only if the\n\t\t *\tprevious checks passed.\n\t\t */\n\t\tif (my_ok && conf->check_cert_cn) {\n\t\t\tif (!radius_xlat(cn_str, sizeof(cn_str), conf->check_cert_cn, handler->request, NULL)) {\n\t\t\t\tradlog(L_ERR, \"rlm_eap_tls (%s): xlat failed.\",\n\t\t\t\t       conf->check_cert_cn);\n\t\t\t\t/* if this fails, fail the verification */\n\t\t\t\tmy_ok = 0;\n\t\t\t} else {\n\t\t\t\tRDEBUG2(\"checking certificate CN (%s) with xlat'ed value (%s)\", common_name, cn_str);\n\t\t\t\tif (strcmp(cn_str, common_name) != 0) {\n\t\t\t\t\tradlog(L_AUTH, \"rlm_eap_tls: Certificate CN (%s) does not match specified value (%s)!\", common_name, cn_str);\n\t\t\t\t\tmy_ok = 0;\n\t\t\t\t}\n\t\t\t}\n\t\t} /* check_cert_cn */\n\n#ifdef HAVE_OPENSSL_OCSP_H\n\t\tif (my_ok && conf->ocsp_enable){\n\t\t\tRDEBUG2(\"--> Starting OCSP Request\");\n\t\t\tif(X509_STORE_CTX_get1_issuer(&issuer_cert, ctx, client_cert)!=1) {\n\t\t\t\tradlog(L_ERR, \"Error: Couldn't get issuer_cert for %s\", common_name);\n\t\t\t}\n\t\t\tmy_ok = ocsp_check(ocsp_store, issuer_cert, client_cert, conf);\n\t\t}\n#endif\n\n\t\twhile (conf->verify_client_cert_cmd) {\n\t\t\tchar filename[256];\n\t\t\tint fd;\n\t\t\tFILE *fp;\n\n\t\t\tsnprintf(filename, sizeof(filename), \"%s/%s.client.XXXXXXXX\",\n\t\t\t\t conf->verify_tmp_dir, progname);\n\t\t\tfd = mkstemp(filename);\n\t\t\tif (fd < 0) {\n\t\t\t\tRDEBUG(\"Failed creating file in %s: %s\",\n\t\t\t\t       conf->verify_tmp_dir, strerror(errno));\n\t\t\t\tbreak;\t\t\t\t       \n\t\t\t}\n\n\t\t\tfp = fdopen(fd, \"w\");\n\t\t\tif (!fp) {\n\t\t\t\tRDEBUG(\"Failed opening file %s: %s\",\n\t\t\t\t       filename, strerror(errno));\n\t\t\t\tbreak;\n\t\t\t}\n\n\t\t\tif (!PEM_write_X509(fp, client_cert)) {\n\t\t\t\tfclose(fp);\n\t\t\t\tRDEBUG(\"Failed writing certificate to file\");\n\t\t\t\tgoto do_unlink;\n\t\t\t}\n\t\t\tfclose(fp);\n\n\t\t\tif (!radius_pairmake(request, &request->packet->vps,\n\t\t\t\t\t     \"TLS-Client-Cert-Filename\",\n\t\t\t\t\t     filename, T_OP_SET)) {\n\t\t\t\tRDEBUG(\"Failed creating TLS-Client-Cert-Filename\");\n\t\t\t\t\n\t\t\t\tgoto do_unlink;\n\t\t\t}\n\n\t\t\tRDEBUG(\"Verifying client certificate: %s\",\n\t\t\t       conf->verify_client_cert_cmd);\n\t\t\tif (radius_exec_program(conf->verify_client_cert_cmd,\n\t\t\t\t\t\trequest, 1, NULL, 0, \n\t\t\t\t\t\trequest->packet->vps,\n\t\t\t\t\t\tNULL, 1) != 0) {\n\t\t\t\tradlog(L_AUTH, \"rlm_eap_tls: Certificate CN (%s) fails external verification!\", common_name);\n\t\t\t\tmy_ok = 0;\n\t\t\t} else {\n\t\t\t\tRDEBUG(\"Client certificate CN %s passed external validation\", common_name);\n\t\t\t}\n\n\t\tdo_unlink:\n\t\t\tunlink(filename);\n\t\t\tbreak;\n\t\t}\n\n\n\t} /* depth == 0 */\n\n\tif (debug_flag > 0) {\n\t\tRDEBUG2(\"chain-depth=%d, \", depth);\n\t\tRDEBUG2(\"error=%d\", err);\n\n\t\tRDEBUG2(\"--> User-Name = %s\", handler->identity);\n\t\tRDEBUG2(\"--> BUF-Name = %s\", common_name);\n\t\tRDEBUG2(\"--> subject = %s\", subject);\n\t\tRDEBUG2(\"--> issuer  = %s\", issuer);\n\t\tRDEBUG2(\"--> verify return:%d\", my_ok);\n\t}\n\treturn my_ok;\n}",
+            537
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/modules/rlm_eap/types/rlm_eap_tls/rlm_eap_tls.c",
+            "cbtls_verify",
+            "static int cbtls_verify(int ok, X509_STORE_CTX *ctx) /* <=== cbtls_verify */ \n{\n\tchar subject[1024]; /* Used for the subject name */\n\tchar issuer[1024]; /* Used for the issuer name */\n\tchar common_name[1024];\n\tchar cn_str[1024];\n\tchar buf[64];\n\tEAP_HANDLER *handler = NULL;\n\tX509 *client_cert;\n\tX509 *issuer_cert;\n\tSSL *ssl;\n\tint err, depth, lookup, loc;\n\tEAP_TLS_CONF *conf;\n\tint my_ok = ok;\n\tREQUEST *request;\n\tASN1_INTEGER *sn = NULL;\n\tASN1_TIME *asn_time = NULL;\n#ifdef HAVE_OPENSSL_OCSP_H\n\tX509_STORE *ocsp_store = NULL;\n#endif\n\n\tclient_cert = X509_STORE_CTX_get_current_cert(ctx);\n\terr = X509_STORE_CTX_get_error(ctx);\n\tdepth = X509_STORE_CTX_get_error_depth(ctx);\n\n\tlookup = depth;\n\n\t/*\n\t *\tLog client/issuing cert.  If there's an error, log\n\t *\tissuing cert.\n\t */\n\tif ((lookup > 1) && !my_ok) lookup = 1;\n\n\t/*\n\t * Retrieve the pointer to the SSL of the connection currently treated\n\t * and the application specific data stored into the SSL object.\n\t */\n\tssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());\n\thandler = (EAP_HANDLER *)SSL_get_ex_data(ssl, 0);\n\trequest = handler->request;\n\tconf = (EAP_TLS_CONF *)SSL_get_ex_data(ssl, 1);\n#ifdef HAVE_OPENSSL_OCSP_H\n\tocsp_store = (X509_STORE *)SSL_get_ex_data(ssl, 2);\n#endif\n\n\n\t/*\n\t *\tGet the Serial Number\n\t */\n\tbuf[0] = '\\0';\n\tsn = X509_get_serialNumber(client_cert);\n\n\t/*\n\t *\tFor this next bit, we create the attributes *only* if\n\t *\twe're at the client or issuing certificate.\n\t */\n\tif ((lookup <= 1) && sn && (sn->length < (sizeof(buf) / 2))) {\n\t\tchar *p = buf;\n\t\tint i;\n\n\t\tfor (i = 0; i < sn->length; i++) {\n\t\t\tsprintf(p, \"%02x\", (unsigned int)sn->data[i]);\n\t\t\tp += 2;\n\t\t}\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_SERIAL][lookup], buf, T_OP_SET));\n\t}\n\n\n\t/*\n\t *\tGet the Expiration Date\n\t */\n\tbuf[0] = '\\0';\n\tasn_time = X509_get_notAfter(client_cert);\n\tif ((lookup <= 1) && asn_time && (asn_time->length < MAX_STRING_LEN)) {\n\t\tmemcpy(buf, (char*) asn_time->data, asn_time->length);\n\t\tbuf[asn_time->length] = '\\0';\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_EXPIRATION][lookup], buf, T_OP_SET));\n\t}\n\n\t/*\n\t *\tGet the Subject & Issuer\n\t */\n\tsubject[0] = issuer[0] = '\\0';\n\tX509_NAME_oneline(X509_get_subject_name(client_cert), subject,\n\t\t\t  sizeof(subject));\n\tsubject[sizeof(subject) - 1] = '\\0';\n\tif ((lookup <= 1) && subject[0] && (strlen(subject) < MAX_STRING_LEN)) {\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_SUBJECT][lookup], subject, T_OP_SET));\n\t}\n\n\tX509_NAME_oneline(X509_get_issuer_name(ctx->current_cert), issuer,\n\t\t\t  sizeof(issuer));\n\tissuer[sizeof(issuer) - 1] = '\\0';\n\tif ((lookup <= 1) && issuer[0] && (strlen(issuer) < MAX_STRING_LEN)) {\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_ISSUER][lookup], issuer, T_OP_SET));\n\t}\n\n\t/*\n\t *\tGet the Common Name, if there is a subject.\n\t */\n\tX509_NAME_get_text_by_NID(X509_get_subject_name(client_cert),\n\t\t\t\t  NID_commonName, common_name, sizeof(common_name));\n\tcommon_name[sizeof(common_name) - 1] = '\\0';\n\tif ((lookup <= 1) && common_name[0] && subject[0] && (strlen(common_name) < MAX_STRING_LEN)) {\n\t\tpairadd(&handler->certs,\n\t\t\tpairmake(cert_attr_names[EAPTLS_CN][lookup], common_name, T_OP_SET));\n\t}\n\n#ifdef GEN_EMAIL\n\t/*\n\t *\tGet the RFC822 Subject Alternative Name\n\t */\n\tloc = X509_get_ext_by_NID(client_cert, NID_subject_alt_name, 0);\n\tif (lookup <= 1 && loc >= 0) {\n\t\tX509_EXTENSION *ext = NULL;\n\t\tGENERAL_NAMES *names = NULL;\n\t\tint i;\n\n\t\tif ((ext = X509_get_ext(client_cert, loc)) &&\n\t\t    (names = X509V3_EXT_d2i(ext))) {\n\t\t\tfor (i = 0; i < sk_GENERAL_NAME_num(names); i++) {\n\t\t\t\tGENERAL_NAME *name = sk_GENERAL_NAME_value(names, i);\n\n\t\t\t\tswitch (name->type) {\n\t\t\t\tcase GEN_EMAIL:\n\t\t\t\t\tif (ASN1_STRING_length(name->d.rfc822Name) >= MAX_STRING_LEN)\n\t\t\t\t\t\tbreak;\n\n\t\t\t\t\tpairadd(&handler->certs,\n\t\t\t\t\t\tpairmake(cert_attr_names[EAPTLS_SAN_EMAIL][lookup],\n\t\t\t\t\t\t\t ASN1_STRING_data(name->d.rfc822Name), T_OP_SET));\n\t\t\t\t\tbreak;\n\t\t\t\tdefault:\n\t\t\t\t\t/* XXX TODO handle other SAN types */\n\t\t\t\t\tbreak;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif (names != NULL)\n\t\t\tsk_GENERAL_NAME_free(names);\n\t}\n#endif\t/* GEN_EMAIL */\n\n\t/*\n\t *\tIf the CRL has expired, that might still be OK.\n\t */\n\tif (!my_ok &&\n\t    (conf->allow_expired_crl) &&\n\t    (err == X509_V_ERR_CRL_HAS_EXPIRED)) {\n\t\tmy_ok = 1;\n\t\tX509_STORE_CTX_set_error( ctx, 0 );\n\t}\n\n\tif (!my_ok) {\n\t\tconst char *p = X509_verify_cert_error_string(err);\n\t\tradlog(L_ERR,\"--> verify error:num=%d:%s\\n\",err, p);\n\t\tradius_pairmake(request, &request->packet->vps,\n\t\t\t\t\"Module-Failure-Message\", p, T_OP_SET);\n\t\treturn my_ok;\n\t}\n\n\tswitch (ctx->error) {\n\n\tcase X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT:\n\t\tradlog(L_ERR, \"issuer= %s\\n\", issuer);\n\t\tbreak;\n\tcase X509_V_ERR_CERT_NOT_YET_VALID:\n\tcase X509_V_ERR_ERROR_IN_CERT_NOT_BEFORE_FIELD:\n\t\tradlog(L_ERR, \"notBefore=\");\n#if 0\n\t\tASN1_TIME_print(bio_err, X509_get_notBefore(ctx->current_cert));\n#endif\n\t\tbreak;\n\tcase X509_V_ERR_CERT_HAS_EXPIRED:\n\tcase X509_V_ERR_ERROR_IN_CERT_NOT_AFTER_FIELD:\n\t\tradlog(L_ERR, \"notAfter=\");\n#if 0\n\t\tASN1_TIME_print(bio_err, X509_get_notAfter(ctx->current_cert));\n#endif\n\t\tbreak;\n\t}\n\n\t/*\n\t *\tIf we're at the actual client cert, apply additional\n\t *\tchecks.\n\t */\n\tif (depth == 0) {\n\t\t/*\n\t\t *\tIf the conf tells us to, check cert issuer\n\t\t *\tagainst the specified value and fail\n\t\t *\tverification if they don't match.\n\t\t */\n\t\tif (conf->check_cert_issuer &&\n\t\t    (strcmp(issuer, conf->check_cert_issuer) != 0)) {\n\t\t\tradlog(L_AUTH, \"rlm_eap_tls: Certificate issuer (%s) does not match specified value (%s)!\", issuer, conf->check_cert_issuer);\n \t\t\tmy_ok = 0;\n \t\t}\n\n\t\t/*\n\t\t *\tIf the conf tells us to, check the CN in the\n\t\t *\tcert against xlat'ed value, but only if the\n\t\t *\tprevious checks passed.\n\t\t */\n\t\tif (my_ok && conf->check_cert_cn) {\n\t\t\tif (!radius_xlat(cn_str, sizeof(cn_str), conf->check_cert_cn, handler->request, NULL)) {\n\t\t\t\tradlog(L_ERR, \"rlm_eap_tls (%s): xlat failed.\",\n\t\t\t\t       conf->check_cert_cn);\n\t\t\t\t/* if this fails, fail the verification */\n\t\t\t\tmy_ok = 0;\n\t\t\t} else {\n\t\t\t\tRDEBUG2(\"checking certificate CN (%s) with xlat'ed value (%s)\", common_name, cn_str);\n\t\t\t\tif (strcmp(cn_str, common_name) != 0) {\n\t\t\t\t\tradlog(L_AUTH, \"rlm_eap_tls: Certificate CN (%s) does not match specified value (%s)!\", common_name, cn_str);\n\t\t\t\t\tmy_ok = 0;\n\t\t\t\t}\n\t\t\t}\n\t\t} /* check_cert_cn */\n\n#ifdef HAVE_OPENSSL_OCSP_H\n\t\tif (my_ok && conf->ocsp_enable){\n\t\t\tRDEBUG2(\"--> Starting OCSP Request\");\n\t\t\tif(X509_STORE_CTX_get1_issuer(&issuer_cert, ctx, client_cert)!=1) {\n\t\t\t\tradlog(L_ERR, \"Error: Couldn't get issuer_cert for %s\", common_name);\n\t\t\t}\n\t\t\tmy_ok = ocsp_check(ocsp_store, issuer_cert, client_cert, conf);\n\t\t}\n#endif\n\n\t\twhile (conf->verify_client_cert_cmd) {\n\t\t\tchar filename[256];\n\t\t\tint fd;\n\t\t\tFILE *fp;\n\n\t\t\tsnprintf(filename, sizeof(filename), \"%s/%s.client.XXXXXXXX\",\n\t\t\t\t conf->verify_tmp_dir, progname);\n\t\t\tfd = mkstemp(filename);\n\t\t\tif (fd < 0) {\n\t\t\t\tRDEBUG(\"Failed creating file in %s: %s\",\n\t\t\t\t       conf->verify_tmp_dir, strerror(errno));\n\t\t\t\tbreak;\t\t\t\t       \n\t\t\t}\n\n\t\t\tfp = fdopen(fd, \"w\");\n\t\t\tif (!fp) {\n\t\t\t\tRDEBUG(\"Failed opening file %s: %s\",\n\t\t\t\t       filename, strerror(errno));\n\t\t\t\tbreak;\n\t\t\t}\n\n\t\t\tif (!PEM_write_X509(fp, client_cert)) {\n\t\t\t\tfclose(fp);\n\t\t\t\tRDEBUG(\"Failed writing certificate to file\");\n\t\t\t\tgoto do_unlink;\n\t\t\t}\n\t\t\tfclose(fp);\n\n\t\t\tif (!radius_pairmake(request, &request->packet->vps,\n\t\t\t\t\t     \"TLS-Client-Cert-Filename\",\n\t\t\t\t\t     filename, T_OP_SET)) {\n\t\t\t\tRDEBUG(\"Failed creating TLS-Client-Cert-Filename\");\n\t\t\t\t\n\t\t\t\tgoto do_unlink;\n\t\t\t}\n\n\t\t\tRDEBUG(\"Verifying client certificate: %s\",\n\t\t\t       conf->verify_client_cert_cmd);\n\t\t\tif (radius_exec_program(conf->verify_client_cert_cmd,\n\t\t\t\t\t\trequest, 1, NULL, 0, \n\t\t\t\t\t\trequest->packet->vps,\n\t\t\t\t\t\tNULL, 1) != 0) {\n\t\t\t\tradlog(L_AUTH, \"rlm_eap_tls: Certificate CN (%s) fails external verification!\", common_name);\n\t\t\t\tmy_ok = 0;\n\t\t\t} else {\n\t\t\t\tRDEBUG(\"Client certificate CN %s passed external validation\", common_name);\n\t\t\t}\n\n\t\tdo_unlink:\n\t\t\tunlink(filename);\n\t\t\tbreak;\n\t\t}\n\n\n\t} /* depth == 0 */\n\n\tif (debug_flag > 0) {\n\t\tRDEBUG2(\"chain-depth=%d, \", depth);\n\t\tRDEBUG2(\"error=%d\", err);\n\n\t\tRDEBUG2(\"--> User-Name = %s\", handler->identity);\n\t\tRDEBUG2(\"--> BUF-Name = %s\", common_name);\n\t\tRDEBUG2(\"--> subject = %s\", subject);\n\t\tRDEBUG2(\"--> issuer  = %s\", issuer);\n\t\tRDEBUG2(\"--> verify return:%d\", my_ok);\n\t}\n\treturn my_ok;\n}",
+            537
+        ]
+    ]
+}

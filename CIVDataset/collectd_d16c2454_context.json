@@ -1,0 +1,426 @@
+{
+    "calleeMethods": [
+        [
+            "src/snmp.c",
+            "csnmp_oid_suffix",
+            "static int csnmp_oid_suffix(oid_t *dst, oid_t const *src, oid_t const *root) { /* <=== csnmp_oid_suffix */ \n  /* Make sure \"src\" is in \"root\"s subtree. */\n  if (src->oid_len <= root->oid_len)\n    return (EINVAL);\n  if (snmp_oid_ncompare(root->oid, root->oid_len, src->oid, src->oid_len,\n                        /* n = */ root->oid_len) != 0)\n    return (EINVAL);\n\n  memset(dst, 0, sizeof(*dst));\n  dst->oid_len = src->oid_len - root->oid_len;\n  memcpy(dst->oid, &src->oid[root->oid_len],\n         dst->oid_len * sizeof(dst->oid[0]));\n  return (0);\n}",
+            1
+        ],
+        [
+            "src/snmp.c",
+            "csnmp_value_list_to_value",
+            "static value_t csnmp_value_list_to_value(struct variable_list *vl, int type, /* <=== csnmp_value_list_to_value */ \n                                         double scale, double shift,\n                                         const char *host_name,\n                                         const char *data_name) {\n  value_t ret;\n  uint64_t tmp_unsigned = 0;\n  int64_t tmp_signed = 0;\n  _Bool defined = 1;\n  /* Set to true when the original SNMP type appears to have been signed. */\n  _Bool prefer_signed = 0;\n\n  if ((vl->type == ASN_INTEGER) || (vl->type == ASN_UINTEGER) ||\n      (vl->type == ASN_COUNTER)\n#ifdef ASN_TIMETICKS\n      || (vl->type == ASN_TIMETICKS)\n#endif\n      || (vl->type == ASN_GAUGE)) {\n    tmp_unsigned = (uint32_t)*vl->val.integer;\n    tmp_signed = (int32_t)*vl->val.integer;\n\n    if (vl->type == ASN_INTEGER)\n      prefer_signed = 1;\n\n    DEBUG(\"snmp plugin: Parsed int32 value is %\" PRIu64 \".\", tmp_unsigned);\n  } else if (vl->type == ASN_COUNTER64) {\n    tmp_unsigned = (uint32_t)vl->val.counter64->high;\n    tmp_unsigned = tmp_unsigned << 32;\n    tmp_unsigned += (uint32_t)vl->val.counter64->low;\n    tmp_signed = (int64_t)tmp_unsigned;\n    DEBUG(\"snmp plugin: Parsed int64 value is %\" PRIu64 \".\", tmp_unsigned);\n  } else if (vl->type == ASN_OCTET_STR) {\n    /* We'll handle this later.. */\n  } else {\n    char oid_buffer[1024] = {0};\n\n    snprint_objid(oid_buffer, sizeof(oid_buffer) - 1, vl->name,\n                  vl->name_length);\n\n#ifdef ASN_NULL\n    if (vl->type == ASN_NULL)\n      INFO(\"snmp plugin: OID \\\"%s\\\" is undefined (type ASN_NULL)\", oid_buffer);\n    else\n#endif\n      WARNING(\"snmp plugin: I don't know the ASN type #%i \"\n              \"(OID: \\\"%s\\\", data block \\\"%s\\\", host block \\\"%s\\\")\",\n              (int)vl->type, oid_buffer,\n              (data_name != NULL) ? data_name : \"UNKNOWN\",\n              (host_name != NULL) ? host_name : \"UNKNOWN\");\n\n    defined = 0;\n  }\n\n  if (vl->type == ASN_OCTET_STR) {\n    int status = -1;\n\n    if (vl->val.string != NULL) {\n      char string[64];\n      size_t string_length;\n\n      string_length = sizeof(string) - 1;\n      if (vl->val_len < string_length)\n        string_length = vl->val_len;\n\n      /* The strings we get from the Net-SNMP library may not be null\n       * terminated. That is why we're using `memcpy' here and not `strcpy'.\n       * `string_length' is set to `vl->val_len' which holds the length of the\n       * string.  -octo */\n      memcpy(string, vl->val.string, string_length);\n      string[string_length] = 0;\n\n      status = parse_value(string, &ret, type);\n      if (status != 0) {\n        ERROR(\"snmp plugin: host %s: csnmp_value_list_to_value: Parsing string \"\n              \"as %s failed: %s\",\n              (host_name != NULL) ? host_name : \"UNKNOWN\",\n              DS_TYPE_TO_STRING(type), string);\n      }\n    }\n\n    if (status != 0) {\n      switch (type) {\n      case DS_TYPE_COUNTER:\n      case DS_TYPE_DERIVE:\n      case DS_TYPE_ABSOLUTE:\n        memset(&ret, 0, sizeof(ret));\n        break;\n\n      case DS_TYPE_GAUGE:\n        ret.gauge = NAN;\n        break;\n\n      default:\n        ERROR(\"snmp plugin: csnmp_value_list_to_value: Unknown \"\n              \"data source type: %i.\",\n              type);\n        ret.gauge = NAN;\n      }\n    }\n  } /* if (vl->type == ASN_OCTET_STR) */\n  else if (type == DS_TYPE_COUNTER) {\n    ret.counter = tmp_unsigned;\n  } else if (type == DS_TYPE_GAUGE) {\n    if (!defined)\n      ret.gauge = NAN;\n    else if (prefer_signed)\n      ret.gauge = (scale * tmp_signed) + shift;\n    else\n      ret.gauge = (scale * tmp_unsigned) + shift;\n  } else if (type == DS_TYPE_DERIVE) {\n    if (prefer_signed)\n      ret.derive = (derive_t)tmp_signed;\n    else\n      ret.derive = (derive_t)tmp_unsigned;\n  } else if (type == DS_TYPE_ABSOLUTE) {\n    ret.absolute = (absolute_t)tmp_unsigned;\n  } else {\n    ERROR(\"snmp plugin: csnmp_value_list_to_value: Unknown data source \"\n          \"type: %i.\",\n          type);\n    ret.gauge = NAN;\n  }\n\n  return (ret);\n} /* value_t csnmp_value_list_to_value */",
+            1
+        ],
+        [
+            "src/daemon/plugin.h",
+            "DS_TYPE_DERIVE",
+            "#define DS_TYPE_DERIVE 2 /* <=== src/daemon/plugin.h:47:47:DS_TYPE_DERIVE:0 */ ",
+            2
+        ],
+        [
+            "src/daemon/utils_avltree.c",
+            "search",
+            "static c_avl_node_t *search(c_avl_tree_t *t, const void *key) { /* <=== search */ \n  c_avl_node_t *n;\n  int cmp;\n\n  n = t->root;\n  while (n != NULL) {\n    cmp = t->compare(key, n->key);\n    if (cmp == 0)\n      return (n);\n    else if (cmp < 0)\n      n = n->left;\n    else\n      n = n->right;\n  }\n\n  return (NULL);\n}",
+            3
+        ],
+        [
+            "src/snmp.c",
+            "csnmp_instance_list_add",
+            "static int csnmp_instance_list_add(csnmp_list_instances_t **head, /* <=== csnmp_instance_list_add */ \n                                   csnmp_list_instances_t **tail,\n                                   const struct snmp_pdu *res,\n                                   const host_definition_t *hd,\n                                   const data_definition_t *dd) {\n  csnmp_list_instances_t *il;\n  struct variable_list *vb;\n  oid_t vb_name;\n  int status;\n  uint32_t is_matched;\n\n  /* Set vb on the last variable */\n  for (vb = res->variables; (vb != NULL) && (vb->next_variable != NULL);\n       vb = vb->next_variable)\n    /* do nothing */;\n  if (vb == NULL)\n    return (-1);\n\n  csnmp_oid_init(&vb_name, vb->name, vb->name_length);\n\n  il = calloc(1, sizeof(*il));\n  if (il == NULL) {\n    ERROR(\"snmp plugin: calloc failed.\");\n    return (-1);\n  }\n  il->next = NULL;\n\n  status = csnmp_oid_suffix(&il->suffix, &vb_name, &dd->instance.oid);\n  if (status != 0) {\n    sfree(il);\n    return (status);\n  }\n\n  /* Get instance name */\n  if ((vb->type == ASN_OCTET_STR) || (vb->type == ASN_BIT_STR) ||\n      (vb->type == ASN_IPADDRESS)) {\n    char *ptr;\n\n    csnmp_strvbcopy(il->instance, vb, sizeof(il->instance));\n    is_matched = 0;\n    for (uint32_t i = 0; i < dd->ignores_len; i++) {\n      status = fnmatch(dd->ignores[i], il->instance, 0);\n      if (status == 0) {\n        if (dd->invert_match == 0) {\n          sfree(il);\n          return 0;\n        } else {\n          is_matched = 1;\n          break;\n        }\n      }\n    }\n    if (dd->invert_match != 0 && is_matched == 0) {\n      sfree(il);\n      return 0;\n    }\n    for (ptr = il->instance; *ptr != '\\0'; ptr++) {\n      if ((*ptr > 0) && (*ptr < 32))\n        *ptr = ' ';\n      else if (*ptr == '/')\n        *ptr = '_';\n    }\n    DEBUG(\"snmp plugin: il->instance = `%s';\", il->instance);\n  } else {\n    value_t val = csnmp_value_list_to_value(\n        vb, DS_TYPE_COUNTER,\n        /* scale = */ 1.0, /* shift = */ 0.0, hd->name, dd->name);\n    ssnprintf(il->instance, sizeof(il->instance), \"%llu\", val.counter);\n  }\n\n  /* TODO: Debugging output */\n\n  if (*head == NULL)\n    *head = il;\n  else\n    (*tail)->next = il;\n  *tail = il;\n\n  return (0);\n} /* int csnmp_instance_list_add */",
+            1
+        ],
+        [
+            "src/snmp.c",
+            "csnmp_oid_compare",
+            "static int csnmp_oid_compare(oid_t const *left, oid_t const *right) { /* <=== csnmp_oid_compare */ \n  return (\n      snmp_oid_compare(left->oid, left->oid_len, right->oid, right->oid_len));\n}",
+            1
+        ],
+        [
+            "src/daemon/common.c",
+            "parse_value",
+            "int parse_value(const char *value_orig, value_t *ret_value, int ds_type) { /* <=== parse_value */ \n  char *value;\n  char *endptr = NULL;\n  size_t value_len;\n\n  if (value_orig == NULL)\n    return (EINVAL);\n\n  value = strdup(value_orig);\n  if (value == NULL)\n    return (ENOMEM);\n  value_len = strlen(value);\n\n  while ((value_len > 0) && isspace((int)value[value_len - 1])) {\n    value[value_len - 1] = 0;\n    value_len--;\n  }\n\n  switch (ds_type) {\n  case DS_TYPE_COUNTER:\n    ret_value->counter = (counter_t)strtoull(value, &endptr, 0);\n    break;\n\n  case DS_TYPE_GAUGE:\n    ret_value->gauge = (gauge_t)strtod(value, &endptr);\n    break;\n\n  case DS_TYPE_DERIVE:\n    ret_value->derive = (derive_t)strtoll(value, &endptr, 0);\n    break;\n\n  case DS_TYPE_ABSOLUTE:\n    ret_value->absolute = (absolute_t)strtoull(value, &endptr, 0);\n    break;\n\n  default:\n    sfree(value);\n    ERROR(\"parse_value: Invalid data source type: %i.\", ds_type);\n    return -1;\n  }\n\n  if (value == endptr) {\n    ERROR(\"parse_value: Failed to parse string as %s: \\\"%s\\\".\",\n          DS_TYPE_TO_STRING(ds_type), value);\n    sfree(value);\n    return -1;\n  } else if ((NULL != endptr) && ('\\0' != *endptr))\n    INFO(\"parse_value: Ignoring trailing garbage \\\"%s\\\" after %s value. \"\n         \"Input string was \\\"%s\\\".\",\n         endptr, DS_TYPE_TO_STRING(ds_type), value_orig);\n\n  sfree(value);\n  return 0;\n} /* int parse_value */",
+            2
+        ],
+        [
+            "src/daemon/plugin.h",
+            "LOG_DEBUG",
+            "#define LOG_DEBUG 7 /* <=== src/daemon/plugin.h:72:72:LOG_DEBUG:0 */ ",
+            3
+        ],
+        [
+            "src/daemon/plugin.h",
+            "WARNING",
+            "#define WARNING(...) plugin_log(LOG_WARNING, __VA_ARGS__) /* <=== src/daemon/plugin.h:391:391:WARNING:1 */ ",
+            2
+        ],
+        [
+            "src/daemon/common.h",
+            "sfree",
+            "#define sfree(ptr)                                                             \\ /* <=== src/daemon/common.h:39:43:sfree:1 */ \n  do {                                                                         \\\n    free(ptr);                                                                 \\\n    (ptr) = NULL;                                                              \\\n  } while (0)",
+            1
+        ],
+        [
+            "src/snmp.c",
+            "csnmp_oid_init",
+            "static void csnmp_oid_init(oid_t *dst, oid const *src, size_t n) { /* <=== csnmp_oid_init */ \n  assert(n <= STATIC_ARRAY_SIZE(dst->oid));\n  memcpy(dst->oid, src, sizeof(*src) * n);\n  dst->oid_len = n;\n}",
+            2
+        ],
+        [
+            "src/snmp.c",
+            "csnmp_strvbcopy_hexstring",
+            "static int csnmp_strvbcopy_hexstring(char *dst, /* {{{ */ /* <=== csnmp_strvbcopy_hexstring */ \n                                     const struct variable_list *vb,\n                                     size_t dst_size) {\n  char *buffer_ptr;\n  size_t buffer_free;\n\n  dst[0] = 0;\n\n  buffer_ptr = dst;\n  buffer_free = dst_size;\n\n  for (size_t i = 0; i < vb->val_len; i++) {\n    int status;\n\n    status = snprintf(buffer_ptr, buffer_free, (i == 0) ? \"%02x\" : \":%02x\",\n                      (unsigned int)vb->val.bitstring[i]);\n    assert(status >= 0);\n\n    if (((size_t)status) >= buffer_free) /* truncated */\n    {\n      dst[dst_size - 1] = 0;\n      return ENOMEM;\n    } else /* if (status < buffer_free) */\n    {\n      buffer_ptr += (size_t)status;\n      buffer_free -= (size_t)status;\n    }\n  }\n\n  return 0;\n} /* }}} int csnmp_strvbcopy_hexstring */",
+            3
+        ],
+        [
+            "src/daemon/plugin.c",
+            "plugin_get_ds",
+            "const data_set_t *plugin_get_ds(const char *name) { /* <=== plugin_get_ds */ \n  data_set_t *ds;\n\n  if (data_sets == NULL) {\n    ERROR(\"plugin_get_ds: No data sets are defined yet.\");\n    return (NULL);\n  }\n\n  if (c_avl_get(data_sets, name, (void *)&ds) != 0) {\n    DEBUG(\"No such dataset registered: %s\", name);\n    return (NULL);\n  }\n\n  return (ds);\n} /* data_set_t *plugin_get_ds */",
+            1
+        ],
+        [
+            "src/daemon/utils_llist.c",
+            "llist_head",
+            "llentry_t *llist_head(llist_t *l) { /* <=== llist_head */ \n  if (l == NULL)\n    return (NULL);\n  return (l->head);\n}",
+            3
+        ],
+        [
+            "src/daemon/common.h",
+            "sfree",
+            "#define sfree(ptr)                                                             \\ /* <=== src/daemon/common.h:39:43:sfree:1 */ \n  do {                                                                         \\\n    free(ptr);                                                                 \\\n    (ptr) = NULL;                                                              \\\n  } while (0)",
+            2
+        ],
+        [
+            "src/daemon/utils_complain.h",
+            "c_release",
+            "#define c_release(level, c, ...)                                               \\ /* <=== src/daemon/utils_complain.h:109:113:c_release:3 */ \n  do {                                                                         \\\n    if (c_would_release(c))                                                    \\\n      c_do_release(level, c, __VA_ARGS__);                                     \\\n  } while (0)",
+            1
+        ],
+        [
+            "src/snmp.c",
+            "csnmp_strvbcopy",
+            "static int csnmp_strvbcopy(char *dst, /* {{{ */ /* <=== csnmp_strvbcopy */ \n                           const struct variable_list *vb, size_t dst_size) {\n  char *src;\n  size_t num_chars;\n\n  if (vb->type == ASN_OCTET_STR)\n    src = (char *)vb->val.string;\n  else if (vb->type == ASN_BIT_STR)\n    src = (char *)vb->val.bitstring;\n  else if (vb->type == ASN_IPADDRESS) {\n    return ssnprintf(dst, dst_size,\n                     \"%\" PRIu8 \".%\" PRIu8 \".%\" PRIu8 \".%\" PRIu8 \"\",\n                     (uint8_t)vb->val.string[0], (uint8_t)vb->val.string[1],\n                     (uint8_t)vb->val.string[2], (uint8_t)vb->val.string[3]);\n  } else {\n    dst[0] = 0;\n    return (EINVAL);\n  }\n\n  num_chars = dst_size - 1;\n  if (num_chars > vb->val_len)\n    num_chars = vb->val_len;\n\n  for (size_t i = 0; i < num_chars; i++) {\n    /* Check for control characters. */\n    if ((unsigned char)src[i] < 32)\n      return (csnmp_strvbcopy_hexstring(dst, vb, dst_size));\n    dst[i] = src[i];\n  }\n  dst[num_chars] = 0;\n  dst[dst_size - 1] = 0;\n\n  if (dst_size <= vb->val_len)\n    return ENOMEM;\n\n  return 0;\n} /* }}} int csnmp_strvbcopy */",
+            2
+        ],
+        [
+            "src/daemon/plugin.h",
+            "INFO",
+            "#define INFO(...) plugin_log(LOG_INFO, __VA_ARGS__) /* <=== src/daemon/plugin.h:393:393:INFO:1 */ ",
+            3
+        ],
+        [
+            "src/daemon/plugin.h",
+            "DS_TYPE_GAUGE",
+            "#define DS_TYPE_GAUGE 1 /* <=== src/daemon/plugin.h:46:46:DS_TYPE_GAUGE:0 */ ",
+            2
+        ],
+        [
+            "src/daemon/plugin.h",
+            "DS_TYPE_COUNTER",
+            "#define DS_TYPE_COUNTER 0 /* <=== src/daemon/plugin.h:45:45:DS_TYPE_COUNTER:0 */ ",
+            2
+        ],
+        [
+            "src/daemon/common.c",
+            "ssnprintf",
+            "int ssnprintf(char *dest, size_t n, const char *format, ...) { /* <=== ssnprintf */ \n  int ret = 0;\n  va_list ap;\n\n  va_start(ap, format);\n  ret = vsnprintf(dest, n, format, ap);\n  dest[n - 1] = '\\0';\n  va_end(ap);\n\n  return (ret);\n} /* int ssnprintf */",
+            2
+        ],
+        [
+            "src/daemon/plugin.h",
+            "ERROR",
+            "#define ERROR(...) plugin_log(LOG_ERR, __VA_ARGS__) /* <=== src/daemon/plugin.h:390:390:ERROR:1 */ ",
+            1
+        ],
+        [
+            "src/daemon/plugin.h",
+            "DS_TYPE_ABSOLUTE",
+            "#define DS_TYPE_ABSOLUTE 3 /* <=== src/daemon/plugin.h:48:48:DS_TYPE_ABSOLUTE:0 */ ",
+            2
+        ],
+        [
+            "src/daemon/plugin.c",
+            "plugin_log",
+            "void plugin_log(int level, const char *format, ...) { /* <=== plugin_log */ \n  char msg[1024];\n  va_list ap;\n  llentry_t *le;\n\n#if !COLLECT_DEBUG\n  if (level >= LOG_DEBUG)\n    return;\n#endif\n\n  va_start(ap, format);\n  vsnprintf(msg, sizeof(msg), format, ap);\n  msg[sizeof(msg) - 1] = '\\0';\n  va_end(ap);\n\n  if (list_log == NULL) {\n    fprintf(stderr, \"%s\\n\", msg);\n    return;\n  }\n\n  le = llist_head(list_log);\n  while (le != NULL) {\n    callback_func_t *cf;\n    plugin_log_cb callback;\n\n    cf = le->value;\n    callback = cf->cf_callback;\n\n    /* do not switch plugin context; rather keep the context\n     * (interval) information of the calling plugin */\n\n    (*callback)(level, msg, &cf->cf_udata);\n\n    le = le->next;\n  }\n} /* void plugin_log */",
+            2
+        ],
+        [
+            "src/daemon/utils_avltree.c",
+            "c_avl_get",
+            "int c_avl_get(c_avl_tree_t *t, const void *key, void **value) { /* <=== c_avl_get */ \n  c_avl_node_t *n;\n\n  assert(t != NULL);\n\n  n = search(t, key);\n  if (n == NULL)\n    return (-1);\n\n  if (value != NULL)\n    *value = n->value;\n\n  return (0);\n}",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <net-snmp/net-snmp-includes.h>",
+        "#include <net-snmp/net-snmp-config.h>",
+        "#include \"collectd.h\"",
+        "#include \"plugin.h\"",
+        "#include \"common.h\"",
+        "#include <fnmatch.h>",
+        "#include \"utils_complain.h\""
+    ],
+    "typeDefs": [
+        [
+            "struct data_set_s {\n  char type[DATA_MAX_NAME_LEN];\n  size_t ds_num;\n  data_source_t *ds;\n}",
+            "data_set_s"
+        ],
+        [
+            "typedef struct oid_s oid_t;",
+            "oid_t"
+        ],
+        [
+            "typedef struct csnmp_list_instances_s csnmp_list_instances_t;",
+            "csnmp_list_instances_t"
+        ],
+        [
+            "typedef struct csnmp_table_values_s csnmp_table_values_t;",
+            "csnmp_table_values_t"
+        ],
+        [
+            "typedef struct host_definition_s host_definition_t;",
+            "host_definition_t"
+        ],
+        [
+            "typedef struct data_set_s data_set_t;",
+            "data_set_t"
+        ],
+        [
+            "typedef struct data_definition_s data_definition_t;",
+            "data_definition_t"
+        ],
+        [
+            "union value_u {\n  counter_t counter;\n  gauge_t gauge;\n  derive_t derive;\n  absolute_t absolute;\n}",
+            "value_u"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/snmp.c": [
+            1263,
+            1265,
+            1270,
+            1273,
+            1276,
+            1293,
+            1298,
+            1299,
+            1304,
+            1313,
+            1314,
+            1315,
+            1317,
+            1319,
+            1320,
+            1325,
+            1326,
+            1327,
+            1334,
+            1335,
+            1337,
+            1338,
+            1341,
+            1342,
+            1348,
+            1349,
+            1351,
+            1353,
+            1354,
+            1357,
+            1360,
+            1365,
+            1366,
+            1367,
+            1368,
+            1369,
+            1371,
+            1375,
+            1377,
+            1379,
+            1381,
+            1388,
+            1390,
+            1394,
+            1395,
+            1400,
+            1401,
+            1403,
+            1404,
+            1408,
+            1409,
+            1410,
+            1411,
+            1412,
+            1415,
+            1421,
+            1422,
+            1423,
+            1425,
+            1435,
+            1439,
+            1440,
+            1444,
+            1451,
+            1452,
+            1456,
+            1460,
+            1461,
+            1463,
+            1467,
+            1468,
+            1469,
+            1470,
+            1471,
+            1473,
+            1474,
+            1476,
+            1477,
+            1481,
+            1482,
+            1486,
+            1488,
+            1491,
+            1492,
+            1493,
+            1500,
+            1501,
+            1502,
+            1503,
+            1507,
+            1508,
+            1509,
+            1510,
+            1514,
+            1515
+        ]
+    },
+    "visitedLines_before": {
+        "src/snmp.c": [
+            1263,
+            1265,
+            1270,
+            1273,
+            1276,
+            1293,
+            1298,
+            1299,
+            1304,
+            1313,
+            1314,
+            1315,
+            1317,
+            1319,
+            1320,
+            1325,
+            1326,
+            1327,
+            1334,
+            1335,
+            1337,
+            1338,
+            1341,
+            1342,
+            1348,
+            1349,
+            1351,
+            1353,
+            1354,
+            1357,
+            1364,
+            1365,
+            1366,
+            1367,
+            1369,
+            1373,
+            1375,
+            1377,
+            1380,
+            1381,
+            1388,
+            1390,
+            1394,
+            1395,
+            1400,
+            1401,
+            1403,
+            1404,
+            1408,
+            1409,
+            1410,
+            1411,
+            1412,
+            1415,
+            1421,
+            1422,
+            1423,
+            1425,
+            1435,
+            1439,
+            1440,
+            1444,
+            1451,
+            1452,
+            1456,
+            1460,
+            1461,
+            1463,
+            1467,
+            1468,
+            1469,
+            1470,
+            1471,
+            1473,
+            1474,
+            1476,
+            1477,
+            1481,
+            1482,
+            1486,
+            1488,
+            1491,
+            1492,
+            1493,
+            1495,
+            1496,
+            1497,
+            1503,
+            1504,
+            1505,
+            1506,
+            1510,
+            1511,
+            1512,
+            1513,
+            1517,
+            1518
+        ]
+    },
+    "visitedParams": {
+        "src/snmp.c": [
+            [
+                "data_definition_t *data",
+                "csnmp_read_table"
+            ],
+            [
+                "host_definition_t *host",
+                "csnmp_read_table"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/snmp.c",
+            "csnmp_read_table",
+            "static int csnmp_read_table(host_definition_t *host, data_definition_t *data) { /* <=== csnmp_read_table */ \n  struct snmp_pdu *req;\n  struct snmp_pdu *res = NULL;\n  struct variable_list *vb;\n\n  const data_set_t *ds;\n\n  size_t oid_list_len = data->values_len + 1;\n  /* Holds the last OID returned by the device. We use this in the GETNEXT\n   * request to proceed. */\n  oid_t oid_list[oid_list_len];\n  /* Set to false when an OID has left its subtree so we don't re-request it\n   * again. */\n  _Bool oid_list_todo[oid_list_len];\n\n  int status;\n  size_t i;\n\n  /* `value_list_head' and `value_list_tail' implement a linked list for each\n   * value. `instance_list_head' and `instance_list_tail' implement a linked\n   * list of\n   * instance names. This is used to jump gaps in the table. */\n  csnmp_list_instances_t *instance_list_head;\n  csnmp_list_instances_t *instance_list_tail;\n  csnmp_table_values_t **value_list_head;\n  csnmp_table_values_t **value_list_tail;\n\n  DEBUG(\"snmp plugin: csnmp_read_table (host = %s, data = %s)\", host->name,\n        data->name);\n\n  if (host->sess_handle == NULL) {\n    DEBUG(\"snmp plugin: csnmp_read_table: host->sess_handle == NULL\");\n    return (-1);\n  }\n\n  ds = plugin_get_ds(data->type);\n  if (!ds) {\n    ERROR(\"snmp plugin: DataSet `%s' not defined.\", data->type);\n    return (-1);\n  }\n\n  if (ds->ds_num != data->values_len) {\n    ERROR(\"snmp plugin: DataSet `%s' requires %zu values, but config talks \"\n          \"about %zu\",\n          data->type, ds->ds_num, data->values_len);\n    return (-1);\n  }\n  assert(data->values_len > 0);\n\n  /* We need a copy of all the OIDs, because GETNEXT will destroy them. */\n  memcpy(oid_list, data->values, data->values_len * sizeof(oid_t));\n  if (data->instance.oid.oid_len > 0)\n    memcpy(oid_list + data->values_len, &data->instance.oid, sizeof(oid_t));\n  else /* no InstanceFrom option specified. */\n    oid_list_len--;\n\n  for (i = 0; i < oid_list_len; i++)\n    oid_list_todo[i] = 1;\n\n  /* We're going to construct n linked lists, one for each \"value\".\n   * value_list_head will contain pointers to the heads of these linked lists,\n   * value_list_tail will contain pointers to the tail of the lists. */\n  value_list_head = calloc(data->values_len, sizeof(*value_list_head));\n  value_list_tail = calloc(data->values_len, sizeof(*value_list_tail));\n  if ((value_list_head == NULL) || (value_list_tail == NULL)) {\n    ERROR(\"snmp plugin: csnmp_read_table: calloc failed.\");\n    sfree(value_list_head);\n    sfree(value_list_tail);\n    return (-1);\n  }\n\n  instance_list_head = NULL;\n  instance_list_tail = NULL;\n\n  status = 0;\n  while (status == 0) {\n    int oid_list_todo_num;\n\n    req = snmp_pdu_create(SNMP_MSG_GETNEXT);\n    if (req == NULL) {\n      ERROR(\"snmp plugin: snmp_pdu_create failed.\");\n      status = -1;\n      break;\n    }\n\n    oid_list_todo_num = 0;\n    for (i = 0; i < oid_list_len; i++) {\n      /* Do not rerequest already finished OIDs */\n      if (!oid_list_todo[i])\n        continue;\n      oid_list_todo_num++;\n      snmp_add_null_var(req, oid_list[i].oid, oid_list[i].oid_len);\n    }\n\n    if (oid_list_todo_num == 0) {\n      /* The request is still empty - so we are finished */\n      DEBUG(\"snmp plugin: all variables have left their subtree\");\n      snmp_free_pdu(req);\n      status = 0;\n      break;\n    }\n\n    res = NULL;\n    /* snmp_sess_synch_response always frees our req PDU */\n    status = snmp_sess_synch_response(host->sess_handle, req, &res);\n    if ((status != STAT_SUCCESS) || (res == NULL)) {\n      char *errstr = NULL;\n\n      snmp_sess_error(host->sess_handle, NULL, NULL, &errstr);\n\n      c_complain(LOG_ERR, &host->complaint,\n                 \"snmp plugin: host %s: snmp_sess_synch_response failed: %s\",\n                 host->name, (errstr == NULL) ? \"Unknown problem\" : errstr);\n\n      if (res != NULL)\n        snmp_free_pdu(res);\n      res = NULL;\n\n      sfree(errstr);\n      csnmp_host_close_session(host);\n\n      status = -1;\n      break;\n    }\n\n    status = 0;\n    assert(res != NULL);\n    c_release(LOG_INFO, &host->complaint,\n              \"snmp plugin: host %s: snmp_sess_synch_response successful.\",\n              host->name);\n\n    vb = res->variables;\n    if (vb == NULL) {\n      status = -1;\n      break;\n    }\n\n    for (vb = res->variables, i = 0; (vb != NULL);\n         vb = vb->next_variable, i++) {\n      /* Calculate value index from todo list */\n      while ((i < oid_list_len) && !oid_list_todo[i])\n        i++;\n\n      /* An instance is configured and the res variable we process is the\n       * instance value (last index) */\n      if ((data->instance.oid.oid_len > 0) && (i == data->values_len)) {\n        if ((vb->type == SNMP_ENDOFMIBVIEW) ||\n            (snmp_oid_ncompare(\n                 data->instance.oid.oid, data->instance.oid.oid_len, vb->name,\n                 vb->name_length, data->instance.oid.oid_len) != 0)) {\n          DEBUG(\"snmp plugin: host = %s; data = %s; Instance left its subtree.\",\n                host->name, data->name);\n          oid_list_todo[i] = 0;\n          continue;\n        }\n\n        /* Allocate a new `csnmp_list_instances_t', insert the instance name and\n         * add it to the list */\n        if (csnmp_instance_list_add(&instance_list_head, &instance_list_tail,\n                                    res, host, data) != 0) {\n          ERROR(\"snmp plugin: host %s: csnmp_instance_list_add failed.\",\n                host->name);\n          status = -1;\n          break;\n        }\n      } else /* The variable we are processing is a normal value */\n      {\n        csnmp_table_values_t *vt;\n        oid_t vb_name;\n        oid_t suffix;\n        int ret;\n\n        csnmp_oid_init(&vb_name, vb->name, vb->name_length);\n\n        /* Calculate the current suffix. This is later used to check that the\n         * suffix is increasing. This also checks if we left the subtree */\n        ret = csnmp_oid_suffix(&suffix, &vb_name, data->values + i);\n        if (ret != 0) {\n          DEBUG(\"snmp plugin: host = %s; data = %s; i = %zu; \"\n                \"Value probably left its subtree.\",\n                host->name, data->name, i);\n          oid_list_todo[i] = 0;\n          continue;\n        }\n\n        /* Make sure the OIDs returned by the agent are increasing. Otherwise\n         * our\n         * table matching algorithm will get confused. */\n        if ((value_list_tail[i] != NULL) &&\n            (csnmp_oid_compare(&suffix, &value_list_tail[i]->suffix) <= 0)) {\n          DEBUG(\"snmp plugin: host = %s; data = %s; i = %zu; \"\n                \"Suffix is not increasing.\",\n                host->name, data->name, i);\n          oid_list_todo[i] = 0;\n          continue;\n        }\n\n        vt = calloc(1, sizeof(*vt));\n        if (vt == NULL) {\n          ERROR(\"snmp plugin: calloc failed.\");\n          status = -1;\n          break;\n        }\n\n        vt->value =\n            csnmp_value_list_to_value(vb, ds->ds[i].type, data->scale,\n                                      data->shift, host->name, data->name);\n        memcpy(&vt->suffix, &suffix, sizeof(vt->suffix));\n        vt->next = NULL;\n\n        if (value_list_tail[i] == NULL)\n          value_list_head[i] = vt;\n        else\n          value_list_tail[i]->next = vt;\n        value_list_tail[i] = vt;\n      }\n\n      /* Copy OID to oid_list[i] */\n      memcpy(oid_list[i].oid, vb->name, sizeof(oid) * vb->name_length);\n      oid_list[i].oid_len = vb->name_length;\n\n    } /* for (vb = res->variables ...) */\n\n    if (res != NULL)\n      snmp_free_pdu(res);\n    res = NULL;\n  } /* while (status == 0) */\n\n  if (res != NULL)\n    snmp_free_pdu(res);\n  res = NULL;\n\n\n  if (status == 0)\n    csnmp_dispatch_table(host, data, instance_list_head, value_list_head);\n\n  /* Free all allocated variables here */\n  while (instance_list_head != NULL) {\n    csnmp_list_instances_t *next = instance_list_head->next;\n    sfree(instance_list_head);\n    instance_list_head = next;\n  }\n\n  for (i = 0; i < data->values_len; i++) {\n    while (value_list_head[i] != NULL) {\n      csnmp_table_values_t *next = value_list_head[i]->next;\n      sfree(value_list_head[i]);\n      value_list_head[i] = next;\n    }\n  }\n\n  sfree(value_list_head);\n  sfree(value_list_tail);\n\n  return (0);\n} /* int csnmp_read_table */",
+            1263
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/snmp.c",
+            "csnmp_read_table",
+            "static int csnmp_read_table(host_definition_t *host, data_definition_t *data) { /* <=== csnmp_read_table */ \n  struct snmp_pdu *req;\n  struct snmp_pdu *res = NULL;\n  struct variable_list *vb;\n\n  const data_set_t *ds;\n\n  size_t oid_list_len = data->values_len + 1;\n  /* Holds the last OID returned by the device. We use this in the GETNEXT\n   * request to proceed. */\n  oid_t oid_list[oid_list_len];\n  /* Set to false when an OID has left its subtree so we don't re-request it\n   * again. */\n  _Bool oid_list_todo[oid_list_len];\n\n  int status;\n  size_t i;\n\n  /* `value_list_head' and `value_list_tail' implement a linked list for each\n   * value. `instance_list_head' and `instance_list_tail' implement a linked\n   * list of\n   * instance names. This is used to jump gaps in the table. */\n  csnmp_list_instances_t *instance_list_head;\n  csnmp_list_instances_t *instance_list_tail;\n  csnmp_table_values_t **value_list_head;\n  csnmp_table_values_t **value_list_tail;\n\n  DEBUG(\"snmp plugin: csnmp_read_table (host = %s, data = %s)\", host->name,\n        data->name);\n\n  if (host->sess_handle == NULL) {\n    DEBUG(\"snmp plugin: csnmp_read_table: host->sess_handle == NULL\");\n    return (-1);\n  }\n\n  ds = plugin_get_ds(data->type);\n  if (!ds) {\n    ERROR(\"snmp plugin: DataSet `%s' not defined.\", data->type);\n    return (-1);\n  }\n\n  if (ds->ds_num != data->values_len) {\n    ERROR(\"snmp plugin: DataSet `%s' requires %zu values, but config talks \"\n          \"about %zu\",\n          data->type, ds->ds_num, data->values_len);\n    return (-1);\n  }\n  assert(data->values_len > 0);\n\n  /* We need a copy of all the OIDs, because GETNEXT will destroy them. */\n  memcpy(oid_list, data->values, data->values_len * sizeof(oid_t));\n  if (data->instance.oid.oid_len > 0)\n    memcpy(oid_list + data->values_len, &data->instance.oid, sizeof(oid_t));\n  else /* no InstanceFrom option specified. */\n    oid_list_len--;\n\n  for (i = 0; i < oid_list_len; i++)\n    oid_list_todo[i] = 1;\n\n  /* We're going to construct n linked lists, one for each \"value\".\n   * value_list_head will contain pointers to the heads of these linked lists,\n   * value_list_tail will contain pointers to the tail of the lists. */\n  value_list_head = calloc(data->values_len, sizeof(*value_list_head));\n  value_list_tail = calloc(data->values_len, sizeof(*value_list_tail));\n  if ((value_list_head == NULL) || (value_list_tail == NULL)) {\n    ERROR(\"snmp plugin: csnmp_read_table: calloc failed.\");\n    sfree(value_list_head);\n    sfree(value_list_tail);\n    return (-1);\n  }\n\n  instance_list_head = NULL;\n  instance_list_tail = NULL;\n\n  status = 0;\n  while (status == 0) {\n    int oid_list_todo_num;\n\n    req = snmp_pdu_create(SNMP_MSG_GETNEXT);\n    if (req == NULL) {\n      ERROR(\"snmp plugin: snmp_pdu_create failed.\");\n      status = -1;\n      break;\n    }\n\n    oid_list_todo_num = 0;\n    for (i = 0; i < oid_list_len; i++) {\n      /* Do not rerequest already finished OIDs */\n      if (!oid_list_todo[i])\n        continue;\n      oid_list_todo_num++;\n      snmp_add_null_var(req, oid_list[i].oid, oid_list[i].oid_len);\n    }\n\n    if (oid_list_todo_num == 0) {\n      /* The request is still empty - so we are finished */\n      DEBUG(\"snmp plugin: all variables have left their subtree\");\n      status = 0;\n      break;\n    }\n\n    res = NULL;\n    status = snmp_sess_synch_response(host->sess_handle, req, &res);\n    if ((status != STAT_SUCCESS) || (res == NULL)) {\n      char *errstr = NULL;\n\n      snmp_sess_error(host->sess_handle, NULL, NULL, &errstr);\n\n      c_complain(LOG_ERR, &host->complaint,\n                 \"snmp plugin: host %s: snmp_sess_synch_response failed: %s\",\n                 host->name, (errstr == NULL) ? \"Unknown problem\" : errstr);\n\n      if (res != NULL)\n        snmp_free_pdu(res);\n      res = NULL;\n\n      /* snmp_synch_response already freed our PDU */\n      req = NULL;\n      sfree(errstr);\n      csnmp_host_close_session(host);\n\n      status = -1;\n      break;\n    }\n\n    status = 0;\n    assert(res != NULL);\n    c_release(LOG_INFO, &host->complaint,\n              \"snmp plugin: host %s: snmp_sess_synch_response successful.\",\n              host->name);\n\n    vb = res->variables;\n    if (vb == NULL) {\n      status = -1;\n      break;\n    }\n\n    for (vb = res->variables, i = 0; (vb != NULL);\n         vb = vb->next_variable, i++) {\n      /* Calculate value index from todo list */\n      while ((i < oid_list_len) && !oid_list_todo[i])\n        i++;\n\n      /* An instance is configured and the res variable we process is the\n       * instance value (last index) */\n      if ((data->instance.oid.oid_len > 0) && (i == data->values_len)) {\n        if ((vb->type == SNMP_ENDOFMIBVIEW) ||\n            (snmp_oid_ncompare(\n                 data->instance.oid.oid, data->instance.oid.oid_len, vb->name,\n                 vb->name_length, data->instance.oid.oid_len) != 0)) {\n          DEBUG(\"snmp plugin: host = %s; data = %s; Instance left its subtree.\",\n                host->name, data->name);\n          oid_list_todo[i] = 0;\n          continue;\n        }\n\n        /* Allocate a new `csnmp_list_instances_t', insert the instance name and\n         * add it to the list */\n        if (csnmp_instance_list_add(&instance_list_head, &instance_list_tail,\n                                    res, host, data) != 0) {\n          ERROR(\"snmp plugin: host %s: csnmp_instance_list_add failed.\",\n                host->name);\n          status = -1;\n          break;\n        }\n      } else /* The variable we are processing is a normal value */\n      {\n        csnmp_table_values_t *vt;\n        oid_t vb_name;\n        oid_t suffix;\n        int ret;\n\n        csnmp_oid_init(&vb_name, vb->name, vb->name_length);\n\n        /* Calculate the current suffix. This is later used to check that the\n         * suffix is increasing. This also checks if we left the subtree */\n        ret = csnmp_oid_suffix(&suffix, &vb_name, data->values + i);\n        if (ret != 0) {\n          DEBUG(\"snmp plugin: host = %s; data = %s; i = %zu; \"\n                \"Value probably left its subtree.\",\n                host->name, data->name, i);\n          oid_list_todo[i] = 0;\n          continue;\n        }\n\n        /* Make sure the OIDs returned by the agent are increasing. Otherwise\n         * our\n         * table matching algorithm will get confused. */\n        if ((value_list_tail[i] != NULL) &&\n            (csnmp_oid_compare(&suffix, &value_list_tail[i]->suffix) <= 0)) {\n          DEBUG(\"snmp plugin: host = %s; data = %s; i = %zu; \"\n                \"Suffix is not increasing.\",\n                host->name, data->name, i);\n          oid_list_todo[i] = 0;\n          continue;\n        }\n\n        vt = calloc(1, sizeof(*vt));\n        if (vt == NULL) {\n          ERROR(\"snmp plugin: calloc failed.\");\n          status = -1;\n          break;\n        }\n\n        vt->value =\n            csnmp_value_list_to_value(vb, ds->ds[i].type, data->scale,\n                                      data->shift, host->name, data->name);\n        memcpy(&vt->suffix, &suffix, sizeof(vt->suffix));\n        vt->next = NULL;\n\n        if (value_list_tail[i] == NULL)\n          value_list_head[i] = vt;\n        else\n          value_list_tail[i]->next = vt;\n        value_list_tail[i] = vt;\n      }\n\n      /* Copy OID to oid_list[i] */\n      memcpy(oid_list[i].oid, vb->name, sizeof(oid) * vb->name_length);\n      oid_list[i].oid_len = vb->name_length;\n\n    } /* for (vb = res->variables ...) */\n\n    if (res != NULL)\n      snmp_free_pdu(res);\n    res = NULL;\n  } /* while (status == 0) */\n\n  if (res != NULL)\n    snmp_free_pdu(res);\n  res = NULL;\n\n  if (req != NULL)\n    snmp_free_pdu(req);\n  req = NULL;\n\n  if (status == 0)\n    csnmp_dispatch_table(host, data, instance_list_head, value_list_head);\n\n  /* Free all allocated variables here */\n  while (instance_list_head != NULL) {\n    csnmp_list_instances_t *next = instance_list_head->next;\n    sfree(instance_list_head);\n    instance_list_head = next;\n  }\n\n  for (i = 0; i < data->values_len; i++) {\n    while (value_list_head[i] != NULL) {\n      csnmp_table_values_t *next = value_list_head[i]->next;\n      sfree(value_list_head[i]);\n      value_list_head[i] = next;\n    }\n  }\n\n  sfree(value_list_head);\n  sfree(value_list_tail);\n\n  return (0);\n} /* int csnmp_read_table */",
+            1263
+        ]
+    ]
+}

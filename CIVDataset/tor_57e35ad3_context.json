@@ -1,0 +1,601 @@
+{
+    "calleeMethods": [
+        [
+            "src/or/routerparse.c",
+            "get_next_token",
+            "static directory_token_t * /* <=== get_next_token */ \nget_next_token(memarea_t *area,\n               const char **s, const char *eos, token_rule_t *table)\n{\n  /** Reject any object at least this big; it is probably an overflow, an\n   * attack, a bug, or some other nonsense. */\n#define MAX_UNPARSED_OBJECT_SIZE (128*1024)\n  /** Reject any line at least this big; it is probably an overflow, an\n   * attack, a bug, or some other nonsense. */\n#define MAX_LINE_LENGTH (128*1024)\n\n  const char *next, *eol, *obstart;\n  size_t obname_len;\n  int i;\n  directory_token_t *tok;\n  obj_syntax o_syn = NO_OBJ;\n  char ebuf[128];\n  const char *kwd = \"\";\n\n  tor_assert(area);\n  tok = ALLOC_ZERO(sizeof(directory_token_t));\n  tok->tp = _ERR;\n\n  /* Set *s to first token, eol to end-of-line, next to after first token */\n  *s = eat_whitespace_eos(*s, eos); /* eat multi-line whitespace */\n  tor_assert(eos >= *s);\n  eol = memchr(*s, '\\n', eos-*s);\n  if (!eol)\n    eol = eos;\n  if (eol - *s > MAX_LINE_LENGTH) {\n    RET_ERR(\"Line far too long\");\n  }\n\n  next = find_whitespace_eos(*s, eol);\n\n  if (!strcmp_len(*s, \"opt\", next-*s)) {\n    /* Skip past an \"opt\" at the start of the line. */\n    *s = eat_whitespace_eos_no_nl(next, eol);\n    next = find_whitespace_eos(*s, eol);\n  } else if (*s == eos) {  /* If no \"opt\", and end-of-line, line is invalid */\n    RET_ERR(\"Unexpected EOF\");\n  }\n\n  /* Search the table for the appropriate entry.  (I tried a binary search\n   * instead, but it wasn't any faster.) */\n  for (i = 0; table[i].t ; ++i) {\n    if (!strcmp_len(*s, table[i].t, next-*s)) {\n      /* We've found the keyword. */\n      kwd = table[i].t;\n      tok->tp = table[i].v;\n      o_syn = table[i].os;\n      *s = eat_whitespace_eos_no_nl(next, eol);\n      /* We go ahead whether there are arguments or not, so that tok->args is\n       * always set if we want arguments. */\n      if (table[i].concat_args) {\n        /* The keyword takes the line as a single argument */\n        tok->args = ALLOC(sizeof(char*));\n        tok->args[0] = STRNDUP(*s,eol-*s); /* Grab everything on line */\n        tok->n_args = 1;\n      } else {\n        /* This keyword takes multiple arguments. */\n        if (get_token_arguments(area, tok, *s, eol)<0) {\n          tor_snprintf(ebuf, sizeof(ebuf),\"Far too many arguments to %s\", kwd);\n          RET_ERR(ebuf);\n        }\n        *s = eol;\n      }\n      if (tok->n_args < table[i].min_args) {\n        tor_snprintf(ebuf, sizeof(ebuf), \"Too few arguments to %s\", kwd);\n        RET_ERR(ebuf);\n      } else if (tok->n_args > table[i].max_args) {\n        tor_snprintf(ebuf, sizeof(ebuf), \"Too many arguments to %s\", kwd);\n        RET_ERR(ebuf);\n      }\n      break;\n    }\n  }\n\n  if (tok->tp == _ERR) {\n    /* No keyword matched; call it an \"K_opt\" or \"A_unrecognized\" */\n    if (**s == '@')\n      tok->tp = _A_UNKNOWN;\n    else\n      tok->tp = K_OPT;\n    tok->args = ALLOC(sizeof(char*));\n    tok->args[0] = STRNDUP(*s, eol-*s);\n    tok->n_args = 1;\n    o_syn = OBJ_OK;\n  }\n\n  /* Check whether there's an object present */\n  *s = eat_whitespace_eos(eol, eos);  /* Scan from end of first line */\n  tor_assert(eos >= *s);\n  eol = memchr(*s, '\\n', eos-*s);\n  if (!eol || eol-*s<11 || strcmpstart(*s, \"-----BEGIN \")) /* No object. */\n    goto check_object;\n\n  obstart = *s; /* Set obstart to start of object spec */\n  if (*s+16 >= eol || memchr(*s+11,'\\0',eol-*s-16) || /* no short lines, */\n      strcmp_len(eol-5, \"-----\", 5) ||           /* nuls or invalid endings */\n      (eol-*s) > MAX_UNPARSED_OBJECT_SIZE) {     /* name too long */\n    RET_ERR(\"Malformed object: bad begin line\");\n  }\n  tok->object_type = STRNDUP(*s+11, eol-*s-16);\n  obname_len = eol-*s-16; /* store objname length here to avoid a strlen() */\n  *s = eol+1;    /* Set *s to possible start of object data (could be eos) */\n\n  /* Go to the end of the object */\n  next = tor_memstr(*s, eos-*s, \"-----END \");\n  if (!next) {\n    RET_ERR(\"Malformed object: missing object end line\");\n  }\n  tor_assert(eos >= next);\n  eol = memchr(next, '\\n', eos-next);\n  if (!eol)  /* end-of-line marker, or eos if there's no '\\n' */\n    eol = eos;\n  /* Validate the ending tag, which should be 9 + NAME + 5 + eol */\n  if ((size_t)(eol-next) != 9+obname_len+5 ||\n      strcmp_len(next+9, tok->object_type, obname_len) ||\n      strcmp_len(eol-5, \"-----\", 5)) {\n    snprintf(ebuf, sizeof(ebuf), \"Malformed object: mismatched end tag %s\",\n             tok->object_type);\n    ebuf[sizeof(ebuf)-1] = '\\0';\n    RET_ERR(ebuf);\n  }\n  if (next - *s > MAX_UNPARSED_OBJECT_SIZE)\n    RET_ERR(\"Couldn't parse object: missing footer or object much too big.\");\n\n  if (!strcmp(tok->object_type, \"RSA PUBLIC KEY\")) { /* If it's a public key */\n    tok->key = crypto_new_pk_env();\n    if (crypto_pk_read_public_key_from_string(tok->key, obstart, eol-obstart))\n      RET_ERR(\"Couldn't parse public key.\");\n  } else if (!strcmp(tok->object_type, \"RSA PRIVATE KEY\")) { /* private key */\n    tok->key = crypto_new_pk_env();\n    if (crypto_pk_read_private_key_from_string(tok->key, obstart, eol-obstart))\n      RET_ERR(\"Couldn't parse private key.\");\n  } else { /* If it's something else, try to base64-decode it */\n    int r;\n    tok->object_body = ALLOC(next-*s); /* really, this is too much RAM. */\n    r = base64_decode(tok->object_body, next-*s, *s, next-*s);\n    if (r<0)\n      RET_ERR(\"Malformed object: bad base64-encoded data\");\n    tok->object_size = r;\n  }\n  *s = eol;\n\n check_object:\n  tok = token_check_object(area, kwd, tok, o_syn);\n\n done_tokenizing:\n  return tok;\n\n#undef RET_ERR\n#undef ALLOC\n#undef ALLOC_ZERO\n#undef STRDUP\n#undef STRNDUP\n}",
+            2
+        ],
+        [
+            "src/common/torlog.h",
+            "_log_warn",
+            "void _log_warn(log_domain_mask_t domain, const char *format, ...); /* <=== _log_warn */ ",
+            1
+        ],
+        [
+            "src/or/routerparse.c",
+            "TS_NO_NEW_ANNOTATIONS",
+            "#define TS_NO_NEW_ANNOTATIONS 4 /* <=== src/or/routerparse.c:556:556:TS_NO_NEW_ANNOTATIONS:0 */ ",
+            2
+        ],
+        [
+            "src/or/routerparse.c",
+            "MAX_UNPARSED_OBJECT_SIZE",
+            "#define MAX_UNPARSED_OBJECT_SIZE (128*1024) /* <=== src/or/routerparse.c:3842:3842:MAX_UNPARSED_OBJECT_SIZE:0 */ ",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "ALLOC",
+            "#define ALLOC(sz) memarea_alloc(area,sz) /* <=== src/or/routerparse.c:3723:3723:ALLOC:1 */ ",
+            3
+        ],
+        [
+            "src/common/memarea.c",
+            "memarea_new",
+            "memarea_t * /* <=== memarea_new */ \nmemarea_new(void)\n{\n  memarea_t *head = tor_malloc(sizeof(memarea_t));\n  head->first = alloc_chunk(CHUNK_SIZE, 1);\n  return head;\n}",
+            1
+        ],
+        [
+            "src/or/routerparse.c",
+            "ALLOC_ZERO",
+            "#define ALLOC_ZERO(sz) memarea_alloc_zero(area,sz) /* <=== src/or/routerparse.c:3722:3722:ALLOC_ZERO:1 */ ",
+            3
+        ],
+        [
+            "src/common/crypto.c",
+            "crypto_pk_read_public_key_from_string",
+            "int /* <=== crypto_pk_read_public_key_from_string */ \ncrypto_pk_read_public_key_from_string(crypto_pk_env_t *env, const char *src,\n                                      size_t len)\n{\n  BIO *b;\n\n  tor_assert(env);\n  tor_assert(src);\n  tor_assert(len<INT_MAX);\n\n  b = BIO_new(BIO_s_mem()); /* Create a memory BIO */\n  if (!b)\n    return -1;\n\n  BIO_write(b, src, (int)len);\n\n  if (env->key)\n    RSA_free(env->key);\n  env->key = PEM_read_bio_RSAPublicKey(b, NULL, NULL, NULL);\n  BIO_free(b);\n  if (!env->key) {\n    crypto_log_errors(LOG_WARN, \"reading public key from string\");\n    return -1;\n  }\n\n  return 0;\n}",
+            3
+        ],
+        [
+            "src/or/or.h",
+            "snprintf",
+            "#define snprintf _snprintf /* <=== src/or/or.h:83:83:snprintf:0 */ ",
+            3
+        ],
+        [
+            "src/common/compat.h",
+            "TOR_ISPRINT",
+            "DECLARE_CTYPE_FN(ISPRINT) /* <=== TOR_ISPRINT */ ",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "router_get_networkstatus_v3_hashes",
+            "int /* <=== router_get_networkstatus_v3_hashes */ \nrouter_get_networkstatus_v3_hashes(const char *s, digests_t *digests)\n{\n  return router_get_hashes_impl(s,strlen(s),digests,\n                                \"network-status-version\",\n                                \"\\ndirectory-signature\",\n                                ' ');\n}",
+            1
+        ],
+        [
+            "src/common/util.c",
+            "_tor_strdup",
+            "char * /* <=== _tor_strdup */ \n_tor_strdup(const char *s DMALLOC_PARAMS)\n{\n  char *dup;\n  tor_assert(s);\n\n#ifdef USE_DMALLOC\n  dup = dmalloc_strdup(file, line, s, 0);\n#else\n  dup = strdup(s);\n#endif\n  if (PREDICT_UNLIKELY(dup == NULL)) {\n    log_err(LD_MM,\"Out of memory on strdup(). Dying.\");\n    exit(1);\n  }\n  return dup;\n}",
+            3
+        ],
+        [
+            "src/common/torlog.h",
+            "_log_err",
+            "void _log_err(log_domain_mask_t domain, const char *format, ...); /* <=== _log_err */ ",
+            2
+        ],
+        [
+            "src/common/memarea.c",
+            "SENTINEL_LEN",
+            "#define SENTINEL_LEN sizeof(uint32_t) /* <=== src/common/memarea.c:37:37:SENTINEL_LEN:0 */ ",
+            3
+        ],
+        [
+            "src/common/memarea.c",
+            "realign_pointer",
+            "static INLINE void * /* <=== realign_pointer */ \nrealign_pointer(void *ptr)\n{\n  uintptr_t x = (uintptr_t)ptr;\n  x = (x+MEMAREA_ALIGN_MASK) & ~MEMAREA_ALIGN_MASK;\n  /* Reinstate this if bug 930 ever reappears\n  tor_assert(((void*)x) >= ptr);\n  */\n  return (void*)x;\n}",
+            3
+        ],
+        [
+            "src/common/torlog.h",
+            "LD_DIR",
+            "#define LD_DIR      (1u<<13) /* <=== src/common/torlog.h:81:81:LD_DIR:0 */ ",
+            1
+        ],
+        [
+            "src/or/routerparse.c",
+            "router_get_hashes_impl",
+            "static int /* <=== router_get_hashes_impl */ \nrouter_get_hashes_impl(const char *s, size_t s_len, digests_t *digests,\n                       const char *start_str,\n                       const char *end_str, char end_c)\n{\n  const char *start=NULL, *end=NULL;\n  if (router_get_hash_impl_helper(s,s_len,start_str,end_str,end_c,\n                                  &start,&end)<0)\n    return -1;\n\n  if (crypto_digest_all(digests, start, end-start)) {\n    log_warn(LD_BUG,\"couldn't compute digests\");\n    return -1;\n  }\n\n  return 0;\n}",
+            2
+        ],
+        [
+            "src/common/compat.h",
+            "MIN",
+            "#define MIN(a,b) ( ((a)>(b)) ? (b) : (a) ) /* <=== src/common/compat.h:650:650:MIN:2 */ ",
+            2
+        ],
+        [
+            "src/common/torlog.h",
+            "LD_MM",
+            "#define LD_MM       (1u<<6) /* <=== src/common/torlog.h:67:67:LD_MM:0 */ ",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "STRNDUP",
+            "#define STRNDUP(str,n) memarea_strndup(area,(str),(n)) /* <=== src/or/routerparse.c:3725:3725:STRNDUP:2 */ ",
+            3
+        ],
+        [
+            "src/or/networkstatus.c",
+            "networkstatus_parse_flavor_name",
+            "int /* <=== networkstatus_parse_flavor_name */ \nnetworkstatus_parse_flavor_name(const char *flavname)\n{\n  if (!strcmp(flavname, \"ns\"))\n    return FLAV_NS;\n  else if (!strcmp(flavname, \"microdesc\"))\n    return FLAV_MICRODESC;\n  else\n    return -1;\n}",
+            1
+        ],
+        [
+            "src/common/container.h",
+            "smartlist_len",
+            "#define smartlist_len(sl) ((sl)->num_used) /* <=== src/common/container.h:79:79:smartlist_len:1 */ ",
+            2
+        ],
+        [
+            "src/or/routerparse.c",
+            "AT_START",
+            "#define AT_START 1 /* <=== src/or/routerparse.c:200:200:AT_START:0 */ ",
+            2
+        ],
+        [
+            "src/common/memarea.c",
+            "memarea_alloc_zero",
+            "void * /* <=== memarea_alloc_zero */ \nmemarea_alloc_zero(memarea_t *area, size_t sz)\n{\n  void *result = memarea_alloc(area, sz);\n  memset(result, 0, sz);\n  return result;\n}",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "token_check_object",
+            "static INLINE directory_token_t * /* <=== token_check_object */ \ntoken_check_object(memarea_t *area, const char *kwd,\n                   directory_token_t *tok, obj_syntax o_syn)\n{\n  char ebuf[128];\n  switch (o_syn) {\n    case NO_OBJ:\n      /* No object is allowed for this token. */\n      if (tok->object_body) {\n        tor_snprintf(ebuf, sizeof(ebuf), \"Unexpected object for %s\", kwd);\n        RET_ERR(ebuf);\n      }\n      if (tok->key) {\n        tor_snprintf(ebuf, sizeof(ebuf), \"Unexpected public key for %s\", kwd);\n        RET_ERR(ebuf);\n      }\n      break;\n    case NEED_OBJ:\n      /* There must be a (non-key) object. */\n      if (!tok->object_body) {\n        tor_snprintf(ebuf, sizeof(ebuf), \"Missing object for %s\", kwd);\n        RET_ERR(ebuf);\n      }\n      break;\n    case NEED_KEY_1024: /* There must be a 1024-bit public key. */\n    case NEED_SKEY_1024: /* There must be a 1024-bit private key. */\n      if (tok->key && crypto_pk_num_bits(tok->key) != PK_BYTES*8) {\n        tor_snprintf(ebuf, sizeof(ebuf), \"Wrong size on key for %s: %d bits\",\n                     kwd, crypto_pk_num_bits(tok->key));\n        RET_ERR(ebuf);\n      }\n      /* fall through */\n    case NEED_KEY: /* There must be some kind of key. */\n      if (!tok->key) {\n        tor_snprintf(ebuf, sizeof(ebuf), \"Missing public key for %s\", kwd);\n        RET_ERR(ebuf);\n      }\n      if (o_syn != NEED_SKEY_1024) {\n        if (crypto_pk_key_is_private(tok->key)) {\n          tor_snprintf(ebuf, sizeof(ebuf),\n               \"Private key given for %s, which wants a public key\", kwd);\n          RET_ERR(ebuf);\n        }\n      } else { /* o_syn == NEED_SKEY_1024 */\n        if (!crypto_pk_key_is_private(tok->key)) {\n          tor_snprintf(ebuf, sizeof(ebuf),\n               \"Public key given for %s, which wants a private key\", kwd);\n          RET_ERR(ebuf);\n        }\n      }\n      break;\n    case OBJ_OK:\n      /* Anything goes with this token. */\n      break;\n  }\n\n done_tokenizing:\n  return tok;\n}",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "TS_ANNOTATIONS_OK",
+            "#define TS_ANNOTATIONS_OK 1 /* <=== src/or/routerparse.c:554:554:TS_ANNOTATIONS_OK:0 */ ",
+            2
+        ],
+        [
+            "src/common/util.c",
+            "eat_whitespace_eos",
+            "const char * /* <=== eat_whitespace_eos */ \neat_whitespace_eos(const char *s, const char *eos)\n{\n  tor_assert(s);\n  tor_assert(eos && s <= eos);\n\n  while (s < eos) {\n    switch (*s) {\n    case '\\0':\n    default:\n      return s;\n    case ' ':\n    case '\\t':\n    case '\\n':\n    case '\\r':\n      ++s;\n      break;\n    case '#':\n      ++s;\n      while (s < eos && *s && *s != '\\n')\n        ++s;\n    }\n  }\n  return s;\n}",
+            2
+        ],
+        [
+            "src/common/torlog.h",
+            "LD_BUG",
+            "#define LD_BUG      (1u<<12) /* <=== src/common/torlog.h:79:79:LD_BUG:0 */ ",
+            3
+        ],
+        [
+            "src/common/util.h",
+            "tor_free",
+            "#define tor_free(p) STMT_BEGIN                                 \\ /* <=== src/common/util.h:100:105:tor_free:1 */ \n    if (PREDICT_LIKELY((p)!=NULL)) {                           \\\n      free(p);                                                 \\\n      (p)=NULL;                                                \\\n    }                                                          \\\n  STMT_END",
+            2
+        ],
+        [
+            "src/common/memarea.c",
+            "CHUNK_HEADER_SIZE",
+            "#define CHUNK_HEADER_SIZE STRUCT_OFFSET(memarea_chunk_t, u) /* <=== src/common/memarea.c:86:86:CHUNK_HEADER_SIZE:0 */ ",
+            3
+        ],
+        [
+            "src/common/util.c",
+            "esc_for_log",
+            "char * /* <=== esc_for_log */ \nesc_for_log(const char *s)\n{\n  const char *cp;\n  char *result, *outp;\n  size_t len = 3;\n  if (!s) {\n    return tor_strdup(\"\");\n  }\n\n  for (cp = s; *cp; ++cp) {\n    switch (*cp) {\n      case '\\\\':\n      case '\\\"':\n      case '\\'':\n      case '\\r':\n      case '\\n':\n      case '\\t':\n        len += 2;\n        break;\n      default:\n        if (TOR_ISPRINT(*cp) && ((uint8_t)*cp)<127)\n          ++len;\n        else\n          len += 4;\n        break;\n    }\n  }\n\n  result = outp = tor_malloc(len);\n  *outp++ = '\\\"';\n  for (cp = s; *cp; ++cp) {\n    switch (*cp) {\n      case '\\\\':\n      case '\\\"':\n      case '\\'':\n        *outp++ = '\\\\';\n        *outp++ = *cp;\n        break;\n      case '\\n':\n        *outp++ = '\\\\';\n        *outp++ = 'n';\n        break;\n      case '\\t':\n        *outp++ = '\\\\';\n        *outp++ = 't';\n        break;\n      case '\\r':\n        *outp++ = '\\\\';\n        *outp++ = 'r';\n        break;\n      default:\n        if (TOR_ISPRINT(*cp) && ((uint8_t)*cp)<127) {\n          *outp++ = *cp;\n        } else {\n          tor_snprintf(outp, 5, \"\\\\%03o\", (int)(uint8_t) *cp);\n          outp += 4;\n        }\n        break;\n    }\n  }\n\n  *outp++ = '\\\"';\n  *outp++ = 0;\n\n  return result;\n}",
+            2
+        ],
+        [
+            "src/common/memarea.c",
+            "alloc_chunk",
+            "static memarea_chunk_t * /* <=== alloc_chunk */ \nalloc_chunk(size_t sz, int freelist_ok)\n{\n  tor_assert(sz < SIZE_T_CEILING);\n  if (freelist && freelist_ok) {\n    memarea_chunk_t *res = freelist;\n    freelist = res->next_chunk;\n    res->next_chunk = NULL;\n    --freelist_len;\n    CHECK_SENTINEL(res);\n    return res;\n  } else {\n    size_t chunk_size = freelist_ok ? CHUNK_SIZE : sz;\n    memarea_chunk_t *res;\n    chunk_size += SENTINEL_LEN;\n    res = tor_malloc_roundup(&chunk_size);\n    res->next_chunk = NULL;\n    res->mem_size = chunk_size - CHUNK_HEADER_SIZE - SENTINEL_LEN;\n    res->next_mem = res->u.mem;\n    tor_assert(res->next_mem+res->mem_size+SENTINEL_LEN ==\n               ((char*)res)+chunk_size);\n    tor_assert(realign_pointer(res->next_mem) == res->next_mem);\n    SET_SENTINEL(res);\n    return res;\n  }\n}",
+            2
+        ],
+        [
+            "src/or/routerparse.c",
+            "MIN_ANNOTATION",
+            "#define MIN_ANNOTATION A_PURPOSE /* <=== src/or/routerparse.c:159:159:MIN_ANNOTATION:0 */ ",
+            2
+        ],
+        [
+            "src/common/compat.c",
+            "set_uint32",
+            "void /* <=== set_uint32 */ \nset_uint32(void *cp, uint32_t v)\n{\n  memcpy(cp,&v,4);\n}",
+            3
+        ],
+        [
+            "src/common/memarea.c",
+            "SET_SENTINEL",
+            "#define SET_SENTINEL(chunk)                                     \\ /* <=== src/common/memarea.c:40:43:SET_SENTINEL:1 */ \n  STMT_BEGIN                                                    \\\n  set_uint32( &(chunk)->u.mem[chunk->mem_size], SENTINEL_VAL ); \\\n  STMT_END",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "router_get_hash_impl_helper",
+            "static int /* <=== router_get_hash_impl_helper */ \nrouter_get_hash_impl_helper(const char *s, size_t s_len,\n                            const char *start_str,\n                            const char *end_str, char end_c,\n                            const char **start_out, const char **end_out)\n{\n  const char *start, *end;\n  start = tor_memstr(s, s_len, start_str);\n  if (!start) {\n    log_warn(LD_DIR,\"couldn't find start of hashed material \\\"%s\\\"\",start_str);\n    return -1;\n  }\n  if (start != s && *(start-1) != '\\n') {\n    log_warn(LD_DIR,\n             \"first occurrence of \\\"%s\\\" is not at the start of a line\",\n             start_str);\n    return -1;\n  }\n  end = tor_memstr(start+strlen(start_str),\n                   s_len - (start-s) - strlen(start_str), end_str);\n  if (!end) {\n    log_warn(LD_DIR,\"couldn't find end of hashed material \\\"%s\\\"\",end_str);\n    return -1;\n  }\n  end = memchr(end+strlen(end_str), end_c, s_len - (end-s) - strlen(end_str));\n  if (!end) {\n    log_warn(LD_DIR,\"couldn't find EOL\");\n    return -1;\n  }\n  ++end;\n\n  *start_out = start;\n  *end_out = end;\n  return 0;\n}",
+            3
+        ],
+        [
+            "src/common/memarea.c",
+            "CHECK_SENTINEL",
+            "#define CHECK_SENTINEL(chunk)                                           \\ /* <=== src/common/memarea.c:45:49:CHECK_SENTINEL:1 */ \n  STMT_BEGIN                                                            \\\n  uint32_t sent_val = get_uint32(&(chunk)->u.mem[chunk->mem_size]);     \\\n  tor_assert(sent_val == SENTINEL_VAL);                                 \\\n  STMT_END",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "RET_ERR",
+            "#define RET_ERR(msg)                                               \\ /* <=== src/or/routerparse.c:3727:3734:RET_ERR:1 */ \n  STMT_BEGIN                                                       \\\n    if (tok) token_clear(tok);                                      \\\n    tok = ALLOC_ZERO(sizeof(directory_token_t));                   \\\n    tok->tp = _ERR;                                                \\\n    tok->error = STRDUP(msg);                                      \\\n    goto done_tokenizing;                                          \\\n  STMT_END",
+            3
+        ],
+        [
+            "src/common/container.c",
+            "smartlist_create",
+            "smartlist_t * /* <=== smartlist_create */ \nsmartlist_create(void)\n{\n  smartlist_t *sl = tor_malloc(sizeof(smartlist_t));\n  sl->num_used = 0;\n  sl->capacity = SMARTLIST_DEFAULT_CAPACITY;\n  sl->list = tor_malloc(sizeof(void *) * sl->capacity);\n  return sl;\n}",
+            1
+        ],
+        [
+            "src/common/crypto.c",
+            "crypto_new_pk_env",
+            "crypto_pk_env_t * /* <=== crypto_new_pk_env */ \ncrypto_new_pk_env(void)\n{\n  RSA *rsa;\n\n  rsa = RSA_new();\n  tor_assert(rsa);\n  return _crypto_new_pk_env_rsa(rsa);\n}",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "AT_END",
+            "#define AT_END 2 /* <=== src/or/routerparse.c:201:201:AT_END:0 */ ",
+            2
+        ],
+        [
+            "src/common/crypto.c",
+            "crypto_free_pk_env",
+            "void /* <=== crypto_free_pk_env */ \ncrypto_free_pk_env(crypto_pk_env_t *env)\n{\n  if (!env)\n    return;\n\n  if (--env->refs > 0)\n    return;\n  tor_assert(env->refs == 0);\n\n  if (env->key)\n    RSA_free(env->key);\n\n  tor_free(env);\n}",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "find_start_of_next_routerstatus",
+            "static INLINE const char * /* <=== find_start_of_next_routerstatus */ \nfind_start_of_next_routerstatus(const char *s)\n{\n  const char *eos, *footer, *sig;\n  if ((eos = strstr(s, \"\\nr \")))\n    ++eos;\n  else\n    eos = s + strlen(s);\n\n  footer = tor_memstr(s, eos-s, \"\\ndirectory-footer\");\n  sig = tor_memstr(s, eos-s, \"\\ndirectory-signature\");\n\n  if (footer && sig)\n    return MIN(footer, sig) + 1;\n  else if (footer)\n    return footer+1;\n  else if (sig)\n    return sig+1;\n  else\n    return eos;\n}",
+            1
+        ],
+        [
+            "src/common/container.c",
+            "smartlist_ensure_capacity",
+            "static INLINE void /* <=== smartlist_ensure_capacity */ \nsmartlist_ensure_capacity(smartlist_t *sl, int size)\n{\n#if SIZEOF_SIZE_T > SIZEOF_INT\n#define MAX_CAPACITY (INT_MAX)\n#else\n#define MAX_CAPACITY (int)((SIZE_MAX / (sizeof(void*))))\n#endif\n  if (size > sl->capacity) {\n    int higher = sl->capacity;\n    if (PREDICT_UNLIKELY(size > MAX_CAPACITY/2)) {\n      tor_assert(size <= MAX_CAPACITY);\n      higher = MAX_CAPACITY;\n    } else {\n      while (size > higher)\n        higher *= 2;\n    }\n    sl->capacity = higher;\n    sl->list = tor_realloc(sl->list, sizeof(void*)*((size_t)sl->capacity));\n  }\n}",
+            3
+        ],
+        [
+            "src/common/util.c",
+            "find_whitespace_eos",
+            "const char * /* <=== find_whitespace_eos */ \nfind_whitespace_eos(const char *s, const char *eos)\n{\n  /* tor_assert(s); */\n  while (s < eos) {\n    switch (*s)\n    {\n    case '\\0':\n    case '#':\n    case ' ':\n    case '\\r':\n    case '\\n':\n    case '\\t':\n      return s;\n    default:\n      ++s;\n    }\n  }\n  return s;\n}",
+            3
+        ],
+        [
+            "src/common/util.c",
+            "strcmpstart",
+            "int /* <=== strcmpstart */ \nstrcmpstart(const char *s1, const char *s2)\n{\n  size_t n = strlen(s2);\n  return strncmp(s1, s2, n);\n}",
+            3
+        ],
+        [
+            "src/common/crypto.c",
+            "crypto_pk_read_private_key_from_string",
+            "int /* <=== crypto_pk_read_private_key_from_string */ \ncrypto_pk_read_private_key_from_string(crypto_pk_env_t *env,\n                                       const char *s, ssize_t len)\n{\n  BIO *b;\n\n  tor_assert(env);\n  tor_assert(s);\n  tor_assert(len < INT_MAX && len < SSIZE_T_CEILING);\n\n  /* Create a read-only memory BIO, backed by the string 's' */\n  b = BIO_new_mem_buf((char*)s, (int)len);\n  if (!b)\n    return -1;\n\n  if (env->key)\n    RSA_free(env->key);\n\n  env->key = PEM_read_bio_RSAPrivateKey(b,NULL,NULL,NULL);\n\n  BIO_free(b);\n\n  if (!env->key) {\n    crypto_log_errors(LOG_WARN, \"Error parsing private key\");\n    return -1;\n  }\n  return 0;\n}",
+            3
+        ],
+        [
+            "src/common/util.c",
+            "escaped",
+            "const char * /* <=== escaped */ \nescaped(const char *s)\n{\n  static char *_escaped_val = NULL;\n  tor_free(_escaped_val);\n\n  if (s)\n    _escaped_val = esc_for_log(s);\n  else\n    _escaped_val = NULL;\n\n  return _escaped_val;\n}",
+            1
+        ],
+        [
+            "src/common/compat.c",
+            "tor_fix_source_file",
+            "const char * /* <=== tor_fix_source_file */ \ntor_fix_source_file(const char *fname)\n{\n  const char *cp1, *cp2, *r;\n  cp1 = strrchr(fname, '/');\n  cp2 = strrchr(fname, '\\\\');\n  if (cp1 && cp2) {\n    r = (cp1<cp2)?(cp2+1):(cp1+1);\n  } else if (cp1) {\n    r = cp1+1;\n  } else if (cp2) {\n    r = cp2+1;\n  } else {\n    r = fname;\n  }\n  return r;\n}",
+            2
+        ],
+        [
+            "src/common/util.c",
+            "_tor_malloc_roundup",
+            "void * /* <=== _tor_malloc_roundup */ \n_tor_malloc_roundup(size_t *sizep DMALLOC_PARAMS)\n{\n#ifdef HAVE_MALLOC_GOOD_SIZE\n  tor_assert(*sizep < SIZE_T_CEILING);\n  *sizep = malloc_good_size(*sizep);\n  return _tor_malloc(*sizep DMALLOC_FN_ARGS);\n#elif 0 && defined(HAVE_MALLOC_USABLE_SIZE) && !defined(USE_DMALLOC)\n  /* Never use malloc_usable_size(); it makes valgrind really unhappy,\n   * and doesn't win much in terms of usable space where it exists. */\n  void *result;\n  tor_assert(*sizep < SIZE_T_CEILING);\n  result = _tor_malloc(*sizep DMALLOC_FN_ARGS);\n  *sizep = malloc_usable_size(result);\n  return result;\n#else\n  return _tor_malloc(*sizep DMALLOC_FN_ARGS);\n#endif\n}",
+            3
+        ],
+        [
+            "src/common/memarea.c",
+            "memarea_strndup",
+            "char * /* <=== memarea_strndup */ \nmemarea_strndup(memarea_t *area, const char *s, size_t n)\n{\n  size_t ln;\n  char *result;\n  const char *cp, *end = s+n;\n  tor_assert(n < SIZE_T_CEILING);\n  for (cp = s; cp < end && *cp; ++cp)\n    ;\n  /* cp now points to s+n, or to the 0 in the string. */\n  ln = cp-s;\n  result = memarea_alloc(area, ln+1);\n  memcpy(result, s, ln);\n  result[ln]='\\0';\n  return result;\n}",
+            3
+        ],
+        [
+            "src/common/util.c",
+            "eat_whitespace_eos_no_nl",
+            "const char * /* <=== eat_whitespace_eos_no_nl */ \neat_whitespace_eos_no_nl(const char *s, const char *eos)\n{\n  while (s < eos && (*s == ' ' || *s == '\\t' || *s == '\\r'))\n    ++s;\n  return s;\n}",
+            3
+        ],
+        [
+            "src/common/compat.c",
+            "get_uint32",
+            "uint32_t /* <=== get_uint32 */ \nget_uint32(const void *cp)\n{\n  uint32_t v;\n  memcpy(&v,cp,4);\n  return v;\n}",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "MAX_LINE_LENGTH",
+            "#define MAX_LINE_LENGTH (128*1024) /* <=== src/or/routerparse.c:3845:3845:MAX_LINE_LENGTH:0 */ ",
+            3
+        ],
+        [
+            "src/common/container.h",
+            "SMARTLIST_FOREACH",
+            "#define SMARTLIST_FOREACH(sl, type, var, cmd)                   \\ /* <=== src/common/container.h:227:230:SMARTLIST_FOREACH:4 */ \n  SMARTLIST_FOREACH_BEGIN(sl,type,var) {                        \\\n    cmd;                                                        \\\n  } SMARTLIST_FOREACH_END(var)",
+            2
+        ],
+        [
+            "src/common/util.h",
+            "tor_malloc",
+            "#define tor_malloc(size)       _tor_malloc(size DMALLOC_ARGS) /* <=== src/common/util.h:108:108:tor_malloc:1 */ ",
+            2
+        ],
+        [
+            "src/common/compat.c",
+            "tor_memmem",
+            "const void * /* <=== tor_memmem */ \ntor_memmem(const void *_haystack, size_t hlen,\n           const void *_needle, size_t nlen)\n{\n#if defined(HAVE_MEMMEM) && (!defined(__GNUC__) || __GNUC__ >= 2)\n  tor_assert(nlen);\n  return memmem(_haystack, hlen, _needle, nlen);\n#else\n  /* This isn't as fast as the GLIBC implementation, but it doesn't need to\n   * be. */\n  const char *p, *end;\n  const char *haystack = (const char*)_haystack;\n  const char *needle = (const char*)_needle;\n  char first;\n  tor_assert(nlen);\n\n  p = haystack;\n  end = haystack + hlen;\n  first = *(const char*)needle;\n  while ((p = memchr(p, first, end-p))) {\n    if (p+nlen > end)\n      return NULL;\n    if (fast_memeq(p, needle, nlen))\n      return p;\n    ++p;\n  }\n  return NULL;\n#endif\n}",
+            3
+        ],
+        [
+            "src/common/memarea.c",
+            "CHUNK_SIZE",
+            "#define CHUNK_SIZE 4096 /* <=== src/common/memarea.c:89:89:CHUNK_SIZE:0 */ ",
+            2
+        ],
+        [
+            "src/or/routerparse.c",
+            "tokenize_string",
+            "static int /* <=== tokenize_string */ \ntokenize_string(memarea_t *area,\n                const char *start, const char *end, smartlist_t *out,\n                token_rule_t *table, int flags)\n{\n  const char **s;\n  directory_token_t *tok = NULL;\n  int counts[_NIL];\n  int i;\n  int first_nonannotation;\n  int prev_len = smartlist_len(out);\n  tor_assert(area);\n\n  s = &start;\n  if (!end)\n    end = start+strlen(start);\n  for (i = 0; i < _NIL; ++i)\n    counts[i] = 0;\n\n  SMARTLIST_FOREACH(out, const directory_token_t *, t, ++counts[t->tp]);\n\n  while (*s < end && (!tok || tok->tp != _EOF)) {\n    tok = get_next_token(area, s, end, table);\n    if (tok->tp == _ERR) {\n      log_warn(LD_DIR, \"parse error: %s\", tok->error);\n      token_clear(tok);\n      return -1;\n    }\n    ++counts[tok->tp];\n    smartlist_add(out, tok);\n    *s = eat_whitespace_eos(*s, end);\n  }\n\n  if (flags & TS_NOCHECK)\n    return 0;\n\n  if ((flags & TS_ANNOTATIONS_OK)) {\n    first_nonannotation = -1;\n    for (i = 0; i < smartlist_len(out); ++i) {\n      tok = smartlist_get(out, i);\n      if (tok->tp < MIN_ANNOTATION || tok->tp > MAX_ANNOTATION) {\n        first_nonannotation = i;\n        break;\n      }\n    }\n    if (first_nonannotation < 0) {\n      log_warn(LD_DIR, \"parse error: item contains only annotations\");\n      return -1;\n    }\n    for (i=first_nonannotation;  i < smartlist_len(out); ++i) {\n      tok = smartlist_get(out, i);\n      if (tok->tp >= MIN_ANNOTATION && tok->tp <= MAX_ANNOTATION) {\n        log_warn(LD_DIR, \"parse error: Annotations mixed with keywords\");\n        return -1;\n      }\n    }\n    if ((flags & TS_NO_NEW_ANNOTATIONS)) {\n      if (first_nonannotation != prev_len) {\n        log_warn(LD_DIR, \"parse error: Unexpected annotations.\");\n        return -1;\n      }\n    }\n  } else {\n    for (i=0;  i < smartlist_len(out); ++i) {\n      tok = smartlist_get(out, i);\n      if (tok->tp >= MIN_ANNOTATION && tok->tp <= MAX_ANNOTATION) {\n        log_warn(LD_DIR, \"parse error: no annotations allowed.\");\n        return -1;\n      }\n    }\n    first_nonannotation = 0;\n  }\n  for (i = 0; table[i].t; ++i) {\n    if (counts[table[i].v] < table[i].min_cnt) {\n      log_warn(LD_DIR, \"Parse error: missing %s element.\", table[i].t);\n      return -1;\n    }\n    if (counts[table[i].v] > table[i].max_cnt) {\n      log_warn(LD_DIR, \"Parse error: too many %s elements.\", table[i].t);\n      return -1;\n    }\n    if (table[i].pos & AT_START) {\n      if (smartlist_len(out) < 1 ||\n          (tok = smartlist_get(out, first_nonannotation))->tp != table[i].v) {\n        log_warn(LD_DIR, \"Parse error: first item is not %s.\", table[i].t);\n        return -1;\n      }\n    }\n    if (table[i].pos & AT_END) {\n      if (smartlist_len(out) < 1 ||\n          (tok = smartlist_get(out, smartlist_len(out)-1))->tp != table[i].v) {\n        log_warn(LD_DIR, \"Parse error: last item is not %s.\", table[i].t);\n        return -1;\n      }\n    }\n  }\n  return 0;\n}",
+            1
+        ],
+        [
+            "src/common/memarea.c",
+            "memarea_strdup",
+            "char * /* <=== memarea_strdup */ \nmemarea_strdup(memarea_t *area, const char *s)\n{\n  return memarea_memdup(area, s, strlen(s)+1);\n}",
+            3
+        ],
+        [
+            "src/common/container.c",
+            "smartlist_add",
+            "void /* <=== smartlist_add */ \nsmartlist_add(smartlist_t *sl, void *element)\n{\n  smartlist_ensure_capacity(sl, sl->num_used+1);\n  sl->list[sl->num_used++] = element;\n}",
+            2
+        ],
+        [
+            "src/common/container.h",
+            "smartlist_get",
+            "#define smartlist_get(sl, idx) ((sl)->list[idx]) /* <=== src/common/container.h:80:80:smartlist_get:2 */ ",
+            2
+        ],
+        [
+            "src/common/compat.h",
+            "PREDICT_UNLIKELY",
+            "#define PREDICT_UNLIKELY(exp) (exp) /* <=== src/common/compat.h:174:174:PREDICT_UNLIKELY:1 */ ",
+            3
+        ],
+        [
+            "src/common/util.c",
+            "strcmp_len",
+            "int /* <=== strcmp_len */ \nstrcmp_len(const char *s1, const char *s2, size_t s1_len)\n{\n  size_t s2_len = strlen(s2);\n  if (s1_len < s2_len)\n    return -1;\n  if (s1_len > s2_len)\n    return 1;\n  return fast_memcmp(s1, s2, s2_len);\n}",
+            3
+        ],
+        [
+            "src/common/compat.c",
+            "tor_snprintf",
+            "int /* <=== tor_snprintf */ \ntor_snprintf(char *str, size_t size, const char *format, ...)\n{\n  va_list ap;\n  int r;\n  va_start(ap,format);\n  r = tor_vsnprintf(str,size,format,ap);\n  va_end(ap);\n  return r;\n}",
+            3
+        ],
+        [
+            "src/common/compat.h",
+            "tor_memstr",
+            "static INLINE const void * /* <=== tor_memstr */ \ntor_memstr(const void *haystack, size_t hlen, const char *needle)\n{\n  return tor_memmem(haystack, hlen, needle, strlen(needle));\n}",
+            2
+        ],
+        [
+            "src/or/routerparse.c",
+            "MAX_ANNOTATION",
+            "#define MAX_ANNOTATION _A_UNKNOWN /* <=== src/or/routerparse.c:160:160:MAX_ANNOTATION:0 */ ",
+            2
+        ],
+        [
+            "src/common/crypto.c",
+            "base64_decode",
+            "int /* <=== base64_decode */ \nbase64_decode(char *dest, size_t destlen, const char *src, size_t srclen)\n{\n#ifdef USE_OPENSSL_BASE64\n  EVP_ENCODE_CTX ctx;\n  int len, ret;\n  /* 64 bytes of input -> *up to* 48 bytes of output.\n     Plus one more byte, in case I'm wrong.\n  */\n  if (destlen < ((srclen/64)+1)*49)\n    return -1;\n  if (destlen > SIZE_T_CEILING)\n    return -1;\n\n  EVP_DecodeInit(&ctx);\n  EVP_DecodeUpdate(&ctx, (unsigned char*)dest, &len,\n                   (unsigned char*)src, srclen);\n  EVP_DecodeFinal(&ctx, (unsigned char*)dest, &ret);\n  ret += len;\n  return ret;\n#else\n  const char *eos = src+srclen;\n  uint32_t n=0;\n  int n_idx=0;\n  char *dest_orig = dest;\n\n  /* Max number of bits == srclen*6.\n   * Number of bytes required to hold all bits == (srclen*6)/8.\n   * Yes, we want to round down: anything that hangs over the end of a\n   * byte is padding. */\n  if (destlen < (srclen*3)/4)\n    return -1;\n  if (destlen > SIZE_T_CEILING)\n    return -1;\n\n  /* Iterate over all the bytes in src.  Each one will add 0 or 6 bits to the\n   * value we're decoding.  Accumulate bits in <b>n</b>, and whenever we have\n   * 24 bits, batch them into 3 bytes and flush those bytes to dest.\n   */\n  for ( ; src < eos; ++src) {\n    unsigned char c = (unsigned char) *src;\n    uint8_t v = base64_decode_table[c];\n    switch (v) {\n      case X:\n        /* This character isn't allowed in base64. */\n        return -1;\n      case SP:\n        /* This character is whitespace, and has no effect. */\n        continue;\n      case PAD:\n        /* We've hit an = character: the data is over. */\n        goto end_of_loop;\n      default:\n        /* We have an actual 6-bit value.  Append it to the bits in n. */\n        n = (n<<6) | v;\n        if ((++n_idx) == 4) {\n          /* We've accumulated 24 bits in n. Flush them. */\n          *dest++ = (n>>16);\n          *dest++ = (n>>8) & 0xff;\n          *dest++ = (n) & 0xff;\n          n_idx = 0;\n          n = 0;\n        }\n    }\n  }\n end_of_loop:\n  /* If we have leftover bits, we need to cope. */\n  switch (n_idx) {\n    case 0:\n    default:\n      /* No leftover bits.  We win. */\n      break;\n    case 1:\n      /* 6 leftover bits. That's invalid; we can't form a byte out of that. */\n      return -1;\n    case 2:\n      /* 12 leftover bits: The last 4 are padding and the first 8 are data. */\n      *dest++ = n >> 4;\n      break;\n    case 3:\n      /* 18 leftover bits: The last 2 are padding and the first 16 are data. */\n      *dest++ = n >> 10;\n      *dest++ = n >> 2;\n  }\n\n  tor_assert((dest-dest_orig) <= (ssize_t)destlen);\n  tor_assert((dest-dest_orig) <= INT_MAX);\n\n  return (int)(dest-dest_orig);\n#endif\n}",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "token_clear",
+            "static void /* <=== token_clear */ \ntoken_clear(directory_token_t *tok)\n{\n  if (tok->key)\n    crypto_free_pk_env(tok->key);\n}",
+            2
+        ],
+        [
+            "src/common/util.h",
+            "tor_malloc_roundup",
+            "#define tor_malloc_roundup(szp) _tor_malloc_roundup(szp DMALLOC_ARGS) /* <=== src/common/util.h:110:110:tor_malloc_roundup:1 */ ",
+            3
+        ],
+        [
+            "src/common/memarea.c",
+            "memarea_alloc",
+            "void * /* <=== memarea_alloc */ \nmemarea_alloc(memarea_t *area, size_t sz)\n{\n  memarea_chunk_t *chunk = area->first;\n  char *result;\n  tor_assert(chunk);\n  CHECK_SENTINEL(chunk);\n  tor_assert(sz < SIZE_T_CEILING);\n  if (sz == 0)\n    sz = 1;\n  if (chunk->next_mem+sz > chunk->u.mem+chunk->mem_size) {\n    if (sz+CHUNK_HEADER_SIZE >= CHUNK_SIZE) {\n      /* This allocation is too big.  Stick it in a special chunk, and put\n       * that chunk second in the list. */\n      memarea_chunk_t *new_chunk = alloc_chunk(sz+CHUNK_HEADER_SIZE, 0);\n      new_chunk->next_chunk = chunk->next_chunk;\n      chunk->next_chunk = new_chunk;\n      chunk = new_chunk;\n    } else {\n      memarea_chunk_t *new_chunk = alloc_chunk(CHUNK_SIZE, 1);\n      new_chunk->next_chunk = chunk;\n      area->first = chunk = new_chunk;\n    }\n    tor_assert(chunk->mem_size >= sz);\n  }\n  result = chunk->next_mem;\n  chunk->next_mem = chunk->next_mem + sz;\n  /* Reinstate these if bug 930 ever comes back\n  tor_assert(chunk->next_mem >= chunk->u.mem);\n  tor_assert(chunk->next_mem <= chunk->u.mem+chunk->mem_size);\n  */\n  chunk->next_mem = realign_pointer(chunk->next_mem);\n  return result;\n}",
+            3
+        ],
+        [
+            "src/common/util.c",
+            "_tor_malloc",
+            "void * /* <=== _tor_malloc */ \n_tor_malloc(size_t size DMALLOC_PARAMS)\n{\n  void *result;\n\n  tor_assert(size < SIZE_T_CEILING);\n\n#ifndef MALLOC_ZERO_WORKS\n  /* Some libc mallocs don't work when size==0. Override them. */\n  if (size==0) {\n    size=1;\n  }\n#endif\n\n#ifdef USE_DMALLOC\n  result = dmalloc_malloc(file, line, size, DMALLOC_FUNC_MALLOC, 0, 0);\n#else\n  result = malloc(size);\n#endif\n\n  if (PREDICT_UNLIKELY(result == NULL)) {\n    log_err(LD_MM,\"Out of memory on malloc(). Dying.\");\n    /* If these functions die within a worker process, they won't call\n     * spawn_exit, but that's ok, since the parent will run out of memory soon\n     * anyway. */\n    exit(1);\n  }\n  return result;\n}",
+            2
+        ],
+        [
+            "src/common/util.h",
+            "tor_strdup",
+            "#define tor_strdup(s)          _tor_strdup(s DMALLOC_ARGS) /* <=== src/common/util.h:112:112:tor_strdup:1 */ ",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "get_token_arguments",
+            "static INLINE int /* <=== get_token_arguments */ \nget_token_arguments(memarea_t *area, directory_token_t *tok,\n                    const char *s, const char *eol)\n{\n/** Largest number of arguments we'll accept to any token, ever. */\n#define MAX_ARGS 512\n  char *mem = memarea_strndup(area, s, eol-s);\n  char *cp = mem;\n  int j = 0;\n  char *args[MAX_ARGS];\n  while (*cp) {\n    if (j == MAX_ARGS)\n      return -1;\n    args[j++] = cp;\n    cp = (char*)find_whitespace(cp);\n    if (!cp || !*cp)\n      break; /* End of the line. */\n    *cp++ = '\\0';\n    cp = (char*)eat_whitespace(cp);\n  }\n  tok->n_args = j;\n  tok->args = memarea_memdup(area, args, j*sizeof(char*));\n  return j;\n#undef MAX_ARGS\n}",
+            3
+        ],
+        [
+            "src/or/routerparse.c",
+            "find_by_keyword",
+            "#define find_by_keyword(s, keyword) _find_by_keyword((s), (keyword), #keyword) /* <=== src/or/routerparse.c:550:550:find_by_keyword:2 */ ",
+            1
+        ],
+        [
+            "src/common/container.c",
+            "SMARTLIST_DEFAULT_CAPACITY",
+            "#define SMARTLIST_DEFAULT_CAPACITY 16 /* <=== src/common/container.c:27:27:SMARTLIST_DEFAULT_CAPACITY:0 */ ",
+            2
+        ],
+        [
+            "src/common/util.h",
+            "tor_assert",
+            "#define tor_assert(expr) STMT_BEGIN                                     \\ /* <=== src/common/util.h:45:52:tor_assert:1 */ \n    if (PREDICT_UNLIKELY(!(expr))) {                                    \\\n      log_err(LD_BUG, \"%s:%d: %s: Assertion %s failed; aborting.\",      \\\n          _SHORT_FILE_, __LINE__, __func__, #expr);                     \\\n      fprintf(stderr,\"%s:%d %s: Assertion %s failed; aborting.\\n\",      \\\n              _SHORT_FILE_, __LINE__, __func__, #expr);                 \\\n      abort();                                                          \\\n    } STMT_END",
+            1
+        ],
+        [
+            "src/or/routerparse.c",
+            "TS_NOCHECK",
+            "#define TS_NOCHECK 2 /* <=== src/or/routerparse.c:555:555:TS_NOCHECK:0 */ ",
+            2
+        ],
+        [
+            "src/common/crypto.c",
+            "crypto_digest_all",
+            "int /* <=== crypto_digest_all */ \ncrypto_digest_all(digests_t *ds_out, const char *m, size_t len)\n{\n  digest_algorithm_t i;\n  tor_assert(ds_out);\n  memset(ds_out, 0, sizeof(*ds_out));\n  if (crypto_digest(ds_out->d[DIGEST_SHA1], m, len) < 0)\n    return -1;\n  for (i = DIGEST_SHA256; i < N_DIGEST_ALGORITHMS; ++i) {\n    if (crypto_digest256(ds_out->d[i], m, len, i) < 0)\n      return -1;\n  }\n  return 0;\n}",
+            3
+        ]
+    ],
+    "globalVars": [
+        "static token_rule_t[] networkstatus_token_table",
+        "static token_rule_t[] networkstatus_consensus_token_table"
+    ],
+    "importContext": [
+        "#include \"routerlist.h\"",
+        "#include <math.h>",
+        "#include \"microdesc.h\"",
+        "#include \"or.h\"",
+        "#include \"memarea.h\"",
+        "#include \"circuitbuild.h\"",
+        "#include \"rephist.h\"",
+        "#include \"dirvote.h\"",
+        "#include \"dirserv.h\"",
+        "#include \"rendcommon.h\"",
+        "#include \"networkstatus.h\"",
+        "#include \"routerparse.h\"",
+        "#include \"config.h\"",
+        "#include \"policies.h\"",
+        "#include \"router.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct directory_token_t {\n  directory_keyword tp;        /**< Type of the token. */\n  int n_args:30;               /**< Number of elements in args */\n  char **args;                 /**< Array of arguments from keyword line. */\n\n  char *object_type;           /**< -----BEGIN [object_type]-----*/\n  size_t object_size;          /**< Bytes in object_body */\n  char *object_body;           /**< Contents of object, base64-decoded. */\n\n  crypto_pk_env_t *key;        /**< For public keys only.  Heap-allocated. */\n\n  char *error;                 /**< For _ERR tokens only. */\n} directory_token_t;",
+            "directory_token_t"
+        ],
+        [
+            "typedef struct {\n  char d[N_DIGEST_ALGORITHMS][DIGEST256_LEN];\n}",
+            "digests_t"
+        ],
+        [
+            "typedef struct smartlist_t {\n  /** @{ */\n  /** <b>list</b> has enough capacity to store exactly <b>capacity</b> elements\n   * before it needs to be resized.  Only the first <b>num_used</b> (\\<=\n   * capacity) elements point to valid data.\n   */\n  void **list;\n  int num_used;\n  int capacity;\n  /** @} */\n} smartlist_t;",
+            "smartlist_t"
+        ],
+        [
+            "struct memarea_t {\n  memarea_chunk_t *first; /**< Top of the chunk stack: never NULL. */\n}",
+            "memarea_t"
+        ],
+        [
+            "typedef enum {\n  NS_TYPE_VOTE,\n  NS_TYPE_CONSENSUS,\n  NS_TYPE_OPINION,\n}",
+            "networkstatus_type_t"
+        ],
+        [
+            "typedef struct networkstatus_t {\n  networkstatus_type_t type : 8; /**< Vote, consensus, or opinion? */\n  consensus_flavor_t flavor : 8; /**< If a consensus, what kind? */\n  time_t published; /**< Vote only: Time when vote was written. */\n  time_t valid_after; /**< Time after which this vote or consensus applies. */\n  time_t fresh_until; /**< Time before which this is the most recent vote or\n                       * consensus. */\n  time_t valid_until; /**< Time after which this vote or consensus should not\n                       * be used. */\n\n  /** Consensus only: what method was used to produce this consensus? */\n  int consensus_method;\n  /** Vote only: what methods is this voter willing to use? */\n  smartlist_t *supported_methods;\n\n  /** How long does this vote/consensus claim that authorities take to\n   * distribute their votes to one another? */\n  int vote_seconds;\n  /** How long does this vote/consensus claim that authorities take to\n   * distribute their consensus signatures to one another? */\n  int dist_seconds;\n\n  /** Comma-separated list of recommended client software, or NULL if this\n   * voter has no opinion. */\n  char *client_versions;\n  char *server_versions;\n  /** List of flags that this vote/consensus applies to routers.  If a flag is\n   * not listed here, the voter has no opinion on what its value should be. */\n  smartlist_t *known_flags;\n\n  /** List of key=value strings for the parameters in this vote or\n   * consensus, sorted by key. */\n  smartlist_t *net_params;\n\n  /** List of key=value strings for the bw weight parameters in the\n   * consensus. */\n  smartlist_t *weight_params;\n\n  /** List of networkstatus_voter_info_t.  For a vote, only one element\n   * is included.  For a consensus, one element is included for every voter\n   * whose vote contributed to the consensus. */\n  smartlist_t *voters;\n\n  struct authority_cert_t *cert; /**< Vote only: the voter's certificate. */\n\n  /** Digests of this document, as signed. */\n  digests_t digests;\n\n  /** List of router statuses, sorted by identity digest.  For a vote,\n   * the elements are vote_routerstatus_t; for a consensus, the elements\n   * are routerstatus_t. */\n  smartlist_t *routerstatus_list;\n\n  /** If present, a map from descriptor digest to elements of\n   * routerstatus_list. */\n  digestmap_t *desc_digest_map;\n}",
+            "networkstatus_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/or/routerparse.c": [
+            2778,
+            2779,
+            2780,
+            2782,
+            2787,
+            2795,
+            2800,
+            2805,
+            2806,
+            2807,
+            2808,
+            2809,
+            2810,
+            2818,
+            2819,
+            2820,
+            2821,
+            2822,
+            2823,
+            2824
+        ]
+    },
+    "visitedLines_before": {
+        "src/or/routerparse.c": [
+            2778,
+            2779,
+            2780,
+            2782,
+            2787,
+            2795,
+            2800,
+            2805,
+            2806,
+            2807,
+            2808,
+            2809,
+            2810,
+            2818,
+            2819,
+            2820,
+            2821,
+            2822,
+            2823,
+            2824
+        ]
+    },
+    "visitedParams": {
+        "src/or/routerparse.c": [
+            [
+                "const char *s",
+                "networkstatus_parse_vote_from_string"
+            ],
+            [
+                "networkstatus_type_t ns_type",
+                "networkstatus_parse_vote_from_string"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/or/routerparse.c",
+            "networkstatus_parse_vote_from_string",
+            "networkstatus_t * /* <=== networkstatus_parse_vote_from_string */ \nnetworkstatus_parse_vote_from_string(const char *s, const char **eos_out,\n                                     networkstatus_type_t ns_type)\n{\n  smartlist_t *tokens = smartlist_create();\n  smartlist_t *rs_tokens = NULL, *footer_tokens = NULL;\n  networkstatus_voter_info_t *voter = NULL;\n  networkstatus_t *ns = NULL;\n  digests_t ns_digests;\n  const char *cert, *end_of_header, *end_of_footer, *s_dup = s;\n  directory_token_t *tok;\n  int ok;\n  struct in_addr in;\n  int i, inorder, n_signatures = 0;\n  memarea_t *area = NULL, *rs_area = NULL;\n  consensus_flavor_t flav = FLAV_NS;\n\n  tor_assert(s);\n\n  if (eos_out)\n    *eos_out = NULL;\n\n  if (router_get_networkstatus_v3_hashes(s, &ns_digests)) {\n    log_warn(LD_DIR, \"Unable to compute digest of network-status\");\n    goto err;\n  }\n\n  area = memarea_new();\n  end_of_header = find_start_of_next_routerstatus(s);\n  if (tokenize_string(area, s, end_of_header, tokens,\n                      (ns_type == NS_TYPE_CONSENSUS) ?\n                      networkstatus_consensus_token_table :\n                      networkstatus_token_table, 0)) {\n    log_warn(LD_DIR, \"Error tokenizing network-status vote header\");\n    goto err;\n  }\n\n  ns = tor_malloc_zero(sizeof(networkstatus_t));\n  memcpy(&ns->digests, &ns_digests, sizeof(ns_digests));\n\n  tok = find_by_keyword(tokens, K_NETWORK_STATUS_VERSION);\n  tor_assert(tok);\n  if (tok->n_args > 1) {\n    int flavor = networkstatus_parse_flavor_name(tok->args[1]);\n    if (flavor < 0) {\n      log_warn(LD_DIR, \"Can't parse document with unknown flavor %s\",\n               escaped(tok->args[1]));\n      goto err;\n    }\n    ns->flavor = flav = flavor;\n  }\n  if (flav != FLAV_NS && ns_type != NS_TYPE_CONSENSUS) {\n    log_warn(LD_DIR, \"Flavor found on non-consensus networkstatus.\");\n    goto err;\n  }\n\n  if (ns_type != NS_TYPE_CONSENSUS) {\n    const char *end_of_cert = NULL;\n    if (!(cert = strstr(s, \"\\ndir-key-certificate-version\")))\n      goto err;\n    ++cert;\n    ns->cert = authority_cert_parse_from_string(cert, &end_of_cert);\n    if (!ns->cert || !end_of_cert || end_of_cert > end_of_header)\n      goto err;\n  }\n\n  tok = find_by_keyword(tokens, K_VOTE_STATUS);\n  tor_assert(tok->n_args);\n  if (!strcmp(tok->args[0], \"vote\")) {\n    ns->type = NS_TYPE_VOTE;\n  } else if (!strcmp(tok->args[0], \"consensus\")) {\n    ns->type = NS_TYPE_CONSENSUS;\n  } else if (!strcmp(tok->args[0], \"opinion\")) {\n    ns->type = NS_TYPE_OPINION;\n  } else {\n    log_warn(LD_DIR, \"Unrecognized vote status %s in network-status\",\n             escaped(tok->args[0]));\n    goto err;\n  }\n  if (ns_type != ns->type) {\n    log_warn(LD_DIR, \"Got the wrong kind of v3 networkstatus.\");\n    goto err;\n  }\n\n  if (ns->type == NS_TYPE_VOTE || ns->type == NS_TYPE_OPINION) {\n    tok = find_by_keyword(tokens, K_PUBLISHED);\n    if (parse_iso_time(tok->args[0], &ns->published))\n      goto err;\n\n    ns->supported_methods = smartlist_create();\n    tok = find_opt_by_keyword(tokens, K_CONSENSUS_METHODS);\n    if (tok) {\n      for (i=0; i < tok->n_args; ++i)\n        smartlist_add(ns->supported_methods, tor_strdup(tok->args[i]));\n    } else {\n      smartlist_add(ns->supported_methods, tor_strdup(\"1\"));\n    }\n  } else {\n    tok = find_opt_by_keyword(tokens, K_CONSENSUS_METHOD);\n    if (tok) {\n      ns->consensus_method = (int)tor_parse_long(tok->args[0], 10, 1, INT_MAX,\n                                                 &ok, NULL);\n      if (!ok)\n        goto err;\n    } else {\n      ns->consensus_method = 1;\n    }\n  }\n\n  tok = find_by_keyword(tokens, K_VALID_AFTER);\n  if (parse_iso_time(tok->args[0], &ns->valid_after))\n    goto err;\n\n  tok = find_by_keyword(tokens, K_FRESH_UNTIL);\n  if (parse_iso_time(tok->args[0], &ns->fresh_until))\n    goto err;\n\n  tok = find_by_keyword(tokens, K_VALID_UNTIL);\n  if (parse_iso_time(tok->args[0], &ns->valid_until))\n    goto err;\n\n  tok = find_by_keyword(tokens, K_VOTING_DELAY);\n  tor_assert(tok->n_args >= 2);\n  ns->vote_seconds =\n    (int) tor_parse_long(tok->args[0], 10, 0, INT_MAX, &ok, NULL);\n  if (!ok)\n    goto err;\n  ns->dist_seconds =\n    (int) tor_parse_long(tok->args[1], 10, 0, INT_MAX, &ok, NULL);\n  if (!ok)\n    goto err;\n  if (ns->valid_after + MIN_VOTE_INTERVAL > ns->fresh_until) {\n    log_warn(LD_DIR, \"Vote/consensus freshness interval is too short\");\n    goto err;\n  }\n  if (ns->valid_after + MIN_VOTE_INTERVAL*2 > ns->valid_until) {\n    log_warn(LD_DIR, \"Vote/consensus liveness interval is too short\");\n    goto err;\n  }\n  if (ns->vote_seconds < MIN_VOTE_SECONDS) {\n    log_warn(LD_DIR, \"Vote seconds is too short\");\n    goto err;\n  }\n  if (ns->dist_seconds < MIN_DIST_SECONDS) {\n    log_warn(LD_DIR, \"Dist seconds is too short\");\n    goto err;\n  }\n\n  if ((tok = find_opt_by_keyword(tokens, K_CLIENT_VERSIONS))) {\n    ns->client_versions = tor_strdup(tok->args[0]);\n  }\n  if ((tok = find_opt_by_keyword(tokens, K_SERVER_VERSIONS))) {\n    ns->server_versions = tor_strdup(tok->args[0]);\n  }\n\n  tok = find_by_keyword(tokens, K_KNOWN_FLAGS);\n  ns->known_flags = smartlist_create();\n  inorder = 1;\n  for (i = 0; i < tok->n_args; ++i) {\n    smartlist_add(ns->known_flags, tor_strdup(tok->args[i]));\n    if (i>0 && strcmp(tok->args[i-1], tok->args[i])>= 0) {\n      log_warn(LD_DIR, \"%s >= %s\", tok->args[i-1], tok->args[i]);\n      inorder = 0;\n    }\n  }\n  if (!inorder) {\n    log_warn(LD_DIR, \"known-flags not in order\");\n    goto err;\n  }\n\n  tok = find_opt_by_keyword(tokens, K_PARAMS);\n  if (tok) {\n    inorder = 1;\n    ns->net_params = smartlist_create();\n    for (i = 0; i < tok->n_args; ++i) {\n      int ok=0;\n      char *eq = strchr(tok->args[i], '=');\n      if (!eq) {\n        log_warn(LD_DIR, \"Bad element '%s' in params\", escaped(tok->args[i]));\n        goto err;\n      }\n      tor_parse_long(eq+1, 10, INT32_MIN, INT32_MAX, &ok, NULL);\n      if (!ok) {\n        log_warn(LD_DIR, \"Bad element '%s' in params\", escaped(tok->args[i]));\n        goto err;\n      }\n      if (i > 0 && strcmp(tok->args[i-1], tok->args[i]) >= 0) {\n        log_warn(LD_DIR, \"%s >= %s\", tok->args[i-1], tok->args[i]);\n        inorder = 0;\n      }\n      smartlist_add(ns->net_params, tor_strdup(tok->args[i]));\n    }\n    if (!inorder) {\n      log_warn(LD_DIR, \"params not in order\");\n      goto err;\n    }\n  }\n\n  ns->voters = smartlist_create();\n\n  SMARTLIST_FOREACH_BEGIN(tokens, directory_token_t *, _tok) {\n    tok = _tok;\n    if (tok->tp == K_DIR_SOURCE) {\n      tor_assert(tok->n_args >= 6);\n\n      if (voter)\n        smartlist_add(ns->voters, voter);\n      voter = tor_malloc_zero(sizeof(networkstatus_voter_info_t));\n      voter->sigs = smartlist_create();\n      if (ns->type != NS_TYPE_CONSENSUS)\n        memcpy(voter->vote_digest, ns_digests.d[DIGEST_SHA1], DIGEST_LEN);\n\n      voter->nickname = tor_strdup(tok->args[0]);\n      if (strlen(tok->args[1]) != HEX_DIGEST_LEN ||\n          base16_decode(voter->identity_digest, sizeof(voter->identity_digest),\n                        tok->args[1], HEX_DIGEST_LEN) < 0) {\n        log_warn(LD_DIR, \"Error decoding identity digest %s in \"\n                 \"network-status vote.\", escaped(tok->args[1]));\n        goto err;\n      }\n      if (ns->type != NS_TYPE_CONSENSUS &&\n          tor_memneq(ns->cert->cache_info.identity_digest,\n                 voter->identity_digest, DIGEST_LEN)) {\n        log_warn(LD_DIR,\"Mismatch between identities in certificate and vote\");\n        goto err;\n      }\n      voter->address = tor_strdup(tok->args[2]);\n      if (!tor_inet_aton(tok->args[3], &in)) {\n        log_warn(LD_DIR, \"Error decoding IP address %s in network-status.\",\n                 escaped(tok->args[3]));\n        goto err;\n      }\n      voter->addr = ntohl(in.s_addr);\n      voter->dir_port = (uint16_t)\n        tor_parse_long(tok->args[4], 10, 0, 65535, &ok, NULL);\n      if (!ok)\n        goto err;\n      voter->or_port = (uint16_t)\n        tor_parse_long(tok->args[5], 10, 0, 65535, &ok, NULL);\n      if (!ok)\n        goto err;\n    } else if (tok->tp == K_CONTACT) {\n      if (!voter || voter->contact) {\n        log_warn(LD_DIR, \"contact element is out of place.\");\n        goto err;\n      }\n      voter->contact = tor_strdup(tok->args[0]);\n    } else if (tok->tp == K_VOTE_DIGEST) {\n      tor_assert(ns->type == NS_TYPE_CONSENSUS);\n      tor_assert(tok->n_args >= 1);\n      if (!voter || ! tor_digest_is_zero(voter->vote_digest)) {\n        log_warn(LD_DIR, \"vote-digest element is out of place.\");\n        goto err;\n      }\n      if (strlen(tok->args[0]) != HEX_DIGEST_LEN ||\n        base16_decode(voter->vote_digest, sizeof(voter->vote_digest),\n                      tok->args[0], HEX_DIGEST_LEN) < 0) {\n        log_warn(LD_DIR, \"Error decoding vote digest %s in \"\n                 \"network-status consensus.\", escaped(tok->args[0]));\n        goto err;\n      }\n    }\n  } SMARTLIST_FOREACH_END(_tok);\n  if (voter) {\n    smartlist_add(ns->voters, voter);\n    voter = NULL;\n  }\n  if (smartlist_len(ns->voters) == 0) {\n    log_warn(LD_DIR, \"Missing dir-source elements in a vote networkstatus.\");\n    goto err;\n  } else if (ns->type != NS_TYPE_CONSENSUS && smartlist_len(ns->voters) != 1) {\n    log_warn(LD_DIR, \"Too many dir-source elements in a vote networkstatus.\");\n    goto err;\n  }\n\n  if (ns->type != NS_TYPE_CONSENSUS &&\n      (tok = find_opt_by_keyword(tokens, K_LEGACY_DIR_KEY))) {\n    int bad = 1;\n    if (strlen(tok->args[0]) == HEX_DIGEST_LEN) {\n      networkstatus_voter_info_t *voter = smartlist_get(ns->voters, 0);\n      if (base16_decode(voter->legacy_id_digest, DIGEST_LEN,\n                        tok->args[0], HEX_DIGEST_LEN)<0)\n        bad = 1;\n      else\n        bad = 0;\n    }\n    if (bad) {\n      log_warn(LD_DIR, \"Invalid legacy key digest %s on vote.\",\n               escaped(tok->args[0]));\n    }\n  }\n\n  /* Parse routerstatus lines. */\n  rs_tokens = smartlist_create();\n  rs_area = memarea_new();\n  s = end_of_header;\n  ns->routerstatus_list = smartlist_create();\n\n  while (!strcmpstart(s, \"r \")) {\n    if (ns->type != NS_TYPE_CONSENSUS) {\n      vote_routerstatus_t *rs = tor_malloc_zero(sizeof(vote_routerstatus_t));\n      if (routerstatus_parse_entry_from_string(rs_area, &s, rs_tokens, ns,\n                                               rs, 0, 0))\n        smartlist_add(ns->routerstatus_list, rs);\n      else {\n        tor_free(rs->version);\n        tor_free(rs);\n      }\n    } else {\n      routerstatus_t *rs;\n      if ((rs = routerstatus_parse_entry_from_string(rs_area, &s, rs_tokens,\n                                                     NULL, NULL,\n                                                     ns->consensus_method,\n                                                     flav)))\n        smartlist_add(ns->routerstatus_list, rs);\n    }\n  }\n  for (i = 1; i < smartlist_len(ns->routerstatus_list); ++i) {\n    routerstatus_t *rs1, *rs2;\n    if (ns->type != NS_TYPE_CONSENSUS) {\n      vote_routerstatus_t *a = smartlist_get(ns->routerstatus_list, i-1);\n      vote_routerstatus_t *b = smartlist_get(ns->routerstatus_list, i);\n      rs1 = &a->status; rs2 = &b->status;\n    } else {\n      rs1 = smartlist_get(ns->routerstatus_list, i-1);\n      rs2 = smartlist_get(ns->routerstatus_list, i);\n    }\n    if (fast_memcmp(rs1->identity_digest, rs2->identity_digest, DIGEST_LEN)\n        >= 0) {\n      log_warn(LD_DIR, \"Vote networkstatus entries not sorted by identity \"\n               \"digest\");\n      goto err;\n    }\n  }\n\n  /* Parse footer; check signature. */\n  footer_tokens = smartlist_create();\n  if ((end_of_footer = strstr(s, \"\\nnetwork-status-version \")))\n    ++end_of_footer;\n  else\n    end_of_footer = s + strlen(s);\n  if (tokenize_string(area,s, end_of_footer, footer_tokens,\n                      networkstatus_vote_footer_token_table, 0)) {\n    log_warn(LD_DIR, \"Error tokenizing network-status vote footer.\");\n    goto err;\n  }\n\n  {\n    int found_sig = 0;\n    SMARTLIST_FOREACH_BEGIN(footer_tokens, directory_token_t *, _tok) {\n      tok = _tok;\n      if (tok->tp == K_DIRECTORY_SIGNATURE)\n        found_sig = 1;\n      else if (found_sig) {\n        log_warn(LD_DIR, \"Extraneous token after first directory-signature\");\n        goto err;\n      }\n    } SMARTLIST_FOREACH_END(_tok);\n  }\n\n  if ((tok = find_opt_by_keyword(footer_tokens, K_DIRECTORY_FOOTER))) {\n    if (tok != smartlist_get(footer_tokens, 0)) {\n      log_warn(LD_DIR, \"Misplaced directory-footer token\");\n      goto err;\n    }\n  }\n\n  tok = find_opt_by_keyword(footer_tokens, K_BW_WEIGHTS);\n  if (tok) {\n    ns->weight_params = smartlist_create();\n    for (i = 0; i < tok->n_args; ++i) {\n      int ok=0;\n      char *eq = strchr(tok->args[i], '=');\n      if (!eq) {\n        log_warn(LD_DIR, \"Bad element '%s' in weight params\",\n                 escaped(tok->args[i]));\n        goto err;\n      }\n      tor_parse_long(eq+1, 10, INT32_MIN, INT32_MAX, &ok, NULL);\n      if (!ok) {\n        log_warn(LD_DIR, \"Bad element '%s' in params\", escaped(tok->args[i]));\n        goto err;\n      }\n      smartlist_add(ns->weight_params, tor_strdup(tok->args[i]));\n    }\n  }\n\n  SMARTLIST_FOREACH_BEGIN(footer_tokens, directory_token_t *, _tok) {\n    char declared_identity[DIGEST_LEN];\n    networkstatus_voter_info_t *v;\n    document_signature_t *sig;\n    const char *id_hexdigest = NULL;\n    const char *sk_hexdigest = NULL;\n    digest_algorithm_t alg = DIGEST_SHA1;\n    tok = _tok;\n    if (tok->tp != K_DIRECTORY_SIGNATURE)\n      continue;\n    tor_assert(tok->n_args >= 2);\n    if (tok->n_args == 2) {\n      id_hexdigest = tok->args[0];\n      sk_hexdigest = tok->args[1];\n    } else {\n      const char *algname = tok->args[0];\n      int a;\n      id_hexdigest = tok->args[1];\n      sk_hexdigest = tok->args[2];\n      a = crypto_digest_algorithm_parse_name(algname);\n      if (a<0) {\n        log_warn(LD_DIR, \"Unknown digest algorithm %s; skipping\",\n                 escaped(algname));\n        continue;\n      }\n      alg = a;\n    }\n\n    if (!tok->object_type ||\n        strcmp(tok->object_type, \"SIGNATURE\") ||\n        tok->object_size < 128 || tok->object_size > 512) {\n      log_warn(LD_DIR, \"Bad object type or length on directory-signature\");\n      goto err;\n    }\n\n    if (strlen(id_hexdigest) != HEX_DIGEST_LEN ||\n        base16_decode(declared_identity, sizeof(declared_identity),\n                      id_hexdigest, HEX_DIGEST_LEN) < 0) {\n      log_warn(LD_DIR, \"Error decoding declared identity %s in \"\n               \"network-status vote.\", escaped(id_hexdigest));\n      goto err;\n    }\n    if (!(v = networkstatus_get_voter_by_id(ns, declared_identity))) {\n      log_warn(LD_DIR, \"ID on signature on network-status vote does not match \"\n               \"any declared directory source.\");\n      goto err;\n    }\n    sig = tor_malloc_zero(sizeof(document_signature_t));\n    memcpy(sig->identity_digest, v->identity_digest, DIGEST_LEN);\n    sig->alg = alg;\n    if (strlen(sk_hexdigest) != HEX_DIGEST_LEN ||\n        base16_decode(sig->signing_key_digest, sizeof(sig->signing_key_digest),\n                      sk_hexdigest, HEX_DIGEST_LEN) < 0) {\n      log_warn(LD_DIR, \"Error decoding declared signing key digest %s in \"\n               \"network-status vote.\", escaped(sk_hexdigest));\n      tor_free(sig);\n      goto err;\n    }\n\n    if (ns->type != NS_TYPE_CONSENSUS) {\n      if (tor_memneq(declared_identity, ns->cert->cache_info.identity_digest,\n                 DIGEST_LEN)) {\n        log_warn(LD_DIR, \"Digest mismatch between declared and actual on \"\n                 \"network-status vote.\");\n        tor_free(sig);\n        goto err;\n      }\n    }\n\n    if (voter_get_sig_by_algorithm(v, sig->alg)) {\n      /* We already parsed a vote with this algorithm from this voter. Use the\n         first one. */\n      log_fn(LOG_PROTOCOL_WARN, LD_DIR, \"We received a networkstatus \"\n             \"that contains two votes from the same voter with the same \"\n             \"algorithm. Ignoring the second vote.\");\n      tor_free(sig);\n      continue;\n    }\n\n    if (ns->type != NS_TYPE_CONSENSUS) {\n      if (check_signature_token(ns_digests.d[DIGEST_SHA1], DIGEST_LEN,\n                                tok, ns->cert->signing_key, 0,\n                                \"network-status vote\")) {\n        tor_free(sig);\n        goto err;\n      }\n      sig->good_signature = 1;\n    } else {\n      if (tok->object_size >= INT_MAX || tok->object_size >= SIZE_T_CEILING) {\n        tor_free(sig);\n        goto err;\n      }\n      sig->signature = tor_memdup(tok->object_body, tok->object_size);\n      sig->signature_len = (int) tok->object_size;\n    }\n    smartlist_add(v->sigs, sig);\n\n    ++n_signatures;\n  } SMARTLIST_FOREACH_END(_tok);\n\n  if (! n_signatures) {\n    log_warn(LD_DIR, \"No signatures on networkstatus vote.\");\n    goto err;\n  } else if (ns->type == NS_TYPE_VOTE && n_signatures != 1) {\n    log_warn(LD_DIR, \"Received more than one signature on a \"\n             \"network-status vote.\");\n    goto err;\n  }\n\n  if (eos_out)\n    *eos_out = end_of_footer;\n\n  goto done;\n err:\n  dump_desc(s_dup, \"v3 networkstatus\");\n  networkstatus_vote_free(ns);\n  ns = NULL;\n done:\n  if (tokens) {\n    SMARTLIST_FOREACH(tokens, directory_token_t *, t, token_clear(t));\n    smartlist_free(tokens);\n  }\n  if (voter) {\n    if (voter->sigs) {\n      SMARTLIST_FOREACH(voter->sigs, document_signature_t *, sig,\n                        document_signature_free(sig));\n      smartlist_free(voter->sigs);\n    }\n    tor_free(voter->nickname);\n    tor_free(voter->address);\n    tor_free(voter->contact);\n    tor_free(voter);\n  }\n  if (rs_tokens) {\n    SMARTLIST_FOREACH(rs_tokens, directory_token_t *, t, token_clear(t));\n    smartlist_free(rs_tokens);\n  }\n  if (footer_tokens) {\n    SMARTLIST_FOREACH(footer_tokens, directory_token_t *, t, token_clear(t));\n    smartlist_free(footer_tokens);\n  }\n  if (area) {\n    DUMP_AREA(area, \"v3 networkstatus\");\n    memarea_drop_all(area);\n  }\n  if (rs_area)\n    memarea_drop_all(rs_area);\n\n  return ns;\n}",
+            2778
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/or/routerparse.c",
+            "networkstatus_parse_vote_from_string",
+            "networkstatus_t * /* <=== networkstatus_parse_vote_from_string */ \nnetworkstatus_parse_vote_from_string(const char *s, const char **eos_out,\n                                     networkstatus_type_t ns_type)\n{\n  smartlist_t *tokens = smartlist_create();\n  smartlist_t *rs_tokens = NULL, *footer_tokens = NULL;\n  networkstatus_voter_info_t *voter = NULL;\n  networkstatus_t *ns = NULL;\n  digests_t ns_digests;\n  const char *cert, *end_of_header, *end_of_footer, *s_dup = s;\n  directory_token_t *tok;\n  int ok;\n  struct in_addr in;\n  int i, inorder, n_signatures = 0;\n  memarea_t *area = NULL, *rs_area = NULL;\n  consensus_flavor_t flav = FLAV_NS;\n\n  tor_assert(s);\n\n  if (eos_out)\n    *eos_out = NULL;\n\n  if (router_get_networkstatus_v3_hashes(s, &ns_digests)) {\n    log_warn(LD_DIR, \"Unable to compute digest of network-status\");\n    goto err;\n  }\n\n  area = memarea_new();\n  end_of_header = find_start_of_next_routerstatus(s);\n  if (tokenize_string(area, s, end_of_header, tokens,\n                      (ns_type == NS_TYPE_CONSENSUS) ?\n                      networkstatus_consensus_token_table :\n                      networkstatus_token_table, 0)) {\n    log_warn(LD_DIR, \"Error tokenizing network-status vote header\");\n    goto err;\n  }\n\n  ns = tor_malloc_zero(sizeof(networkstatus_t));\n  memcpy(&ns->digests, &ns_digests, sizeof(ns_digests));\n\n  tok = find_by_keyword(tokens, K_NETWORK_STATUS_VERSION);\n  tor_assert(tok);\n  if (tok->n_args > 1) {\n    int flavor = networkstatus_parse_flavor_name(tok->args[1]);\n    if (flavor < 0) {\n      log_warn(LD_DIR, \"Can't parse document with unknown flavor %s\",\n               escaped(tok->args[2]));\n      goto err;\n    }\n    ns->flavor = flav = flavor;\n  }\n  if (flav != FLAV_NS && ns_type != NS_TYPE_CONSENSUS) {\n    log_warn(LD_DIR, \"Flavor found on non-consensus networkstatus.\");\n    goto err;\n  }\n\n  if (ns_type != NS_TYPE_CONSENSUS) {\n    const char *end_of_cert = NULL;\n    if (!(cert = strstr(s, \"\\ndir-key-certificate-version\")))\n      goto err;\n    ++cert;\n    ns->cert = authority_cert_parse_from_string(cert, &end_of_cert);\n    if (!ns->cert || !end_of_cert || end_of_cert > end_of_header)\n      goto err;\n  }\n\n  tok = find_by_keyword(tokens, K_VOTE_STATUS);\n  tor_assert(tok->n_args);\n  if (!strcmp(tok->args[0], \"vote\")) {\n    ns->type = NS_TYPE_VOTE;\n  } else if (!strcmp(tok->args[0], \"consensus\")) {\n    ns->type = NS_TYPE_CONSENSUS;\n  } else if (!strcmp(tok->args[0], \"opinion\")) {\n    ns->type = NS_TYPE_OPINION;\n  } else {\n    log_warn(LD_DIR, \"Unrecognized vote status %s in network-status\",\n             escaped(tok->args[0]));\n    goto err;\n  }\n  if (ns_type != ns->type) {\n    log_warn(LD_DIR, \"Got the wrong kind of v3 networkstatus.\");\n    goto err;\n  }\n\n  if (ns->type == NS_TYPE_VOTE || ns->type == NS_TYPE_OPINION) {\n    tok = find_by_keyword(tokens, K_PUBLISHED);\n    if (parse_iso_time(tok->args[0], &ns->published))\n      goto err;\n\n    ns->supported_methods = smartlist_create();\n    tok = find_opt_by_keyword(tokens, K_CONSENSUS_METHODS);\n    if (tok) {\n      for (i=0; i < tok->n_args; ++i)\n        smartlist_add(ns->supported_methods, tor_strdup(tok->args[i]));\n    } else {\n      smartlist_add(ns->supported_methods, tor_strdup(\"1\"));\n    }\n  } else {\n    tok = find_opt_by_keyword(tokens, K_CONSENSUS_METHOD);\n    if (tok) {\n      ns->consensus_method = (int)tor_parse_long(tok->args[0], 10, 1, INT_MAX,\n                                                 &ok, NULL);\n      if (!ok)\n        goto err;\n    } else {\n      ns->consensus_method = 1;\n    }\n  }\n\n  tok = find_by_keyword(tokens, K_VALID_AFTER);\n  if (parse_iso_time(tok->args[0], &ns->valid_after))\n    goto err;\n\n  tok = find_by_keyword(tokens, K_FRESH_UNTIL);\n  if (parse_iso_time(tok->args[0], &ns->fresh_until))\n    goto err;\n\n  tok = find_by_keyword(tokens, K_VALID_UNTIL);\n  if (parse_iso_time(tok->args[0], &ns->valid_until))\n    goto err;\n\n  tok = find_by_keyword(tokens, K_VOTING_DELAY);\n  tor_assert(tok->n_args >= 2);\n  ns->vote_seconds =\n    (int) tor_parse_long(tok->args[0], 10, 0, INT_MAX, &ok, NULL);\n  if (!ok)\n    goto err;\n  ns->dist_seconds =\n    (int) tor_parse_long(tok->args[1], 10, 0, INT_MAX, &ok, NULL);\n  if (!ok)\n    goto err;\n  if (ns->valid_after + MIN_VOTE_INTERVAL > ns->fresh_until) {\n    log_warn(LD_DIR, \"Vote/consensus freshness interval is too short\");\n    goto err;\n  }\n  if (ns->valid_after + MIN_VOTE_INTERVAL*2 > ns->valid_until) {\n    log_warn(LD_DIR, \"Vote/consensus liveness interval is too short\");\n    goto err;\n  }\n  if (ns->vote_seconds < MIN_VOTE_SECONDS) {\n    log_warn(LD_DIR, \"Vote seconds is too short\");\n    goto err;\n  }\n  if (ns->dist_seconds < MIN_DIST_SECONDS) {\n    log_warn(LD_DIR, \"Dist seconds is too short\");\n    goto err;\n  }\n\n  if ((tok = find_opt_by_keyword(tokens, K_CLIENT_VERSIONS))) {\n    ns->client_versions = tor_strdup(tok->args[0]);\n  }\n  if ((tok = find_opt_by_keyword(tokens, K_SERVER_VERSIONS))) {\n    ns->server_versions = tor_strdup(tok->args[0]);\n  }\n\n  tok = find_by_keyword(tokens, K_KNOWN_FLAGS);\n  ns->known_flags = smartlist_create();\n  inorder = 1;\n  for (i = 0; i < tok->n_args; ++i) {\n    smartlist_add(ns->known_flags, tor_strdup(tok->args[i]));\n    if (i>0 && strcmp(tok->args[i-1], tok->args[i])>= 0) {\n      log_warn(LD_DIR, \"%s >= %s\", tok->args[i-1], tok->args[i]);\n      inorder = 0;\n    }\n  }\n  if (!inorder) {\n    log_warn(LD_DIR, \"known-flags not in order\");\n    goto err;\n  }\n\n  tok = find_opt_by_keyword(tokens, K_PARAMS);\n  if (tok) {\n    inorder = 1;\n    ns->net_params = smartlist_create();\n    for (i = 0; i < tok->n_args; ++i) {\n      int ok=0;\n      char *eq = strchr(tok->args[i], '=');\n      if (!eq) {\n        log_warn(LD_DIR, \"Bad element '%s' in params\", escaped(tok->args[i]));\n        goto err;\n      }\n      tor_parse_long(eq+1, 10, INT32_MIN, INT32_MAX, &ok, NULL);\n      if (!ok) {\n        log_warn(LD_DIR, \"Bad element '%s' in params\", escaped(tok->args[i]));\n        goto err;\n      }\n      if (i > 0 && strcmp(tok->args[i-1], tok->args[i]) >= 0) {\n        log_warn(LD_DIR, \"%s >= %s\", tok->args[i-1], tok->args[i]);\n        inorder = 0;\n      }\n      smartlist_add(ns->net_params, tor_strdup(tok->args[i]));\n    }\n    if (!inorder) {\n      log_warn(LD_DIR, \"params not in order\");\n      goto err;\n    }\n  }\n\n  ns->voters = smartlist_create();\n\n  SMARTLIST_FOREACH_BEGIN(tokens, directory_token_t *, _tok) {\n    tok = _tok;\n    if (tok->tp == K_DIR_SOURCE) {\n      tor_assert(tok->n_args >= 6);\n\n      if (voter)\n        smartlist_add(ns->voters, voter);\n      voter = tor_malloc_zero(sizeof(networkstatus_voter_info_t));\n      voter->sigs = smartlist_create();\n      if (ns->type != NS_TYPE_CONSENSUS)\n        memcpy(voter->vote_digest, ns_digests.d[DIGEST_SHA1], DIGEST_LEN);\n\n      voter->nickname = tor_strdup(tok->args[0]);\n      if (strlen(tok->args[1]) != HEX_DIGEST_LEN ||\n          base16_decode(voter->identity_digest, sizeof(voter->identity_digest),\n                        tok->args[1], HEX_DIGEST_LEN) < 0) {\n        log_warn(LD_DIR, \"Error decoding identity digest %s in \"\n                 \"network-status vote.\", escaped(tok->args[1]));\n        goto err;\n      }\n      if (ns->type != NS_TYPE_CONSENSUS &&\n          tor_memneq(ns->cert->cache_info.identity_digest,\n                 voter->identity_digest, DIGEST_LEN)) {\n        log_warn(LD_DIR,\"Mismatch between identities in certificate and vote\");\n        goto err;\n      }\n      voter->address = tor_strdup(tok->args[2]);\n      if (!tor_inet_aton(tok->args[3], &in)) {\n        log_warn(LD_DIR, \"Error decoding IP address %s in network-status.\",\n                 escaped(tok->args[3]));\n        goto err;\n      }\n      voter->addr = ntohl(in.s_addr);\n      voter->dir_port = (uint16_t)\n        tor_parse_long(tok->args[4], 10, 0, 65535, &ok, NULL);\n      if (!ok)\n        goto err;\n      voter->or_port = (uint16_t)\n        tor_parse_long(tok->args[5], 10, 0, 65535, &ok, NULL);\n      if (!ok)\n        goto err;\n    } else if (tok->tp == K_CONTACT) {\n      if (!voter || voter->contact) {\n        log_warn(LD_DIR, \"contact element is out of place.\");\n        goto err;\n      }\n      voter->contact = tor_strdup(tok->args[0]);\n    } else if (tok->tp == K_VOTE_DIGEST) {\n      tor_assert(ns->type == NS_TYPE_CONSENSUS);\n      tor_assert(tok->n_args >= 1);\n      if (!voter || ! tor_digest_is_zero(voter->vote_digest)) {\n        log_warn(LD_DIR, \"vote-digest element is out of place.\");\n        goto err;\n      }\n      if (strlen(tok->args[0]) != HEX_DIGEST_LEN ||\n        base16_decode(voter->vote_digest, sizeof(voter->vote_digest),\n                      tok->args[0], HEX_DIGEST_LEN) < 0) {\n        log_warn(LD_DIR, \"Error decoding vote digest %s in \"\n                 \"network-status consensus.\", escaped(tok->args[0]));\n        goto err;\n      }\n    }\n  } SMARTLIST_FOREACH_END(_tok);\n  if (voter) {\n    smartlist_add(ns->voters, voter);\n    voter = NULL;\n  }\n  if (smartlist_len(ns->voters) == 0) {\n    log_warn(LD_DIR, \"Missing dir-source elements in a vote networkstatus.\");\n    goto err;\n  } else if (ns->type != NS_TYPE_CONSENSUS && smartlist_len(ns->voters) != 1) {\n    log_warn(LD_DIR, \"Too many dir-source elements in a vote networkstatus.\");\n    goto err;\n  }\n\n  if (ns->type != NS_TYPE_CONSENSUS &&\n      (tok = find_opt_by_keyword(tokens, K_LEGACY_DIR_KEY))) {\n    int bad = 1;\n    if (strlen(tok->args[0]) == HEX_DIGEST_LEN) {\n      networkstatus_voter_info_t *voter = smartlist_get(ns->voters, 0);\n      if (base16_decode(voter->legacy_id_digest, DIGEST_LEN,\n                        tok->args[0], HEX_DIGEST_LEN)<0)\n        bad = 1;\n      else\n        bad = 0;\n    }\n    if (bad) {\n      log_warn(LD_DIR, \"Invalid legacy key digest %s on vote.\",\n               escaped(tok->args[0]));\n    }\n  }\n\n  /* Parse routerstatus lines. */\n  rs_tokens = smartlist_create();\n  rs_area = memarea_new();\n  s = end_of_header;\n  ns->routerstatus_list = smartlist_create();\n\n  while (!strcmpstart(s, \"r \")) {\n    if (ns->type != NS_TYPE_CONSENSUS) {\n      vote_routerstatus_t *rs = tor_malloc_zero(sizeof(vote_routerstatus_t));\n      if (routerstatus_parse_entry_from_string(rs_area, &s, rs_tokens, ns,\n                                               rs, 0, 0))\n        smartlist_add(ns->routerstatus_list, rs);\n      else {\n        tor_free(rs->version);\n        tor_free(rs);\n      }\n    } else {\n      routerstatus_t *rs;\n      if ((rs = routerstatus_parse_entry_from_string(rs_area, &s, rs_tokens,\n                                                     NULL, NULL,\n                                                     ns->consensus_method,\n                                                     flav)))\n        smartlist_add(ns->routerstatus_list, rs);\n    }\n  }\n  for (i = 1; i < smartlist_len(ns->routerstatus_list); ++i) {\n    routerstatus_t *rs1, *rs2;\n    if (ns->type != NS_TYPE_CONSENSUS) {\n      vote_routerstatus_t *a = smartlist_get(ns->routerstatus_list, i-1);\n      vote_routerstatus_t *b = smartlist_get(ns->routerstatus_list, i);\n      rs1 = &a->status; rs2 = &b->status;\n    } else {\n      rs1 = smartlist_get(ns->routerstatus_list, i-1);\n      rs2 = smartlist_get(ns->routerstatus_list, i);\n    }\n    if (fast_memcmp(rs1->identity_digest, rs2->identity_digest, DIGEST_LEN)\n        >= 0) {\n      log_warn(LD_DIR, \"Vote networkstatus entries not sorted by identity \"\n               \"digest\");\n      goto err;\n    }\n  }\n\n  /* Parse footer; check signature. */\n  footer_tokens = smartlist_create();\n  if ((end_of_footer = strstr(s, \"\\nnetwork-status-version \")))\n    ++end_of_footer;\n  else\n    end_of_footer = s + strlen(s);\n  if (tokenize_string(area,s, end_of_footer, footer_tokens,\n                      networkstatus_vote_footer_token_table, 0)) {\n    log_warn(LD_DIR, \"Error tokenizing network-status vote footer.\");\n    goto err;\n  }\n\n  {\n    int found_sig = 0;\n    SMARTLIST_FOREACH_BEGIN(footer_tokens, directory_token_t *, _tok) {\n      tok = _tok;\n      if (tok->tp == K_DIRECTORY_SIGNATURE)\n        found_sig = 1;\n      else if (found_sig) {\n        log_warn(LD_DIR, \"Extraneous token after first directory-signature\");\n        goto err;\n      }\n    } SMARTLIST_FOREACH_END(_tok);\n  }\n\n  if ((tok = find_opt_by_keyword(footer_tokens, K_DIRECTORY_FOOTER))) {\n    if (tok != smartlist_get(footer_tokens, 0)) {\n      log_warn(LD_DIR, \"Misplaced directory-footer token\");\n      goto err;\n    }\n  }\n\n  tok = find_opt_by_keyword(footer_tokens, K_BW_WEIGHTS);\n  if (tok) {\n    ns->weight_params = smartlist_create();\n    for (i = 0; i < tok->n_args; ++i) {\n      int ok=0;\n      char *eq = strchr(tok->args[i], '=');\n      if (!eq) {\n        log_warn(LD_DIR, \"Bad element '%s' in weight params\",\n                 escaped(tok->args[i]));\n        goto err;\n      }\n      tor_parse_long(eq+1, 10, INT32_MIN, INT32_MAX, &ok, NULL);\n      if (!ok) {\n        log_warn(LD_DIR, \"Bad element '%s' in params\", escaped(tok->args[i]));\n        goto err;\n      }\n      smartlist_add(ns->weight_params, tor_strdup(tok->args[i]));\n    }\n  }\n\n  SMARTLIST_FOREACH_BEGIN(footer_tokens, directory_token_t *, _tok) {\n    char declared_identity[DIGEST_LEN];\n    networkstatus_voter_info_t *v;\n    document_signature_t *sig;\n    const char *id_hexdigest = NULL;\n    const char *sk_hexdigest = NULL;\n    digest_algorithm_t alg = DIGEST_SHA1;\n    tok = _tok;\n    if (tok->tp != K_DIRECTORY_SIGNATURE)\n      continue;\n    tor_assert(tok->n_args >= 2);\n    if (tok->n_args == 2) {\n      id_hexdigest = tok->args[0];\n      sk_hexdigest = tok->args[1];\n    } else {\n      const char *algname = tok->args[0];\n      int a;\n      id_hexdigest = tok->args[1];\n      sk_hexdigest = tok->args[2];\n      a = crypto_digest_algorithm_parse_name(algname);\n      if (a<0) {\n        log_warn(LD_DIR, \"Unknown digest algorithm %s; skipping\",\n                 escaped(algname));\n        continue;\n      }\n      alg = a;\n    }\n\n    if (!tok->object_type ||\n        strcmp(tok->object_type, \"SIGNATURE\") ||\n        tok->object_size < 128 || tok->object_size > 512) {\n      log_warn(LD_DIR, \"Bad object type or length on directory-signature\");\n      goto err;\n    }\n\n    if (strlen(id_hexdigest) != HEX_DIGEST_LEN ||\n        base16_decode(declared_identity, sizeof(declared_identity),\n                      id_hexdigest, HEX_DIGEST_LEN) < 0) {\n      log_warn(LD_DIR, \"Error decoding declared identity %s in \"\n               \"network-status vote.\", escaped(id_hexdigest));\n      goto err;\n    }\n    if (!(v = networkstatus_get_voter_by_id(ns, declared_identity))) {\n      log_warn(LD_DIR, \"ID on signature on network-status vote does not match \"\n               \"any declared directory source.\");\n      goto err;\n    }\n    sig = tor_malloc_zero(sizeof(document_signature_t));\n    memcpy(sig->identity_digest, v->identity_digest, DIGEST_LEN);\n    sig->alg = alg;\n    if (strlen(sk_hexdigest) != HEX_DIGEST_LEN ||\n        base16_decode(sig->signing_key_digest, sizeof(sig->signing_key_digest),\n                      sk_hexdigest, HEX_DIGEST_LEN) < 0) {\n      log_warn(LD_DIR, \"Error decoding declared signing key digest %s in \"\n               \"network-status vote.\", escaped(sk_hexdigest));\n      tor_free(sig);\n      goto err;\n    }\n\n    if (ns->type != NS_TYPE_CONSENSUS) {\n      if (tor_memneq(declared_identity, ns->cert->cache_info.identity_digest,\n                 DIGEST_LEN)) {\n        log_warn(LD_DIR, \"Digest mismatch between declared and actual on \"\n                 \"network-status vote.\");\n        tor_free(sig);\n        goto err;\n      }\n    }\n\n    if (voter_get_sig_by_algorithm(v, sig->alg)) {\n      /* We already parsed a vote with this algorithm from this voter. Use the\n         first one. */\n      log_fn(LOG_PROTOCOL_WARN, LD_DIR, \"We received a networkstatus \"\n             \"that contains two votes from the same voter with the same \"\n             \"algorithm. Ignoring the second vote.\");\n      tor_free(sig);\n      continue;\n    }\n\n    if (ns->type != NS_TYPE_CONSENSUS) {\n      if (check_signature_token(ns_digests.d[DIGEST_SHA1], DIGEST_LEN,\n                                tok, ns->cert->signing_key, 0,\n                                \"network-status vote\")) {\n        tor_free(sig);\n        goto err;\n      }\n      sig->good_signature = 1;\n    } else {\n      if (tok->object_size >= INT_MAX || tok->object_size >= SIZE_T_CEILING) {\n        tor_free(sig);\n        goto err;\n      }\n      sig->signature = tor_memdup(tok->object_body, tok->object_size);\n      sig->signature_len = (int) tok->object_size;\n    }\n    smartlist_add(v->sigs, sig);\n\n    ++n_signatures;\n  } SMARTLIST_FOREACH_END(_tok);\n\n  if (! n_signatures) {\n    log_warn(LD_DIR, \"No signatures on networkstatus vote.\");\n    goto err;\n  } else if (ns->type == NS_TYPE_VOTE && n_signatures != 1) {\n    log_warn(LD_DIR, \"Received more than one signature on a \"\n             \"network-status vote.\");\n    goto err;\n  }\n\n  if (eos_out)\n    *eos_out = end_of_footer;\n\n  goto done;\n err:\n  dump_desc(s_dup, \"v3 networkstatus\");\n  networkstatus_vote_free(ns);\n  ns = NULL;\n done:\n  if (tokens) {\n    SMARTLIST_FOREACH(tokens, directory_token_t *, t, token_clear(t));\n    smartlist_free(tokens);\n  }\n  if (voter) {\n    if (voter->sigs) {\n      SMARTLIST_FOREACH(voter->sigs, document_signature_t *, sig,\n                        document_signature_free(sig));\n      smartlist_free(voter->sigs);\n    }\n    tor_free(voter->nickname);\n    tor_free(voter->address);\n    tor_free(voter->contact);\n    tor_free(voter);\n  }\n  if (rs_tokens) {\n    SMARTLIST_FOREACH(rs_tokens, directory_token_t *, t, token_clear(t));\n    smartlist_free(rs_tokens);\n  }\n  if (footer_tokens) {\n    SMARTLIST_FOREACH(footer_tokens, directory_token_t *, t, token_clear(t));\n    smartlist_free(footer_tokens);\n  }\n  if (area) {\n    DUMP_AREA(area, \"v3 networkstatus\");\n    memarea_drop_all(area);\n  }\n  if (rs_area)\n    memarea_drop_all(rs_area);\n\n  return ns;\n}",
+            2778
+        ]
+    ]
+}

@@ -1,0 +1,135 @@
+{
+    "calleeMethods": [
+        [
+            "src/lib/virtio.c",
+            "_vq_record",
+            "static inline void /* <=== _vq_record */ \n_vq_record(int i, volatile struct virtio_desc *vd, struct iovec *iov, int n_iov,\n\tuint16_t *flags)\n{\n\tif (i >= n_iov)\n\t\treturn;\n\tiov[i].iov_base = paddr_guest2host(vd->vd_addr, vd->vd_len);\n\tiov[i].iov_len = vd->vd_len;\n\tif (flags != NULL)\n\t\tflags[i] = vd->vd_flags;\n}",
+            2
+        ],
+        [
+            "src/lib/virtio.c",
+            "VQ_MAX_DESCRIPTORS",
+            "#define\tVQ_MAX_DESCRIPTORS\t512\t/* see below */ /* <=== src/lib/virtio.c:208:208:VQ_MAX_DESCRIPTORS:0 */ ",
+            2
+        ],
+        [
+            "src/lib/virtio.c",
+            "vq_getchain",
+            "int /* <=== vq_getchain */ \nvq_getchain(struct vqueue_info *vq, uint16_t *pidx, struct iovec *iov,\n\tint n_iov, uint16_t *flags)\n{\n\tint i;\n\tu_int ndesc, n_indir;\n\tu_int idx, next;\n\tvolatile struct virtio_desc *vdir, *vindir, *vp;\n\tstruct virtio_softc *vs;\n\tconst char *name;\n\n\tvs = vq->vq_vs;\n\tname = vs->vs_vc->vc_name;\n\n\t/*\n\t * Note: it's the responsibility of the guest not to\n\t * update vq->vq_avail->va_idx until all of the descriptors\n         * the guest has written are valid (including all their\n         * vd_next fields and vd_flags).\n\t *\n\t * Compute (last_avail - va_idx) in integers mod 2**16.  This is\n\t * the number of descriptors the device has made available\n\t * since the last time we updated vq->vq_last_avail.\n\t *\n\t * We just need to do the subtraction as an unsigned int,\n\t * then trim off excess bits.\n\t */\n\tidx = vq->vq_last_avail;\n\tndesc = (uint16_t)((u_int)vq->vq_avail->va_idx - idx);\n\tif (ndesc == 0)\n\t\treturn (0);\n\tif (ndesc > vq->vq_qsize) {\n\t\t/* XXX need better way to diagnose issues */\n\t\tfprintf(stderr,\n\t\t    \"%s: ndesc (%u) out of range, driver confused?\\r\\n\",\n\t\t    name, (u_int)ndesc);\n\t\treturn (-1);\n\t}\n\n\t/*\n\t * Now count/parse \"involved\" descriptors starting from\n\t * the head of the chain.\n\t *\n\t * To prevent loops, we could be more complicated and\n\t * check whether we're re-visiting a previously visited\n\t * index, but we just abort if the count gets excessive.\n\t */\n\t*pidx = next = vq->vq_avail->va_ring[idx & (vq->vq_qsize - 1)];\n\tvq->vq_last_avail++;\n\tfor (i = 0; i < VQ_MAX_DESCRIPTORS; next = vdir->vd_next) {\n\t\tif (next >= vq->vq_qsize) {\n\t\t\tfprintf(stderr,\n\t\t\t    \"%s: descriptor index %u out of range, \"\n\t\t\t    \"driver confused?\\r\\n\",\n\t\t\t    name, next);\n\t\t\treturn (-1);\n\t\t}\n\t\tvdir = &vq->vq_desc[next];\n\t\tif ((vdir->vd_flags & VRING_DESC_F_INDIRECT) == 0) {\n\t\t\t_vq_record(i, vdir, iov, n_iov, flags);\n\t\t\ti++;\n\t\t} else if ((vs->vs_vc->vc_hv_caps &\n\t\t    VIRTIO_RING_F_INDIRECT_DESC) == 0) {\n\t\t\tfprintf(stderr,\n\t\t\t    \"%s: descriptor has forbidden INDIRECT flag, \"\n\t\t\t    \"driver confused?\\r\\n\",\n\t\t\t    name);\n\t\t\treturn (-1);\n\t\t} else {\n\t\t\tn_indir = vdir->vd_len / 16;\n\t\t\tif ((vdir->vd_len & 0xf) || n_indir == 0) {\n\t\t\t\tfprintf(stderr,\n\t\t\t\t    \"%s: invalid indir len 0x%x, \"\n\t\t\t\t    \"driver confused?\\r\\n\",\n\t\t\t\t    name, (u_int)vdir->vd_len);\n\t\t\t\treturn (-1);\n\t\t\t}\n\t\t\tvindir = paddr_guest2host(vdir->vd_addr, vdir->vd_len);\n\t\t\t/*\n\t\t\t * Indirects start at the 0th, then follow\n\t\t\t * their own embedded \"next\"s until those run\n\t\t\t * out.  Each one's indirect flag must be off\n\t\t\t * (we don't really have to check, could just\n\t\t\t * ignore errors...).\n\t\t\t */\n\t\t\tnext = 0;\n\t\t\tfor (;;) {\n\t\t\t\tvp = &vindir[next];\n\t\t\t\tif (vp->vd_flags & VRING_DESC_F_INDIRECT) {\n\t\t\t\t\tfprintf(stderr,\n\t\t\t\t\t    \"%s: indirect desc has INDIR flag,\"\n\t\t\t\t\t    \" driver confused?\\r\\n\",\n\t\t\t\t\t    name);\n\t\t\t\t\treturn (-1);\n\t\t\t\t}\n\t\t\t\t_vq_record(i, vp, iov, n_iov, flags);\n\t\t\t\tif (++i > VQ_MAX_DESCRIPTORS)\n\t\t\t\t\tgoto loopy;\n\t\t\t\tif ((vp->vd_flags & VRING_DESC_F_NEXT) == 0)\n\t\t\t\t\tbreak;\n\t\t\t\tnext = vp->vd_next;\n\t\t\t\tif (next >= n_indir) {\n\t\t\t\t\tfprintf(stderr,\n\t\t\t\t\t    \"%s: invalid next %u > %u, \"\n\t\t\t\t\t    \"driver confused?\\r\\n\",\n\t\t\t\t\t    name, (u_int)next, n_indir);\n\t\t\t\t\treturn (-1);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif ((vdir->vd_flags & VRING_DESC_F_NEXT) == 0)\n\t\t\treturn (i);\n\t}\nloopy:\n\tfprintf(stderr,\n\t    \"%s: descriptor loop? count > %d - driver confused?\\r\\n\",\n\t    name, i);\n\treturn (-1);\n}",
+            1
+        ],
+        [
+            "src/include/xhyve/xhyve.h",
+            "paddr_guest2host",
+            "void *paddr_guest2host(uintptr_t addr, size_t len); /* <=== paddr_guest2host */ ",
+            2
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <string.h>",
+        "#include <fcntl.h>",
+        "#include <sys/stat.h>",
+        "#include <xhyve/pci_emul.h>",
+        "#include <sys/param.h>",
+        "#include <xhyve/support/md5.h>",
+        "#include <stdint.h>",
+        "#include <xhyve/virtio.h>",
+        "#include <assert.h>",
+        "#include <xhyve/block_if.h>",
+        "#include <xhyve/support/misc.h>",
+        "#include <stdlib.h>",
+        "#include <pthread.h>",
+        "#include <sys/uio.h>",
+        "#include <sys/disk.h>",
+        "#include <xhyve/support/linker_set.h>",
+        "#include <unistd.h>",
+        "#include <stdio.h>",
+        "#include <xhyve/xhyve.h>",
+        "#include <strings.h>",
+        "#include <errno.h>",
+        "#include <sys/ioctl.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct iovec",
+            "iovec"
+        ],
+        [
+            "struct pci_vtblk_softc {\n\tstruct virtio_softc vbsc_vs;\n\tpthread_mutex_t vsc_mtx;\n\tstruct vqueue_info vbsc_vq;\n\tstruct vtblk_config vbsc_cfg;\n\tstruct blockif_ctxt *bc;\n\tchar vbsc_ident[VTBLK_BLK_ID_BYTES];\n\tstruct pci_vtblk_ioreq vbsc_ios[VTBLK_RINGSZ];\n}",
+            "pci_vtblk_softc"
+        ],
+        [
+            "struct virtio_blk_discard_write_zeroes {\n\tuint64_t sector; /* starting offset in 512-byte units */\n\tuint32_t num_sectors; /* number of 512-byte units */\n\tstruct {\n\t\tuint32_t unmap:1;\n\t\tuint32_t reserved:31;\n\t} flags;\n}",
+            "virtio_blk_discard_write_zeroes"
+        ],
+        [
+            "struct pci_vtblk_ioreq {\n\tstruct blockif_req\t\tio_req;\n\tstruct pci_vtblk_softc\t       *io_sc;\n\tuint8_t\t\t\t       *io_status;\n\tuint16_t\t\t\tio_idx;\n}",
+            "pci_vtblk_ioreq"
+        ],
+        [
+            "struct vqueue_info {\n\t/* size of this queue (a power of 2) */\n\tuint16_t vq_qsize;\n\t/* called instead of vc_notify, if not NULL */\n\tvoid (*vq_notify)(void *, struct vqueue_info *);\n\t/* backpointer to softc */\n\tstruct virtio_softc *vq_vs;\n\t/* we're the num'th queue in the softc */\n\tuint16_t vq_num;\n\t/* flags (see above) */\n\tuint16_t vq_flags;\n\t/* a recent value of vq_avail->va_idx */\n\tuint16_t vq_last_avail;\n\t/* saved vq_used->vu_idx; see vq_endchains */\n\tuint16_t vq_save_used;\n\t/* MSI-X index, or VIRTIO_MSI_NO_VECTOR */\n\tuint16_t vq_msix_idx;\n\t/* PFN of virt queue (not shifted!) */\n\tuint32_t vq_pfn;\n\t/* descriptor array */\n\tvolatile struct virtio_desc *vq_desc;\n\t/* the \"avail\" ring */\n\tvolatile struct vring_avail *vq_avail;\n\t/* the \"used\" ring */\n\tvolatile struct vring_used *vq_used;\n}",
+            "vqueue_info"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/lib/pci_virtio_block.c": [
+            249,
+            250,
+            259,
+            260,
+            262,
+            272,
+            274,
+            278,
+            279,
+            309,
+            319,
+            321
+        ]
+    },
+    "visitedLines_before": {
+        "src/lib/pci_virtio_block.c": [
+            249,
+            250,
+            259,
+            260,
+            262,
+            272,
+            274,
+            278,
+            279,
+            309,
+            319,
+            321
+        ]
+    },
+    "visitedParams": {
+        "src/lib/pci_virtio_block.c": [
+            [
+                "struct pci_vtblk_softc *sc",
+                "pci_vtblk_proc"
+            ],
+            [
+                "struct vqueue_info *vq",
+                "pci_vtblk_proc"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/lib/pci_virtio_block.c",
+            "pci_vtblk_proc",
+            "static void /* <=== pci_vtblk_proc */ \npci_vtblk_proc(struct pci_vtblk_softc *sc, struct vqueue_info *vq)\n{\n\tstruct virtio_blk_hdr *vbh;\n\tstruct virtio_blk_discard_write_zeroes *vbdiscard;\n\tstruct pci_vtblk_ioreq *io;\n\tint i, n;\n\tint err;\n\tssize_t iolen;\n\tint expectro, type;\n\tstruct iovec iov[BLOCKIF_IOV_MAX + 2];\n\tuint16_t idx, flags[BLOCKIF_IOV_MAX + 2];\n\n\tn = vq_getchain(vq, &idx, iov, BLOCKIF_IOV_MAX + 2, flags);\n\n\t/*\n\t * The first descriptor will be the read-only fixed header,\n\t * and the last is for status (hence +2 above and below).\n\t * The remaining iov's are the actual data I/O vectors.\n\t *\n\t * XXX - note - this fails on crash dump, which does a\n\t * VIRTIO_BLK_T_FLUSH with a zero transfer length\n\t */\n\tassert(n >= 2 && n <= BLOCKIF_IOV_MAX + 2);\n\n\tio = &sc->vbsc_ios[idx];\n\tassert((flags[0] & VRING_DESC_F_WRITE) == 0);\n\tassert(iov[0].iov_len == sizeof(struct virtio_blk_hdr));\n\tvbh = iov[0].iov_base;\n\tmemcpy(&io->io_req.br_iov, &iov[1],\n\t       sizeof(struct iovec) * ((size_t)n - 2));\n\tio->io_req.br_iovcnt = n - 2;\n\tio->io_req.br_offset = (off_t)(vbh->vbh_sector * DEV_BSIZE);\n\tio->io_status = iov[--n].iov_base;\n\tassert(iov[n].iov_len == 1);\n\tassert(flags[n] & VRING_DESC_F_WRITE);\n\n\t/*\n\t * XXX\n\t * The guest should not be setting the BARRIER flag because\n\t * we don't advertise the capability.\n\t */\n\ttype = vbh->vbh_type & ~VBH_FLAG_BARRIER;\n\texpectro = (type == VBH_OP_WRITE) || (type == VBH_OP_DISCARD);\n\tiolen = 0;\n\tfor (i = 1; i < n; i++) {\n\t\t/*\n\t\t * - write/discard op implies read-only descriptor,\n\t\t * - read/ident op implies write-only descriptor,\n\t\t * therefore test the inverse of the descriptor bit\n\t\t * to the op.\n\t\t */\n\t\tassert(((flags[i] & VRING_DESC_F_WRITE) == 0) == expectro);\n\t\tiolen += iov[i].iov_len;\n\t}\n\tio->io_req.br_resid = iolen;\n\n\tDPRINTF((\"virtio-block: %s op, %zd bytes, %d segs\\n\\r\",\n\t\t print_vbh_op(type), iolen, i - 1));\n\n\tswitch (type) {\n\tcase VBH_OP_READ:\n\t\terr = blockif_read(sc->bc, &io->io_req);\n\t\tbreak;\n\tcase VBH_OP_WRITE:\n\t\terr = blockif_write(sc->bc, &io->io_req);\n\t\tbreak;\n\tcase VBH_OP_DISCARD:\n\t\t/* We currently limit the discard to one segment in the initial negotiation\n\t\t   so expect exactly one correctly-sized payload descriptor. */\n\t\tassert(iov[1].iov_len == sizeof(struct virtio_blk_discard_write_zeroes));\n\t\tassert(n == 2);\n\t\tvbdiscard = iov[1].iov_base;\n\t\tio->io_req.br_offset = (off_t) vbdiscard->sector * DEV_BSIZE;\n\t\tio->io_req.br_resid = vbdiscard->num_sectors * DEV_BSIZE;\n\t\terr = blockif_delete(sc->bc, &io->io_req);\n\t\tbreak;\n\tcase VBH_OP_FLUSH:\n\tcase VBH_OP_FLUSH_OUT:\n\t\terr = blockif_flush(sc->bc, &io->io_req);\n\t\tbreak;\n\tcase VBH_OP_IDENT:\n\t\t/* Assume a single buffer */\n\t\t/* S/n equal to buffer is not zero-terminated. */\n\t\tmemset(iov[1].iov_base, 0, iov[1].iov_len);\n\t\tstrncpy(iov[1].iov_base, sc->vbsc_ident,\n\t\t    MIN(iov[1].iov_len, sizeof(sc->vbsc_ident)));\n\t\t/* xhyve: FIXME */\n\t\tpci_vtblk_done_locked(&io->io_req, 0);\n\t\treturn;\n\tdefault:\n\t\t/* xhyve: FIXME */\n\t\tpci_vtblk_done_locked(&io->io_req, EOPNOTSUPP);\n\t\treturn;\n\t}\n\tassert(err == 0);\n}",
+            249
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/lib/pci_virtio_block.c",
+            "pci_vtblk_proc",
+            "static void /* <=== pci_vtblk_proc */ \npci_vtblk_proc(struct pci_vtblk_softc *sc, struct vqueue_info *vq)\n{\n\tstruct virtio_blk_hdr *vbh;\n\tstruct virtio_blk_discard_write_zeroes *vbdiscard;\n\tstruct pci_vtblk_ioreq *io;\n\tint i, n;\n\tint err;\n\tssize_t iolen;\n\tint expectro, type;\n\tstruct iovec iov[BLOCKIF_IOV_MAX + 2];\n\tuint16_t idx, flags[BLOCKIF_IOV_MAX + 2];\n\n\tn = vq_getchain(vq, &idx, iov, BLOCKIF_IOV_MAX + 2, flags);\n\n\t/*\n\t * The first descriptor will be the read-only fixed header,\n\t * and the last is for status (hence +2 above and below).\n\t * The remaining iov's are the actual data I/O vectors.\n\t *\n\t * XXX - note - this fails on crash dump, which does a\n\t * VIRTIO_BLK_T_FLUSH with a zero transfer length\n\t */\n\tassert(n >= 2 && n <= BLOCKIF_IOV_MAX + 2);\n\n\tio = &sc->vbsc_ios[idx];\n\tassert((flags[0] & VRING_DESC_F_WRITE) == 0);\n\tassert(iov[0].iov_len == sizeof(struct virtio_blk_hdr));\n\tvbh = iov[0].iov_base;\n\tmemcpy(&io->io_req.br_iov, &iov[1],\n\t       sizeof(struct iovec) * ((size_t)n - 2));\n\tio->io_req.br_iovcnt = n - 2;\n\tio->io_req.br_offset = (off_t)(vbh->vbh_sector * DEV_BSIZE);\n\tio->io_status = iov[--n].iov_base;\n\tassert(iov[n].iov_len == 1);\n\tassert(flags[n] & VRING_DESC_F_WRITE);\n\n\t/*\n\t * XXX\n\t * The guest should not be setting the BARRIER flag because\n\t * we don't advertise the capability.\n\t */\n\ttype = vbh->vbh_type & ~VBH_FLAG_BARRIER;\n\texpectro = (type == VBH_OP_WRITE) || (type == VBH_OP_DISCARD);\n\tiolen = 0;\n\tfor (i = 1; i < n; i++) {\n\t\t/*\n\t\t * - write/discard op implies read-only descriptor,\n\t\t * - read/ident op implies write-only descriptor,\n\t\t * therefore test the inverse of the descriptor bit\n\t\t * to the op.\n\t\t */\n\t\tassert(((flags[i] & VRING_DESC_F_WRITE) == 0) == expectro);\n\t\tiolen += iov[i].iov_len;\n\t}\n\tio->io_req.br_resid = iolen;\n\n\tDPRINTF((\"virtio-block: %s op, %zd bytes, %d segs\\n\\r\",\n\t\t print_vbh_op(type), iolen, i - 1));\n\n\tswitch (type) {\n\tcase VBH_OP_READ:\n\t\terr = blockif_read(sc->bc, &io->io_req);\n\t\tbreak;\n\tcase VBH_OP_WRITE:\n\t\terr = blockif_write(sc->bc, &io->io_req);\n\t\tbreak;\n\tcase VBH_OP_DISCARD:\n\t\t/* We currently limit the discard to one segment in the initial negotiation\n\t\t   so expect exactly one correctly-sized payload descriptor. */\n\t\tassert(iov[1].iov_len = sizeof(struct virtio_blk_discard_write_zeroes));\n\t\tassert(n == 2);\n\t\tvbdiscard = iov[1].iov_base;\n\t\tio->io_req.br_offset = (off_t) vbdiscard->sector * DEV_BSIZE;\n\t\tio->io_req.br_resid = vbdiscard->num_sectors * DEV_BSIZE;\n\t\terr = blockif_delete(sc->bc, &io->io_req);\n\t\tbreak;\n\tcase VBH_OP_FLUSH:\n\tcase VBH_OP_FLUSH_OUT:\n\t\terr = blockif_flush(sc->bc, &io->io_req);\n\t\tbreak;\n\tcase VBH_OP_IDENT:\n\t\t/* Assume a single buffer */\n\t\t/* S/n equal to buffer is not zero-terminated. */\n\t\tmemset(iov[1].iov_base, 0, iov[1].iov_len);\n\t\tstrncpy(iov[1].iov_base, sc->vbsc_ident,\n\t\t    MIN(iov[1].iov_len, sizeof(sc->vbsc_ident)));\n\t\t/* xhyve: FIXME */\n\t\tpci_vtblk_done_locked(&io->io_req, 0);\n\t\treturn;\n\tdefault:\n\t\t/* xhyve: FIXME */\n\t\tpci_vtblk_done_locked(&io->io_req, EOPNOTSUPP);\n\t\treturn;\n\t}\n\tassert(err == 0);\n}",
+            249
+        ]
+    ]
+}

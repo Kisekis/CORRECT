@@ -1,0 +1,190 @@
+{
+    "calleeMethods": [
+        [
+            "arch/x86/kernel/cpu/microcode/intel_early.c",
+            "matching_model_microcode",
+            "static enum ucode_state /* <=== matching_model_microcode */ \nmatching_model_microcode(struct microcode_header_intel *mc_header,\n\t\t\tunsigned long sig)\n{\n\tu8 x86, x86_model;\n\tu8 x86_ucode, x86_model_ucode;\n\tstruct extended_sigtable *ext_header;\n\tunsigned long total_size = get_totalsize(mc_header);\n\tunsigned long data_size = get_datasize(mc_header);\n\tint ext_sigcount, i;\n\tstruct extended_signature *ext_sig;\n\n\tx86 = get_x86_family(sig);\n\tx86_model = get_x86_model(sig);\n\n\tx86_ucode = get_x86_family(mc_header->sig);\n\tx86_model_ucode = get_x86_model(mc_header->sig);\n\n\tif (x86 == x86_ucode && x86_model == x86_model_ucode)\n\t\treturn UCODE_OK;\n\n\t/* Look for ext. headers: */\n\tif (total_size <= data_size + MC_HEADER_SIZE)\n\t\treturn UCODE_NFOUND;\n\n\text_header = (struct extended_sigtable *)\n\t\t     mc_header + data_size + MC_HEADER_SIZE;\n\text_sigcount = ext_header->count;\n\text_sig = (void *)ext_header + EXT_HEADER_SIZE;\n\n\tfor (i = 0; i < ext_sigcount; i++) {\n\t\tx86_ucode = get_x86_family(ext_sig->sig);\n\t\tx86_model_ucode = get_x86_model(ext_sig->sig);\n\n\t\tif (x86 == x86_ucode && x86_model == x86_model_ucode)\n\t\t\treturn UCODE_OK;\n\n\t\text_sig++;\n\t}\n\n\treturn UCODE_NFOUND;\n}",
+            1
+        ],
+        [
+            "arch/x86/kernel/cpu/microcode/intel_lib.c",
+            "update_match_revision",
+            "int /* <=== update_match_revision */ \nupdate_match_revision(struct microcode_header_intel *mc_header, int rev)\n{\n\treturn (mc_header->rev <= rev) ? 0 : 1;\n}",
+            2
+        ],
+        [
+            "arch/x86/kernel/cpu/microcode/intel_lib.c",
+            "get_matching_sig",
+            "int get_matching_sig(unsigned int csig, int cpf, void *mc, int rev) /* <=== get_matching_sig */ \n{\n\tstruct microcode_header_intel *mc_header = mc;\n\tstruct extended_sigtable *ext_header;\n\tunsigned long total_size = get_totalsize(mc_header);\n\tint ext_sigcount, i;\n\tstruct extended_signature *ext_sig;\n\n\tif (update_match_cpu(csig, cpf, mc_header->sig, mc_header->pf))\n\t\treturn 1;\n\n\t/* Look for ext. headers: */\n\tif (total_size <= get_datasize(mc_header) + MC_HEADER_SIZE)\n\t\treturn 0;\n\n\text_header = mc + get_datasize(mc_header) + MC_HEADER_SIZE;\n\text_sigcount = ext_header->count;\n\text_sig = (void *)ext_header + EXT_HEADER_SIZE;\n\n\tfor (i = 0; i < ext_sigcount; i++) {\n\t\tif (update_match_cpu(csig, cpf, ext_sig->sig, ext_sig->pf))\n\t\t\treturn 1;\n\t\text_sig++;\n\t}\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "arch/x86/kernel/cpu/microcode/intel_lib.c",
+            "microcode_sanity_check",
+            "int microcode_sanity_check(void *mc, int print_err) /* <=== microcode_sanity_check */ \n{\n\tunsigned long total_size, data_size, ext_table_size;\n\tstruct microcode_header_intel *mc_header = mc;\n\tstruct extended_sigtable *ext_header = NULL;\n\tint sum, orig_sum, ext_sigcount = 0, i;\n\tstruct extended_signature *ext_sig;\n\n\ttotal_size = get_totalsize(mc_header);\n\tdata_size = get_datasize(mc_header);\n\n\tif (data_size + MC_HEADER_SIZE > total_size) {\n\t\tif (print_err)\n\t\t\tpr_err(\"error! Bad data size in microcode data file\\n\");\n\t\treturn -EINVAL;\n\t}\n\n\tif (mc_header->ldrver != 1 || mc_header->hdrver != 1) {\n\t\tif (print_err)\n\t\t\tpr_err(\"error! Unknown microcode update format\\n\");\n\t\treturn -EINVAL;\n\t}\n\text_table_size = total_size - (MC_HEADER_SIZE + data_size);\n\tif (ext_table_size) {\n\t\tif ((ext_table_size < EXT_HEADER_SIZE)\n\t\t || ((ext_table_size - EXT_HEADER_SIZE) % EXT_SIGNATURE_SIZE)) {\n\t\t\tif (print_err)\n\t\t\t\tpr_err(\"error! Small exttable size in microcode data file\\n\");\n\t\t\treturn -EINVAL;\n\t\t}\n\t\text_header = mc + MC_HEADER_SIZE + data_size;\n\t\tif (ext_table_size != exttable_size(ext_header)) {\n\t\t\tif (print_err)\n\t\t\t\tpr_err(\"error! Bad exttable size in microcode data file\\n\");\n\t\t\treturn -EFAULT;\n\t\t}\n\t\text_sigcount = ext_header->count;\n\t}\n\n\t/* check extended table checksum */\n\tif (ext_table_size) {\n\t\tint ext_table_sum = 0;\n\t\tint *ext_tablep = (int *)ext_header;\n\n\t\ti = ext_table_size / DWSIZE;\n\t\twhile (i--)\n\t\t\text_table_sum += ext_tablep[i];\n\t\tif (ext_table_sum) {\n\t\t\tif (print_err)\n\t\t\t\tpr_warn(\"aborting, bad extended signature table checksum\\n\");\n\t\t\treturn -EINVAL;\n\t\t}\n\t}\n\n\t/* calculate the checksum */\n\torig_sum = 0;\n\ti = (MC_HEADER_SIZE + data_size) / DWSIZE;\n\twhile (i--)\n\t\torig_sum += ((int *)mc)[i];\n\tif (orig_sum) {\n\t\tif (print_err)\n\t\t\tpr_err(\"aborting, bad checksum\\n\");\n\t\treturn -EINVAL;\n\t}\n\tif (!ext_table_size)\n\t\treturn 0;\n\t/* check extended signature checksum */\n\tfor (i = 0; i < ext_sigcount; i++) {\n\t\text_sig = (void *)ext_header + EXT_HEADER_SIZE +\n\t\t\t  EXT_SIGNATURE_SIZE * i;\n\t\tsum = orig_sum\n\t\t\t- (mc_header->sig + mc_header->pf + mc_header->cksum)\n\t\t\t+ (ext_sig->sig + ext_sig->pf + ext_sig->cksum);\n\t\tif (sum) {\n\t\t\tif (print_err)\n\t\t\t\tpr_err(\"aborting, bad checksum\\n\");\n\t\t\treturn -EINVAL;\n\t\t}\n\t}\n\treturn 0;\n}",
+            1
+        ],
+        [
+            "arch/x86/kernel/cpu/microcode/intel_early.c",
+            "_save_mc",
+            "static void _save_mc(struct microcode_intel **mc_saved, u8 *ucode_ptr, /* <=== _save_mc */ \n\t\t     unsigned int *mc_saved_count_p)\n{\n\tint i;\n\tint found = 0;\n\tunsigned int mc_saved_count = *mc_saved_count_p;\n\tstruct microcode_header_intel *mc_header;\n\n\tmc_header = (struct microcode_header_intel *)ucode_ptr;\n\tfor (i = 0; i < mc_saved_count; i++) {\n\t\tunsigned int sig, pf;\n\t\tunsigned int new_rev;\n\t\tstruct microcode_header_intel *mc_saved_header =\n\t\t\t     (struct microcode_header_intel *)mc_saved[i];\n\t\tsig = mc_saved_header->sig;\n\t\tpf = mc_saved_header->pf;\n\t\tnew_rev = mc_header->rev;\n\n\t\tif (get_matching_sig(sig, pf, ucode_ptr, new_rev)) {\n\t\t\tfound = 1;\n\t\t\tif (update_match_revision(mc_header, new_rev)) {\n\t\t\t\t/*\n\t\t\t\t * Found an older ucode saved before.\n\t\t\t\t * Replace the older one with this newer\n\t\t\t\t * one.\n\t\t\t\t */\n\t\t\t\tmc_saved[i] =\n\t\t\t\t\t(struct microcode_intel *)ucode_ptr;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t}\n\tif (i >= mc_saved_count && !found)\n\t\t/*\n\t\t * This ucode is first time discovered in ucode file.\n\t\t * Save it to memory.\n\t\t */\n\t\tmc_saved[mc_saved_count++] =\n\t\t\t\t (struct microcode_intel *)ucode_ptr;\n\n\t*mc_saved_count_p = mc_saved_count;\n}",
+            1
+        ],
+        [
+            "arch/x86/kernel/cpu/microcode/intel_early.c",
+            "get_x86_model",
+            "static u8 get_x86_model(unsigned long sig) /* <=== get_x86_model */ \n{\n\tu8 x86, x86_model;\n\n\tx86 = get_x86_family(sig);\n\tx86_model = (sig >> 4) & 0xf;\n\n\tif (x86 == 0x6 || x86 == 0xf)\n\t\tx86_model += ((sig >> 16) & 0xf) << 4;\n\n\treturn x86_model;\n}",
+            2
+        ],
+        [
+            "arch/x86/kernel/cpu/microcode/intel_early.c",
+            "get_x86_family",
+            "static u8 get_x86_family(unsigned long sig) /* <=== get_x86_family */ \n{\n\tu8 x86;\n\n\tx86 = (sig >> 8) & 0xf;\n\n\tif (x86 == 0xf)\n\t\tx86 += (sig >> 20) & 0xff;\n\n\treturn x86;\n}",
+            2
+        ],
+        [
+            "arch/x86/kernel/cpu/microcode/intel_lib.c",
+            "update_match_cpu",
+            "static inline int /* <=== update_match_cpu */ \nupdate_match_cpu(unsigned int csig, unsigned int cpf,\n\t\t unsigned int sig, unsigned int pf)\n{\n\treturn (!sigmatch(sig, csig, pf, cpf)) ? 0 : 1;\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/cpu.h>",
+        "#include <asm/setup.h>",
+        "#include <asm/tlbflush.h>",
+        "#include <asm/microcode_intel.h>",
+        "#include <linux/module.h>",
+        "#include <asm/msr.h>",
+        "#include <asm/processor.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/mm.h>",
+        "#include <linux/earlycpio.h>",
+        "#include <linux/initrd.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef __kernel_size_t\t\tsize_t;",
+            "size_t"
+        ],
+        [
+            "static struct mc_saved_data {\n\tunsigned int mc_saved_count;\n\tstruct microcode_intel **mc_saved;\n}",
+            "mc_saved_data"
+        ],
+        [
+            "struct ucode_cpu_info {\n\tstruct cpu_signature\tcpu_sig;\n\tint\t\t\tvalid;\n\tvoid\t\t\t*mc;\n}",
+            "ucode_cpu_info"
+        ],
+        [
+            "enum ucode_state { UCODE_ERROR, UCODE_OK, UCODE_NFOUND }",
+            "ucode_state"
+        ],
+        [
+            "typedef __u8  u8;",
+            "u8"
+        ],
+        [
+            "struct microcode_header_intel {\n\tunsigned int            hdrver;\n\tunsigned int            rev;\n\tunsigned int            date;\n\tunsigned int            sig;\n\tunsigned int            cksum;\n\tunsigned int            ldrver;\n\tunsigned int            pf;\n\tunsigned int            datasize;\n\tunsigned int            totalsize;\n\tunsigned int            reserved[3];\n}",
+            "microcode_header_intel"
+        ]
+    ],
+    "visitedLines_after": {
+        "arch/x86/kernel/cpu/microcode/intel_early.c": [
+            309,
+            310,
+            311,
+            312,
+            313,
+            315,
+            316,
+            317,
+            320,
+            321,
+            324,
+            325,
+            327,
+            328,
+            329,
+            332,
+            339,
+            340,
+            341,
+            345,
+            347,
+            355,
+            356,
+            360,
+            361,
+            363,
+            365
+        ]
+    },
+    "visitedLines_before": {
+        "arch/x86/kernel/cpu/microcode/intel_early.c": [
+            309,
+            310,
+            311,
+            312,
+            313,
+            315,
+            316,
+            317,
+            320,
+            321,
+            324,
+            325,
+            327,
+            328,
+            329,
+            332,
+            339,
+            340,
+            341,
+            345,
+            347,
+            355,
+            356,
+            360,
+            361,
+            363,
+            365
+        ]
+    },
+    "visitedParams": {
+        "arch/x86/kernel/cpu/microcode/intel_early.c": [
+            [
+                "size_t size",
+                "get_matching_model_microcode"
+            ],
+            [
+                "struct mc_saved_data *mc_saved_data",
+                "get_matching_model_microcode"
+            ],
+            [
+                "struct ucode_cpu_info *uci",
+                "get_matching_model_microcode"
+            ],
+            [
+                "void *data",
+                "get_matching_model_microcode"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "arch/x86/kernel/cpu/microcode/intel_early.c",
+            "get_matching_model_microcode",
+            "get_matching_model_microcode(int cpu, unsigned long start, /* <=== get_matching_model_microcode */ \n\t\t\t     void *data, size_t size,\n\t\t\t     struct mc_saved_data *mc_saved_data,\n\t\t\t     unsigned long *mc_saved_in_initrd,\n\t\t\t     struct ucode_cpu_info *uci)\n{\n\tu8 *ucode_ptr = data;\n\tunsigned int leftover = size;\n\tenum ucode_state state = UCODE_OK;\n\tunsigned int mc_size;\n\tstruct microcode_header_intel *mc_header;\n\tstruct microcode_intel *mc_saved_tmp[MAX_UCODE_COUNT];\n\tunsigned int mc_saved_count = mc_saved_data->mc_saved_count;\n\tint i;\n\n\twhile (leftover && mc_saved_count < ARRAY_SIZE(mc_saved_tmp)) {\n\t\tmc_header = (struct microcode_header_intel *)ucode_ptr;\n\n\t\tmc_size = get_totalsize(mc_header);\n\t\tif (!mc_size || mc_size > leftover ||\n\t\t\tmicrocode_sanity_check(ucode_ptr, 0) < 0)\n\t\t\tbreak;\n\n\t\tleftover -= mc_size;\n\n\t\t/*\n\t\t * Since APs with same family and model as the BSP may boot in\n\t\t * the platform, we need to find and save microcode patches\n\t\t * with the same family and model as the BSP.\n\t\t */\n\t\tif (matching_model_microcode(mc_header, uci->cpu_sig.sig) !=\n\t\t\t UCODE_OK) {\n\t\t\tucode_ptr += mc_size;\n\t\t\tcontinue;\n\t\t}\n\n\t\t_save_mc(mc_saved_tmp, ucode_ptr, &mc_saved_count);\n\n\t\tucode_ptr += mc_size;\n\t}\n\n\tif (leftover) {\n\t\tstate = UCODE_ERROR;\n\t\tgoto out;\n\t}\n\n\tif (mc_saved_count == 0) {\n\t\tstate = UCODE_NFOUND;\n\t\tgoto out;\n\t}\n\n\tfor (i = 0; i < mc_saved_count; i++)\n\t\tmc_saved_in_initrd[i] = (unsigned long)mc_saved_tmp[i] - start;\n\n\tmc_saved_data->mc_saved_count = mc_saved_count;\nout:\n\treturn state;\n}",
+            309
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "arch/x86/kernel/cpu/microcode/intel_early.c",
+            "get_matching_model_microcode",
+            "get_matching_model_microcode(int cpu, unsigned long start, /* <=== get_matching_model_microcode */ \n\t\t\t     void *data, size_t size,\n\t\t\t     struct mc_saved_data *mc_saved_data,\n\t\t\t     unsigned long *mc_saved_in_initrd,\n\t\t\t     struct ucode_cpu_info *uci)\n{\n\tu8 *ucode_ptr = data;\n\tunsigned int leftover = size;\n\tenum ucode_state state = UCODE_OK;\n\tunsigned int mc_size;\n\tstruct microcode_header_intel *mc_header;\n\tstruct microcode_intel *mc_saved_tmp[MAX_UCODE_COUNT];\n\tunsigned int mc_saved_count = mc_saved_data->mc_saved_count;\n\tint i;\n\n\twhile (leftover) {\n\t\tmc_header = (struct microcode_header_intel *)ucode_ptr;\n\n\t\tmc_size = get_totalsize(mc_header);\n\t\tif (!mc_size || mc_size > leftover ||\n\t\t\tmicrocode_sanity_check(ucode_ptr, 0) < 0)\n\t\t\tbreak;\n\n\t\tleftover -= mc_size;\n\n\t\t/*\n\t\t * Since APs with same family and model as the BSP may boot in\n\t\t * the platform, we need to find and save microcode patches\n\t\t * with the same family and model as the BSP.\n\t\t */\n\t\tif (matching_model_microcode(mc_header, uci->cpu_sig.sig) !=\n\t\t\t UCODE_OK) {\n\t\t\tucode_ptr += mc_size;\n\t\t\tcontinue;\n\t\t}\n\n\t\t_save_mc(mc_saved_tmp, ucode_ptr, &mc_saved_count);\n\n\t\tucode_ptr += mc_size;\n\t}\n\n\tif (leftover) {\n\t\tstate = UCODE_ERROR;\n\t\tgoto out;\n\t}\n\n\tif (mc_saved_count == 0) {\n\t\tstate = UCODE_NFOUND;\n\t\tgoto out;\n\t}\n\n\tfor (i = 0; i < mc_saved_count; i++)\n\t\tmc_saved_in_initrd[i] = (unsigned long)mc_saved_tmp[i] - start;\n\n\tmc_saved_data->mc_saved_count = mc_saved_count;\nout:\n\treturn state;\n}",
+            309
+        ]
+    ]
+}

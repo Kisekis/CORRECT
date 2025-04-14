@@ -1,0 +1,164 @@
+{
+    "calleeMethods": [
+        [
+            "src/context.h",
+            "log_err",
+            "#define log_err(ctx, ...) \\ /* <=== src/context.h:110:111:log_err:2 */ \n    xkb_log((ctx), XKB_LOG_LEVEL_ERROR, 0,  __VA_ARGS__)",
+            1
+        ],
+        [
+            "src/text.c",
+            "LookupString",
+            "bool /* <=== LookupString */ \nLookupString(const LookupEntry tab[], const char *string,\n              unsigned int *value_rtrn)\n{\n    if (!string)\n        return false;\n\n    for (const LookupEntry *entry = tab; entry->name; entry++) {\n        if (istreq(entry->name, string)) {\n            *value_rtrn = entry->value;\n            return true;\n        }\n    }\n\n    return false;\n}",
+            1
+        ],
+        [
+            "src/xkbcomp/expr.c",
+            "ExprResolveModMask",
+            "bool /* <=== ExprResolveModMask */ \nExprResolveModMask(struct xkb_context *ctx, const ExprDef *expr,\n                   enum mod_type mod_type, const struct xkb_mod_set *mods,\n                   xkb_mod_mask_t *mask_rtrn)\n{\n    LookupModMaskPriv priv = { .mods = mods, .mod_type = mod_type };\n    return ExprResolveMaskLookup(ctx, expr, mask_rtrn, LookupModMask, &priv);\n}",
+            1
+        ],
+        [
+            "src/xkbcomp/ast.h",
+            "expr_value_type_to_string",
+            "const char * /* <=== expr_value_type_to_string */ \nexpr_value_type_to_string(enum expr_value_type type);",
+            3
+        ],
+        [
+            "src/context-priv.c",
+            "xkb_log",
+            "void /* <=== xkb_log */ \nxkb_log(struct xkb_context *ctx, enum xkb_log_level level, int verbosity,\n        const char *fmt, ...)\n{\n    va_list args;\n\n    if (ctx->log_level < level || ctx->log_verbosity < verbosity)\n        return;\n\n    va_start(args, fmt);\n    ctx->log_fn(ctx, level, fmt, args);\n    va_end(args);\n}",
+            1
+        ],
+        [
+            "src/utils.h",
+            "istreq",
+            "static inline bool /* <=== istreq */ \nistreq(const char *s1, const char *s2)\n{\n    return istrcmp(s1, s2) == 0;\n}",
+            2
+        ],
+        [
+            "src/context.h",
+            "log_wsgo",
+            "#define log_wsgo(ctx, ...) \\ /* <=== src/context.h:112:113:log_wsgo:2 */ \n    xkb_log((ctx), XKB_LOG_LEVEL_CRITICAL, 0, __VA_ARGS__)",
+            3
+        ],
+        [
+            "src/xkbcomp/expr.c",
+            "ExprResolveMaskLookup",
+            "static bool /* <=== ExprResolveMaskLookup */ \nExprResolveMaskLookup(struct xkb_context *ctx, const ExprDef *expr,\n                      unsigned int *val_rtrn, IdentLookupFunc lookup,\n                      const void *lookupPriv)\n{\n    bool ok = false;\n    unsigned int l = 0, r = 0;\n    int v;\n    ExprDef *left, *right;\n    const char *bogus = NULL;\n\n    switch (expr->expr.op) {\n    case EXPR_VALUE:\n        if (expr->expr.value_type != EXPR_TYPE_INT) {\n            log_err(ctx,\n                    \"Found constant of type %s where a mask was expected\\n\",\n                    expr_value_type_to_string(expr->expr.value_type));\n            return false;\n        }\n        *val_rtrn = (unsigned int) expr->integer.ival;\n        return true;\n\n    case EXPR_IDENT:\n        ok = lookup(ctx, lookupPriv, expr->ident.ident, EXPR_TYPE_INT,\n                    val_rtrn);\n        if (!ok)\n            log_err(ctx, \"Identifier \\\"%s\\\" of type int is unknown\\n\",\n                    xkb_atom_text(ctx, expr->ident.ident));\n        return ok;\n\n    case EXPR_FIELD_REF:\n        log_err(ctx, \"Default \\\"%s.%s\\\" of type int is unknown\\n\",\n                xkb_atom_text(ctx, expr->field_ref.element),\n                xkb_atom_text(ctx, expr->field_ref.field));\n        return false;\n\n    case EXPR_ARRAY_REF:\n        bogus = \"array reference\";\n\t/* fallthrough */\n    case EXPR_ACTION_DECL:\n        if (bogus == NULL)\n            bogus = \"function use\";\n        log_err(ctx,\n                \"Unexpected %s in mask expression; Expression Ignored\\n\",\n                bogus);\n        return false;\n\n    case EXPR_ADD:\n    case EXPR_SUBTRACT:\n    case EXPR_MULTIPLY:\n    case EXPR_DIVIDE:\n        left = expr->binary.left;\n        right = expr->binary.right;\n        if (!ExprResolveMaskLookup(ctx, left, &l, lookup, lookupPriv) ||\n            !ExprResolveMaskLookup(ctx, right, &r, lookup, lookupPriv))\n            return false;\n\n        switch (expr->expr.op) {\n        case EXPR_ADD:\n            *val_rtrn = l | r;\n            break;\n        case EXPR_SUBTRACT:\n            *val_rtrn = l & (~r);\n            break;\n        case EXPR_MULTIPLY:\n        case EXPR_DIVIDE:\n            log_err(ctx, \"Cannot %s masks; Illegal operation ignored\\n\",\n                    (expr->expr.op == EXPR_DIVIDE ? \"divide\" : \"multiply\"));\n            return false;\n        default:\n            break;\n        }\n\n        return true;\n\n    case EXPR_ASSIGN:\n        log_wsgo(ctx, \"Assignment operator not implemented yet\\n\");\n        break;\n\n    case EXPR_INVERT:\n        left = expr->unary.child;\n        if (!ExprResolveIntegerLookup(ctx, left, &v, lookup, lookupPriv))\n            return false;\n\n        *val_rtrn = ~v;\n        return true;\n\n    case EXPR_UNARY_PLUS:\n    case EXPR_NEGATE:\n    case EXPR_NOT:\n        left = expr->unary.child;\n        if (!ExprResolveIntegerLookup(ctx, left, &v, lookup, lookupPriv))\n            log_err(ctx, \"The %s operator cannot be used with a mask\\n\",\n                    (expr->expr.op == EXPR_NEGATE ? \"-\" : \"!\"));\n        return false;\n\n    default:\n        log_wsgo(ctx, \"Unknown operator %d in ResolveMask\\n\",\n                 expr->expr.op);\n        break;\n    }\n\n    return false;\n}",
+            2
+        ],
+        [
+            "src/context-priv.c",
+            "xkb_atom_text",
+            "const char * /* <=== xkb_atom_text */ \nxkb_atom_text(struct xkb_context *ctx, xkb_atom_t atom)\n{\n    return atom_text(ctx->atom_table, atom);\n}",
+            1
+        ],
+        [
+            "src/xkbcomp/expr.c",
+            "ExprResolveIntegerLookup",
+            "static bool /* <=== ExprResolveIntegerLookup */ \nExprResolveIntegerLookup(struct xkb_context *ctx, const ExprDef *expr,\n                         int *val_rtrn, IdentLookupFunc lookup,\n                         const void *lookupPriv)\n{\n    bool ok = false;\n    int l, r;\n    unsigned u;\n    ExprDef *left, *right;\n\n    switch (expr->expr.op) {\n    case EXPR_VALUE:\n        if (expr->expr.value_type != EXPR_TYPE_INT) {\n            log_err(ctx,\n                    \"Found constant of type %s where an int was expected\\n\",\n                    expr_value_type_to_string(expr->expr.value_type));\n            return false;\n        }\n\n        *val_rtrn = expr->integer.ival;\n        return true;\n\n    case EXPR_IDENT:\n        if (lookup)\n            ok = lookup(ctx, lookupPriv, expr->ident.ident, EXPR_TYPE_INT, &u);\n\n        if (!ok)\n            log_err(ctx, \"Identifier \\\"%s\\\" of type int is unknown\\n\",\n                    xkb_atom_text(ctx, expr->ident.ident));\n        else\n            *val_rtrn = (int) u;\n\n        return ok;\n\n    case EXPR_FIELD_REF:\n        log_err(ctx, \"Default \\\"%s.%s\\\" of type int is unknown\\n\",\n                xkb_atom_text(ctx, expr->field_ref.element),\n                xkb_atom_text(ctx, expr->field_ref.field));\n        return false;\n\n    case EXPR_ADD:\n    case EXPR_SUBTRACT:\n    case EXPR_MULTIPLY:\n    case EXPR_DIVIDE:\n        left = expr->binary.left;\n        right = expr->binary.right;\n        if (!ExprResolveIntegerLookup(ctx, left, &l, lookup, lookupPriv) ||\n            !ExprResolveIntegerLookup(ctx, right, &r, lookup, lookupPriv))\n            return false;\n\n        switch (expr->expr.op) {\n        case EXPR_ADD:\n            *val_rtrn = l + r;\n            break;\n        case EXPR_SUBTRACT:\n            *val_rtrn = l - r;\n            break;\n        case EXPR_MULTIPLY:\n            *val_rtrn = l * r;\n            break;\n        case EXPR_DIVIDE:\n            if (r == 0) {\n                log_err(ctx, \"Cannot divide by zero: %d / %d\\n\", l, r);\n                return false;\n            }\n            *val_rtrn = l / r;\n            break;\n        default:\n            log_err(ctx, \"%s of integers not permitted\\n\",\n                    expr_op_type_to_string(expr->expr.op));\n            return false;\n        }\n\n        return true;\n\n    case EXPR_ASSIGN:\n        log_wsgo(ctx, \"Assignment operator not implemented yet\\n\");\n        break;\n\n    case EXPR_NOT:\n        log_err(ctx, \"The ! operator cannot be applied to an integer\\n\");\n        return false;\n\n    case EXPR_INVERT:\n    case EXPR_NEGATE:\n        left = expr->unary.child;\n        if (!ExprResolveIntegerLookup(ctx, left, &l, lookup, lookupPriv))\n            return false;\n\n        *val_rtrn = (expr->expr.op == EXPR_NEGATE ? -l : ~l);\n        return true;\n\n    case EXPR_UNARY_PLUS:\n        left = expr->unary.child;\n        return ExprResolveIntegerLookup(ctx, left, val_rtrn, lookup,\n                                        lookupPriv);\n\n    default:\n        log_wsgo(ctx, \"Unknown operator %d in ResolveInteger\\n\",\n                 expr->expr.op);\n        break;\n    }\n\n    return false;\n}",
+            3
+        ],
+        [
+            "src/utils.h",
+            "istrcmp",
+            "istrcmp(const char *a, const char *b); /* <=== istrcmp */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"action.h\"",
+        "#include \"xkbcomp-priv.h\"",
+        "#include \"expr.h\"",
+        "#include \"include.h\"",
+        "#include \"vmod.h\"",
+        "#include \"text.h\""
+    ],
+    "typeDefs": [
+        [
+            "enum xkb_match_operation {\n    MATCH_NONE,\n    MATCH_ANY_OR_NONE,\n    MATCH_ANY,\n    MATCH_ALL,\n    MATCH_EXACTLY,\n}",
+            "xkb_match_operation"
+        ],
+        [
+            "union ExprDef {\n    ParseCommon common;\n    /* Maybe someday we can use C11 anonymous struct for ExprCommon here. */\n    ExprCommon expr;\n    ExprIdent ident;\n    ExprString string;\n    ExprBoolean boolean;\n    ExprInteger integer;\n    ExprKeyName key_name;\n    ExprBinary binary;\n    ExprUnary unary;\n    ExprFieldRef field_ref;\n    ExprArrayRef array_ref;\n    ExprAction action;\n    ExprKeysymList keysym_list;\n}",
+            "ExprDef"
+        ],
+        [
+            "typedef struct {\n    char *name;\n    int errorCount;\n    SymInterpInfo default_interp;\n    darray(SymInterpInfo) interps;\n    LedInfo default_led;\n    LedInfo leds[XKB_MAX_LEDS];\n    unsigned int num_leds;\n    ActionsInfo *actions;\n    struct xkb_mod_set mods;\n\n    struct xkb_context *ctx;\n}",
+            "CompatInfo"
+        ],
+        [
+            "typedef union ExprDef",
+            "ExprDef"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/xkbcomp/compat.c": [
+            254,
+            255,
+            256,
+            258,
+            264,
+            265,
+            266,
+            267,
+            268,
+            269,
+            271,
+            273,
+            284,
+            285
+        ]
+    },
+    "visitedLines_before": {
+        "src/xkbcomp/compat.c": [
+            254,
+            255,
+            256,
+            258,
+            264,
+            265,
+            266,
+            267,
+            268,
+            270,
+            272,
+            283,
+            284
+        ]
+    },
+    "visitedParams": {
+        "src/xkbcomp/compat.c": [
+            [
+                "CompatInfo *info",
+                "ResolveStateAndPredicate"
+            ],
+            [
+                "ExprDef *expr",
+                "ResolveStateAndPredicate"
+            ],
+            [
+                "enum xkb_match_operation *pred_rtrn",
+                "ResolveStateAndPredicate"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/xkbcomp/compat.c",
+            "ResolveStateAndPredicate",
+            "static bool /* <=== ResolveStateAndPredicate */ \nResolveStateAndPredicate(ExprDef *expr, enum xkb_match_operation *pred_rtrn,\n                         xkb_mod_mask_t *mods_rtrn, CompatInfo *info)\n{\n    if (expr == NULL) {\n        *pred_rtrn = MATCH_ANY_OR_NONE;\n        *mods_rtrn = MOD_REAL_MASK_ALL;\n        return true;\n    }\n\n    *pred_rtrn = MATCH_EXACTLY;\n    if (expr->expr.op == EXPR_ACTION_DECL) {\n        const char *pred_txt = xkb_atom_text(info->ctx, expr->action.name);\n        if (!LookupString(symInterpretMatchMaskNames, pred_txt, pred_rtrn) ||\n            !expr->action.args) {\n            log_err(info->ctx,\n                    \"Illegal modifier predicate \\\"%s\\\"; Ignored\\n\", pred_txt);\n            return false;\n        }\n        expr = expr->action.args;\n    }\n    else if (expr->expr.op == EXPR_IDENT) {\n        const char *pred_txt = xkb_atom_text(info->ctx, expr->ident.ident);\n        if (pred_txt && istreq(pred_txt, \"any\")) {\n            *pred_rtrn = MATCH_ANY;\n            *mods_rtrn = MOD_REAL_MASK_ALL;\n            return true;\n        }\n    }\n\n    return ExprResolveModMask(info->ctx, expr, MOD_REAL, &info->mods,\n                              mods_rtrn);\n}",
+            254
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/xkbcomp/compat.c",
+            "ResolveStateAndPredicate",
+            "static bool /* <=== ResolveStateAndPredicate */ \nResolveStateAndPredicate(ExprDef *expr, enum xkb_match_operation *pred_rtrn,\n                         xkb_mod_mask_t *mods_rtrn, CompatInfo *info)\n{\n    if (expr == NULL) {\n        *pred_rtrn = MATCH_ANY_OR_NONE;\n        *mods_rtrn = MOD_REAL_MASK_ALL;\n        return true;\n    }\n\n    *pred_rtrn = MATCH_EXACTLY;\n    if (expr->expr.op == EXPR_ACTION_DECL) {\n        const char *pred_txt = xkb_atom_text(info->ctx, expr->action.name);\n        if (!LookupString(symInterpretMatchMaskNames, pred_txt, pred_rtrn)) {\n            log_err(info->ctx,\n                    \"Illegal modifier predicate \\\"%s\\\"; Ignored\\n\", pred_txt);\n            return false;\n        }\n        expr = expr->action.args;\n    }\n    else if (expr->expr.op == EXPR_IDENT) {\n        const char *pred_txt = xkb_atom_text(info->ctx, expr->ident.ident);\n        if (pred_txt && istreq(pred_txt, \"any\")) {\n            *pred_rtrn = MATCH_ANY;\n            *mods_rtrn = MOD_REAL_MASK_ALL;\n            return true;\n        }\n    }\n\n    return ExprResolveModMask(info->ctx, expr, MOD_REAL, &info->mods,\n                              mods_rtrn);\n}",
+            254
+        ]
+    ]
+}

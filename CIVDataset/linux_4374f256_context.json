@@ -1,0 +1,167 @@
+{
+    "calleeMethods": [
+        [
+            "kernel/bpf/verifier.c",
+            "__reg_deduce_bounds",
+            "static void __reg_deduce_bounds(struct bpf_reg_state *reg) /* <=== __reg_deduce_bounds */ \n{\n\t/* Learn sign from signed bounds.\n\t * If we cannot cross the sign boundary, then signed and unsigned bounds\n\t * are the same, so combine.  This works even in the negative case, e.g.\n\t * -3 s<= x s<= -1 implies 0xf...fd u<= x u<= 0xf...ff.\n\t */\n\tif (reg->smin_value >= 0 || reg->smax_value < 0) {\n\t\treg->smin_value = reg->umin_value = max_t(u64, reg->smin_value,\n\t\t\t\t\t\t\t  reg->umin_value);\n\t\treg->smax_value = reg->umax_value = min_t(u64, reg->smax_value,\n\t\t\t\t\t\t\t  reg->umax_value);\n\t\treturn;\n\t}\n\t/* Learn sign from unsigned bounds.  Signed bounds cross the sign\n\t * boundary, so we must be careful.\n\t */\n\tif ((s64)reg->umax_value >= 0) {\n\t\t/* Positive.  We can't learn anything from the smin, but smax\n\t\t * is positive, hence safe.\n\t\t */\n\t\treg->smin_value = reg->umin_value;\n\t\treg->smax_value = reg->umax_value = min_t(u64, reg->smax_value,\n\t\t\t\t\t\t\t  reg->umax_value);\n\t} else if ((s64)reg->umin_value < 0) {\n\t\t/* Negative.  We can't learn anything from the smax, but smin\n\t\t * is negative, hence safe.\n\t\t */\n\t\treg->smin_value = reg->umin_value = max_t(u64, reg->smin_value,\n\t\t\t\t\t\t\t  reg->umin_value);\n\t\treg->smax_value = reg->umax_value;\n\t}\n}",
+            1
+        ],
+        [
+            "kernel/bpf/tnum.c",
+            "tnum_range",
+            "struct tnum tnum_range(u64 min, u64 max) /* <=== tnum_range */ \n{\n\tu64 chi = min ^ max, delta;\n\tu8 bits = fls64(chi);\n\n\t/* special case, needed because 1ULL << 64 is undefined */\n\tif (bits > 63)\n\t\treturn tnum_unknown;\n\t/* e.g. if chi = 4, bits = 3, delta = (1<<3) - 1 = 7.\n\t * if chi = 0, bits = 0, delta = (1<<0) - 1 = 0, so we return\n\t *  constant min (since min == max).\n\t */\n\tdelta = (1ULL << bits) - 1;\n\treturn TNUM(min & ~delta, delta);\n}",
+            2
+        ],
+        [
+            "kernel/bpf/verifier.c",
+            "__reg_bound_offset",
+            "static void __reg_bound_offset(struct bpf_reg_state *reg) /* <=== __reg_bound_offset */ \n{\n\treg->var_off = tnum_intersect(reg->var_off,\n\t\t\t\t      tnum_range(reg->umin_value,\n\t\t\t\t\t\t reg->umax_value));\n}",
+            1
+        ],
+        [
+            "kernel/bpf/tnum.c",
+            "tnum_intersect",
+            "struct tnum tnum_intersect(struct tnum a, struct tnum b) /* <=== tnum_intersect */ \n{\n\tu64 v, mu;\n\n\tv = a.value | b.value;\n\tmu = a.mask & b.mask;\n\treturn TNUM(v & ~mu, mu);\n}",
+            2
+        ],
+        [
+            "kernel/bpf/tnum.c",
+            "TNUM",
+            "#define TNUM(_v, _m)\t(struct tnum){.value = _v, .mask = _m} /* <=== kernel/bpf/tnum.c:11:11:TNUM:2 */ ",
+            3
+        ],
+        [
+            "kernel/bpf/verifier.c",
+            "__update_reg_bounds",
+            "static void __update_reg_bounds(struct bpf_reg_state *reg) /* <=== __update_reg_bounds */ \n{\n\t/* min signed is max(sign bit) | min(other bits) */\n\treg->smin_value = max_t(s64, reg->smin_value,\n\t\t\t\treg->var_off.value | (reg->var_off.mask & S64_MIN));\n\t/* max signed is min(sign bit) | max(other bits) */\n\treg->smax_value = min_t(s64, reg->smax_value,\n\t\t\t\treg->var_off.value | (reg->var_off.mask & S64_MAX));\n\treg->umin_value = max(reg->umin_value, reg->var_off.value);\n\treg->umax_value = min(reg->umax_value,\n\t\t\t      reg->var_off.value | reg->var_off.mask);\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <linux/file.h>",
+        "#include <net/netlink.h>",
+        "#include <linux/vmalloc.h>",
+        "#include <linux/stringify.h>",
+        "#include <linux/bpf_types.h>",
+        "#include <linux/filter.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/bpf_verifier.h>",
+        "#include <linux/types.h>",
+        "#include \"disasm.h\"",
+        "#include <linux/bpf.h>",
+        "#include <linux/kernel.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef unsigned long long u64;",
+            "u64"
+        ],
+        [
+            "struct bpf_reg_state {\n\tenum bpf_reg_type type;\n\tunion {\n\t\t/* valid when type == PTR_TO_PACKET */\n\t\tu16 range;\n\n\t\t/* valid when type == CONST_PTR_TO_MAP | PTR_TO_MAP_VALUE |\n\t\t *   PTR_TO_MAP_VALUE_OR_NULL\n\t\t */\n\t\tstruct bpf_map *map_ptr;\n\t};\n\t/* Fixed part of pointer offset, pointer types only */\n\ts32 off;\n\t/* For PTR_TO_PACKET, used to find other pointers with the same variable\n\t * offset, so they can share range knowledge.\n\t * For PTR_TO_MAP_VALUE_OR_NULL this is used to share which map value we\n\t * came from, when one is tested for != NULL.\n\t */\n\tu32 id;\n\t/* Ordering of fields matters.  See states_equal() */\n\t/* For scalar types (SCALAR_VALUE), this represents our knowledge of\n\t * the actual value.\n\t * For pointer types, this represents the variable part of the offset\n\t * from the pointed-to object, and is shared with all bpf_reg_states\n\t * with the same id as us.\n\t */\n\tstruct tnum var_off;\n\t/* Used to determine if any memory access using this register will\n\t * result in a bad access.\n\t * These refer to the same value as var_off, not necessarily the actual\n\t * contents of the register.\n\t */\n\ts64 smin_value; /* minimum possible (s64)value */\n\ts64 smax_value; /* maximum possible (s64)value */\n\tu64 umin_value; /* minimum possible (u64)value */\n\tu64 umax_value; /* maximum possible (u64)value */\n\t/* This field must be last, for states_equal() reasons. */\n\tenum bpf_reg_liveness live;\n}",
+            "bpf_reg_state"
+        ],
+        [
+            "struct bpf_insn {\n\t__u8\tcode;\t\t/* opcode */\n\t__u8\tdst_reg:4;\t/* dest register */\n\t__u8\tsrc_reg:4;\t/* source register */\n\t__s16\toff;\t\t/* signed offset */\n\t__s32\timm;\t\t/* signed immediate constant */\n}",
+            "bpf_insn"
+        ],
+        [
+            "typedef unsigned char u8;",
+            "u8"
+        ]
+    ],
+    "visitedLines_after": {
+        "kernel/bpf/verifier.c": [
+            2007,
+            2008,
+            2009,
+            2010,
+            2013,
+            2018,
+            2020,
+            2021,
+            2023,
+            2024,
+            2025,
+            2026,
+            2028,
+            2030,
+            2186,
+            2207,
+            2208,
+            2209,
+            2210,
+            2213,
+            2214,
+            2215,
+            2217,
+            2224,
+            2225
+        ]
+    },
+    "visitedLines_before": {
+        "kernel/bpf/verifier.c": [
+            2007,
+            2008,
+            2009,
+            2010,
+            2013,
+            2018,
+            2020,
+            2021,
+            2023,
+            2024,
+            2025,
+            2026,
+            2028,
+            2030,
+            2186,
+            2194,
+            2195,
+            2197,
+            2200,
+            2201,
+            2204,
+            2205,
+            2208,
+            2211,
+            2212,
+            2213,
+            2215,
+            2222,
+            2223
+        ]
+    },
+    "visitedParams": {
+        "kernel/bpf/verifier.c": [
+            [
+                "struct bpf_insn *insn",
+                "adjust_scalar_min_max_vals"
+            ],
+            [
+                "struct bpf_reg_state *dst_reg",
+                "adjust_scalar_min_max_vals"
+            ],
+            [
+                "struct bpf_reg_state src_reg",
+                "adjust_scalar_min_max_vals"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "kernel/bpf/verifier.c",
+            "adjust_scalar_min_max_vals",
+            "static int adjust_scalar_min_max_vals(struct bpf_verifier_env *env, /* <=== adjust_scalar_min_max_vals */ \n\t\t\t\t      struct bpf_insn *insn,\n\t\t\t\t      struct bpf_reg_state *dst_reg,\n\t\t\t\t      struct bpf_reg_state src_reg)\n{\n\tstruct bpf_reg_state *regs = cur_regs(env);\n\tu8 opcode = BPF_OP(insn->code);\n\tbool src_known, dst_known;\n\ts64 smin_val, smax_val;\n\tu64 umin_val, umax_val;\n\n\tif (BPF_CLASS(insn->code) != BPF_ALU64) {\n\t\t/* 32-bit ALU ops are (32,32)->64 */\n\t\tcoerce_reg_to_32(dst_reg);\n\t\tcoerce_reg_to_32(&src_reg);\n\t}\n\tsmin_val = src_reg.smin_value;\n\tsmax_val = src_reg.smax_value;\n\tumin_val = src_reg.umin_value;\n\tumax_val = src_reg.umax_value;\n\tsrc_known = tnum_is_const(src_reg.var_off);\n\tdst_known = tnum_is_const(dst_reg->var_off);\n\n\tswitch (opcode) {\n\tcase BPF_ADD:\n\t\tif (signed_add_overflows(dst_reg->smin_value, smin_val) ||\n\t\t    signed_add_overflows(dst_reg->smax_value, smax_val)) {\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\tdst_reg->smin_value += smin_val;\n\t\t\tdst_reg->smax_value += smax_val;\n\t\t}\n\t\tif (dst_reg->umin_value + umin_val < umin_val ||\n\t\t    dst_reg->umax_value + umax_val < umax_val) {\n\t\t\tdst_reg->umin_value = 0;\n\t\t\tdst_reg->umax_value = U64_MAX;\n\t\t} else {\n\t\t\tdst_reg->umin_value += umin_val;\n\t\t\tdst_reg->umax_value += umax_val;\n\t\t}\n\t\tdst_reg->var_off = tnum_add(dst_reg->var_off, src_reg.var_off);\n\t\tbreak;\n\tcase BPF_SUB:\n\t\tif (signed_sub_overflows(dst_reg->smin_value, smax_val) ||\n\t\t    signed_sub_overflows(dst_reg->smax_value, smin_val)) {\n\t\t\t/* Overflow possible, we know nothing */\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\tdst_reg->smin_value -= smax_val;\n\t\t\tdst_reg->smax_value -= smin_val;\n\t\t}\n\t\tif (dst_reg->umin_value < umax_val) {\n\t\t\t/* Overflow possible, we know nothing */\n\t\t\tdst_reg->umin_value = 0;\n\t\t\tdst_reg->umax_value = U64_MAX;\n\t\t} else {\n\t\t\t/* Cannot overflow (as long as bounds are consistent) */\n\t\t\tdst_reg->umin_value -= umax_val;\n\t\t\tdst_reg->umax_value -= umin_val;\n\t\t}\n\t\tdst_reg->var_off = tnum_sub(dst_reg->var_off, src_reg.var_off);\n\t\tbreak;\n\tcase BPF_MUL:\n\t\tdst_reg->var_off = tnum_mul(dst_reg->var_off, src_reg.var_off);\n\t\tif (smin_val < 0 || dst_reg->smin_value < 0) {\n\t\t\t/* Ain't nobody got time to multiply that sign */\n\t\t\t__mark_reg_unbounded(dst_reg);\n\t\t\t__update_reg_bounds(dst_reg);\n\t\t\tbreak;\n\t\t}\n\t\t/* Both values are positive, so we can work with unsigned and\n\t\t * copy the result to signed (unless it exceeds S64_MAX).\n\t\t */\n\t\tif (umax_val > U32_MAX || dst_reg->umax_value > U32_MAX) {\n\t\t\t/* Potential overflow, we know nothing */\n\t\t\t__mark_reg_unbounded(dst_reg);\n\t\t\t/* (except what we can learn from the var_off) */\n\t\t\t__update_reg_bounds(dst_reg);\n\t\t\tbreak;\n\t\t}\n\t\tdst_reg->umin_value *= umin_val;\n\t\tdst_reg->umax_value *= umax_val;\n\t\tif (dst_reg->umax_value > S64_MAX) {\n\t\t\t/* Overflow possible, we know nothing */\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\tdst_reg->smin_value = dst_reg->umin_value;\n\t\t\tdst_reg->smax_value = dst_reg->umax_value;\n\t\t}\n\t\tbreak;\n\tcase BPF_AND:\n\t\tif (src_known && dst_known) {\n\t\t\t__mark_reg_known(dst_reg, dst_reg->var_off.value &\n\t\t\t\t\t\t  src_reg.var_off.value);\n\t\t\tbreak;\n\t\t}\n\t\t/* We get our minimum from the var_off, since that's inherently\n\t\t * bitwise.  Our maximum is the minimum of the operands' maxima.\n\t\t */\n\t\tdst_reg->var_off = tnum_and(dst_reg->var_off, src_reg.var_off);\n\t\tdst_reg->umin_value = dst_reg->var_off.value;\n\t\tdst_reg->umax_value = min(dst_reg->umax_value, umax_val);\n\t\tif (dst_reg->smin_value < 0 || smin_val < 0) {\n\t\t\t/* Lose signed bounds when ANDing negative numbers,\n\t\t\t * ain't nobody got time for that.\n\t\t\t */\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\t/* ANDing two positives gives a positive, so safe to\n\t\t\t * cast result into s64.\n\t\t\t */\n\t\t\tdst_reg->smin_value = dst_reg->umin_value;\n\t\t\tdst_reg->smax_value = dst_reg->umax_value;\n\t\t}\n\t\t/* We may learn something more from the var_off */\n\t\t__update_reg_bounds(dst_reg);\n\t\tbreak;\n\tcase BPF_OR:\n\t\tif (src_known && dst_known) {\n\t\t\t__mark_reg_known(dst_reg, dst_reg->var_off.value |\n\t\t\t\t\t\t  src_reg.var_off.value);\n\t\t\tbreak;\n\t\t}\n\t\t/* We get our maximum from the var_off, and our minimum is the\n\t\t * maximum of the operands' minima\n\t\t */\n\t\tdst_reg->var_off = tnum_or(dst_reg->var_off, src_reg.var_off);\n\t\tdst_reg->umin_value = max(dst_reg->umin_value, umin_val);\n\t\tdst_reg->umax_value = dst_reg->var_off.value |\n\t\t\t\t      dst_reg->var_off.mask;\n\t\tif (dst_reg->smin_value < 0 || smin_val < 0) {\n\t\t\t/* Lose signed bounds when ORing negative numbers,\n\t\t\t * ain't nobody got time for that.\n\t\t\t */\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\t/* ORing two positives gives a positive, so safe to\n\t\t\t * cast result into s64.\n\t\t\t */\n\t\t\tdst_reg->smin_value = dst_reg->umin_value;\n\t\t\tdst_reg->smax_value = dst_reg->umax_value;\n\t\t}\n\t\t/* We may learn something more from the var_off */\n\t\t__update_reg_bounds(dst_reg);\n\t\tbreak;\n\tcase BPF_LSH:\n\t\tif (umax_val > 63) {\n\t\t\t/* Shifts greater than 63 are undefined.  This includes\n\t\t\t * shifts by a negative number.\n\t\t\t */\n\t\t\tmark_reg_unknown(env, regs, insn->dst_reg);\n\t\t\tbreak;\n\t\t}\n\t\t/* We lose all sign bit information (except what we can pick\n\t\t * up from var_off)\n\t\t */\n\t\tdst_reg->smin_value = S64_MIN;\n\t\tdst_reg->smax_value = S64_MAX;\n\t\t/* If we might shift our top bit out, then we know nothing */\n\t\tif (dst_reg->umax_value > 1ULL << (63 - umax_val)) {\n\t\t\tdst_reg->umin_value = 0;\n\t\t\tdst_reg->umax_value = U64_MAX;\n\t\t} else {\n\t\t\tdst_reg->umin_value <<= umin_val;\n\t\t\tdst_reg->umax_value <<= umax_val;\n\t\t}\n\t\tif (src_known)\n\t\t\tdst_reg->var_off = tnum_lshift(dst_reg->var_off, umin_val);\n\t\telse\n\t\t\tdst_reg->var_off = tnum_lshift(tnum_unknown, umin_val);\n\t\t/* We may learn something more from the var_off */\n\t\t__update_reg_bounds(dst_reg);\n\t\tbreak;\n\tcase BPF_RSH:\n\t\tif (umax_val > 63) {\n\t\t\t/* Shifts greater than 63 are undefined.  This includes\n\t\t\t * shifts by a negative number.\n\t\t\t */\n\t\t\tmark_reg_unknown(env, regs, insn->dst_reg);\n\t\t\tbreak;\n\t\t}\n\t\t/* BPF_RSH is an unsigned shift.  If the value in dst_reg might\n\t\t * be negative, then either:\n\t\t * 1) src_reg might be zero, so the sign bit of the result is\n\t\t *    unknown, so we lose our signed bounds\n\t\t * 2) it's known negative, thus the unsigned bounds capture the\n\t\t *    signed bounds\n\t\t * 3) the signed bounds cross zero, so they tell us nothing\n\t\t *    about the result\n\t\t * If the value in dst_reg is known nonnegative, then again the\n\t\t * unsigned bounts capture the signed bounds.\n\t\t * Thus, in all cases it suffices to blow away our signed bounds\n\t\t * and rely on inferring new ones from the unsigned bounds and\n\t\t * var_off of the result.\n\t\t */\n\t\tdst_reg->smin_value = S64_MIN;\n\t\tdst_reg->smax_value = S64_MAX;\n\t\tif (src_known)\n\t\t\tdst_reg->var_off = tnum_rshift(dst_reg->var_off,\n\t\t\t\t\t\t       umin_val);\n\t\telse\n\t\t\tdst_reg->var_off = tnum_rshift(tnum_unknown, umin_val);\n\t\tdst_reg->umin_value >>= umax_val;\n\t\tdst_reg->umax_value >>= umin_val;\n\t\t/* We may learn something more from the var_off */\n\t\t__update_reg_bounds(dst_reg);\n\t\tbreak;\n\tdefault:\n\t\tmark_reg_unknown(env, regs, insn->dst_reg);\n\t\tbreak;\n\t}\n\n\t__reg_deduce_bounds(dst_reg);\n\t__reg_bound_offset(dst_reg);\n\treturn 0;\n}",
+            2007
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "kernel/bpf/verifier.c",
+            "adjust_scalar_min_max_vals",
+            "static int adjust_scalar_min_max_vals(struct bpf_verifier_env *env, /* <=== adjust_scalar_min_max_vals */ \n\t\t\t\t      struct bpf_insn *insn,\n\t\t\t\t      struct bpf_reg_state *dst_reg,\n\t\t\t\t      struct bpf_reg_state src_reg)\n{\n\tstruct bpf_reg_state *regs = cur_regs(env);\n\tu8 opcode = BPF_OP(insn->code);\n\tbool src_known, dst_known;\n\ts64 smin_val, smax_val;\n\tu64 umin_val, umax_val;\n\n\tif (BPF_CLASS(insn->code) != BPF_ALU64) {\n\t\t/* 32-bit ALU ops are (32,32)->64 */\n\t\tcoerce_reg_to_32(dst_reg);\n\t\tcoerce_reg_to_32(&src_reg);\n\t}\n\tsmin_val = src_reg.smin_value;\n\tsmax_val = src_reg.smax_value;\n\tumin_val = src_reg.umin_value;\n\tumax_val = src_reg.umax_value;\n\tsrc_known = tnum_is_const(src_reg.var_off);\n\tdst_known = tnum_is_const(dst_reg->var_off);\n\n\tswitch (opcode) {\n\tcase BPF_ADD:\n\t\tif (signed_add_overflows(dst_reg->smin_value, smin_val) ||\n\t\t    signed_add_overflows(dst_reg->smax_value, smax_val)) {\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\tdst_reg->smin_value += smin_val;\n\t\t\tdst_reg->smax_value += smax_val;\n\t\t}\n\t\tif (dst_reg->umin_value + umin_val < umin_val ||\n\t\t    dst_reg->umax_value + umax_val < umax_val) {\n\t\t\tdst_reg->umin_value = 0;\n\t\t\tdst_reg->umax_value = U64_MAX;\n\t\t} else {\n\t\t\tdst_reg->umin_value += umin_val;\n\t\t\tdst_reg->umax_value += umax_val;\n\t\t}\n\t\tdst_reg->var_off = tnum_add(dst_reg->var_off, src_reg.var_off);\n\t\tbreak;\n\tcase BPF_SUB:\n\t\tif (signed_sub_overflows(dst_reg->smin_value, smax_val) ||\n\t\t    signed_sub_overflows(dst_reg->smax_value, smin_val)) {\n\t\t\t/* Overflow possible, we know nothing */\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\tdst_reg->smin_value -= smax_val;\n\t\t\tdst_reg->smax_value -= smin_val;\n\t\t}\n\t\tif (dst_reg->umin_value < umax_val) {\n\t\t\t/* Overflow possible, we know nothing */\n\t\t\tdst_reg->umin_value = 0;\n\t\t\tdst_reg->umax_value = U64_MAX;\n\t\t} else {\n\t\t\t/* Cannot overflow (as long as bounds are consistent) */\n\t\t\tdst_reg->umin_value -= umax_val;\n\t\t\tdst_reg->umax_value -= umin_val;\n\t\t}\n\t\tdst_reg->var_off = tnum_sub(dst_reg->var_off, src_reg.var_off);\n\t\tbreak;\n\tcase BPF_MUL:\n\t\tdst_reg->var_off = tnum_mul(dst_reg->var_off, src_reg.var_off);\n\t\tif (smin_val < 0 || dst_reg->smin_value < 0) {\n\t\t\t/* Ain't nobody got time to multiply that sign */\n\t\t\t__mark_reg_unbounded(dst_reg);\n\t\t\t__update_reg_bounds(dst_reg);\n\t\t\tbreak;\n\t\t}\n\t\t/* Both values are positive, so we can work with unsigned and\n\t\t * copy the result to signed (unless it exceeds S64_MAX).\n\t\t */\n\t\tif (umax_val > U32_MAX || dst_reg->umax_value > U32_MAX) {\n\t\t\t/* Potential overflow, we know nothing */\n\t\t\t__mark_reg_unbounded(dst_reg);\n\t\t\t/* (except what we can learn from the var_off) */\n\t\t\t__update_reg_bounds(dst_reg);\n\t\t\tbreak;\n\t\t}\n\t\tdst_reg->umin_value *= umin_val;\n\t\tdst_reg->umax_value *= umax_val;\n\t\tif (dst_reg->umax_value > S64_MAX) {\n\t\t\t/* Overflow possible, we know nothing */\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\tdst_reg->smin_value = dst_reg->umin_value;\n\t\t\tdst_reg->smax_value = dst_reg->umax_value;\n\t\t}\n\t\tbreak;\n\tcase BPF_AND:\n\t\tif (src_known && dst_known) {\n\t\t\t__mark_reg_known(dst_reg, dst_reg->var_off.value &\n\t\t\t\t\t\t  src_reg.var_off.value);\n\t\t\tbreak;\n\t\t}\n\t\t/* We get our minimum from the var_off, since that's inherently\n\t\t * bitwise.  Our maximum is the minimum of the operands' maxima.\n\t\t */\n\t\tdst_reg->var_off = tnum_and(dst_reg->var_off, src_reg.var_off);\n\t\tdst_reg->umin_value = dst_reg->var_off.value;\n\t\tdst_reg->umax_value = min(dst_reg->umax_value, umax_val);\n\t\tif (dst_reg->smin_value < 0 || smin_val < 0) {\n\t\t\t/* Lose signed bounds when ANDing negative numbers,\n\t\t\t * ain't nobody got time for that.\n\t\t\t */\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\t/* ANDing two positives gives a positive, so safe to\n\t\t\t * cast result into s64.\n\t\t\t */\n\t\t\tdst_reg->smin_value = dst_reg->umin_value;\n\t\t\tdst_reg->smax_value = dst_reg->umax_value;\n\t\t}\n\t\t/* We may learn something more from the var_off */\n\t\t__update_reg_bounds(dst_reg);\n\t\tbreak;\n\tcase BPF_OR:\n\t\tif (src_known && dst_known) {\n\t\t\t__mark_reg_known(dst_reg, dst_reg->var_off.value |\n\t\t\t\t\t\t  src_reg.var_off.value);\n\t\t\tbreak;\n\t\t}\n\t\t/* We get our maximum from the var_off, and our minimum is the\n\t\t * maximum of the operands' minima\n\t\t */\n\t\tdst_reg->var_off = tnum_or(dst_reg->var_off, src_reg.var_off);\n\t\tdst_reg->umin_value = max(dst_reg->umin_value, umin_val);\n\t\tdst_reg->umax_value = dst_reg->var_off.value |\n\t\t\t\t      dst_reg->var_off.mask;\n\t\tif (dst_reg->smin_value < 0 || smin_val < 0) {\n\t\t\t/* Lose signed bounds when ORing negative numbers,\n\t\t\t * ain't nobody got time for that.\n\t\t\t */\n\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t} else {\n\t\t\t/* ORing two positives gives a positive, so safe to\n\t\t\t * cast result into s64.\n\t\t\t */\n\t\t\tdst_reg->smin_value = dst_reg->umin_value;\n\t\t\tdst_reg->smax_value = dst_reg->umax_value;\n\t\t}\n\t\t/* We may learn something more from the var_off */\n\t\t__update_reg_bounds(dst_reg);\n\t\tbreak;\n\tcase BPF_LSH:\n\t\tif (umax_val > 63) {\n\t\t\t/* Shifts greater than 63 are undefined.  This includes\n\t\t\t * shifts by a negative number.\n\t\t\t */\n\t\t\tmark_reg_unknown(env, regs, insn->dst_reg);\n\t\t\tbreak;\n\t\t}\n\t\t/* We lose all sign bit information (except what we can pick\n\t\t * up from var_off)\n\t\t */\n\t\tdst_reg->smin_value = S64_MIN;\n\t\tdst_reg->smax_value = S64_MAX;\n\t\t/* If we might shift our top bit out, then we know nothing */\n\t\tif (dst_reg->umax_value > 1ULL << (63 - umax_val)) {\n\t\t\tdst_reg->umin_value = 0;\n\t\t\tdst_reg->umax_value = U64_MAX;\n\t\t} else {\n\t\t\tdst_reg->umin_value <<= umin_val;\n\t\t\tdst_reg->umax_value <<= umax_val;\n\t\t}\n\t\tif (src_known)\n\t\t\tdst_reg->var_off = tnum_lshift(dst_reg->var_off, umin_val);\n\t\telse\n\t\t\tdst_reg->var_off = tnum_lshift(tnum_unknown, umin_val);\n\t\t/* We may learn something more from the var_off */\n\t\t__update_reg_bounds(dst_reg);\n\t\tbreak;\n\tcase BPF_RSH:\n\t\tif (umax_val > 63) {\n\t\t\t/* Shifts greater than 63 are undefined.  This includes\n\t\t\t * shifts by a negative number.\n\t\t\t */\n\t\t\tmark_reg_unknown(env, regs, insn->dst_reg);\n\t\t\tbreak;\n\t\t}\n\t\t/* BPF_RSH is an unsigned shift, so make the appropriate casts */\n\t\tif (dst_reg->smin_value < 0) {\n\t\t\tif (umin_val) {\n\t\t\t\t/* Sign bit will be cleared */\n\t\t\t\tdst_reg->smin_value = 0;\n\t\t\t} else {\n\t\t\t\t/* Lost sign bit information */\n\t\t\t\tdst_reg->smin_value = S64_MIN;\n\t\t\t\tdst_reg->smax_value = S64_MAX;\n\t\t\t}\n\t\t} else {\n\t\t\tdst_reg->smin_value =\n\t\t\t\t(u64)(dst_reg->smin_value) >> umax_val;\n\t\t}\n\t\tif (src_known)\n\t\t\tdst_reg->var_off = tnum_rshift(dst_reg->var_off,\n\t\t\t\t\t\t       umin_val);\n\t\telse\n\t\t\tdst_reg->var_off = tnum_rshift(tnum_unknown, umin_val);\n\t\tdst_reg->umin_value >>= umax_val;\n\t\tdst_reg->umax_value >>= umin_val;\n\t\t/* We may learn something more from the var_off */\n\t\t__update_reg_bounds(dst_reg);\n\t\tbreak;\n\tdefault:\n\t\tmark_reg_unknown(env, regs, insn->dst_reg);\n\t\tbreak;\n\t}\n\n\t__reg_deduce_bounds(dst_reg);\n\t__reg_bound_offset(dst_reg);\n\treturn 0;\n}",
+            2007
+        ]
+    ]
+}

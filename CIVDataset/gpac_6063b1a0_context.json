@@ -1,0 +1,213 @@
+{
+    "calleeMethods": [
+        [
+            "src/isomedia/box_funcs.c",
+            "gf_isom_box_array_read_ex",
+            "GF_Err gf_isom_box_array_read_ex(GF_Box *parent, GF_BitStream *bs, GF_Err (*add_box)(GF_Box *par, GF_Box *b), u32 parent_type) /* <=== gf_isom_box_array_read_ex */ \n{\n\tGF_Err e;\n\tGF_Box *a = NULL;\n\tBool skip_logs = gf_bs_get_cookie(bs) ? GF_TRUE : GF_FALSE;\n\n\t//we may have terminators in some QT files (4 bytes set to 0 ...)\n\twhile (parent->size>=8) {\n\t\te = gf_isom_box_parse_ex(&a, bs, parent_type, GF_FALSE);\n\t\tif (e) {\n\t\t\tif (a) gf_isom_box_del(a);\n\t\t\treturn e;\n\t\t}\n\t\t//sub box parsing aborted with no error\n\t\tif (!a) return GF_OK;\n\n\t\tif (parent->size < a->size) {\n\t\t\tif (!skip_logs) {\n\t\t\t\tGF_LOG(GF_LOG_WARNING, GF_LOG_CONTAINER, (\"[iso file] Box \\\"%s\\\" is larger than container box\\n\", gf_4cc_to_str(a->type)));\n\t\t\t}\n\t\t\tparent->size = 0;\n\t\t} else {\n\t\t\tparent->size -= a->size;\n\t\t}\n\n\t\t//check container validity\n\t\tif (strlen(a->registry->parents_4cc)) {\n\t\t\tBool parent_OK = GF_FALSE;\n\t\t\tconst char *parent_code = gf_4cc_to_str(parent->type);\n\t\t\tif (parent->type == GF_ISOM_BOX_TYPE_UNKNOWN)\n\t\t\t\tparent_code = gf_4cc_to_str( ((GF_UnknownBox*)parent)->original_4cc );\n\t\t\tif (strstr(a->registry->parents_4cc, parent_code) != NULL) {\n\t\t\t\tparent_OK = GF_TRUE;\n\t\t\t} else if (!strcmp(a->registry->parents_4cc, \"*\") || strstr(a->registry->parents_4cc, \"* \") || strstr(a->registry->parents_4cc, \" *\")) {\n\t\t\t\tparent_OK = GF_TRUE;\n\t\t\t} else {\n\t\t\t\t//parent must be a sample entry\n\t\t\t\tif (strstr(a->registry->parents_4cc, \"sample_entry\") !=\tNULL) {\n\t\t\t\t\t//parent is in an stsd\n\t\t\t\t\tif (strstr(parent->registry->parents_4cc, \"stsd\") != NULL) {\n\t\t\t\t\t\tif (strstr(a->registry->parents_4cc, \"video_sample_entry\") !=\tNULL) {\n\t\t\t\t\t\t\tif (((GF_SampleEntryBox*)parent)->internal_type==GF_ISOM_SAMPLE_ENTRY_VIDEO) {\n\t\t\t\t\t\t\t\tparent_OK = GF_TRUE;\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tparent_OK = GF_TRUE;\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\t//other types are sample formats, eg a 3GPP text sample, RTP hint sample or VTT cue. Not handled at this level\n\t\t\t\telse if (a->type==GF_ISOM_BOX_TYPE_UNKNOWN) parent_OK = GF_TRUE;\n\t\t\t\telse if (a->type==GF_ISOM_BOX_TYPE_UUID) parent_OK = GF_TRUE;\n\t\t\t}\n\t\t\tif (! parent_OK && !skip_logs) {\n\t\t\t\tGF_LOG(GF_LOG_WARNING, GF_LOG_CONTAINER, (\"[iso file] Box \\\"%s\\\" is invalid in container %s\\n\", gf_4cc_to_str(a->type), parent_code));\n\t\t\t}\n\t\t}\n\n\t\te = add_box(parent, a);\n\t\tif (e) {\n\t\t\tif (e == GF_ISOM_INVALID_MEDIA) return GF_OK;\n\t\t\tgf_isom_box_del(a);\n\t\t\treturn e;\n\t\t}\n\t\t//in dump mode store all boxes in other_boxes if not done, so that we can dump the original order\n\t\tgf_isom_box_add_for_dump_mode(parent, a);\n\t}\n\treturn GF_OK;\n}",
+            2
+        ],
+        [
+            "src/utils/bitstream.c",
+            "BS_ReadByte",
+            "static u8 BS_ReadByte(GF_BitStream *bs) /* <=== BS_ReadByte */ \n{\n\tif (bs->bsmode == GF_BITSTREAM_READ) {\n\t\tu8 res;\n\t\tif (bs->position >= bs->size) {\n\t\t\tif (bs->EndOfStream) bs->EndOfStream(bs->par);\n\t\t\treturn 0;\n\t\t}\n\t\tres = bs->original[bs->position++];\n\t\treturn res;\n\t}\n\tif (bs->buffer_io)\n\t\tbs_flush_cache(bs);\n\n\t/*we are in FILE mode, test for end of file*/\n\tif (!feof(bs->stream)) {\n\t\tu8 res;\n\t\tassert(bs->position<=bs->size);\n\t\tbs->position++;\n\t\tres = fgetc(bs->stream);\n\t\treturn res;\n\t}\n\tif (bs->EndOfStream) {\n\t\tbs->EndOfStream(bs->par);\n\t} else {\n\t\tGF_LOG(GF_LOG_ERROR, GF_LOG_CORE, (\"[BS] Attempt to overread bitstream\\n\"));\n\t}\n\tassert(bs->position <= 1+bs->size);\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "src/isomedia/box_funcs.c",
+            "gf_isom_box_parse_ex",
+            "GF_Err gf_isom_box_parse_ex(GF_Box **outBox, GF_BitStream *bs, u32 parent_type, Bool is_root_box) /* <=== gf_isom_box_parse_ex */ \n{\n\tu32 type, uuid_type, hdr_size;\n\tu64 size, start, payload_start, end;\n\tchar uuid[16];\n\tGF_Err e;\n\tGF_Box *newBox;\n\tBool skip_logs = gf_bs_get_cookie(bs) ? GF_TRUE : GF_FALSE;\n\tBool is_special = GF_TRUE;\n\n\tif ((bs == NULL) || (outBox == NULL) ) return GF_BAD_PARAM;\n\t*outBox = NULL;\n\tif (gf_bs_available(bs) < 8) {\n\t\treturn GF_ISOM_INCOMPLETE_FILE;\n\t}\n\n\tstart = gf_bs_get_position(bs);\n\n\tuuid_type = 0;\n\tsize = (u64) gf_bs_read_u32(bs);\n\thdr_size = 4;\n\t/*fix for some boxes found in some old hinted files*/\n\tif ((size >= 2) && (size <= 4)) {\n\t\tsize = 4;\n\t\ttype = GF_ISOM_BOX_TYPE_VOID;\n\t} else {\n\t\ttype = gf_bs_read_u32(bs);\n\t\thdr_size += 4;\n\t\t/*no size means till end of file - EXCEPT FOR some old QuickTime boxes...*/\n\t\tif (type == GF_ISOM_BOX_TYPE_TOTL)\n\t\t\tsize = 12;\n\t\tif (!size) {\n\t\t\tif (is_root_box) {\n\t\t\t\tif (!skip_logs) {\n\t\t\t\t\tGF_LOG(GF_LOG_DEBUG, GF_LOG_CONTAINER, (\"[iso file] Warning Read Box type %s (0x%08X) size 0 reading till the end of file\\n\", gf_4cc_to_str(type), type));\n\t\t\t\t}\n\t\t\t\tsize = gf_bs_available(bs) + 8;\n\t\t\t} else {\n\t\t\t\tif (!skip_logs) {\n\t\t\t\t\tGF_LOG(GF_LOG_ERROR, GF_LOG_CONTAINER, (\"[iso file] Read Box type %s (0x%08X) at position \"LLU\" has size 0 but is not at root/file level, skipping\\n\", gf_4cc_to_str(type), type, start));\n\t\t\t\t}\n\t\t\t\treturn GF_OK;\n//\t\t\t\treturn GF_ISOM_INVALID_FILE;\n\t\t\t}\n\t\t}\n\t}\n\t/*handle uuid*/\n\tmemset(uuid, 0, 16);\n\tif (type == GF_ISOM_BOX_TYPE_UUID ) {\n\t\tif (gf_bs_available(bs) < 16) {\n\t\t\treturn GF_ISOM_INCOMPLETE_FILE;\n\t\t}\n\t\tgf_bs_read_data(bs, uuid, 16);\n\t\thdr_size += 16;\n\t\tuuid_type = gf_isom_solve_uuid_box(uuid);\n\t}\n\n\t//handle large box\n\tif (size == 1) {\n\t\tif (gf_bs_available(bs) < 8) {\n\t\t\treturn GF_ISOM_INCOMPLETE_FILE;\n\t\t}\n\t\tsize = gf_bs_read_u64(bs);\n\t\thdr_size += 8;\n\t}\n\tGF_LOG(GF_LOG_DEBUG, GF_LOG_CONTAINER, (\"[iso file] Read Box type %s size \"LLD\" start \"LLD\"\\n\", gf_4cc_to_str(type), LLD_CAST size, LLD_CAST start));\n\n\tif ( size < hdr_size ) {\n\t\tGF_LOG(GF_LOG_DEBUG, GF_LOG_CONTAINER, (\"[iso file] Box size \"LLD\" less than box header size %d\\n\", LLD_CAST size, hdr_size));\n\t\treturn GF_ISOM_INVALID_FILE;\n\t}\n\n\t//some special boxes (references and track groups) are handled by a single generic box with an associated ref/group type\n\tif (parent_type && (parent_type == GF_ISOM_BOX_TYPE_TREF)) {\n\t\tnewBox = gf_isom_box_new(GF_ISOM_BOX_TYPE_REFT);\n\t\tif (!newBox) return GF_OUT_OF_MEM;\n\t\t((GF_TrackReferenceTypeBox*)newBox)->reference_type = type;\n\t} else if (parent_type && (parent_type == GF_ISOM_BOX_TYPE_IREF)) {\n\t\tnewBox = gf_isom_box_new(GF_ISOM_BOX_TYPE_REFI);\n\t\tif (!newBox) return GF_OUT_OF_MEM;\n\t\t((GF_ItemReferenceTypeBox*)newBox)->reference_type = type;\n\t} else if (parent_type && (parent_type == GF_ISOM_BOX_TYPE_TRGR)) {\n\t\tnewBox = gf_isom_box_new(GF_ISOM_BOX_TYPE_TRGT);\n\t\tif (!newBox) return GF_OUT_OF_MEM;\n\t\t((GF_TrackGroupTypeBox*)newBox)->group_type = type;\n\t} else if (parent_type && (parent_type == GF_ISOM_BOX_TYPE_GRPL)) {\n\t\tnewBox = gf_isom_box_new(GF_ISOM_BOX_TYPE_GRPT);\n\t\tif (!newBox) return GF_OUT_OF_MEM;\n\t\t((GF_EntityToGroupTypeBox*)newBox)->grouping_type = type;\n\t} else {\n\t\t//OK, create the box based on the type\n\t\tis_special = GF_FALSE;\n\t\tnewBox = gf_isom_box_new_ex(uuid_type ? uuid_type : type, parent_type, skip_logs, is_root_box);\n\t\tif (!newBox) return GF_OUT_OF_MEM;\n\t}\n\n\t//OK, init and read this box\n\tif (type==GF_ISOM_BOX_TYPE_UUID && !is_special) {\n\t\tmemcpy(((GF_UUIDBox *)newBox)->uuid, uuid, 16);\n\t\t((GF_UUIDBox *)newBox)->internal_4cc = uuid_type;\n\t}\n\n\tif (!newBox->type) newBox->type = type;\n\tpayload_start = gf_bs_get_position(bs);\n\nretry_unknown_box:\n\n\tend = gf_bs_available(bs);\n\tif (size - hdr_size > end ) {\n\t\tnewBox->size = size - hdr_size - end;\n\t\t*outBox = newBox;\n\t\treturn GF_ISOM_INCOMPLETE_FILE;\n\t}\n\n\tnewBox->size = size - hdr_size;\n\n\tif (newBox->size) {\n\t\te = gf_isom_full_box_read(newBox, bs);\n\t\tif (!e) e = gf_isom_box_read(newBox, bs);\n\t\tnewBox->size = size;\n\t\tend = gf_bs_get_position(bs);\n\t} else {\n\t\tnewBox->size = size;\n\t\t//empty box\n\t\te = GF_OK;\n\t\tend = gf_bs_get_position(bs);\n\t}\n\n\tif (e && (e != GF_ISOM_INCOMPLETE_FILE)) {\n\t\tgf_isom_box_del(newBox);\n\t\t*outBox = NULL;\n\n\t\tif (parent_type==GF_ISOM_BOX_TYPE_STSD) {\n\t\t\tnewBox = gf_isom_box_new(GF_ISOM_BOX_TYPE_UNKNOWN);\n\t\t\t((GF_UnknownBox *)newBox)->original_4cc = type;\n\t\t\tnewBox->size = size;\n\t\t\tgf_bs_seek(bs, payload_start);\n\t\t\tgoto retry_unknown_box;\n\t\t}\n\t\tif (!skip_logs) {\n\t\t\tGF_LOG(GF_LOG_ERROR, GF_LOG_CONTAINER, (\"[iso file] Read Box \\\"%s\\\" (start \"LLU\") failed (%s) - skipping\\n\", gf_4cc_to_str(type), start, gf_error_to_string(e)));\n\t\t}\n\t\t//we don't try to reparse known boxes that have been failing (too dangerous)\n\t\treturn e;\n\t}\n\n\tif (end-start > size) {\n\t\tif (!skip_logs) {\n\t\t\tGF_LOG(GF_LOG_WARNING, GF_LOG_CONTAINER, (\"[iso file] Box \\\"%s\\\" size \"LLU\" (start \"LLU\") invalid (read \"LLU\")\\n\", gf_4cc_to_str(type), LLU_CAST size, start, LLU_CAST (end-start) ));\n\t\t}\n\t\t/*let's still try to load the file since no error was notified*/\n\t\tgf_bs_seek(bs, start+size);\n\t} else if (end-start < size) {\n\t\tu32 to_skip = (u32) (size-(end-start));\n\t\tif (!skip_logs) {\n\t\t\tif ((to_skip!=4) || gf_bs_peek_bits(bs, 32, 0)) {\n\t\t\t\tGF_LOG(GF_LOG_WARNING, GF_LOG_CONTAINER, (\"[iso file] Box \\\"%s\\\" (start \"LLU\") has %u extra bytes\\n\", gf_4cc_to_str(type), start, to_skip));\n\t\t\t}\n\t\t}\n\t\tgf_bs_skip_bytes(bs, to_skip);\n\t}\n\t*outBox = newBox;\n\n\treturn e;\n}",
+            3
+        ],
+        [
+            "src/utils/bitstream.c",
+            "gf_bs_read_u16",
+            "u32 gf_bs_read_u16(GF_BitStream *bs) /* <=== gf_bs_read_u16 */ \n{\n\tu32 ret;\n\tassert(bs->nbBits==8);\n\tret = BS_ReadByte(bs);\n\tret<<=8;\n\tret |= BS_ReadByte(bs);\n\treturn ret;\n}",
+            1
+        ],
+        [
+            "src/isomedia/box_funcs.c",
+            "gf_isom_box_array_del",
+            "void gf_isom_box_array_del(GF_List *other_boxes) /* <=== gf_isom_box_array_del */ \n{\n\tu32 count, i;\n\tGF_Box *a;\n\tif (!other_boxes) return;\n\tcount = gf_list_count(other_boxes);\n\tfor (i = 0; i < count; i++) {\n\t\ta = (GF_Box *)gf_list_get(other_boxes, i);\n\t\tif (a) gf_isom_box_del(a);\n\t}\n\tgf_list_del(other_boxes);\n}",
+            2
+        ],
+        [
+            "src/utils/bitstream.c",
+            "bs_flush_cache",
+            "static void bs_flush_cache(GF_BitStream *bs) /* <=== bs_flush_cache */ \n{\n\tif (bs->buffer_written) {\n\t\tu32 nb_write = (u32) fwrite(bs->buffer_io, 1, bs->buffer_written, bs->stream);\n\t\tbs->size += nb_write;\n\t\tbs->position += nb_write;\n\t\tbs->buffer_written = 0;\n\t}\n}",
+            3
+        ],
+        [
+            "src/utils/alloc.c",
+            "gf_malloc",
+            "void *gf_malloc(size_t size) /* <=== gf_malloc */ \n{\n\treturn MALLOC(size);\n}",
+            1
+        ],
+        [
+            "src/utils/bitstream.c",
+            "gf_bs_get_cookie",
+            "u64 gf_bs_get_cookie(GF_BitStream *bs) /* <=== gf_bs_get_cookie */ \n{\n\tif (!bs) return 0;\n\treturn bs->cookie;\n}",
+            1
+        ],
+        [
+            "src/isomedia/box_funcs.c",
+            "gf_isom_box_add_for_dump_mode",
+            "void gf_isom_box_add_for_dump_mode(GF_Box *parent, GF_Box *a) /* <=== gf_isom_box_add_for_dump_mode */ \n{\n\tif (use_dump_mode && a && (!parent->other_boxes || (gf_list_find(parent->other_boxes, a)<0) ) )\n\t\tgf_isom_box_add_default(parent, a);\n}",
+            3
+        ],
+        [
+            "src/utils/bitstream.c",
+            "gf_bs_read_u8",
+            "u32 gf_bs_read_u8(GF_BitStream *bs) /* <=== gf_bs_read_u8 */ \n{\n\tassert(bs->nbBits==8);\n\treturn (u32) BS_ReadByte(bs);\n}",
+            1
+        ],
+        [
+            "src/utils/alloc.c",
+            "MALLOC",
+            "#define MALLOC\tmalloc /* <=== src/utils/alloc.c:121:121:MALLOC:0 */ ",
+            2
+        ],
+        [
+            "src/isomedia/box_funcs.c",
+            "gf_isom_box_del",
+            "void gf_isom_box_del(GF_Box *a) /* <=== gf_isom_box_del */ \n{\n\tGF_List *other_boxes;\n\tif (!a) return;\n\tif (skip_box_dump_del) return;\n\n\tother_boxes\t= a->other_boxes;\n\ta->other_boxes = NULL;\n\n\tif (!a->registry) {\n\t\tGF_LOG(GF_LOG_ERROR, GF_LOG_CONTAINER, (\"[iso file] Delete invalid box type %s without registry\\n\", gf_4cc_to_str(a->type) ));\n\t} else {\n\t\tif (use_dump_mode) {\n\t\t\tskip_box_dump_del = GF_TRUE;\n\t\t\ta->registry->del_fn(a);\n\t\t\tskip_box_dump_del = GF_FALSE;\n\t\t} else {\n\t\t\ta->registry->del_fn(a);\n\t\t}\n\t}\n\t//delet the other boxes after deleting the box for dumper case where all child boxes are stored in otherbox\n\tif (other_boxes) {\n\t\tgf_isom_box_array_del(other_boxes);\n\t}\n}",
+            1
+        ],
+        [
+            "src/isomedia/box_funcs.c",
+            "gf_isom_box_array_read",
+            "GF_Err gf_isom_box_array_read(GF_Box *parent, GF_BitStream *bs, GF_Err (*add_box)(GF_Box *par, GF_Box *b)) /* <=== gf_isom_box_array_read */ \n{\n\treturn gf_isom_box_array_read_ex(parent, bs, add_box, parent->type);\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <gpac/internal/isomedia_dev.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct\n{\n\tGF_ISOM_BOX\n}",
+            "GF_Box"
+        ],
+        [
+            "typedef struct\n{\n\tunsigned char *pixels_YUV_source;\n\n\tu32 width, height;\n\tDtMxProcess *m_Matrix;\n\n\tDtDevice *dvc;\n\tBool is_sending, is_configured, is_10b, clip_sdi;\n\n\tDtCbkCtx audio_cbk_ctx, video_cbk_ctx;\n\n\ts64 frameNum;\n\tFILE *pFile;\n\tBool is_in_flush;\n\tBool frame_transfered;\n\t\n\ts64 lastFrameNum;\n\tu64 init_clock, last_frame_time;\n\n\tu32 frame_dur, frame_scale;\n\tBool needs_reconfigure;\n\tu32 force_width, force_height;\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct\n{\n\tGF_ISOM_AUDIO_SAMPLE_ENTRY\n\t//for MPEG4 audio\n\tGF_ESDBox *esd;\n\tGF_SLConfig *slc;\n\t//for 3GPP audio\n\tGF_3GPPConfigBox *cfg_3gpp;\n\n\t//for AC3/EC3 audio\n\tGF_AC3ConfigBox *cfg_ac3;\n\n\t//for Opus\n\tGF_OpusSpecificBox *cfg_opus;\n\n\t//for MPEG-H audio\n\tGF_MHAConfigBox *cfg_mha;\n}",
+            "GF_MPEGAudioSampleEntryBox"
+        ],
+        [
+            "typedef struct\n{\n\t/*the service we're responsible for*/\n\tGF_ClientService *service;\n\tu32 state;\n\n\tDeviceDescriptor *device_desc;\n\tCaptureDevice* device;\n\n\tGPACCaptureHandler *video_handler;\n\tGPACCaptureHandler *audio_handler;\n\n\tu32 width, height, pixel_format, stride, out_size, fps;\n\tu32 default_4cc;\n\tBool flip_video;\n}",
+            "ANY"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/isomedia/box_code_base.c": [
+            4017,
+            4026,
+            4028,
+            4029,
+            4030,
+            4031,
+            4032,
+            4035,
+            4037,
+            4038,
+            4039,
+            4040,
+            4041,
+            4042,
+            4043,
+            4044,
+            4045,
+            4046,
+            4047,
+            4050,
+            4051,
+            4052,
+            4053,
+            4054,
+            4058,
+            4059,
+            4062,
+            4063,
+            4064,
+            4068,
+            4069,
+            4070,
+            4071,
+            4072,
+            4074,
+            4075,
+            4076
+        ]
+    },
+    "visitedLines_before": {
+        "src/isomedia/box_code_base.c": [
+            4017,
+            4026,
+            4028,
+            4029,
+            4030,
+            4031,
+            4032,
+            4035,
+            4037,
+            4038,
+            4039,
+            4040,
+            4041,
+            4042,
+            4043,
+            4044,
+            4045,
+            4046,
+            4047,
+            4050,
+            4051,
+            4052,
+            4053,
+            4054,
+            4058,
+            4059,
+            4062,
+            4063,
+            4064,
+            4068,
+            4069,
+            4070,
+            4071,
+            4073,
+            4074,
+            4075
+        ]
+    },
+    "visitedParams": {
+        "src/isomedia/box_code_base.c": [
+            [
+                "GF_BitStream *bs",
+                "audio_sample_entry_Read"
+            ],
+            [
+                "GF_Box *s",
+                "audio_sample_entry_Read"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/isomedia/box_code_base.c",
+            "audio_sample_entry_Read",
+            "GF_Err audio_sample_entry_Read(GF_Box *s, GF_BitStream *bs) /* <=== audio_sample_entry_Read */ \n{\n\tGF_MPEGAudioSampleEntryBox *ptr;\n\tchar *data;\n\tu8 a, b, c, d;\n\tu32 i, size, v, nb_alnum;\n\tGF_Err e;\n\tu64 pos, start;\n\n\tptr = (GF_MPEGAudioSampleEntryBox *)s;\n\n\tstart = gf_bs_get_position(bs);\n\tgf_bs_seek(bs, start + 8);\n\tv = gf_bs_read_u16(bs);\n\tif (v)\n\t\tptr->is_qtff = 1;\n\n\t//try to disambiguate QTFF v1 and MP4 v1 audio sample entries ...\n\tif (v==1) {\n\t\t//go to end of ISOM audio sample entry, skip 4 byte (box size field), read 4 bytes (box type) and check if this looks like a box\n\t\tgf_bs_seek(bs, start + 8 + 20  + 4);\n\t\ta = gf_bs_read_u8(bs);\n\t\tb = gf_bs_read_u8(bs);\n\t\tc = gf_bs_read_u8(bs);\n\t\td = gf_bs_read_u8(bs);\n\t\tnb_alnum = 0;\n\t\tif (isalnum(a)) nb_alnum++;\n\t\tif (isalnum(b)) nb_alnum++;\n\t\tif (isalnum(c)) nb_alnum++;\n\t\tif (isalnum(d)) nb_alnum++;\n\t\tif (nb_alnum>2) ptr->is_qtff = 0;\n\t}\n\n\tgf_bs_seek(bs, start);\n\te = gf_isom_audio_sample_entry_read((GF_AudioSampleEntryBox*)s, bs);\n\tif (e) return e;\n\tpos = gf_bs_get_position(bs);\n\tsize = (u32) s->size;\n\n\t//when cookie is set on bs, always convert qtff-style mp4a to isobmff-style\n\t//since the conversion is done in addBox and we don't have the bitstream there (arg...), flag the box\n \tif (gf_bs_get_cookie(bs)) {\n \t\tptr->is_qtff |= 1<<16;\n \t}\n\n\te = gf_isom_box_array_read(s, bs, audio_sample_entry_AddBox);\n\tif (!e) return GF_OK;\n\tif (size<8) return GF_ISOM_INVALID_FILE;\n\n\t/*hack for some weird files (possibly recorded with live.com tools, needs further investigations)*/\n\tgf_bs_seek(bs, pos);\n\tdata = (char*)gf_malloc(sizeof(char) * size);\n\tgf_bs_read_data(bs, data, size);\n\tfor (i=0; i<size-8; i++) {\n\t\tif (GF_4CC((u32)data[i+4], (u8)data[i+5], (u8)data[i+6], (u8)data[i+7]) == GF_ISOM_BOX_TYPE_ESDS) {\n\t\t\textern Bool use_dump_mode;\n\t\t\tGF_BitStream *mybs = gf_bs_new(data + i, size - i, GF_BITSTREAM_READ);\n\t\t\tif (ptr->esd) {\n\t\t\t\tif (!use_dump_mode) gf_isom_box_del((GF_Box *)ptr->esd);\n\t\t\t\tptr->esd=NULL;\n\t\t\t}\n\n\t\t\te = gf_isom_box_parse((GF_Box **)&ptr->esd, mybs);\n\n\t\t\tif (e==GF_OK) {\n\t\t\t\tgf_isom_box_add_for_dump_mode((GF_Box*)ptr, (GF_Box*)ptr->esd);\n\t\t\t} else if (ptr->esd) {\n\t\t\t\tgf_isom_box_del((GF_Box *)ptr->esd);\n\t\t\t\tptr->esd=NULL;\n\t\t\t}\n\n\t\t\tgf_bs_del(mybs);\n\t\t\tbreak;\n\t\t}\n\t}\n\tgf_free(data);\n\treturn e;\n}",
+            4017
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/isomedia/box_code_base.c",
+            "audio_sample_entry_Read",
+            "GF_Err audio_sample_entry_Read(GF_Box *s, GF_BitStream *bs) /* <=== audio_sample_entry_Read */ \n{\n\tGF_MPEGAudioSampleEntryBox *ptr;\n\tchar *data;\n\tu8 a, b, c, d;\n\tu32 i, size, v, nb_alnum;\n\tGF_Err e;\n\tu64 pos, start;\n\n\tptr = (GF_MPEGAudioSampleEntryBox *)s;\n\n\tstart = gf_bs_get_position(bs);\n\tgf_bs_seek(bs, start + 8);\n\tv = gf_bs_read_u16(bs);\n\tif (v)\n\t\tptr->is_qtff = 1;\n\n\t//try to disambiguate QTFF v1 and MP4 v1 audio sample entries ...\n\tif (v==1) {\n\t\t//go to end of ISOM audio sample entry, skip 4 byte (box size field), read 4 bytes (box type) and check if this looks like a box\n\t\tgf_bs_seek(bs, start + 8 + 20  + 4);\n\t\ta = gf_bs_read_u8(bs);\n\t\tb = gf_bs_read_u8(bs);\n\t\tc = gf_bs_read_u8(bs);\n\t\td = gf_bs_read_u8(bs);\n\t\tnb_alnum = 0;\n\t\tif (isalnum(a)) nb_alnum++;\n\t\tif (isalnum(b)) nb_alnum++;\n\t\tif (isalnum(c)) nb_alnum++;\n\t\tif (isalnum(d)) nb_alnum++;\n\t\tif (nb_alnum>2) ptr->is_qtff = 0;\n\t}\n\n\tgf_bs_seek(bs, start);\n\te = gf_isom_audio_sample_entry_read((GF_AudioSampleEntryBox*)s, bs);\n\tif (e) return e;\n\tpos = gf_bs_get_position(bs);\n\tsize = (u32) s->size;\n\n\t//when cookie is set on bs, always convert qtff-style mp4a to isobmff-style\n\t//since the conversion is done in addBox and we don't have the bitstream there (arg...), flag the box\n \tif (gf_bs_get_cookie(bs)) {\n \t\tptr->is_qtff |= 1<<16;\n \t}\n\n\te = gf_isom_box_array_read(s, bs, audio_sample_entry_AddBox);\n\tif (!e) return GF_OK;\n\tif (size<8) return GF_ISOM_INVALID_FILE;\n\n\t/*hack for some weird files (possibly recorded with live.com tools, needs further investigations)*/\n\tgf_bs_seek(bs, pos);\n\tdata = (char*)gf_malloc(sizeof(char) * size);\n\tgf_bs_read_data(bs, data, size);\n\tfor (i=0; i<size-8; i++) {\n\t\tif (GF_4CC((u32)data[i+4], (u8)data[i+5], (u8)data[i+6], (u8)data[i+7]) == GF_ISOM_BOX_TYPE_ESDS) {\n\t\t\tGF_BitStream *mybs = gf_bs_new(data + i, size - i, GF_BITSTREAM_READ);\n\t\t\tif (ptr->esd) {\n\t\t\t\tgf_isom_box_del((GF_Box *)ptr->esd);\n\t\t\t\tptr->esd=NULL;\n\t\t\t}\n\n\t\t\te = gf_isom_box_parse((GF_Box **)&ptr->esd, mybs);\n\n\t\t\tif (e==GF_OK) {\n\t\t\t\tgf_isom_box_add_for_dump_mode((GF_Box*)ptr, (GF_Box*)ptr->esd);\n\t\t\t} else if (ptr->esd) {\n\t\t\t\tgf_isom_box_del((GF_Box *)ptr->esd);\n\t\t\t\tptr->esd=NULL;\n\t\t\t}\n\n\t\t\tgf_bs_del(mybs);\n\t\t\tbreak;\n\t\t}\n\t}\n\tgf_free(data);\n\treturn e;\n}",
+            4017
+        ]
+    ]
+}

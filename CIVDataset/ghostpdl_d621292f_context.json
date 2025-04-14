@@ -1,0 +1,924 @@
+{
+    "calleeMethods": [
+        [
+            "base/gxblend.c",
+            "art_pdf_knockout_composite_pixel_alpha_8",
+            "static void /* <=== art_pdf_knockout_composite_pixel_alpha_8 */ \nart_pdf_knockout_composite_pixel_alpha_8(byte *backdrop, byte tos_shape, byte *dst,\n                        const byte *src, int n_chan, gs_blend_mode_t blend_mode,\n                        const pdf14_nonseparable_blending_procs_t * pblend_procs,\n                        pdf14_device *p14dev)\n{\n    byte a_b, a_s;\n    unsigned int a_r;\n    int tmp;\n    int src_scale;\n    int c_b, c_s;\n    int i;\n\n    a_s = src[n_chan];\n    a_b = backdrop[n_chan];\n    if (a_s == 0) {\n        /* source alpha is zero, if we have a src shape value there then copy\n           the backdrop, else leave it alone */\n        if (tos_shape)\n           memcpy(dst, backdrop, n_chan + 1);\n        return;\n    }\n\n    /* In this case a_s is not zero */\n    if (a_b == 0) {\n        /* backdrop alpha is zero but not source alpha, just copy source pixels and\n           avoid computation. */\n        memcpy(dst, src, n_chan + 1);\n        return;\n    }\n\n    /* Result alpha is Union of backdrop and source alpha */\n    tmp = (0xff - a_b) * (0xff - a_s) + 0x80;\n    a_r = 0xff - (((tmp >> 8) + tmp) >> 8);\n    /* todo: verify that a_r is nonzero in all cases */\n\n    /* Compute a_s / a_r in 16.16 format */\n    src_scale = ((a_s << 16) + (a_r >> 1)) / a_r;\n\n    if (blend_mode == BLEND_MODE_Normal) {\n        /* Do simple compositing of source over backdrop */\n        for (i = 0; i < n_chan; i++) {\n            c_s = src[i];\n            c_b = backdrop[i];\n            tmp = (c_b << 16) + src_scale * (c_s - c_b) + 0x8000;\n            dst[i] = tmp >> 16;\n        }\n    } else {\n        /* Do compositing with blending */\n        byte blend[ART_MAX_CHAN];\n\n        art_blend_pixel_8(blend, backdrop, src, n_chan, blend_mode, pblend_procs,\n                        p14dev);\n        for (i = 0; i < n_chan; i++) {\n            int c_bl;\t\t/* Result of blend function */\n            int c_mix;\t\t/* Blend result mixed with source color */\n\n            c_s = src[i];\n            c_b = backdrop[i];\n            c_bl = blend[i];\n            tmp = a_b * (c_bl - ((int)c_s)) + 0x80;\n            c_mix = c_s + (((tmp >> 8) + tmp) >> 8);\n            tmp = (c_b << 16) + src_scale * (c_mix - c_b) + 0x8000;\n            dst[i] = tmp >> 16;\n        }\n    }\n    dst[n_chan] = a_r;\n}",
+            3
+        ],
+        [
+            "base/gp_nsync.c",
+            "gp_monitor_enter",
+            "int /* <=== gp_monitor_enter */ \ngp_monitor_enter(gp_monitor * mon)\n{\n    if (mon->dummy_ != 0)\n        return_error(gs_error_unknownerror);\n    mon->dummy_ = mon;\n    return 0;\n}",
+            2
+        ],
+        [
+            "base/gxsync.h",
+            "gx_monitor_enter",
+            "#define gx_monitor_enter(sema)  gp_monitor_enter(&(sema)->native) /* <=== base/gxsync.h:78:78:gx_monitor_enter:1 */ ",
+            2
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_release_link",
+            "void /* <=== gsicc_release_link */ \ngsicc_release_link(gsicc_link_t *icclink)\n{\n    gsicc_link_cache_t *icc_link_cache = icclink->icc_link_cache;\n\n    gx_monitor_enter(icc_link_cache->lock);\n    /* Decrement the reference count */\n    if (--(icclink->ref_count) == 0) {\n\n        gsicc_link_t *curr, *prev;\n\n        /* Find link in cache, and move it to the end of the list.  */\n        /* This way zero ref_count links are found LRU first\t*/\n        curr = icc_link_cache->head;\n        prev = NULL;\n        while (curr != icclink) {\n            prev = curr;\n            curr = curr->next;\n        };\n        if (prev == NULL) {\n            /* this link was the head */\n            icc_link_cache->head = curr->next;\n        } else {\n            prev->next = curr->next;\t\t/* de-link this one */\n        }\n        /* Find the first zero-ref entry on the list */\n        curr = icc_link_cache->head;\n        prev = NULL;\n        while (curr != NULL && curr->ref_count > 0) {\n            prev = curr;\n            curr = curr->next;\n        }\n        /* Found where to link this one into the tail of the list */\n        if (prev == NULL) {\n            icc_link_cache->head = icclink;\n            icclink->next = icc_link_cache->head->next;\n        } else {\n            /* link this one in here */\n            prev->next = icclink;\n            icclink->next = curr;\n        }\n\n        /* now release any tasks waiting for a cache slot */\n        while (icclink->icc_link_cache->num_waiting > 0) {\n            gx_semaphore_signal(icclink->icc_link_cache->wait);\n            icclink->icc_link_cache->num_waiting--;\n        }\n    }\n    gx_monitor_leave(icc_link_cache->lock);\n}",
+            1
+        ],
+        [
+            "base/gp_wsync.c",
+            "gp_semaphore_signal",
+            "int\t\t\t\t/* rets 0 ok, -ve error */ /* <=== gp_semaphore_signal */ \ngp_semaphore_signal(\n                    gp_semaphore * sema\t/* semaphore to affect */\n)\n{\n    win32_semaphore *const winSema = (win32_semaphore *)sema;\n\n    return\n        (ReleaseSemaphore(winSema->handle, 1, NULL) ? 0 :\n         gs_error_unknownerror);\n}",
+            2
+        ],
+        [
+            "base/strmio.c",
+            "sfclose",
+            "int /* <=== sfclose */ \nsfclose(stream *s)\n{\n    /* no need to flush since these are 'read' only */\n    gs_memory_t *mem = s->memory;\n    sclose(s);\n    gs_free_object(mem, s, \"sfclose(stream)\");\n    return 0;\n}",
+            3
+        ],
+        [
+            "base/stdpre.h",
+            "max",
+            "#  define max(a, b) (((a) > (b)) ? (a) : (b)) /* <=== base/stdpre.h:365:365:max:2 */ ",
+            1
+        ],
+        [
+            "base/gxblend.c",
+            "art_pdf_composite_group_8",
+            "void /* <=== art_pdf_composite_group_8 */ \nart_pdf_composite_group_8(byte *dst, byte *dst_alpha_g,\n        const byte *src, int n_chan, byte alpha, gs_blend_mode_t blend_mode,\n        const pdf14_nonseparable_blending_procs_t * pblend_procs,\n        pdf14_device *p14dev)\n{\n    byte src_alpha;\t\t/* $\\alpha g_n$ */\n    byte src_tmp[ART_MAX_CHAN + 1];\n    int tmp;\n\n    if (alpha == 255) {\n        art_pdf_composite_pixel_alpha_8(dst, src, n_chan,\n            blend_mode, pblend_procs, p14dev);\n        if (dst_alpha_g != NULL) {\n            tmp = (255 - *dst_alpha_g) * (255 - src[n_chan]) + 0x80;\n            *dst_alpha_g = 255 - ((tmp + (tmp >> 8)) >> 8);\n        }\n    } else {\n        src_alpha = src[n_chan];\n        if (src_alpha == 0)\n            return;\n        memcpy(src_tmp, src, n_chan + 3);\n        tmp = src_alpha * alpha + 0x80;\n        src_tmp[n_chan] = (tmp + (tmp >> 8)) >> 8;\n        art_pdf_composite_pixel_alpha_8(dst, src_tmp, n_chan,\n                                        blend_mode, pblend_procs,\n                                        p14dev);\n        if (dst_alpha_g != NULL) {\n            tmp = (255 - *dst_alpha_g) * (255 - src_tmp[n_chan]) + 0x80;\n            *dst_alpha_g = 255 - ((tmp + (tmp >> 8)) >> 8);\n        }\n    }\n}",
+            2
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gscms_get_profile_handle_mem",
+            "gcmmhprofile_t gscms_get_profile_handle_mem(gs_memory_t *mem, /* <=== gscms_get_profile_handle_mem */ \n                                            unsigned char *buffer,\n                                            unsigned int input_size);",
+            3
+        ],
+        [
+            "base/gserrors.h",
+            "gs_rethrow",
+            "#define gs_rethrow(code, fmt) \\ /* <=== base/gserrors.h:295:296:gs_rethrow:2 */ \n    gs_throw_imp(__func__, __FILE__, __LINE__, 1, code, fmt)",
+            3
+        ],
+        [
+            "base/stdpre.h",
+            "min",
+            "#  define min(a, b) (((a) < (b)) ? (a) : (b)) /* <=== base/stdpre.h:362:362:min:2 */ ",
+            1
+        ],
+        [
+            "base/gp_psync.c",
+            "gp_monitor_leave",
+            "int /* <=== gp_monitor_leave */ \ngp_monitor_leave(gp_monitor * mona)\n{\n    pthread_mutex_t * const mon = (pthread_mutex_t *)mona;\n    int scode = 0;\n\n#ifdef GS_RECURSIVE_MUTEXATTR\n    scode = pthread_mutex_unlock(mon);\n#else\n    assert(((gp_pthread_recursive_t *)mona)->lcount > 0 && ((gp_pthread_recursive_t *)mona)->self_id != 0);\n\n    if (pthread_equal(pthread_self(),((gp_pthread_recursive_t *)mona)->self_id)) {\n      if ((--((gp_pthread_recursive_t *)mona)->lcount) == 0) {\n          ((gp_pthread_recursive_t *)mona)->self_id = 0;\t/* Not valid unless mutex is locked */\n          scode = pthread_mutex_unlock(mon);\n\n      }\n    }\n    else {\n        scode = -1 /* should be EPERM */;\n    }\n#endif\n    return SEM_ERROR_CODE(scode);\n}",
+            2
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_get_cspace_hash",
+            "static int /* <=== gsicc_get_cspace_hash */ \ngsicc_get_cspace_hash(gsicc_manager_t *icc_manager, gx_device *dev,\n                      cmm_profile_t *cmm_icc_profile_data, int64_t *hash)\n{\n    cmm_dev_profile_t *dev_profile;\n    cmm_profile_t *icc_profile;\n    gsicc_rendering_param_t render_cond;\n    int code;\n\n    if (cmm_icc_profile_data == NULL)\n    {\n        if (dev == NULL)\n            return -1;\n        code = dev_proc(dev, get_profile)(dev, &dev_profile);\n        if (code < 0)\n            return code;\n        gsicc_extract_profile(dev->graphics_type_tag, dev_profile,\n            &(icc_profile), &render_cond);\n        *hash = icc_profile->hashcode;\n        return 0;\n    }\n    if (cmm_icc_profile_data->hash_is_valid ) {\n        *hash = cmm_icc_profile_data->hashcode;\n    } else {\n        /* We need to compute for this color space */\n        gsicc_get_icc_buff_hash(cmm_icc_profile_data->buffer, hash,\n                                cmm_icc_profile_data->buffer_size);\n        cmm_icc_profile_data->hashcode = *hash;\n        cmm_icc_profile_data->hash_is_valid = true;\n    }\n    return 0;\n}",
+            3
+        ],
+        [
+            "base/gscolorbuffer.c",
+            "gs_transform_color_buffer_generic",
+            "void /* <=== gs_transform_color_buffer_generic */ \ngs_transform_color_buffer_generic(byte *inputbuffer,\n            int row_stride, int plane_stride,\n            int input_num_color, gs_int_rect rect, byte *outputbuffer,\n            int output_num_color, int num_noncolor_planes)\n\n{\n    int num_rows, num_cols, x, y, z;\n    void (* color_remap)(byte input[],byte output[]) = NULL;\n    byte input_vector[4],output_vector[4];\n    int plane_offset[PDF14_MAX_PLANES],alpha_offset_in,max_num_channels;\n\n    num_rows = rect.q.y - rect.p.y;\n    num_cols = rect.q.x - rect.p.x;\n\n    /* Check for spot + cmyk case */\n\n    if (output_num_color > 4)\n    {\n\n        /* To CMYK always */\n        switch (input_num_color) {\n\n            case 1:\n                color_remap = gray_to_cmyk;\n                break;\n\n            case 3:\n                color_remap = rgb_to_cmyk;\n                break;\n\n            case 4:\n                color_remap = NULL;        /* Copy data */\n                break;\n\n            default:\n\n                /* Should never be here.  Groups must\n                   be gray, rgb or CMYK.   Exception\n                   may be ICC with XPS */\n\n                break;\n\n        }\n\n    } else {\n\n        /* Pick the mapping to use */\n\n        switch (input_num_color) {\n\n            case 1:\n                if (output_num_color == 3)\n                    color_remap = gray_to_rgb;\n                else\n                    color_remap = gray_to_cmyk;\n                break;\n\n            case 3:\n                if (output_num_color == 1)\n                    color_remap = rgb_to_gray;\n                else\n                    color_remap = rgb_to_cmyk;\n                break;\n\n            case 4:\n                if (output_num_color == 1)\n                    color_remap = cmyk_to_gray;\n                else\n                    color_remap = cmyk_to_rgb;\n                break;\n\n            default:\n\n                /* Should never be here.  Groups must\n                   be gray, rgb or CMYK.   Until we\n                   have ICC working here with XPS */\n\n                break;\n\n        }\n\n    }\n\n    /* data is planar */\n\n    max_num_channels = max(input_num_color, output_num_color) +\n        num_noncolor_planes;\n\n    for (z = 0; z < max_num_channels; z++)\n       plane_offset[z] = z * plane_stride;\n\n    if (color_remap == NULL) {\n\n        /* Blending group was CMYK, output is CMYK + spot */\n\n        memcpy(outputbuffer, inputbuffer, 4*plane_stride);\n\n        /* Add any data that are beyond the standard color data (e.g. alpha) */\n\n        if (num_noncolor_planes > 0)\n            memcpy(&(outputbuffer[plane_offset[output_num_color]]),\n                &(inputbuffer[plane_offset[input_num_color]]),\n                num_noncolor_planes*plane_stride);\n\n    } else {\n\n        /* Have to remap */\n\n        alpha_offset_in = input_num_color*plane_stride;\n\n        for (y = 0; y < num_rows; y++) {\n\n           for (x = 0; x < num_cols; x++) {\n\n                /* If the source alpha is transparent, then move on */\n\n                if (inputbuffer[x + alpha_offset_in] != 0x00) {\n\n                    /* grab the input */\n\n                    for (z = 0; z<input_num_color; z++)\n                        input_vector[z] = inputbuffer[x+plane_offset[z]];\n\n                    /* convert */\n\n                   color_remap(input_vector,output_vector);\n\n                   /* store the output */\n\n                   for (z = 0; z < output_num_color; z++)\n                        outputbuffer[x+plane_offset[z]] = output_vector[z];\n\n                   /* Add any that are beyond the standard color data */\n\n                    for(z = 0; z < num_noncolor_planes; z++)\n                        outputbuffer[x + plane_offset[output_num_color+z]] =\n                            inputbuffer[x + plane_offset[input_num_color+z]];\n\n                }\n\n            }\n\n            /* update our positions */\n\n            for (z = 0; z < max_num_channels; z++)\n                plane_offset[z] += row_stride;\n\n            alpha_offset_in += row_stride;\n\n        }\n\n    }\n\n}",
+            1
+        ],
+        [
+            "base/stdpre.h",
+            "false",
+            "#define false ((bool)0) /* <=== base/stdpre.h:320:320:false:0 */ ",
+            1
+        ],
+        [
+            "base/gsicc_cache.c",
+            "REND_SHIFT",
+            "#define REND_SHIFT 8 /* <=== base/gsicc_cache.c:88:88:REND_SHIFT:0 */ ",
+            3
+        ],
+        [
+            "base/gdebug.h",
+            "if_debug6m",
+            "#  define if_debug6m(c,m,s,a1,a2,a3,a4,a5,a6) DO_NOTHING /* <=== base/gdebug.h:172:172:if_debug6m:9 */ ",
+            2
+        ],
+        [
+            "base/gdevp14.c",
+            "pdf14_buf_free",
+            "static\tvoid /* <=== pdf14_buf_free */ \npdf14_buf_free(pdf14_buf *buf, gs_memory_t *memory)\n{\n    pdf14_parent_color_t *old_parent_color_info = buf->parent_color_info_procs;\n\n    if (buf->mask_stack && buf->mask_stack->rc_mask)\n        rc_decrement(buf->mask_stack->rc_mask, \"pdf14_buf_free\");\n\n    gs_free_object(memory, buf->mask_stack, \"pdf14_buf_free\");\n    gs_free_object(memory, buf->transfer_fn, \"pdf14_buf_free\");\n    gs_free_object(memory, buf->matte, \"pdf14_buf_free\");\n    gs_free_object(memory, buf->data, \"pdf14_buf_free\");\n\n    while (old_parent_color_info) {\n       if (old_parent_color_info->icc_profile != NULL) {\n           rc_decrement(old_parent_color_info->icc_profile, \"pdf14_buf_free\");\n       }\n       buf->parent_color_info_procs = old_parent_color_info->previous;\n       gs_free_object(memory, old_parent_color_info, \"pdf14_buf_free\");\n       old_parent_color_info = buf->parent_color_info_procs;\n    }\n\n    gs_free_object(memory, buf->backdrop, \"pdf14_buf_free\");\n    gs_free_object(memory, buf, \"pdf14_buf_free\");\n}",
+            1
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_profile_new",
+            "cmm_profile_t * /* <=== gsicc_profile_new */ \ngsicc_profile_new(stream *s, gs_memory_t *memory, const char* pname,\n                  int namelen)\n{\n    cmm_profile_t *result;\n    int code;\n    char *nameptr = NULL;\n    gs_memory_t *mem_nongc = memory->non_gc_memory;\n\n    result = (cmm_profile_t*) gs_alloc_bytes(mem_nongc, sizeof(cmm_profile_t),\n                                    \"gsicc_profile_new\");\n    if (result == NULL)\n        return result;\n    memset(result, 0, GSICC_SERIALIZED_SIZE);\n    if (namelen > 0) {\n        nameptr = (char*) gs_alloc_bytes(mem_nongc, namelen+1,\n                             \"gsicc_profile_new\");\n        if (nameptr == NULL) {\n            gs_free_object(mem_nongc, result, \"gsicc_profile_new\");\n            return NULL;\n        }\n        memcpy(nameptr, pname, namelen);\n        nameptr[namelen] = '\\0';\n        result->name = nameptr;\n    } else {\n        result->name = NULL;\n    }\n    result->name_length = namelen;\n\n    /* We may not have a stream if we are creating this\n       object from our own constructed buffer.  For\n       example if we are converting CalRGB to an ICC type */\n    if ( s != NULL) {\n        code = gsicc_load_profile_buffer(result, s, mem_nongc);\n        if (code < 0) {\n            gs_free_object(mem_nongc, result, \"gsicc_profile_new\");\n            gs_free_object(mem_nongc, nameptr, \"gsicc_profile_new\");\n            return NULL;\n        }\n    } else {\n        result->buffer = NULL;\n        result->buffer_size = 0;\n    }\n    rc_init_free(result, mem_nongc, 1, rc_free_icc_profile);\n    result->profile_handle = NULL;\n    result->spotnames = NULL;\n    result->rend_is_valid = false;\n    result->isdevlink = false;  /* only used for srcgtag profiles */\n    result->dev = NULL;\n    result->memory = mem_nongc;\n    result->lock = gx_monitor_label(gx_monitor_alloc(mem_nongc),\n                                    \"gsicc_manage\");\n    result->vers = ICCVERS_UNKNOWN;\n    result->v2_data = NULL;\n    result->v2_size = 0;\n    result->release = gscms_release_profile; /* Default case */\n\n    if (result->lock == NULL) {\n        gs_free_object(mem_nongc, result, \"gsicc_profile_new\");\n        gs_free_object(mem_nongc, nameptr, \"gsicc_profile_new\");\n        return NULL;\n    }\n    if_debug1m(gs_debug_flag_icc, mem_nongc,\n               \"[icc] allocating ICC profile = 0x%p\\n\", result);\n    return result;\n}",
+            3
+        ],
+        [
+            "base/gsicc_cache.c",
+            "PRESERVE_SHIFT",
+            "#define PRESERVE_SHIFT 16 /* <=== base/gsicc_cache.c:89:89:PRESERVE_SHIFT:0 */ ",
+            3
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gscms_avoid_white_fix_flag",
+            "int gscms_avoid_white_fix_flag(void); /* <=== gscms_avoid_white_fix_flag */ ",
+            2
+        ],
+        [
+            "base/gsicc_manage.h",
+            "GRAY_TO_K",
+            "#define GRAY_TO_K         \"gray_to_k.icc\" /* <=== base/gsicc_manage.h:33:33:GRAY_TO_K:0 */ ",
+            2
+        ],
+        [
+            "base/gsmemory.h",
+            "gs_free_object",
+            "#define gs_free_object(mem, data, cname)\\ /* <=== base/gsmemory.h:138:139:gs_free_object:3 */ \n  ((mem)->procs.free_object(mem, data, cname))",
+            1
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gscms_get_profile_data_space",
+            "gsicc_colorbuffer_t gscms_get_profile_data_space(gcmmhprofile_t profile); /* <=== gscms_get_profile_data_space */ ",
+            3
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gscms_get_link_proof_devlink",
+            "gcmmhlink_t gscms_get_link_proof_devlink(gcmmhprofile_t lcms_srchandle, /* <=== gscms_get_link_proof_devlink */ \n                                         gcmmhprofile_t lcms_proofhandle,\n                                         gcmmhprofile_t lcms_deshandle, \n                                         gcmmhprofile_t lcms_devlinkhandle,\n                                         gsicc_rendering_param_t *rendering_params,\n                                         bool src_dev_link, int cmm_flags,\n                                         gs_memory_t *memory);",
+            2
+        ],
+        [
+            "base/gp_nsync.c",
+            "gp_semaphore_signal",
+            "int /* <=== gp_semaphore_signal */ \ngp_semaphore_signal(gp_semaphore * sema)\n{\n    ++(*(int *)sema);\n    return 0;\n}",
+            2
+        ],
+        [
+            "base/gsicc_manage.h",
+            "SMASK_CMYK_ICC",
+            "#define SMASK_CMYK_ICC    \"ps_cmyk.icc\" /* <=== base/gsicc_manage.h:32:32:SMASK_CMYK_ICC:0 */ ",
+            3
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gscms_get_link_dim",
+            "void gscms_get_link_dim(gcmmhlink_t link, int *num_inputs, int *num_outputs); /* <=== gscms_get_link_dim */ ",
+            3
+        ],
+        [
+            "base/gp_wsync.c",
+            "gp_monitor_enter",
+            "int\t\t\t\t/* rets 0 ok, -ve error */ /* <=== gp_monitor_enter */ \ngp_monitor_enter(\n                 gp_monitor * mon\t/* monitor to affect */\n)\n{\n    win32_monitor *const winMon = (win32_monitor *)mon;\n\n    EnterCriticalSection(&winMon->lock);\t/* rets no status */\n    return 0;\n}",
+            2
+        ],
+        [
+            "base/gserrors.h",
+            "gs_rethrow1",
+            "#define gs_rethrow1(code, fmt, arg1) \\ /* <=== base/gserrors.h:297:298:gs_rethrow1:3 */ \n    gs_throw_imp(__func__, __FILE__, __LINE__, 1, code, fmt, arg1)",
+            3
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_find_zeroref_cache",
+            "static gsicc_link_t* /* <=== gsicc_find_zeroref_cache */ \ngsicc_find_zeroref_cache(gsicc_link_cache_t *icc_link_cache)\n{\n    gsicc_link_t *curr = NULL;\n\n    /* Look through the cache for first zero ref count */\n    /* when ref counts go to zero, the icc_link is moved to the */\n    /* end of the list, so the first we find is the 'oldest'.\n       If we get to the last entry we return NULL.  At that point\n       there are no slots available and the thread should be\n       put into a wait state.  Since most threads have at most 1 active\n       link at anyone time, this will not be an issue for a single-threaded\n       case. */\n\n    curr = icc_link_cache->head;\n    while (curr != NULL ) {\n        if (curr->ref_count == 0) {\n            curr->ref_count++;\t\t/* we will use this one */\n            break;\n        }\n        curr = curr->next;\n    }\n    return(curr);\n}",
+            3
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_get_profile_handle_buffer",
+            "gcmmhprofile_t /* <=== gsicc_get_profile_handle_buffer */ \ngsicc_get_profile_handle_buffer(unsigned char *buffer, int profile_size, gs_memory_t *memory)\n{\n\n    gcmmhprofile_t profile_handle = NULL;\n\n     if( buffer != NULL) {\n         if (profile_size < ICC_HEADER_SIZE) {\n             return 0;\n         }\n         profile_handle = gscms_get_profile_handle_mem(memory->non_gc_memory, buffer, profile_size);\n         return profile_handle;\n     }\n     return 0;\n}",
+            2
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_set_iccsmaskprofile",
+            "cmm_profile_t* /* <=== gsicc_set_iccsmaskprofile */ \ngsicc_set_iccsmaskprofile(const char *pname,\n                          int namelen, gsicc_manager_t *icc_manager,\n                          gs_memory_t *mem)\n{\n    stream *str;\n    int code;\n    cmm_profile_t *icc_profile;\n\n    if (icc_manager == NULL) {\n        code = gsicc_open_search(pname, namelen, mem, NULL, 0, &str);\n    } else {\n        code = gsicc_open_search(pname, namelen, mem, mem->gs_lib_ctx->profiledir,\n                                 mem->gs_lib_ctx->profiledir_len, &str);\n    }\n    if (code < 0 || str == NULL)\n        return NULL;\n    icc_profile = gsicc_profile_new(str, mem, pname, namelen);\n    code = sfclose(str);\n    if (icc_profile == NULL)\n        return NULL;\n    /* Get the profile handle */\n    icc_profile->profile_handle =\n            gsicc_get_profile_handle_buffer(icc_profile->buffer,\n                                            icc_profile->buffer_size,\n                                            mem);\n    /* Compute the hash code of the profile. Everything in the\n       ICC manager will have it's hash code precomputed */\n    gsicc_get_icc_buff_hash(icc_profile->buffer, &(icc_profile->hashcode),\n                            icc_profile->buffer_size);\n    icc_profile->hash_is_valid = true;\n    icc_profile->num_comps =\n            gscms_get_input_channel_count(icc_profile->profile_handle);\n    icc_profile->num_comps_out =\n            gscms_get_output_channel_count(icc_profile->profile_handle);\n    icc_profile->data_cs =\n            gscms_get_profile_data_space(icc_profile->profile_handle);\n    gscms_set_icc_range(&icc_profile);\n    return icc_profile;\n}",
+            2
+        ],
+        [
+            "base/gp_wsync.c",
+            "gp_semaphore_wait",
+            "int\t\t\t\t/* rets 0 ok, -ve error */ /* <=== gp_semaphore_wait */ \ngp_semaphore_wait(\n                  gp_semaphore * sema\t/* semaphore to affect */\n)\n{\n    win32_semaphore *const winSema = (win32_semaphore *)sema;\n\n    return\n        (\n#ifdef METRO\n        WaitForSingleObjectEx(winSema->handle, INFINITE, FALSE)\n#else\n        WaitForSingleObject(winSema->handle, INFINITE)\n#endif\n          == WAIT_OBJECT_0 ? 0 : gs_error_unknownerror);\n}",
+            3
+        ],
+        [
+            "base/gserrors.h",
+            "gs_throw",
+            "#define gs_throw(code, fmt) \\ /* <=== base/gserrors.h:269:270:gs_throw:2 */ \n    gs_throw_imp(__func__, __FILE__, __LINE__, 0, code, fmt)",
+            3
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gsicc_rcm_get_link",
+            "gsicc_link_t* gsicc_rcm_get_link(const gs_gstate *pgs, gx_device *dev,  /* <=== gsicc_rcm_get_link */ \n                                 gsicc_colorbuffer_t data_cs);",
+            2
+        ],
+        [
+            "base/gp_wsync.c",
+            "gp_monitor_leave",
+            "int\t\t\t\t/* rets 0 ok, -ve error */ /* <=== gp_monitor_leave */ \ngp_monitor_leave(\n                 gp_monitor * mon\t/* monitor to affect */\n)\n{\n    win32_monitor *const winMon = (win32_monitor *)mon;\n\n    LeaveCriticalSection(&winMon->lock);\t/* rets no status */\n    return 0;\n}",
+            2
+        ],
+        [
+            "base/gp_nsync.c",
+            "gp_monitor_leave",
+            "int /* <=== gp_monitor_leave */ \ngp_monitor_leave(gp_monitor * mon)\n{\n    if (mon->dummy_ != mon)\n        return_error(gs_error_unknownerror);\n    mon->dummy_ = 0;\n    return 0;\n}",
+            2
+        ],
+        [
+            "base/gsicc_cache.c",
+            "ICC_CACHE_MAXLINKS",
+            "#define ICC_CACHE_MAXLINKS 50 /* <=== base/gsicc_cache.c:47:47:ICC_CACHE_MAXLINKS:0 */ ",
+            3
+        ],
+        [
+            "base/gxblend.h",
+            "ART_MAX_CHAN",
+            "#define ART_MAX_CHAN GX_DEVICE_COLOR_MAX_COMPONENTS /* <=== base/gxblend.h:38:38:ART_MAX_CHAN:0 */ ",
+            3
+        ],
+        [
+            "base/gscms.h",
+            "GSICC_SERIALIZED_SIZE",
+            "#define GSICC_SERIALIZED_SIZE offsetof(cmm_profile_t, buffer) /* <=== base/gscms.h:378:378:GSICC_SERIALIZED_SIZE:0 */ ",
+            3
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_initialize_default_profile",
+            "int /* <=== gsicc_initialize_default_profile */ \ngsicc_initialize_default_profile(cmm_profile_t *icc_profile)\n{\n    gsicc_profile_t defaulttype = icc_profile->default_match;\n    gsicc_colorbuffer_t default_space = gsUNDEFINED;\n    int num_comps, num_comps_out;\n    gs_memory_t *mem = icc_profile->memory;\n\n    /* Get the profile handle if it is not already set */\n    if (icc_profile->profile_handle == NULL) {\n        icc_profile->profile_handle =\n                        gsicc_get_profile_handle_buffer(icc_profile->buffer,\n                                                        icc_profile->buffer_size,\n                                                        mem);\n        if (icc_profile->profile_handle == NULL) {\n            return gs_rethrow1(gs_error_VMerror, \"allocation of profile %s handle failed\",\n                               icc_profile->name);\n        }\n    }\n    if (icc_profile->buffer != NULL && icc_profile->hash_is_valid == false) {\n        /* Compute the hash code of the profile. */\n        gsicc_get_icc_buff_hash(icc_profile->buffer, &(icc_profile->hashcode),\n                                icc_profile->buffer_size);\n        icc_profile->hash_is_valid = true;\n    }\n    num_comps = icc_profile->num_comps;\n    icc_profile->num_comps =\n        gscms_get_input_channel_count(icc_profile->profile_handle);\n    num_comps_out = icc_profile->num_comps_out;\n    icc_profile->num_comps_out =\n        gscms_get_output_channel_count(icc_profile->profile_handle);\n    icc_profile->data_cs =\n        gscms_get_profile_data_space(icc_profile->profile_handle);\n    if_debug0m(gs_debug_flag_icc,mem,\"[icc] Setting ICC profile in Manager\\n\");\n    switch(defaulttype) {\n        case DEFAULT_GRAY:\n            if_debug0m(gs_debug_flag_icc,mem,\"[icc] Default Gray\\n\");\n            default_space = gsGRAY;\n            break;\n        case DEFAULT_RGB:\n            if_debug0m(gs_debug_flag_icc,mem,\"[icc] Default RGB\\n\");\n            default_space = gsRGB;\n            break;\n        case DEFAULT_CMYK:\n            if_debug0m(gs_debug_flag_icc,mem,\"[icc] Default CMYK\\n\");\n            default_space = gsCMYK;\n             break;\n        case NAMED_TYPE:\n            if_debug0m(gs_debug_flag_icc,mem,\"[icc] Named Color\\n\");\n            break;\n        case LAB_TYPE:\n            if_debug0m(gs_debug_flag_icc,mem,\"[icc] CIELAB Profile\\n\");\n            break;\n        case DEVICEN_TYPE:\n            if_debug0m(gs_debug_flag_icc,mem,\"[icc] DeviceN Profile\\n\");\n            break;\n        case DEFAULT_NONE:\n        default:\n            return 0;\n            break;\n    }\n    if_debug1m(gs_debug_flag_icc,mem,\"[icc] name = %s\\n\", icc_profile->name);\n    if_debug1m(gs_debug_flag_icc,mem,\"[icc] num_comps = %d\\n\", icc_profile->num_comps);\n    /* Check that we have the proper color space for the ICC\n       profiles that can be externally set */\n    if (default_space != gsUNDEFINED ||\n        num_comps != icc_profile->num_comps ||\n        num_comps_out != icc_profile->num_comps_out) {\n        if (icc_profile->data_cs != default_space) {\n            return gs_rethrow(-1, \"A default profile has an incorrect color space\");\n        }\n    }\n    return 0;\n}",
+            2
+        ],
+        [
+            "base/gsicc_cache.c",
+            "BP_SHIFT",
+            "#define BP_SHIFT 0 /* <=== base/gsicc_cache.c:87:87:BP_SHIFT:0 */ ",
+            3
+        ],
+        [
+            "base/gxblend.c",
+            "art_pdf_recomposite_group_8",
+            "void /* <=== art_pdf_recomposite_group_8 */ \nart_pdf_recomposite_group_8(byte *dst, byte *dst_alpha_g,\n        const byte *src, byte src_alpha_g, int n_chan,\n        byte alpha, gs_blend_mode_t blend_mode,\n        const pdf14_nonseparable_blending_procs_t * pblend_procs,\n        pdf14_device *p14dev, int num_spots)\n{\n    byte dst_alpha;\n    int i;\n    int tmp;\n    int scale;\n\n    if (src_alpha_g == 0)\n        return;\n\n    if (blend_mode == BLEND_MODE_Normal && alpha == 255) {\n        /* In this case, uncompositing and recompositing cancel each\n           other out. Note: if the reason that alpha == 255 is that\n           there is no constant mask and no soft mask, then this\n           operation should be optimized away at a higher level. */\n\n        memcpy(dst, src, n_chan + 1);\n        if (dst_alpha_g != NULL) {\n            tmp = (255 - *dst_alpha_g) * (255 - src_alpha_g) + 0x80;\n            *dst_alpha_g = 255 - ((tmp + (tmp >> 8)) >> 8);\n        }\n        return;\n    } else {\n        /* \"interesting\" blend mode */\n        byte ca[ART_MAX_CHAN + 1];\t/* $C, \\alpha$ */\n\n        dst_alpha = dst[n_chan];\n        if (src_alpha_g == 255 || dst_alpha == 0) {\n            memcpy(ca, src, n_chan + 3);\n        } else {\n            /* Uncomposite the color. In other words, solve\n               \"src = (ca, src_alpha_g) over dst\" for ca */\n            scale = (dst_alpha * 255 * 2 + src_alpha_g) / (src_alpha_g << 1) -\n                dst_alpha;\n            for (i = 0; i < n_chan; i++) {\n                int si, di;\n\n                si = src[i];\n                di = dst[i];\n                tmp = (si - di) * scale + 0x80;\n                tmp = si + ((tmp + (tmp >> 8)) >> 8);\n\n                /* todo: it should be possible to optimize these cond branches */\n                if (tmp < 0)\n                    tmp = 0;\n                if (tmp > 255)\n                    tmp = 255;\n                ca[i] = tmp;\n            }\n        }\n\n        tmp = src_alpha_g * alpha + 0x80;\n        tmp = (tmp + (tmp >> 8)) >> 8;\n        ca[n_chan] = tmp;\n        if (dst_alpha_g != NULL) {\n            tmp = (255 - *dst_alpha_g) * (255 - tmp) + 0x80;\n            *dst_alpha_g = 255 - ((tmp + (tmp >> 8)) >> 8);\n        }\n        if (num_spots > 0 && !blend_valid_for_spot(blend_mode)) {\n            /* Split and do the spots with normal blend mode.\n               Blending functions assume alpha is last component so do some\n               movements here */\n            byte temp_spot_src = ca[n_chan - num_spots];\n            byte temp_spot_dst = dst[n_chan - num_spots];\n            ca[n_chan - num_spots] = ca[n_chan];\n            dst[n_chan - num_spots] = dst[n_chan];\n\n            /* Blend process */\n            art_pdf_composite_pixel_alpha_8(dst, ca, n_chan - num_spots,\n                blend_mode, pblend_procs, p14dev);\n\n            /* Restore colorants that were blown away by alpha and blend spots */\n            dst[n_chan - num_spots] = temp_spot_dst;\n            ca[n_chan - num_spots] = temp_spot_src;\n            art_pdf_composite_pixel_alpha_8(&(dst[n_chan - num_spots]),\n                &(ca[n_chan - num_spots]), num_spots,\n                BLEND_MODE_Normal, pblend_procs, p14dev);\n        } else {\n            art_pdf_composite_pixel_alpha_8(dst, ca, n_chan, blend_mode,\n                pblend_procs, p14dev);\n        }\n    }\n    /* todo: optimize BLEND_MODE_Normal buf alpha != 255 case */\n}",
+            2
+        ],
+        [
+            "base/gsrefct.h",
+            "rc_decrement",
+            "#define rc_decrement(vp, cname)\\ /* <=== base/gsrefct.h:180:181:rc_decrement:2 */ \n  rc_adjust(vp, -1, cname)",
+            1
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_new_iccsmask",
+            "gsicc_smask_t* /* <=== gsicc_new_iccsmask */ \ngsicc_new_iccsmask(gs_memory_t *memory)\n{\n    gsicc_smask_t *result;\n\n    result = (gsicc_smask_t *) gs_alloc_struct(memory, gsicc_smask_t, &st_gsicc_smask, \"gsicc_new_iccsmask\");\n    if (result != NULL) {\n        result->smask_gray = NULL;\n        result->smask_rgb = NULL;\n        result->smask_cmyk = NULL;\n        result->memory = memory;\n        result->swapped = false;\n    }\n    return result;\n}",
+            3
+        ],
+        [
+            "base/gxblend.h",
+            "PDF14_MAX_PLANES",
+            "#define\tPDF14_MAX_PLANES GX_DEVICE_COLOR_MAX_COMPONENTS+3  /* Needed for alpha channel, shape, group alpha */ /* <=== base/gxblend.h:34:34:PDF14_MAX_PLANES:0 */ ",
+            2
+        ],
+        [
+            "base/gxsync.h",
+            "gx_monitor_leave",
+            "#define gx_monitor_leave(sema)  gp_monitor_leave(&(sema)->native) /* <=== base/gxsync.h:79:79:gx_monitor_leave:1 */ ",
+            2
+        ],
+        [
+            "base/gdebug.h",
+            "if_debug1m",
+            "#  define if_debug1m(c,m,s,a1) DO_NOTHING /* <=== base/gdebug.h:167:167:if_debug1m:4 */ ",
+            1
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_alloc_link_entry",
+            "bool /* <=== gsicc_alloc_link_entry */ \ngsicc_alloc_link_entry(gsicc_link_cache_t *icc_link_cache,\n                       gsicc_link_t **ret_link, gsicc_hashlink_t hash,\n                       bool include_softproof, bool include_devlink)\n{\n    gs_memory_t *cache_mem = icc_link_cache->memory;\n    gsicc_link_t *link;\n\n    /* First see if we can add a link */\n    /* TODO: this should be based on memory usage, not just num_links */\n    gx_monitor_enter(icc_link_cache->lock);\n    while (icc_link_cache->num_links >= ICC_CACHE_MAXLINKS) {\n        /* If not, see if there is anything we can remove from cache. */\n        while ((link = gsicc_find_zeroref_cache(icc_link_cache)) == NULL) {\n            icc_link_cache->num_waiting++;\n            /* safe to unlock since above will make sure semaphore is signalled */\n            gx_monitor_leave(icc_link_cache->lock);\n            /* we get signalled (released from wait) when a link goes to zero ref */\n            gx_semaphore_wait(icc_link_cache->wait);\n            /* repeat the findcachelink to see if some other thread has\t*/\n            /*already started building the link\twe need\t\t\t*/\n            *ret_link = gsicc_findcachelink(hash, icc_link_cache,\n                                            include_softproof, include_devlink);\n            /* Got a hit, return link (ref_count for the link was already bumped */\n            if (*ret_link != NULL)\n                return true;\n            gx_monitor_enter(icc_link_cache->lock);\t    /* restore the lock */\n            /* we will re-test the num_links above while locked to insure */\n            /* that some other thread didn't grab the slot and max us out */\n        }\n        /* Remove the zero ref_count link profile we found.\t\t*/\n        /* Even if we remove this link, we may still be maxed out so\t*/\n        /* the outermost 'while' will check to make sure some other\t*/\n        /* thread did not grab the one we remove.\t\t\t*/\n        gsicc_remove_link(link, cache_mem);\n    }\n    /* insert an empty link that we will reserve so we */\n    /* can unlock while building the link contents     */\n    (*ret_link) = gsicc_alloc_link(cache_mem->stable_memory, hash);\n    if (*ret_link) {\n        (*ret_link)->icc_link_cache = icc_link_cache;\n        (*ret_link)->next = icc_link_cache->head;\n        icc_link_cache->head = *ret_link;\n        icc_link_cache->num_links++;\n        /* now that we own this link we can release\n          the lock since it is not valid */\n    }\n    gx_monitor_leave(icc_link_cache->lock);\n    return false;\n}",
+            2
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gscms_get_output_channel_count",
+            "int gscms_get_output_channel_count(gcmmhprofile_t profile); /* <=== gscms_get_output_channel_count */ ",
+            3
+        ],
+        [
+            "base/gdebug.h",
+            "if_debug0m",
+            "#  define if_debug0m(c,m,s) DO_NOTHING /* <=== base/gdebug.h:166:166:if_debug0m:3 */ ",
+            3
+        ],
+        [
+            "base/gsicc_manage.h",
+            "SMASK_RGB_ICC",
+            "#define SMASK_RGB_ICC     \"ps_rgb.icc\" /* <=== base/gsicc_manage.h:31:31:SMASK_RGB_ICC:0 */ ",
+            3
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_profile_from_ps",
+            "bool /* <=== gsicc_profile_from_ps */ \ngsicc_profile_from_ps(cmm_profile_t *profile_data)\n{\n    switch ( profile_data->default_match ) {\n        case CIE_A:\n        case CIE_ABC:\n        case CIE_DEF:\n        case CIE_DEFG:\n            return true;\n        default:\n            return false;\n    }\n}",
+            2
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_remove_link",
+            "static void /* <=== gsicc_remove_link */ \ngsicc_remove_link(gsicc_link_t *link, const gs_memory_t *memory)\n{\n    gsicc_link_t *curr, *prev;\n    gsicc_link_cache_t *icc_link_cache = link->icc_link_cache;\n\n    if_debug2m(gs_debug_flag_icc, memory,\n               \"[icc] Removing link = 0x%p memory = 0x%p\\n\", link,\n               memory->stable_memory);\n    /* NOTE: link->ref_count must be 0: assert ? */\n    gx_monitor_enter(icc_link_cache->lock);\n    curr = icc_link_cache->head;\n    prev = NULL;\n\n    while (curr != NULL ) {\n        if (curr == link) {\n            /* remove this one from the list */\n            if (prev == NULL)\n                icc_link_cache->head = curr->next;\n            else\n                prev->next = curr->next;\n            break;\n        }\n        prev = curr;\n        curr = curr->next;\n    }\n    /* if curr != link we didn't find it: assert ? */\n    icc_link_cache->num_links--;\t/* no longer in the cache */\n    gx_monitor_leave(icc_link_cache->lock);\n    gsicc_link_free(link, memory);\t/* outside link */\n}",
+            2
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_set_link_data",
+            "static void /* <=== gsicc_set_link_data */ \ngsicc_set_link_data(gsicc_link_t *icc_link, void *link_handle,\n                    gsicc_hashlink_t hashcode, gx_monitor_t *lock,\n                    bool includes_softproof, bool includes_devlink,\n                    bool pageneutralcolor, gsicc_colorbuffer_t data_cs)\n{\n    gx_monitor_enter(lock);\t\t/* lock the cache while changing data */\n    icc_link->link_handle = link_handle;\n    gscms_get_link_dim(link_handle, &(icc_link->num_input), &(icc_link->num_output));\n    icc_link->hashcode.link_hashcode = hashcode.link_hashcode;\n    icc_link->hashcode.des_hash = hashcode.des_hash;\n    icc_link->hashcode.src_hash = hashcode.src_hash;\n    icc_link->hashcode.rend_hash = hashcode.rend_hash;\n    icc_link->includes_softproof = includes_softproof;\n    icc_link->includes_devlink = includes_devlink;\n    if ( (hashcode.src_hash == hashcode.des_hash) &&\n          !includes_softproof && !includes_devlink) {\n        icc_link->is_identity = true;\n    } else {\n        icc_link->is_identity = false;\n    }\n    icc_link->valid = true;\n\n    /* Set up for monitoring */\n    icc_link->data_cs = data_cs;\n    if (pageneutralcolor)\n        gsicc_mcm_set_link(icc_link);\n\n    /* Now release any tasks/threads waiting for these contents */\n    while (icc_link->num_waiting > 0) {\n        gx_semaphore_signal(icc_link->wait);\n        icc_link->num_waiting--;\n    }\n    gx_monitor_leave(lock);\t/* done with updating, let everyone run */\n}",
+            2
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gsicc_mcm_set_link",
+            "void gsicc_mcm_set_link(gsicc_link_t* link); /* <=== gsicc_mcm_set_link */ ",
+            3
+        ],
+        [
+            "base/gxdevcli.h",
+            "dev_proc",
+            "#define dev_proc(dev, p) ((dev)->procs.p) /* <=== base/gxdevcli.h:833:833:dev_proc:2 */ ",
+            2
+        ],
+        [
+            "base/gdebug.h",
+            "if_debug2m",
+            "#  define if_debug2m(c,m,s,a1,a2) DO_NOTHING /* <=== base/gdebug.h:168:168:if_debug2m:5 */ ",
+            2
+        ],
+        [
+            "base/gxblend.c",
+            "blend_valid_for_spot",
+            "bool /* <=== blend_valid_for_spot */ \nblend_valid_for_spot(gs_blend_mode_t blend_mode)\n{\n    if (blend_mode == BLEND_MODE_Difference ||\n        blend_mode == BLEND_MODE_Exclusion ||\n        blend_mode == BLEND_MODE_Hue ||\n        blend_mode == BLEND_MODE_Saturation ||\n        blend_mode == BLEND_MODE_Color ||\n        blend_mode == BLEND_MODE_Luminosity)\n        return false;\n    else\n        return true;\n}",
+            2
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gscms_get_link",
+            "gcmmhlink_t gscms_get_link(gcmmhprofile_t lcms_srchandle, /* <=== gscms_get_link */ \n                           gcmmhprofile_t lcms_deshandle,\n                           gsicc_rendering_param_t *rendering_params,\n                           int cmm_flags,\n                           gs_memory_t *memory);",
+            2
+        ],
+        [
+            "base/stdpre.h",
+            "true",
+            "#define true ((bool)1) /* <=== base/stdpre.h:322:322:true:0 */ ",
+            1
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_get_link_profile",
+            "gsicc_link_t* /* <=== gsicc_get_link_profile */ \ngsicc_get_link_profile(const gs_gstate *pgs, gx_device *dev,\n                       cmm_profile_t *gs_input_profile,\n                       cmm_profile_t *gs_output_profile,\n                       gsicc_rendering_param_t *rendering_params,\n                       gs_memory_t *memory, bool devicegraytok)\n{\n    gsicc_hashlink_t hash;\n    gsicc_link_t *link, *found_link;\n    gcmmhlink_t link_handle = NULL;\n    gsicc_manager_t *icc_manager = pgs->icc_manager;\n    gsicc_link_cache_t *icc_link_cache = pgs->icc_link_cache;\n    gs_memory_t *cache_mem = pgs->icc_link_cache->memory;\n    gcmmhprofile_t *cms_input_profile;\n    gcmmhprofile_t *cms_output_profile = NULL;\n    gcmmhprofile_t *cms_proof_profile = NULL;\n    gcmmhprofile_t *cms_devlink_profile = NULL;\n    int code;\n    bool include_softproof = false;\n    bool include_devicelink = false;\n    cmm_dev_profile_t *dev_profile;\n    cmm_profile_t *proof_profile = NULL;\n    cmm_profile_t *devlink_profile = NULL;\n    bool src_dev_link = gs_input_profile->isdevlink;\n    bool pageneutralcolor = false;\n    int cms_flags = 0;\n\n    /* Determine if we are using a soft proof or device link profile */\n    if (dev != NULL ) {\n        code = dev_proc(dev, get_profile)(dev,  &dev_profile);\n        if (code < 0)\n            return NULL;\n        if (dev_profile != NULL) {\n            proof_profile = dev_profile->proof_profile;\n            devlink_profile = dev_profile->link_profile;\n            pageneutralcolor = dev_profile->pageneutralcolor;\n        }\n        /* If the source color is the same as the proofing color then we do not\n           need to apply the proofing color in this case.  This occurs in cases\n           where we have a CMYK output intent profile, a Device CMYK color, and\n           are going out to an RGB device */\n        if (proof_profile != NULL ) {\n            if (proof_profile->hashcode == gs_input_profile->hashcode) {\n                proof_profile = NULL;\n            } else {\n                include_softproof = true;\n            }\n        }\n        if (devlink_profile != NULL) include_devicelink = true;\n    }\n    /* First compute the hash code for the incoming case.  If the output color\n       space is NULL we will use the device profile for the output color space */\n    code = gsicc_compute_linkhash(icc_manager, dev, gs_input_profile,\n                                  gs_output_profile,\n                                  rendering_params, &hash);\n    if (code < 0)\n        return NULL;\n    /* Check the cache for a hit.  Need to check if softproofing was used */\n    found_link = gsicc_findcachelink(hash, icc_link_cache, include_softproof,\n                                     include_devicelink);\n    /* Got a hit, return link (ref_count for the link was already bumped */\n    if (found_link != NULL) {\n        if_debug2m(gs_debug_flag_icc, memory,\n                   \"[icc] Found Link = 0x%p, hash = %lld \\n\",\n                   found_link, (long long)hash.link_hashcode);\n        if_debug2m(gs_debug_flag_icc, memory,\n                   \"[icc] input_numcomps = %d, input_hash = %lld \\n\",\n                   gs_input_profile->num_comps,\n                   (long long)gs_input_profile->hashcode);\n        if_debug2m(gs_debug_flag_icc, memory,\n                   \"[icc] output_numcomps = %d, output_hash = %lld \\n\",\n                   gs_output_profile->num_comps,\n                   (long long)gs_output_profile->hashcode);\n        return found_link;\n    }\n    /* Before we do anything, check if we have a case where the source profile\n       is coming from the clist and we don't even want to be doing any color\n       managment */\n    if (gs_input_profile->profile_handle == NULL &&\n        gs_input_profile->buffer == NULL &&\n        gs_input_profile->dev != NULL) {\n\n        /* ICC profile should be in clist. This is the first call to it.  Note that\n           the profiles are not really shared amongst threads like the links are.\n           Hence the memory is for the local thread's chunk */\n        cms_input_profile =\n            gsicc_get_profile_handle_clist(gs_input_profile,\n                                           gs_input_profile->memory);\n        gs_input_profile->profile_handle = cms_input_profile;\n        /* It is possible that we are not using color management\n           due to a setting forced from srcgtag object (the None option)\n           which has made its way though the clist in the clist imaging\n           code.   In this case, the srcgtag_profile structure\n           which was part of the ICC manager is no longer available.\n           We also have the Replace option.  */\n        if (gs_input_profile->rend_is_valid &&\n            gs_input_profile->rend_cond.cmm == gsCMM_NONE) {\n\n            if (gs_input_profile->data_cs == gsRGB) {\n                link = gsicc_nocm_get_link(pgs, dev, 3);\n            } else {\n                link = gsicc_nocm_get_link(pgs, dev, 4);\n            }\n            /* Set the identity case if we are in that situation */\n            if (link != NULL) {\n                if (gs_input_profile->num_comps ==\n                    dev_profile->device_profile[0]->num_comps) {\n                    link->is_identity = true;\n                }\n                return link;\n            }\n        } else if (gs_input_profile->rend_is_valid &&\n            gs_input_profile->rend_cond.cmm == gsCMM_REPLACE) {\n            return gsicc_rcm_get_link(pgs, dev, gs_input_profile->data_cs);\n            /* Note that there is never an identity case for\n               this type.  */\n        }\n        /* We may have a source profile that is a device link profile and\n           made its way through the clist.  If so get things set up to\n           handle that properly. */\n        src_dev_link = gs_input_profile->isdevlink;\n    }\n    /* No link was found so lets create a new one if there is room. This may\n       actually return a link if another thread has already created it */\n    if (gsicc_alloc_link_entry(icc_link_cache, &link, hash, include_softproof,\n                               include_devicelink))\n        return link;\n    if (link == NULL)\n        return NULL;\n\n    /* Now compute the link contents */\n    cms_input_profile = gs_input_profile->profile_handle;\n    /*  Check if the source was generated from a PS CIE color space.  If yes,\n        then we need to make sure that the CMM does not do something like\n        force a white point mapping like lcms does */\n    if (gsicc_profile_from_ps(gs_input_profile)) {\n        cms_flags = cms_flags | gscms_avoid_white_fix_flag();\n    }\n    if (cms_input_profile == NULL) {\n        if (gs_input_profile->buffer != NULL) {\n            cms_input_profile =\n                gsicc_get_profile_handle_buffer(gs_input_profile->buffer,\n                                                gs_input_profile->buffer_size,\n                                                memory);\n            if (cms_input_profile == NULL)\n                return NULL;\n            gs_input_profile->profile_handle = cms_input_profile;\n            /* This *must* be a default profile that was not set up at start-up/\n               However it could be one from the icc creator code which does not\n               do an initialization at the time of creation from CalRGB etc. */\n            code = gsicc_initialize_default_profile(gs_input_profile);\n            if (code < 0) return NULL;\n        } else {\n            /* Cant create the link.  No profile present,\n               nor any defaults to use for this.  Really\n               need to throw an error for this case. */\n            gsicc_remove_link(link, cache_mem);\n            return NULL;\n        }\n    }\n    /* No need to worry about an output profile handle if our source is a\n       device link profile */\n    if (!src_dev_link) {\n        cms_output_profile = gs_output_profile->profile_handle;\n    }\n    if (cms_output_profile == NULL && !src_dev_link) {\n        if (gs_output_profile->buffer != NULL) {\n            cms_output_profile =\n                gsicc_get_profile_handle_buffer(gs_output_profile->buffer,\n                                                gs_output_profile->buffer_size,\n                                                memory);\n            gs_output_profile->profile_handle = cms_output_profile;\n            /* This *must* be a default profile that was not set up at start-up */\n            code = gsicc_initialize_default_profile(gs_output_profile);\n            if (code < 0) return NULL;\n        } else {\n              /* See if we have a clist device pointer. */\n            if ( gs_output_profile->dev != NULL ) {\n                /* ICC profile should be in clist. This is\n                   the first call to it. */\n                cms_output_profile =\n                    gsicc_get_profile_handle_clist(gs_output_profile,\n                                                   gs_output_profile->memory);\n                gs_output_profile->profile_handle = cms_output_profile;\n            } else {\n                /* Cant create the link.  No profile present,\n                   nor any defaults to use for this.  Really\n                   need to throw an error for this case. */\n                gsicc_remove_link(link, cache_mem);\n                return NULL;\n            }\n        }\n    }\n    if (include_softproof) {\n        cms_proof_profile = proof_profile->profile_handle;\n        if (cms_proof_profile == NULL) {\n            if (proof_profile->buffer != NULL) {\n                cms_proof_profile =\n                    gsicc_get_profile_handle_buffer(proof_profile->buffer,\n                                                    proof_profile->buffer_size,\n                                                    memory);\n                proof_profile->profile_handle = cms_proof_profile;\n                gx_monitor_enter(proof_profile->lock);\n            } else {\n                /* Cant create the link */\n                gsicc_remove_link(link, cache_mem);\n                return NULL;\n            }\n        }\n    }\n    if (include_devicelink) {\n        cms_devlink_profile = devlink_profile->profile_handle;\n        if (cms_devlink_profile == NULL) {\n            if (devlink_profile->buffer != NULL) {\n                cms_devlink_profile =\n                    gsicc_get_profile_handle_buffer(devlink_profile->buffer,\n                                                    devlink_profile->buffer_size,\n                                                    memory);\n                devlink_profile->profile_handle = cms_devlink_profile;\n                gx_monitor_enter(devlink_profile->lock);\n            } else {\n                /* Cant create the link */\n                gsicc_remove_link(link, cache_mem);\n                return NULL;\n            }\n        }\n    }\n    /* Profile reading of same structure not thread safe in lcms */\n    gx_monitor_enter(gs_input_profile->lock);\n    if (!src_dev_link) {\n        gx_monitor_enter(gs_output_profile->lock);\n    }\n    /* We may have to worry about special handling for DeviceGray to\n       DeviceCMYK to ensure that Gray is mapped to K only.  This is only\n       done once and then it is cached and the link used.  Note that Adobe\n       appears to do this only when the source color space was DeviceGray.\n       For us, this requirement is meant by the test of\n       gs_input_profile->default_match == DEFAULT_GRAY */\n    if (!src_dev_link && gs_output_profile->data_cs == gsCMYK &&\n        gs_input_profile->data_cs == gsGRAY &&\n        gs_input_profile->default_match == DEFAULT_GRAY &&\n        pgs->icc_manager != NULL && devicegraytok) {\n        if (icc_manager->graytok_profile == NULL) {\n            icc_manager->graytok_profile =\n                gsicc_set_iccsmaskprofile(GRAY_TO_K, strlen(GRAY_TO_K),\n                                          pgs->icc_manager,\n                                          pgs->icc_manager->memory->stable_memory);\n            if (icc_manager->graytok_profile == NULL) {\n                return NULL;\n            }\n        }\n        if (icc_manager->smask_profiles == NULL) {\n            code = gsicc_initialize_iccsmask(icc_manager);\n        }\n        cms_input_profile =\n            icc_manager->smask_profiles->smask_gray->profile_handle;\n        cms_output_profile =\n            icc_manager->graytok_profile->profile_handle;\n        /* Turn off bp compensation in this case as there is a bug in lcms */\n        rendering_params->black_point_comp = false;\n        cms_flags = 0;  /* Turn off any flag setting */\n    }\n    /* Get the link with the proof and or device link profile */\n    if (include_softproof || include_devicelink || src_dev_link) {\n        link_handle = gscms_get_link_proof_devlink(cms_input_profile,\n                                                   cms_proof_profile,\n                                                   cms_output_profile,\n                                                   cms_devlink_profile,\n                                                   rendering_params,\n                                                   src_dev_link, cms_flags,\n                                                   cache_mem->non_gc_memory);\n        if (include_softproof) {\n            gx_monitor_leave(proof_profile->lock);\n        }\n        if (include_devicelink) {\n            gx_monitor_leave(devlink_profile->lock);\n        }\n    } else {\n        link_handle = gscms_get_link(cms_input_profile, cms_output_profile,\n                                     rendering_params, cms_flags,\n                                     cache_mem->non_gc_memory);\n    }\n    if (!src_dev_link) {\n        gx_monitor_leave(gs_output_profile->lock);\n    }\n    gx_monitor_leave(gs_input_profile->lock);\n    if (link_handle != NULL) {\n        if (gs_input_profile->data_cs == gsGRAY)\n            pageneutralcolor = false;\n        gsicc_set_link_data(link, link_handle, hash, icc_link_cache->lock,\n                            include_softproof, include_devicelink, pageneutralcolor,\n                            gs_input_profile->data_cs);\n        if_debug2m(gs_debug_flag_icc, cache_mem,\n                   \"[icc] New Link = 0x%p, hash = %lld \\n\",\n                   link, (long long)hash.link_hashcode);\n        if_debug2m(gs_debug_flag_icc, cache_mem,\n                   \"[icc] input_numcomps = %d, input_hash = %lld \\n\",\n                   gs_input_profile->num_comps,\n                   (long long)gs_input_profile->hashcode);\n        if_debug2m(gs_debug_flag_icc, cache_mem,\n                   \"[icc] output_numcomps = %d, output_hash = %lld \\n\",\n                   gs_output_profile->num_comps,\n                   (long long)gs_output_profile->hashcode);\n    } else {\n        gsicc_remove_link(link, cache_mem);\n        return NULL;\n    }\n    return link;\n}",
+            1
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_get_icc_buff_hash",
+            "void /* <=== gsicc_get_icc_buff_hash */ \ngsicc_get_icc_buff_hash(unsigned char *buffer, int64_t *hash, unsigned int buff_size)\n{\n    gsicc_get_buff_hash(buffer, hash, buff_size);\n}",
+            3
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gsicc_nocm_get_link",
+            "gsicc_link_t* gsicc_nocm_get_link(const gs_gstate *pgs, gx_device *dev,  /* <=== gsicc_nocm_get_link */ \n                                  gs_color_space_index src_index);",
+            2
+        ],
+        [
+            "base/gxblend.c",
+            "art_pdf_union_mul_8",
+            "byte /* <=== art_pdf_union_mul_8 */ \nart_pdf_union_mul_8(byte alpha1, byte alpha2, byte alpha_mask)\n{\n    int tmp;\n\n    if (alpha_mask == 0xff) {\n        tmp = (0xff - alpha1) * (0xff - alpha2) + 0x80;\n        return 0xff - ((tmp + (tmp >> 8)) >> 8);\n    } else {\n        tmp = alpha2 * alpha_mask + 0x80;\n        tmp = (tmp + (tmp >> 8)) >> 8;\n        tmp = (0xff - alpha1) * (0xff - tmp) + 0x80;\n        return 0xff - ((tmp + (tmp >> 8)) >> 8);\n    }\n}",
+            2
+        ],
+        [
+            "base/gp_psync.c",
+            "gp_monitor_enter",
+            "int /* <=== gp_monitor_enter */ \ngp_monitor_enter(gp_monitor * mona)\n{\n    pthread_mutex_t * const mon = (pthread_mutex_t *)mona;\n    int scode;\n\n#ifdef GS_RECURSIVE_MUTEXATTR\n    scode = pthread_mutex_lock(mon);\n#else\n    assert(((gp_pthread_recursive_t *)mona)->lcount >= 0);\n\n    if ((scode = pthread_mutex_trylock(mon)) == 0) {\n        ((gp_pthread_recursive_t *)mona)->self_id = pthread_self();\n        ((gp_pthread_recursive_t *)mona)->lcount++;\n    } else {\n        if (pthread_equal(pthread_self(),((gp_pthread_recursive_t *)mona)->self_id)) {\n            ((gp_pthread_recursive_t *)mona)->lcount++;\n            scode = 0;\n        }\n        else {\n            /* we were not the owner, wait */\n            scode = pthread_mutex_lock(mon);\n            ((gp_pthread_recursive_t *)mona)->self_id = pthread_self();\n            ((gp_pthread_recursive_t *)mona)->lcount++;\n        }\n    }\n#endif\n    return SEM_ERROR_CODE(scode);\n}",
+            2
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gscms_set_icc_range",
+            "void gscms_set_icc_range(cmm_profile_t **icc_profile) /* <=== gscms_set_icc_range */ \n{\n    int num_comp = (*icc_profile)->num_comps;\n    int k;\n\n    for ( k = 0; k < num_comp; k++) {\n        (*icc_profile)->Range.ranges[k].rmin = 0.0;\n        (*icc_profile)->Range.ranges[k].rmax = 1.0;\n    }\n}",
+            3
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_mash_hash",
+            "static void /* <=== gsicc_mash_hash */ \ngsicc_mash_hash(gsicc_hashlink_t *hash)\n{\n    hash->link_hashcode =\n        (hash->des_hash >> 1) ^ (hash->rend_hash) ^ (hash->src_hash);\n}",
+            3
+        ],
+        [
+            "base/gxclist.h",
+            "clist_read_chunk",
+            "int clist_read_chunk(gx_device_clist_reader *crdev, int64_t position, int size, unsigned char *buf); /* <=== clist_read_chunk */ ",
+            3
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_open_search",
+            "static int /* <=== gsicc_open_search */ \ngsicc_open_search(const char* pname, int namelen, gs_memory_t *mem_gc,\n                  const char* dirname, int dirlen, stream**strp)\n{\n    char *buffer;\n    stream* str;\n\n    /* Check if we need to prepend the file name  */\n    if ( dirname != NULL) {\n        /* If this fails, we will still try the file by itself and with\n           %rom% since someone may have left a space some of the spaces\n           as our defaults, even if they defined the directory to use.\n           This will occur only after searching the defined directory.\n           A warning is noted.  */\n        buffer = (char *) gs_alloc_bytes(mem_gc, namelen + dirlen + 1,\n                                     \"gsicc_open_search\");\n        if (buffer == NULL)\n            return_error(gs_error_VMerror);\n        strcpy(buffer, dirname);\n        strcat(buffer, pname);\n        /* Just to make sure we were null terminated */\n        buffer[namelen + dirlen] = '\\0';\n        str = sfopen(buffer, \"r\", mem_gc);\n        gs_free_object(mem_gc, buffer, \"gsicc_open_search\");\n        if (str != NULL) {\n            *strp = str;\n\t    return 0;\n        }\n    }\n\n    /* First just try it like it is */\n    if (gs_check_file_permission(mem_gc, pname, namelen, \"r\") >= 0) {\n        str = sfopen(pname, \"r\", mem_gc);\n        if (str != NULL) {\n            *strp = str;\n            return 0;\n        }\n    }\n\n    /* If that fails, try %rom% */ /* FIXME: Not sure this is needed or correct */\n                                   /* A better approach might be to have built in defaults */\n    buffer = (char *) gs_alloc_bytes(mem_gc, 1 + namelen +\n                        strlen(DEFAULT_DIR_ICC),\"gsicc_open_search\");\n    if (buffer == NULL)\n        return_error(gs_error_VMerror);\n    strcpy(buffer, DEFAULT_DIR_ICC);\n    strcat(buffer, pname);\n    /* Just to make sure we were null terminated */\n    buffer[namelen + strlen(DEFAULT_DIR_ICC)] = '\\0';\n    str = sfopen(buffer, \"r\", mem_gc);\n    gs_free_object(mem_gc, buffer, \"gsicc_open_search\");\n    if (str == NULL) {\n        gs_warn1(\"Could not find %s \",pname);\n    }\n    *strp = str;\n    return 0;\n}",
+            3
+        ],
+        [
+            "base/gp_psync.c",
+            "SEM_ERROR_CODE",
+            "#define SEM_ERROR_CODE(scode)\\ /* <=== base/gp_psync.c:60:61:SEM_ERROR_CODE:1 */ \n  (scode != 0 ? gs_note_error(gs_error_ioerror) : 0)",
+            3
+        ],
+        [
+            "base/gxblend.c",
+            "art_pdf_composite_pixel_alpha_8",
+            "void /* <=== art_pdf_composite_pixel_alpha_8 */ \nart_pdf_composite_pixel_alpha_8(byte *dst, const byte *src, int n_chan,\n        gs_blend_mode_t blend_mode,\n        const pdf14_nonseparable_blending_procs_t * pblend_procs, pdf14_device *p14dev)\n{\n    byte a_b, a_s;\n    unsigned int a_r;\n    int tmp;\n    int src_scale;\n    int c_b, c_s;\n    int i;\n\n    a_s = src[n_chan];\n    if (a_s == 0) {\n        /* source alpha is zero, avoid all computations and possible\n           divide by zero errors. */\n        return;\n    }\n\n    a_b = dst[n_chan];\n    if (a_b == 0) {\n        /* backdrop alpha is zero, just copy source pixels and avoid\n           computation. */\n\n        memcpy (dst, src, n_chan + 1);\n\n        return;\n    }\n\n    /* Result alpha is Union of backdrop and source alpha */\n    tmp = (0xff - a_b) * (0xff - a_s) + 0x80;\n    a_r = 0xff - (((tmp >> 8) + tmp) >> 8);\n    /* todo: verify that a_r is nonzero in all cases */\n\n    /* Compute a_s / a_r in 16.16 format */\n    src_scale = ((a_s << 16) + (a_r >> 1)) / a_r;\n\n    if (blend_mode == BLEND_MODE_Normal) {\n        /* Do simple compositing of source over backdrop */\n        for (i = 0; i < n_chan; i++) {\n            c_s = src[i];\n            c_b = dst[i];\n            tmp = (c_b << 16) + src_scale * (c_s - c_b) + 0x8000;\n            dst[i] = tmp >> 16;\n        }\n    } else {\n        /* Do compositing with blending */\n        byte blend[ART_MAX_CHAN];\n\n        art_blend_pixel_8(blend, dst, src, n_chan, blend_mode, pblend_procs, p14dev);\n        for (i = 0; i < n_chan; i++) {\n            int c_bl;\t\t/* Result of blend function */\n            int c_mix;\t\t/* Blend result mixed with source color */\n\n            c_s = src[i];\n            c_b = dst[i];\n            c_bl = blend[i];\n            tmp = a_b * (c_bl - ((int)c_s)) + 0x80;\n            c_mix = c_s + (((tmp >> 8) + tmp) >> 8);\n            tmp = (c_b << 16) + src_scale * (c_mix - c_b) + 0x8000;\n            dst[i] = tmp >> 16;\n        }\n    }\n    dst[n_chan] = a_r;\n}",
+            3
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_alloc_link",
+            "static gsicc_link_t * /* <=== gsicc_alloc_link */ \ngsicc_alloc_link(gs_memory_t *memory, gsicc_hashlink_t hashcode)\n{\n    gsicc_link_t *result;\n\n    /* The link has to be added in stable memory. We want them\n       to be maintained across the gsave and grestore process */\n    result = gs_alloc_struct(memory->stable_memory, gsicc_link_t, &st_icc_link,\n                             \"gsicc_alloc_link\");\n    if (result == NULL)\n        return NULL;\n    result->wait = gx_semaphore_alloc(memory->stable_memory);\n    if (result->wait == NULL) {\n        gs_free_object(memory->stable_memory, result, \"gsicc_alloc_link(wait)\");\n        return NULL;\n    }\n    /* set up placeholder values */\n    result->is_monitored = false;\n    result->orig_procs.map_buffer = NULL;\n    result->orig_procs.map_color = NULL;\n    result->orig_procs.free_link = NULL;\n    result->next = NULL;\n    result->link_handle = NULL;\n    result->procs.map_buffer = gscms_transform_color_buffer;\n    result->procs.map_color = gscms_transform_color;\n    result->procs.free_link = gscms_release_link;\n    result->hashcode.link_hashcode = hashcode.link_hashcode;\n    result->hashcode.des_hash = 0;\n    result->hashcode.src_hash = 0;\n    result->hashcode.rend_hash = 0;\n    result->ref_count = 1;\t\t/* prevent it from being freed */\n    result->includes_softproof = 0;\n    result->includes_devlink = 0;\n    result->is_identity = false;\n    result->valid = false;\t\t/* not yet complete */\n    result->num_waiting = 0;\n    return(result);\n}",
+            3
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_link_free",
+            "void /* <=== gsicc_link_free */ \ngsicc_link_free(gsicc_link_t *icc_link, const gs_memory_t *memory)\n{\n    gsicc_link_free_contents(icc_link);\n\n    gs_free_object(memory->stable_memory, icc_link, \"gsicc_link_free\");\n}",
+            3
+        ],
+        [
+            "base/gp_psync.c",
+            "gp_semaphore_wait",
+            "int /* <=== gp_semaphore_wait */ \ngp_semaphore_wait(gp_semaphore * sema)\n{\n    pt_semaphore_t * const sem = (pt_semaphore_t *)sema;\n    int scode, scode2;\n\n    scode = pthread_mutex_lock(&sem->mutex);\n    if (scode != 0)\n        return SEM_ERROR_CODE(scode);\n    while (sem->count == 0) {\n        scode = pthread_cond_wait(&sem->cond, &sem->mutex);\n        if (scode != 0)\n            break;\n    }\n    if (scode == 0)\n        --sem->count;\n    scode2 = pthread_mutex_unlock(&sem->mutex);\n    if (scode == 0)\n        scode = scode2;\n    return SEM_ERROR_CODE(scode);\n}",
+            3
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_init_buffer",
+            "void /* <=== gsicc_init_buffer */ \ngsicc_init_buffer(gsicc_bufferdesc_t *buffer_desc, unsigned char num_chan, unsigned char bytes_per_chan,\n                  bool has_alpha, bool alpha_first, bool is_planar, int plane_stride, int row_stride,\n                  int num_rows, int pixels_per_row)\n{\n    buffer_desc->num_chan = num_chan;\n    buffer_desc->bytes_per_chan = bytes_per_chan;\n    buffer_desc->has_alpha = has_alpha;\n    buffer_desc->alpha_first = alpha_first;\n    buffer_desc->is_planar = is_planar;\n    buffer_desc->plane_stride = plane_stride;\n    buffer_desc->row_stride = row_stride;\n    buffer_desc->num_rows = num_rows;\n    buffer_desc->pixels_per_row = pixels_per_row;\n\n    /* sample endianess is consistent across platforms */\n    buffer_desc->little_endian = true;\n\n}",
+            1
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_initialize_iccsmask",
+            "int /* <=== gsicc_initialize_iccsmask */ \ngsicc_initialize_iccsmask(gsicc_manager_t *icc_manager)\n{\n    gs_memory_t *stable_mem = icc_manager->memory->stable_memory;\n\n    /* Allocations need to be done in stable memory.  We want to maintain\n       the smask_profiles object */\n    icc_manager->smask_profiles = gsicc_new_iccsmask(stable_mem);\n    if (icc_manager->smask_profiles == NULL)\n        return gs_throw(gs_error_VMerror, \"insufficient memory to allocate smask profiles\");\n    /* Load the gray, rgb, and cmyk profiles */\n    if ((icc_manager->smask_profiles->smask_gray =\n        gsicc_set_iccsmaskprofile(SMASK_GRAY_ICC, strlen(SMASK_GRAY_ICC),\n        icc_manager, stable_mem) ) == NULL) {\n        return gs_throw(-1, \"failed to load gray smask profile\");\n    }\n    if ((icc_manager->smask_profiles->smask_rgb =\n        gsicc_set_iccsmaskprofile(SMASK_RGB_ICC, strlen(SMASK_RGB_ICC),\n        icc_manager, stable_mem)) == NULL) {\n        return gs_throw(-1, \"failed to load rgb smask profile\");\n    }\n    if ((icc_manager->smask_profiles->smask_cmyk =\n        gsicc_set_iccsmaskprofile(SMASK_CMYK_ICC, strlen(SMASK_CMYK_ICC),\n        icc_manager, stable_mem)) == NULL) {\n        return gs_throw(-1, \"failed to load cmyk smask profile\");\n    }\n    /* Set these as \"default\" so that pdfwrite or other high level devices\n       will know that these are manufactured profiles, and default spaces\n       should be used */\n    icc_manager->smask_profiles->smask_gray->default_match = DEFAULT_GRAY;\n    icc_manager->smask_profiles->smask_rgb->default_match = DEFAULT_RGB;\n    icc_manager->smask_profiles->smask_cmyk->default_match = DEFAULT_CMYK;\n    return 0;\n}",
+            2
+        ],
+        [
+            "base/gp_psync.c",
+            "gp_semaphore_signal",
+            "int /* <=== gp_semaphore_signal */ \ngp_semaphore_signal(gp_semaphore * sema)\n{\n    pt_semaphore_t * const sem = (pt_semaphore_t *)sema;\n    int scode, scode2;\n\n    scode = pthread_mutex_lock(&sem->mutex);\n    if (scode != 0)\n        return SEM_ERROR_CODE(scode);\n    if (sem->count++ == 0)\n        scode = pthread_cond_signal(&sem->cond);\n    scode2 = pthread_mutex_unlock(&sem->mutex);\n    if (scode == 0)\n        scode = scode2;\n    return SEM_ERROR_CODE(scode);\n}",
+            2
+        ],
+        [
+            "base/gsicc_cms.h",
+            "gscms_get_input_channel_count",
+            "int gscms_get_input_channel_count(gcmmhprofile_t profile); /* <=== gscms_get_input_channel_count */ ",
+            3
+        ],
+        [
+            "base/gxsync.h",
+            "gx_semaphore_signal",
+            "#define gx_semaphore_signal(sema)  gp_semaphore_signal(&(sema)->native) /* <=== base/gxsync.h:54:54:gx_semaphore_signal:1 */ ",
+            2
+        ],
+        [
+            "base/gsrect.h",
+            "rect_intersect",
+            "#define rect_intersect(to, from)\\ /* <=== base/gsrect.h:33:39:rect_intersect:2 */ \n  BEGIN\\\n    if ((from).p.x > (to).p.x) (to).p.x = (from).p.x;\\\n    if ((from).q.x < (to).q.x) (to).q.x = (from).q.x;\\\n    if ((from).p.y > (to).p.y) (to).p.y = (from).p.y;\\\n    if ((from).q.y < (to).q.y) (to).q.y = (from).q.y;\\\n  END",
+            1
+        ],
+        [
+            "base/gxblend.c",
+            "art_pdf_composite_knockout_group_8",
+            "void /* <=== art_pdf_composite_knockout_group_8 */ \nart_pdf_composite_knockout_group_8(byte *backdrop, byte tos_shape, byte *dst,\n        byte *dst_alpha_g, const byte *src, int n_chan, byte alpha,\n        gs_blend_mode_t blend_mode,\n        const pdf14_nonseparable_blending_procs_t * pblend_procs,\n        pdf14_device *p14dev, bool has_mask)\n{\n    byte src_alpha;\t\t/* $\\alpha g_n$ */\n    byte src_tmp[ART_MAX_CHAN + 1];\n    int tmp;\n\n    if (tos_shape == 0) {\n        /* If a softmask was present pass it along Bug 693548 */\n        if (has_mask)\n            dst[n_chan] = alpha;\n        return;\n    }\n\n    if (alpha == 255) {\n        art_pdf_knockout_composite_pixel_alpha_8(backdrop, tos_shape, dst, src,\n                                                 n_chan, blend_mode, pblend_procs,\n                                                 p14dev);\n        if (dst_alpha_g != NULL) {\n            tmp = (255 - *dst_alpha_g) * (255 - src[n_chan]) + 0x80;\n            *dst_alpha_g = 255 - ((tmp + (tmp >> 8)) >> 8);\n        }\n    } else {\n        if (tos_shape != 255) return;\n        src_alpha = src[n_chan];\n        if (src_alpha == 0)\n            return;\n        memcpy(src_tmp, src, n_chan + 3);\n        tmp = src_alpha * alpha + 0x80;\n        src_tmp[n_chan] = (tmp + (tmp >> 8)) >> 8;\n        art_pdf_knockout_composite_pixel_alpha_8(backdrop, tos_shape, dst,\n                                                 src_tmp, n_chan,\n                                                 blend_mode, pblend_procs,\n                                                 p14dev);\n        if (dst_alpha_g != NULL) {\n            tmp = (255 - *dst_alpha_g) * (255 - src_tmp[n_chan]) + 0x80;\n            *dst_alpha_g = 255 - ((tmp + (tmp >> 8)) >> 8);\n        }\n    }\n}",
+            2
+        ],
+        [
+            "base/gsicc_manage.c",
+            "ICC_HEADER_SIZE",
+            "#define ICC_HEADER_SIZE 128 /* <=== base/gsicc_manage.c:43:43:ICC_HEADER_SIZE:0 */ ",
+            3
+        ],
+        [
+            "base/gserrors.h",
+            "return_error",
+            "#define return_error(err) return gs_note_error(err) /* <=== base/gserrors.h:131:131:return_error:1 */ ",
+            1
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_search_icc_table",
+            "static int64_t /* <=== gsicc_search_icc_table */ \ngsicc_search_icc_table(clist_icctable_t *icc_table, int64_t icc_hashcode, int *size)\n{\n    int tablesize = icc_table->tablesize, k;\n    clist_icctable_entry_t *curr_entry;\n\n    curr_entry = icc_table->head;\n    for (k = 0; k < tablesize; k++ ) {\n        if ( curr_entry->serial_data.hashcode == icc_hashcode ) {\n            *size = curr_entry->serial_data.size;\n            return curr_entry->serial_data.file_position;\n        }\n        curr_entry = curr_entry->next;\n    }\n\n    /* Did not find it! */\n    *size = 0;\n    return -1;\n}",
+            3
+        ],
+        [
+            "base/gsicc_manage.c",
+            "gsicc_get_profile_handle_clist",
+            "gcmmhprofile_t /* <=== gsicc_get_profile_handle_clist */ \ngsicc_get_profile_handle_clist(cmm_profile_t *picc_profile, gs_memory_t *memory)\n{\n    gcmmhprofile_t profile_handle = NULL;\n    unsigned int profile_size;\n    int size;\n    gx_device_clist_reader *pcrdev = (gx_device_clist_reader*) picc_profile->dev;\n    unsigned char *buffer_ptr;\n    int64_t position;\n    gsicc_serialized_profile_t profile_header;\n    int k;\n\n    if( pcrdev != NULL) {\n\n        /* Check ICC table for hash code and get the whole size icc raw buffer\n           plus serialized header information */\n        position = gsicc_search_icc_table(pcrdev->icc_table,\n                                          picc_profile->hashcode, &size);\n        if ( position < 0 )\n            return 0;  /* Not found. */\n\n        /* Get the ICC buffer.  We really want to avoid this transfer.\n           I need to write  an interface to the CMM to do this through\n           the clist ioprocs */\n        /* Allocate the buffer */\n        profile_size = size - GSICC_SERIALIZED_SIZE;\n        /* Profile and its members are ALL in non-gc memory */\n        buffer_ptr = gs_alloc_bytes(memory->non_gc_memory, profile_size,\n                                            \"gsicc_get_profile_handle_clist\");\n        if (buffer_ptr == NULL)\n            return 0;\n        picc_profile->buffer = buffer_ptr;\n        clist_read_chunk(pcrdev, position + GSICC_SERIALIZED_SIZE,\n            profile_size, (unsigned char *) buffer_ptr);\n        profile_handle = gscms_get_profile_handle_mem(memory->non_gc_memory, buffer_ptr, profile_size);\n        /* We also need to get some of the serialized information */\n        clist_read_chunk(pcrdev, position, GSICC_SERIALIZED_SIZE,\n                        (unsigned char *) (&profile_header));\n        picc_profile->buffer_size = profile_header.buffer_size;\n        picc_profile->data_cs = profile_header.data_cs;\n        picc_profile->default_match = profile_header.default_match;\n        picc_profile->hash_is_valid = profile_header.hash_is_valid;\n        picc_profile->hashcode = profile_header.hashcode;\n        picc_profile->islab = profile_header.islab;\n        picc_profile->num_comps = profile_header.num_comps;\n        picc_profile->rend_is_valid = profile_header.rend_is_valid;\n        picc_profile->rend_cond = profile_header.rend_cond;\n        picc_profile->isdevlink = profile_header.isdevlink;\n        for ( k = 0; k < profile_header.num_comps; k++ ) {\n            picc_profile->Range.ranges[k].rmax =\n                profile_header.Range.ranges[k].rmax;\n            picc_profile->Range.ranges[k].rmin =\n                profile_header.Range.ranges[k].rmin;\n        }\n        return profile_handle;\n     }\n     return 0;\n}",
+            2
+        ],
+        [
+            "base/gsrect.h",
+            "rect_merge",
+            "#define rect_merge(to, from)\\ /* <=== base/gsrect.h:45:51:rect_merge:2 */ \n  BEGIN\\\n    if ((from).p.x < (to).p.x) (to).p.x = (from).p.x;\\\n    if ((from).q.x > (to).q.x) (to).q.x = (from).q.x;\\\n    if ((from).p.y < (to).p.y) (to).p.y = (from).p.y;\\\n    if ((from).q.y > (to).q.y) (to).q.y = (from).q.y;\\\n  END",
+            2
+        ],
+        [
+            "base/gsicc_manage.h",
+            "SMASK_GRAY_ICC",
+            "#define SMASK_GRAY_ICC    \"ps_gray.icc\" /* <=== base/gsicc_manage.h:30:30:SMASK_GRAY_ICC:0 */ ",
+            3
+        ],
+        [
+            "base/gp_nsync.c",
+            "gp_semaphore_wait",
+            "int /* <=== gp_semaphore_wait */ \ngp_semaphore_wait(gp_semaphore * sema)\n{\n    if (*(int *)sema == 0)\n        return_error(gs_error_unknownerror); /* no real waiting */\n    --(*(int *)sema);\n    return 0;\n}",
+            3
+        ],
+        [
+            "base/gxblend1.c",
+            "pdf14_compose_group",
+            "void /* <=== pdf14_compose_group */ \npdf14_compose_group(pdf14_buf *tos, pdf14_buf *nos, pdf14_buf *maskbuf,\n              int x0, int x1, int y0, int y1, int n_chan, bool additive,\n              const pdf14_nonseparable_blending_procs_t * pblend_procs,\n              bool overprint, gx_color_index drawn_comps, gs_memory_t *memory,\n              gx_device *dev)\n{\n    int num_spots = tos->num_spots;\n    byte alpha = tos->alpha;\n    byte shape = tos->shape;\n    gs_blend_mode_t blend_mode = tos->blend_mode;\n    byte *tos_ptr = tos->data + x0 - tos->rect.p.x +\n        (y0 - tos->rect.p.y) * tos->rowstride;\n    byte *nos_ptr = nos->data + x0 - nos->rect.p.x +\n        (y0 - nos->rect.p.y) * nos->rowstride;\n    byte *mask_row_ptr = NULL;\n    byte *mask_curr_ptr = NULL;\n    int tos_planestride = tos->planestride;\n    int nos_planestride = nos->planestride;\n    byte mask_bg_alpha = 0; /* Quiet compiler. */\n    int width = x1 - x0;\n    int x, y;\n    int i;\n    byte tos_pixel[PDF14_MAX_PLANES];\n    byte nos_pixel[PDF14_MAX_PLANES];\n    byte back_drop[PDF14_MAX_PLANES];\n    bool tos_isolated = tos->isolated;\n    bool nos_isolated = nos->isolated;\n    bool nos_knockout = nos->knockout;\n    byte *nos_alpha_g_ptr;\n    int tos_shape_offset = n_chan * tos_planestride;\n    int tos_alpha_g_offset = tos_shape_offset + (tos->has_shape ? tos_planestride : 0);\n    bool tos_has_tag = tos->has_tags;\n    int tos_tag_offset = tos_planestride * (tos->n_planes - 1);\n    int nos_shape_offset = n_chan * nos_planestride;\n    int nos_alpha_g_offset = nos_shape_offset + (nos->has_shape ? nos_planestride : 0);\n    int nos_tag_offset = nos_planestride * (nos->n_planes - 1);\n    byte *mask_tr_fn = NULL; /* Quiet compiler. */\n    gx_color_index comps;\n    bool has_mask = false;\n    bool in_mask_rect_y = false;\n    bool in_mask_rect = false;\n    byte pix_alpha;\n    byte *backdrop_ptr = NULL;\n    pdf14_device *pdev = (pdf14_device *)dev;\n    bool has_matte = false;\n    byte matte_alpha = 0xff;\n#if RAW_DUMP\n    byte *composed_ptr = NULL;\n#endif\n\n    if ((tos->n_chan == 0) || (nos->n_chan == 0))\n        return;\n    rect_merge(nos->dirty, tos->dirty);\n    if_debug6m('v', memory,\n               \"pdf14_pop_transparency_group y0 = %d, y1 = %d, w = %d, alpha = %d, shape = %d, tag =  bm = %d\\n\",\n               y0, y1, width, alpha, shape, blend_mode);\n    if (!nos->has_shape)\n        nos_shape_offset = 0;\n    if (!nos->has_tags)\n        nos_tag_offset = 0;\n    if (nos->has_alpha_g) {\n        nos_alpha_g_ptr = nos_ptr + nos_alpha_g_offset;\n    } else\n        nos_alpha_g_ptr = NULL;\n    if (nos->backdrop != NULL) {\n        backdrop_ptr = nos->backdrop + x0 - nos->rect.p.x +\n                       (y0 - nos->rect.p.y) * nos->rowstride;\n    }\n\n    if (maskbuf != NULL) {\n        int tmp;\n\n        mask_tr_fn = maskbuf->transfer_fn;\n        /* Make sure we are in the mask buffer */\n        if (maskbuf->data != NULL) {\n            mask_row_ptr = maskbuf->data + x0 - maskbuf->rect.p.x +\n                    (y0 - maskbuf->rect.p.y) * maskbuf->rowstride;\n            has_mask = true;\n        }\n        /* We may have a case, where we are outside the maskbuf rect. */\n        /* We would have avoided creating the maskbuf->data */\n        /* In that case, we should use the background alpha value */\n        /* See discussion on the BC entry in the PDF spec.   */\n        mask_bg_alpha = maskbuf->alpha;\n        /* Adjust alpha by the mask background alpha.   This is only used\n           if we are outside the soft mask rect during the filling operation */\n        mask_bg_alpha = mask_tr_fn[mask_bg_alpha];\n        tmp = alpha * mask_bg_alpha + 0x80;\n        mask_bg_alpha = (tmp + (tmp >> 8)) >> 8;\n        if (maskbuf->matte != NULL)\n            has_matte = true;\n    }\n    n_chan--; /* Now the true number of colorants (i.e. not including alpha)*/\n#if RAW_DUMP\n    composed_ptr = nos_ptr;\n    dump_raw_buffer(y1-y0, width, tos->n_planes, tos_planestride, tos->rowstride,\n                    \"bImageTOS\",tos_ptr);\n    dump_raw_buffer(y1-y0, width, nos->n_planes, nos_planestride, nos->rowstride,\n                    \"cImageNOS\",nos_ptr);\n    if (maskbuf !=NULL && maskbuf->data != NULL) {\n        dump_raw_buffer(maskbuf->rect.q.y - maskbuf->rect.p.y,\n                        maskbuf->rect.q.x - maskbuf->rect.p.x, maskbuf->n_planes,\n                        maskbuf->planestride, maskbuf->rowstride, \"dMask\",\n                        maskbuf->data);\n    }\n#endif\n    for (y = y1 - y0; y > 0; --y) {\n        mask_curr_ptr = mask_row_ptr;\n        if (has_mask && y1 - y >= maskbuf->rect.p.y && y1 - y < maskbuf->rect.q.y) {\n            in_mask_rect_y = true;\n        } else {\n            in_mask_rect_y = false;\n        }\n        for (x = 0; x < width; x++) {\n            if (in_mask_rect_y && has_mask && x0 + x >= maskbuf->rect.p.x &&\n                x0 + x < maskbuf->rect.q.x) {\n                in_mask_rect = true;\n            } else {\n                in_mask_rect = false;\n            }\n            pix_alpha = alpha;\n            /* If we have a soft mask, then we have some special handling of the\n               group alpha value */\n            if (maskbuf != NULL) {\n                if (!in_mask_rect) {\n                    /* Special case where we have a soft mask but are outside\n                       the range of the soft mask and must use the background\n                       alpha value */\n                    pix_alpha = mask_bg_alpha;\n                    matte_alpha = 0xff;\n                } else {\n                    /* If we are isolated, do not double apply the alpha */\n                    if (tos_isolated)\n                        pix_alpha = 0xff;\n                    /* If we have a matte entry (pre-multiplied) then get\n                       the mask alpha so we can undo for proper blending */\n                    if (has_matte)\n                        matte_alpha = mask_tr_fn[*mask_curr_ptr];\n                }\n            }\n\n            /* Matte present, need to undo premultiplied alpha prior to blend */\n            if (has_matte && matte_alpha != 0 && matte_alpha < 0xff) {\n                for (i = 0; i < n_chan; i++) {\n                    /* undo */\n                    int val = (tos_ptr[i * tos_planestride] - maskbuf->matte[i] < 0 ?\n                        0 : tos_ptr[i * tos_planestride] - maskbuf->matte[i]);\n                    int temp = ((((val * 0xff) << 8) / matte_alpha) >> 8) + maskbuf->matte[i];\n\n                    /* clip */\n                    if (temp > 0xff)\n                        tos_pixel[i] = 0xff;\n                    else\n                        tos_pixel[i] = temp;\n\n                    if (!additive) {\n                        /* Pure subtractive */\n                        tos_pixel[i] = 255 - tos_pixel[i];\n                        nos_pixel[i] = 255 - nos_ptr[i * nos_planestride];\n                    } else {\n                        /* additive or hybrid */\n                        if (i >= n_chan - num_spots)\n                            nos_pixel[i] = 255 - nos_ptr[i * nos_planestride];\n                        else\n                            nos_pixel[i] = nos_ptr[i * nos_planestride];\n                    }\n                }\n            } else {\n                /* No matte present */\n                if (!additive) {\n                    /* Pure subtractive */\n                    for (i = 0; i < n_chan; ++i) {\n                        tos_pixel[i] = 255 - tos_ptr[i * tos_planestride];\n                        nos_pixel[i] = 255 - nos_ptr[i * nos_planestride];\n                    }\n                } else {\n                    /* Additive or hybrid */\n                    for (i = 0; i < (n_chan - num_spots); ++i) {\n                        tos_pixel[i] = tos_ptr[i * tos_planestride];\n                        nos_pixel[i] = nos_ptr[i * nos_planestride];\n                    }\n                    for (i = n_chan - num_spots; i < n_chan; i++) {\n                        tos_pixel[i] = 255 - tos_ptr[i * tos_planestride];\n                        nos_pixel[i] = 255 - nos_ptr[i * nos_planestride];\n                    }\n                }\n            }\n            /* alpha */\n            tos_pixel[n_chan] = tos_ptr[n_chan * tos_planestride];\n            nos_pixel[n_chan] = nos_ptr[n_chan * nos_planestride];\n\n\n            if (mask_curr_ptr != NULL) {\n                if (in_mask_rect) {\n                    byte mask = mask_tr_fn[*mask_curr_ptr++];\n                    int tmp = pix_alpha * mask + 0x80;\n                    pix_alpha = (tmp + (tmp >> 8)) >> 8;\n                } else {\n                    mask_curr_ptr++;\n                }\n            }\n\n            if (nos_knockout) {\n                /* We need to be knocking out what ever is on the nos, but may\n                   need to combine with it's backdrop */\n                byte tos_shape = 255;\n\n                if (tos->has_shape)\n                    tos_shape = tos_ptr[tos_shape_offset];\n\n                if (nos_isolated || backdrop_ptr == NULL) {\n                    /* We do not need to compose with the backdrop */\n                    back_drop[n_chan] = 0;\n                    art_pdf_composite_knockout_group_8(back_drop, tos_shape,\n                        nos_pixel, nos_alpha_g_ptr, tos_pixel, n_chan, pix_alpha,\n                        blend_mode, pblend_procs, pdev, has_mask);\n                } else {\n                    /* Per the PDF spec, since the tos is not isolated and we are\n                       going onto a knock out group, we do the composition with\n                       the nos initial backdrop. */\n                    if (additive) {\n                        /* additive or hybrid */\n                        for (i = 0; i < (n_chan - num_spots); ++i) {\n                            back_drop[i] = backdrop_ptr[i * nos_planestride];\n                        }\n                        for (i = n_chan - num_spots; i < n_chan; i++) {\n                            back_drop[i] = 255 - backdrop_ptr[i * nos_planestride];\n                        }\n                    } else {\n                        /* pure subtractive */\n                        for (i = 0; i < n_chan; ++i) {\n                            back_drop[i] = 255 - backdrop_ptr[i * nos_planestride];\n                        }\n                    }\n                    /* alpha */\n                    back_drop[n_chan] = backdrop_ptr[n_chan * nos_planestride];\n                    art_pdf_composite_knockout_group_8(back_drop, tos_shape,\n                                                       nos_pixel, nos_alpha_g_ptr,\n                                                       tos_pixel, n_chan, pix_alpha,\n                                                       blend_mode, pblend_procs,\n                                                       pdev, false);\n                }\n            } else {\n                if (tos_isolated) {\n                    /* Again, if the blend mode is not white preserving handle\n                     * the spot colorants in a special manner */\n                    if (num_spots > 0 && !blend_valid_for_spot(blend_mode)) {\n                        /* Split and do the spots with normal blend mode.\n                           Blending functions assume alpha is last component so\n                           do some movements here */\n                        byte temp_nos_pixel = nos_pixel[n_chan - num_spots];\n                        byte temp_tos_pixel = tos_pixel[n_chan - num_spots];\n                        nos_pixel[n_chan - num_spots] = nos_pixel[n_chan];\n                        tos_pixel[n_chan - num_spots] = tos_pixel[n_chan];\n\n                        /* Blend process with blend mode */\n                        art_pdf_composite_group_8(nos_pixel, nos_alpha_g_ptr, tos_pixel,\n                            n_chan - num_spots, pix_alpha, blend_mode,\n                            pblend_procs, pdev);\n\n                        /* Restore colorants that were blown away by alpha and blend spots */\n                        nos_pixel[n_chan - num_spots] = temp_nos_pixel;\n                        tos_pixel[n_chan - num_spots] = temp_tos_pixel;\n\n                        art_pdf_composite_group_8(&(nos_pixel[n_chan - num_spots]),\n                            nos_alpha_g_ptr, &(tos_pixel[n_chan - num_spots]),\n                            num_spots, pix_alpha, BLEND_MODE_Normal,\n                            pblend_procs, pdev);\n                    } else {\n                        art_pdf_composite_group_8(nos_pixel, nos_alpha_g_ptr,\n                            tos_pixel, n_chan, pix_alpha, blend_mode,\n                            pblend_procs, pdev);\n                    }\n                } else {\n                    byte tos_alpha_g = tos_ptr[tos_alpha_g_offset];\n                    art_pdf_recomposite_group_8(nos_pixel, nos_alpha_g_ptr,\n                                        tos_pixel, tos_alpha_g, n_chan,\n                                        pix_alpha, blend_mode, pblend_procs, pdev,\n                                        num_spots);\n                }\n                if (tos_has_tag) {\n                    if (pix_alpha == 255) {\n                        nos_ptr[nos_tag_offset] = tos_ptr[tos_tag_offset];\n                    } else if (pix_alpha != 0 && tos_ptr[tos_tag_offset] !=\n                               GS_UNTOUCHED_TAG) {\n                        nos_ptr[nos_tag_offset] =\n                            (nos_ptr[nos_tag_offset] |\n                            tos_ptr[tos_tag_offset]) &\n                            ~GS_UNTOUCHED_TAG;\n                    }\n                }\n            }\n            if (nos_shape_offset) {\n                nos_ptr[nos_shape_offset] =\n                    art_pdf_union_mul_8 (nos_ptr[nos_shape_offset],\n                                            tos_ptr[tos_shape_offset],\n                                            shape);\n            }\n            /* Complement the results for subtractive color spaces.  Again,\n             * if we are in an additive blending color space, we are not\n             * going to be fooling with overprint of spot colors */\n            if (additive) {\n                /* additive or hybrid */\n                for (i = 0; i < (n_chan - num_spots); ++i) {\n                    nos_ptr[i * nos_planestride] = nos_pixel[i];\n                }\n                for (i = n_chan - num_spots; i < n_chan; i++) {\n                    nos_ptr[i * nos_planestride] = 255 - nos_pixel[i];\n                }\n            } else {\n                /* Pure subtractive */\n                /* If we were running in the compatible overprint blend mode\n                * and popping the group, we don't need to fool with the\n                * drawn components as that should have already have been\n                * handled during the blending within our special non-isolated\n                * group.  So in other words, if the blend mode is normal\n                * (or compatible) and we are doing overprint, the overprint\n                * has NOT been handled by compatible overprint mode and we\n                * need to take care of it now */\n                if (overprint && (blend_mode == BLEND_MODE_Compatible ||\n                    blend_mode == BLEND_MODE_Normal)) {\n                    for (i = 0, comps = drawn_comps; comps != 0; ++i, comps >>= 1) {\n                        if ((comps & 0x1) != 0) {\n                            nos_ptr[i * nos_planestride] = 255 - nos_pixel[i];\n                        }\n                    }\n                } else {\n                    for (i = 0; i < n_chan; ++i)\n                        nos_ptr[i * nos_planestride] = 255 - nos_pixel[i];\n                }\n            }\n            /* alpha */\n            nos_ptr[n_chan * nos_planestride] = nos_pixel[n_chan];\n\n            if (nos_alpha_g_ptr != NULL)\n                ++nos_alpha_g_ptr;\n            if (backdrop_ptr != NULL)\n                ++backdrop_ptr;\n            ++tos_ptr;\n            ++nos_ptr;\n        }\n        tos_ptr += tos->rowstride - width;\n        nos_ptr += nos->rowstride - width;\n        if (nos_alpha_g_ptr != NULL)\n            nos_alpha_g_ptr += nos->rowstride - width;\n        if (mask_row_ptr != NULL)\n            mask_row_ptr += maskbuf->rowstride;\n        if (backdrop_ptr != NULL)\n            backdrop_ptr += nos->rowstride - width;\n    }\n#if RAW_DUMP\n    dump_raw_buffer(y1-y0, width, nos->n_planes, nos_planestride, nos->rowstride,\n                    \"eComposed\", composed_ptr);\n    global_index++;\n#endif\n}",
+            1
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_findcachelink",
+            "gsicc_link_t* /* <=== gsicc_findcachelink */ \ngsicc_findcachelink(gsicc_hashlink_t hash, gsicc_link_cache_t *icc_link_cache,\n                    bool includes_proof, bool includes_devlink)\n{\n    gsicc_link_t *curr, *prev;\n    int64_t hashcode = hash.link_hashcode;\n\n    /* Look through the cache for the hashcode */\n    gx_monitor_enter(icc_link_cache->lock);\n\n    /* List scanning is fast, so we scan the entire list, this includes   */\n    /* links that are currently unused, but still in the cache (zero_ref) */\n    curr = icc_link_cache->head;\n    prev = NULL;\n\n    while (curr != NULL ) {\n        if (curr->hashcode.link_hashcode == hashcode &&\n            includes_proof == curr->includes_softproof &&\n            includes_devlink == curr->includes_devlink) {\n            /* move this one to the front of the list hoping we will use it\n               again soon */\n            if (prev != NULL) {\n                /* if prev == NULL, curr is already the head */\n                prev->next = curr->next;\n                curr->next = icc_link_cache->head;\n                icc_link_cache->head = curr;\n            }\n            curr->ref_count++;\n            /* bump the ref_count since we will be using this one */\n            while (curr->valid == false) {\n                curr->num_waiting++;\n                gx_monitor_leave(icc_link_cache->lock);\n                gx_semaphore_wait(curr->wait);\n                gx_monitor_enter(icc_link_cache->lock);\t/* re-enter breifly */\n            }\n            gx_monitor_leave(icc_link_cache->lock);\n            return(curr);\t/* success */\n        }\n        prev = curr;\n        curr = curr->next;\n    }\n    gx_monitor_leave(icc_link_cache->lock);\n    return NULL;\n}",
+            2
+        ],
+        [
+            "base/gsmisc.c",
+            "gs_throw_imp",
+            "int gs_throw_imp(const char *func, const char *file, int line, int op, int code, const char *fmt, ...) /* <=== gs_throw_imp */ \n{\n    char msg[1024];\n    va_list ap;\n    int count;\n\n    va_start(ap, fmt);\n    count = vsnprintf(msg, sizeof(msg), fmt, ap);\n    msg[sizeof(msg) - 1] = 0;\n    va_end(ap);\n\n    if (!gs_debug_c('#')) {\n        ; /* NB: gs_log_errors\n           * we could disable these printfs, and probably will when,\n           * the code becomes more stable:\n           * return code;\n           */\n    }\n\n    /* throw */\n    if (op == 0)\n        errprintf_nomem(\"+ %s:%d: %s(): %s\\n\", file, line, func, msg);\n\n    /* rethrow */\n    if (op == 1)\n        errprintf_nomem(\"| %s:%d: %s(): %s\\n\", file, line, func, msg);\n\n    /* catch */\n    if (op == 2)\n        errprintf_nomem(\"- %s:%d: %s(): %s\\n\", file, line, func, msg);\n\n    /* warn */\n    if (op == 3)\n        errprintf_nomem(\"  %s:%d: %s(): %s\\n\", file, line, func, msg);\n\n    if (count >= sizeof(msg) || count < 0)  { /* C99 || MSVC */\n        errwrite_nomem(msg_truncated, sizeof(msg_truncated) - 1);\n    }\n    return code;\n}",
+            3
+        ],
+        [
+            "base/gsmemory.h",
+            "gs_alloc_bytes",
+            "#define gs_alloc_bytes(mem, nbytes, cname)\\ /* <=== base/gsmemory.h:245:246:gs_alloc_bytes:3 */ \n  (*(mem)->procs.alloc_bytes)(mem, nbytes, cname)",
+            1
+        ],
+        [
+            "base/gsicc_cache.c",
+            "gsicc_compute_linkhash",
+            "static int /* <=== gsicc_compute_linkhash */ \ngsicc_compute_linkhash(gsicc_manager_t *icc_manager, gx_device *dev,\n                       cmm_profile_t *input_profile,\n                       cmm_profile_t *output_profile,\n                       gsicc_rendering_param_t *rendering_params,\n                       gsicc_hashlink_t *hash)\n{\n    int code;\n\n    /* first get the hash codes for the color spaces */\n    code = gsicc_get_cspace_hash(icc_manager, dev, input_profile,\n                                 &(hash->src_hash));\n    if (code < 0)\n        return code;\n    code = gsicc_get_cspace_hash(icc_manager, dev, output_profile,\n                                 &(hash->des_hash));\n    if (code < 0)\n        return code;\n\n    /* now for the rendering paramaters, just use the word itself.  At this\n       point in time, we only include the black point setting, the intent\n       and if we are preserving black.  We don't differentiate at this time\n       with object type since the current CMM does not create different\n       links based upon this type setting.  Other parameters such as cmm\n       and override ICC are used prior to a link creation and so should also\n       not factor into the link hash calculation */\n    hash->rend_hash = ((rendering_params->black_point_comp) << BP_SHIFT) +\n                      ((rendering_params->rendering_intent) << REND_SHIFT) +\n                      ((rendering_params->preserve_black) << PRESERVE_SHIFT);\n    /* for now, mash all of these into a link hash */\n    gsicc_mash_hash(hash);\n    return 0;\n}",
+            2
+        ],
+        [
+            "base/gxsync.h",
+            "gx_semaphore_wait",
+            "#define gx_semaphore_wait(sema)  gp_semaphore_wait(&(sema)->native) /* <=== base/gxsync.h:53:53:gx_semaphore_wait:1 */ ",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"gximage.h\"",
+        "#include \"gsstruct.h\"",
+        "#include \"gdevmem.h\"",
+        "#include \"gxdcconv.h\"",
+        "#include \"gdevp14.h\"",
+        "#include \"gstrans.h\"",
+        "#include \"gxgstate.h\"",
+        "#include \"gscolorbuffer.h\"",
+        "#include \"gserrors.h\"",
+        "#include \"gxdcolor.h\"",
+        "#include \"gdevdevn.h\"",
+        "#include \"gsptype1.h\"",
+        "#include \"gx.h\"",
+        "#include \"gxiclass.h\"",
+        "#include \"gxcmap.h\"",
+        "#include \"math_.h\"",
+        "#include \"gsdfilt.h\"",
+        "#include \"gsrect.h\"",
+        "#include \"gsutil.h\"",
+        "#include \"gsicc_manage.h\"",
+        "#include \"gscolor1.h\"",
+        "#include \"gsicc_cache.h\"",
+        "#include \"gxclist.h\"",
+        "#include \"memory_.h\"",
+        "#include \"gscoord.h\"",
+        "#include \"gxpcolor.h\"",
+        "#include \"gxcldev.h\"",
+        "#include \"gxtext.h\"",
+        "#include \"gsdevice.h\"",
+        "#include \"gstparam.h\"",
+        "#include \"gxclpath.h\"",
+        "#include \"gsimage.h\"",
+        "#include \"gxblend.h\"",
+        "#include \"gscdefs.h\"",
+        "#include \"gsptype2.h\"",
+        "#include \"gzcpath.h\"",
+        "#include \"gxdevice.h\"",
+        "#include \"gsovrc.h\"",
+        "#include \"gxdevsop.h\"",
+        "#include \"gxpaint.h\"",
+        "#include \"gxiparam.h\"",
+        "#include \"gzstate.h\"",
+        "#include \"gsicc.h\"",
+        "#include \"gdevprn.h\"",
+        "#include \"gsmatrix.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct gsicc_bufferdesc_s {\n    unsigned char num_chan;\n    unsigned char bytes_per_chan;\n    bool has_alpha;\n    bool alpha_first;\n    bool little_endian;\n    bool is_planar;\n    int plane_stride;\n    int row_stride;\n    int num_rows;\n    int pixels_per_row;\n} gsicc_bufferdesc_t;",
+            "gsicc_bufferdesc_t"
+        ],
+        [
+            "typedef struct {\n    unsigned short *data_short;\n    unsigned char *data_byte;  /* Used for cases where we can\n                                   use the table as is */\n    int     clut_dims[4];\n    int     clut_num_input;\n    int     clut_num_output;\n    int     clut_num_entries;   /* Number of entries */\n    int     clut_word_width;    /* Word width of table, 1 or 2 */\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct gx_device_s gx_device;",
+            "gx_device"
+        ],
+        [
+            "typedef int bool;",
+            "bool"
+        ],
+        [
+            "typedef struct cmm_profile_s cmm_profile_t;",
+            "cmm_profile_t"
+        ],
+        [
+            "typedef struct pdf14_ctx_s pdf14_ctx;",
+            "pdf14_ctx"
+        ],
+        [
+            "typedef struct gsicc_link_s gsicc_link_t;",
+            "gsicc_link_t"
+        ],
+        [
+            "typedef struct pdf14_buf_s pdf14_buf;",
+            "pdf14_buf"
+        ],
+        [
+            "typedef gx_color_index_data gx_color_index;",
+            "gx_color_index"
+        ],
+        [
+            "typedef pdf14_nonseparable_blending_procs_s\n                pdf14_nonseparable_blending_procs_t;",
+            "pdf14_nonseparable_blending_procs_t"
+        ],
+        [
+            "struct gsicc_link_s {\n    void *link_handle;\n    gscms_procs_t procs;\n    gsicc_hashlink_t hashcode;\n    struct gsicc_link_cache_s *icc_link_cache;\n    int ref_count;\n    gsicc_link_t *next;\n    gx_semaphore_t *wait;\t\t/* semaphore used by waiting threads */\n    int num_waiting;\n    bool includes_softproof;\n    bool includes_devlink;\n    bool is_identity;  /* Used for noting that this is an identity profile */\n    bool valid;\t\t/* true once link is completely built and usable */\n    bool is_monitored;\n    gscms_procs_t orig_procs;  /* procs to use after monitoring */\n    gsicc_colorbuffer_t data_cs; /* needed for begin_monitor after end_monitor */\n    int num_input;  /* Need so we can monitor properly */\n    int num_output; /* Need so we can monitor properly */\n}",
+            "gsicc_link_s"
+        ],
+        [
+            "typedef struct pdf14_mask_s pdf14_mask_t;",
+            "pdf14_mask_t"
+        ],
+        [
+            "typedef struct gs_gstate_s gs_gstate;",
+            "gs_gstate"
+        ],
+        [
+            "typedef unsigned char byte;",
+            "byte"
+        ],
+        [
+            "typedef struct gsicc_rendering_param_s {\n    gsicc_rendering_intents_t rendering_intent;   /* Standard rendering intent */\n    gsicc_blackptcomp_t black_point_comp;         /* Black point compensation */\n    gsicc_blackpreserve_t preserve_black;         /* preserve K plane in CMYK2CMYK */\n    gs_graphics_type_tag_t graphics_type_tag;     /* Some CMM may want this */\n    gsicc_cmm_t cmm;                              /* which cmm? (used only with sourcetag) */\n    bool override_icc;                            /* Override source ICC (used only with sourcetag) */\n} gsicc_rendering_param_t;",
+            "gsicc_rendering_param_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "base/gdevp14.c": [
+            1046,
+            1047,
+            1051,
+            1052,
+            1056,
+            1069,
+            1070,
+            1072,
+            1073,
+            1078,
+            1079,
+            1081,
+            1083,
+            1084,
+            1087,
+            1088,
+            1091,
+            1092,
+            1093,
+            1094,
+            1095,
+            1103,
+            1104,
+            1105,
+            1107,
+            1109,
+            1110,
+            1111,
+            1113,
+            1130,
+            1131,
+            1132,
+            1135,
+            1139,
+            1140,
+            1141,
+            1146,
+            1147,
+            1150,
+            1151,
+            1154,
+            1155,
+            1156,
+            1157,
+            1158,
+            1159,
+            1165,
+            1166,
+            1167,
+            1168,
+            1170,
+            1173,
+            1182,
+            1184,
+            1187,
+            1188,
+            1190,
+            1191,
+            1192,
+            1195,
+            1201,
+            1202,
+            1203,
+            1204,
+            1205,
+            1206,
+            1207,
+            1208,
+            1209,
+            1215,
+            1216,
+            1217,
+            1220,
+            1222,
+            1223,
+            1224,
+            1226,
+            1230,
+            1232,
+            1235,
+            1236,
+            1237,
+            1238,
+            1239,
+            1241,
+            1243,
+            1246,
+            1247,
+            1256,
+            1257,
+            1258,
+            1259,
+            1263,
+            1264,
+            1265,
+            1266,
+            1269,
+            1273,
+            1276,
+            1278,
+            1279,
+            1280
+        ]
+    },
+    "visitedLines_before": {
+        "base/gdevp14.c": [
+            1046,
+            1047,
+            1051,
+            1052,
+            1056,
+            1069,
+            1070,
+            1075,
+            1076,
+            1078,
+            1080,
+            1081,
+            1084,
+            1085,
+            1088,
+            1089,
+            1090,
+            1091,
+            1092,
+            1100,
+            1101,
+            1102,
+            1104,
+            1106,
+            1107,
+            1108,
+            1110,
+            1127,
+            1128,
+            1129,
+            1132,
+            1136,
+            1137,
+            1138,
+            1143,
+            1144,
+            1147,
+            1148,
+            1151,
+            1152,
+            1153,
+            1154,
+            1155,
+            1156,
+            1162,
+            1163,
+            1164,
+            1165,
+            1167,
+            1170,
+            1179,
+            1181,
+            1184,
+            1185,
+            1187,
+            1188,
+            1189,
+            1192,
+            1198,
+            1199,
+            1200,
+            1201,
+            1202,
+            1203,
+            1204,
+            1205,
+            1206,
+            1212,
+            1213,
+            1214,
+            1217,
+            1219,
+            1220,
+            1221,
+            1223,
+            1227,
+            1229,
+            1232,
+            1233,
+            1234,
+            1235,
+            1236,
+            1238,
+            1240,
+            1243,
+            1244,
+            1253,
+            1254,
+            1255,
+            1256,
+            1260,
+            1261,
+            1262,
+            1263,
+            1266,
+            1270,
+            1273,
+            1275,
+            1276,
+            1277
+        ]
+    },
+    "visitedParams": {
+        "base/gdevp14.c": [
+            [
+                "pdf14_ctx *ctx",
+                "pdf14_pop_transparency_group"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "base/gdevp14.c",
+            "pdf14_pop_transparency_group",
+            "static\tint /* <=== pdf14_pop_transparency_group */ \npdf14_pop_transparency_group(gs_gstate *pgs, pdf14_ctx *ctx,\n    const pdf14_nonseparable_blending_procs_t * pblend_procs,\n    int tos_num_color_comp, cmm_profile_t *curr_icc_profile, gx_device *dev)\n{\n    pdf14_buf *tos = ctx->stack;\n    pdf14_buf *nos = tos->saved;\n    pdf14_mask_t *mask_stack = tos->mask_stack;\n    pdf14_buf *maskbuf;\n    int x0, x1, y0, y1;\n    byte *new_data_buf = NULL;\n    int num_noncolor_planes, new_num_planes;\n    int num_cols, num_rows, nos_num_color_comp;\n    bool icc_match;\n    gsicc_rendering_param_t rendering_params;\n    gsicc_link_t *icc_link;\n    gsicc_bufferdesc_t input_buff_desc;\n    gsicc_bufferdesc_t output_buff_desc;\n    pdf14_device *pdev = (pdf14_device *)dev;\n    bool overprint = pdev->overprint;\n    gx_color_index drawn_comps = pdev->drawn_comps;\n    bool nonicc_conversion = true;\n\n    if (nos == NULL)\n        return_error(gs_error_unknownerror);  /* Unmatched group pop */\n\n    nos_num_color_comp = nos->parent_color_info_procs->num_components - nos->num_spots;\n    tos_num_color_comp = tos_num_color_comp - tos->num_spots;\n\n#ifdef DEBUG\n    pdf14_debug_mask_stack_state(ctx);\n#endif\n    if (mask_stack == NULL) {\n        maskbuf = NULL;\n    } else {\n        maskbuf = mask_stack->rc_mask->mask_buf;\n    }\n    if (nos == NULL)\n        return_error(gs_error_rangecheck);\n    /* Sanitise the dirty rectangles, in case some of the drawing routines\n     * have made them overly large. */\n    rect_intersect(tos->dirty, tos->rect);\n    rect_intersect(nos->dirty, nos->rect);\n    /* dirty = the marked bbox. rect = the entire bounds of the buffer. */\n    /* Everything marked on tos that fits onto nos needs to be merged down. */\n    y0 = max(tos->dirty.p.y, nos->rect.p.y);\n    y1 = min(tos->dirty.q.y, nos->rect.q.y);\n    x0 = max(tos->dirty.p.x, nos->rect.p.x);\n    x1 = min(tos->dirty.q.x, nos->rect.q.x);\n    if (ctx->mask_stack) {\n        /* This can occur when we have a situation where we are ending out of\n           a group that has internal to it a soft mask and another group.\n           The soft mask left over from the previous trans group pop is put\n           into ctx->masbuf, since it is still active if another trans group\n           push occurs to use it.  If one does not occur, but instead we find\n           ourselves popping from a parent group, then this softmask is no\n           longer needed.  We will rc_decrement and set it to NULL. */\n        rc_decrement(ctx->mask_stack->rc_mask, \"pdf14_pop_transparency_group\");\n        if (ctx->mask_stack->rc_mask == NULL ){\n            gs_free_object(ctx->memory, ctx->mask_stack, \"pdf14_pop_transparency_group\");\n        }\n        ctx->mask_stack = NULL;\n    }\n    ctx->mask_stack = mask_stack;  /* Restore the mask saved by pdf14_push_transparency_group. */\n    tos->mask_stack = NULL;        /* Clean the pointer sinse the mask ownership is now passed to ctx. */\n    if (tos->idle)\n        goto exit;\n    if (maskbuf != NULL && maskbuf->data == NULL && maskbuf->alpha == 255)\n        goto exit;\n\n#if RAW_DUMP\n    /* Dump the current buffer to see what we have. */\n    dump_raw_buffer(ctx->stack->rect.q.y-ctx->stack->rect.p.y,\n                ctx->stack->rowstride, ctx->stack->n_planes,\n                ctx->stack->planestride, ctx->stack->rowstride,\n                \"aaTrans_Group_Pop\",ctx->stack->data);\n#endif\n/* Note currently if a pattern space has transparency, the ICC profile is not used\n   for blending purposes.  Instead we rely upon the gray, rgb, or cmyk parent space.\n   This is partially due to the fact that pdf14_pop_transparency_group and\n   pdf14_push_transparnecy_group have no real ICC interaction and those are the\n   operations called in the tile transparency code.  Instead we may want to\n   look at pdf14_begin_transparency_group and pdf14_end_transparency group which\n   is where all the ICC information is handled.  We will return to look at that later */\n    if (nos->parent_color_info_procs->icc_profile != NULL) {\n        icc_match = (nos->parent_color_info_procs->icc_profile->hashcode !=\n                        curr_icc_profile->hashcode);\n    } else {\n        /* Let the other tests make the decision if we need to transform */\n        icc_match = false;\n    }\n    /* If the color spaces are different and we actually did do a swap of\n       the procs for color */\n    if ((nos->parent_color_info_procs->parent_color_mapping_procs != NULL &&\n        nos_num_color_comp != tos_num_color_comp) || icc_match) {\n        if (x0 < x1 && y0 < y1) {\n            /* The NOS blending color space is different than that of the\n               TOS.  It is necessary to transform the TOS buffer data to the\n               color space of the NOS prior to doing the pdf14_compose_group\n               operation.  */\n            num_noncolor_planes = tos->n_planes - tos_num_color_comp;\n            new_num_planes = num_noncolor_planes + nos_num_color_comp;\n\n            /* See if we are doing ICC based conversion */\n            if (nos->parent_color_info_procs->icc_profile != NULL &&\n                curr_icc_profile != NULL) {\n                /* Use the ICC color management for buffer color conversion */\n                /* Define the rendering intents */\n                rendering_params.black_point_comp = gsBLACKPTCOMP_ON;\n                rendering_params.graphics_type_tag = GS_IMAGE_TAG;\n                rendering_params.override_icc = false;\n                rendering_params.preserve_black = gsBKPRESNOTSPECIFIED;\n                rendering_params.rendering_intent = gsPERCEPTUAL;\n                rendering_params.cmm = gsCMM_DEFAULT;\n                /* Request the ICC link for the transform that we will need to use */\n                /* Note that if pgs is NULL we assume the same color space.  This\n                   is due to a call to pop the group from fill_mask when filling\n                   with a mask with transparency.  In that case, the parent\n                   and the child will have the same color space anyway */\n                icc_link = gsicc_get_link_profile(pgs, dev, curr_icc_profile,\n                                    nos->parent_color_info_procs->icc_profile,\n                                    &rendering_params, pgs->memory, false);\n                if (icc_link != NULL) {\n                    /* if problem with link we will do non-ICC approach */\n                    nonicc_conversion = false;\n                    /* If the link is the identity, then we don't need to do\n                       any color conversions */\n                    if ( !(icc_link->is_identity) ) {\n                        /* Before we do any allocations check if we can get away with\n                           reusing the existing buffer if it is the same size ( if it is\n                           smaller go ahead and allocate).  We could reuse it in this\n                           case too.  We need to do a bit of testing to determine what\n                           would be best.  */\n                        /* FIXME: RJW: Could we get away with just color converting\n                         * the area that's actually active (i.e. dirty, not rect)?\n                         */\n                        if(nos_num_color_comp != tos_num_color_comp) {\n                            /* Different size.  We will need to allocate */\n                            new_data_buf = gs_alloc_bytes(ctx->memory,\n                                                tos->planestride * new_num_planes,\n                                                    \"pdf14_pop_transparency_group\");\n                            if (new_data_buf == NULL)\n                                return_error(gs_error_VMerror);\n                            /* Copy over the noncolor planes. */\n                            memcpy(new_data_buf + tos->planestride * nos_num_color_comp,\n                                   tos->data + tos->planestride * tos_num_color_comp,\n                                   tos->planestride * num_noncolor_planes);\n                        } else {\n                            /* In place color conversion! */\n                            new_data_buf = tos->data;\n                        }\n                        /* Set up the buffer descriptors. Note that pdf14 always has\n                           the alpha channels at the back end (last planes).\n                           We will just handle that here and let the CMM know\n                           nothing about it */\n                        num_rows = tos->rect.q.y - tos->rect.p.y;\n                        num_cols = tos->rect.q.x - tos->rect.p.x;\n                        gsicc_init_buffer(&input_buff_desc, tos_num_color_comp, 1,\n                                          false, false, true,\n                                          tos->planestride, tos->rowstride,\n                                          num_rows, num_cols);\n                        gsicc_init_buffer(&output_buff_desc, nos_num_color_comp,\n                                          1, false, false, true, tos->planestride,\n                                          tos->rowstride, num_rows, num_cols);\n                        /* Transform the data. Since the pdf14 device should be\n                           using RGB, CMYK or Gray buffers, this transform\n                           does not need to worry about the cmap procs of\n                           the target device.  Those are handled when we do\n                           the pdf14 put image operation */\n                        (icc_link->procs.map_buffer)(dev, icc_link, &input_buff_desc,\n                                                     &output_buff_desc, tos->data,\n                                                     new_data_buf);\n                    }\n                    /* Release the link */\n                    gsicc_release_link(icc_link);\n                    /* free the old object if the color spaces were different sizes */\n                    if(!(icc_link->is_identity) &&\n                        nos_num_color_comp != tos_num_color_comp) {\n                        gs_free_object(ctx->memory, tos->data,\n                            \"pdf14_pop_transparency_group\");\n                        tos->data = new_data_buf;\n                    }\n                }\n            }\n            if (nonicc_conversion) {\n                /* Non ICC based transform */\n                new_data_buf = gs_alloc_bytes(ctx->memory,\n                                    tos->planestride * new_num_planes,\n                                    \"pdf14_pop_transparency_group\");\n                if (new_data_buf == NULL)\n                    return_error(gs_error_VMerror);\n                gs_transform_color_buffer_generic(tos->data, tos->rowstride,\n                            tos->planestride, tos_num_color_comp, tos->rect,\n                            new_data_buf, nos_num_color_comp, num_noncolor_planes);\n                /* Free the old object */\n                gs_free_object(ctx->memory, tos->data,\n                                \"pdf14_pop_transparency_group\");\n                 tos->data = new_data_buf;\n            }\n             /* Adjust the plane and channel size now */\n             tos->n_chan = nos->n_chan;\n             tos->n_planes = nos->n_planes;\n#if RAW_DUMP\n            /* Dump the current buffer to see what we have. */\n            dump_raw_buffer(ctx->stack->rect.q.y-ctx->stack->rect.p.y,\n                            ctx->stack->rowstride, ctx->stack->n_chan,\n                            ctx->stack->planestride, ctx->stack->rowstride,\n                            \"aCMTrans_Group_ColorConv\",ctx->stack->data);\n#endif\n             /* compose. never do overprint in this case */\n            pdf14_compose_group(tos, nos, maskbuf, x0, x1, y0, y1, nos->n_chan,\n                 nos->parent_color_info_procs->isadditive,\n                 nos->parent_color_info_procs->parent_blending_procs,\n                 false, drawn_comps, ctx->memory, dev);\n        }\n    } else {\n        /* Group color spaces are the same.  No color conversions needed */\n        if (x0 < x1 && y0 < y1)\n            pdf14_compose_group(tos, nos, maskbuf, x0, x1, y0, y1, nos->n_chan,\n                                ctx->additive, pblend_procs, overprint,\n                                drawn_comps, ctx->memory, dev);\n    }\nexit:\n    ctx->stack = nos;\n    /* We want to detect the cases where we have luminosity soft masks embedded\n       within one another.  The \"alpha\" channel really needs to be merged into\n       the luminosity channel in this case.  This will occur during the mask pop */\n    if (ctx->smask_depth > 0 && maskbuf != NULL) {\n        /* Set the trigger so that we will blend if not alpha. Since\n           we have softmasks embedded in softmasks */\n        ctx->smask_blend = true;\n    }\n    if_debug1m('v', ctx->memory, \"[v]pop buf, idle=%d\\n\", tos->idle);\n    pdf14_buf_free(tos, ctx->memory);\n    return 0;\n}",
+            1046
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "base/gdevp14.c",
+            "pdf14_pop_transparency_group",
+            "static\tint /* <=== pdf14_pop_transparency_group */ \npdf14_pop_transparency_group(gs_gstate *pgs, pdf14_ctx *ctx,\n    const pdf14_nonseparable_blending_procs_t * pblend_procs,\n    int tos_num_color_comp, cmm_profile_t *curr_icc_profile, gx_device *dev)\n{\n    pdf14_buf *tos = ctx->stack;\n    pdf14_buf *nos = tos->saved;\n    pdf14_mask_t *mask_stack = tos->mask_stack;\n    pdf14_buf *maskbuf;\n    int x0, x1, y0, y1;\n    byte *new_data_buf = NULL;\n    int num_noncolor_planes, new_num_planes;\n    int num_cols, num_rows, nos_num_color_comp;\n    bool icc_match;\n    gsicc_rendering_param_t rendering_params;\n    gsicc_link_t *icc_link;\n    gsicc_bufferdesc_t input_buff_desc;\n    gsicc_bufferdesc_t output_buff_desc;\n    pdf14_device *pdev = (pdf14_device *)dev;\n    bool overprint = pdev->overprint;\n    gx_color_index drawn_comps = pdev->drawn_comps;\n    bool nonicc_conversion = true;\n\n    nos_num_color_comp = nos->parent_color_info_procs->num_components - nos->num_spots;\n    tos_num_color_comp = tos_num_color_comp - tos->num_spots;\n\n#ifdef DEBUG\n    pdf14_debug_mask_stack_state(ctx);\n#endif\n    if (mask_stack == NULL) {\n        maskbuf = NULL;\n    } else {\n        maskbuf = mask_stack->rc_mask->mask_buf;\n    }\n    if (nos == NULL)\n        return_error(gs_error_rangecheck);\n    /* Sanitise the dirty rectangles, in case some of the drawing routines\n     * have made them overly large. */\n    rect_intersect(tos->dirty, tos->rect);\n    rect_intersect(nos->dirty, nos->rect);\n    /* dirty = the marked bbox. rect = the entire bounds of the buffer. */\n    /* Everything marked on tos that fits onto nos needs to be merged down. */\n    y0 = max(tos->dirty.p.y, nos->rect.p.y);\n    y1 = min(tos->dirty.q.y, nos->rect.q.y);\n    x0 = max(tos->dirty.p.x, nos->rect.p.x);\n    x1 = min(tos->dirty.q.x, nos->rect.q.x);\n    if (ctx->mask_stack) {\n        /* This can occur when we have a situation where we are ending out of\n           a group that has internal to it a soft mask and another group.\n           The soft mask left over from the previous trans group pop is put\n           into ctx->masbuf, since it is still active if another trans group\n           push occurs to use it.  If one does not occur, but instead we find\n           ourselves popping from a parent group, then this softmask is no\n           longer needed.  We will rc_decrement and set it to NULL. */\n        rc_decrement(ctx->mask_stack->rc_mask, \"pdf14_pop_transparency_group\");\n        if (ctx->mask_stack->rc_mask == NULL ){\n            gs_free_object(ctx->memory, ctx->mask_stack, \"pdf14_pop_transparency_group\");\n        }\n        ctx->mask_stack = NULL;\n    }\n    ctx->mask_stack = mask_stack;  /* Restore the mask saved by pdf14_push_transparency_group. */\n    tos->mask_stack = NULL;        /* Clean the pointer sinse the mask ownership is now passed to ctx. */\n    if (tos->idle)\n        goto exit;\n    if (maskbuf != NULL && maskbuf->data == NULL && maskbuf->alpha == 255)\n        goto exit;\n\n#if RAW_DUMP\n    /* Dump the current buffer to see what we have. */\n    dump_raw_buffer(ctx->stack->rect.q.y-ctx->stack->rect.p.y,\n                ctx->stack->rowstride, ctx->stack->n_planes,\n                ctx->stack->planestride, ctx->stack->rowstride,\n                \"aaTrans_Group_Pop\",ctx->stack->data);\n#endif\n/* Note currently if a pattern space has transparency, the ICC profile is not used\n   for blending purposes.  Instead we rely upon the gray, rgb, or cmyk parent space.\n   This is partially due to the fact that pdf14_pop_transparency_group and\n   pdf14_push_transparnecy_group have no real ICC interaction and those are the\n   operations called in the tile transparency code.  Instead we may want to\n   look at pdf14_begin_transparency_group and pdf14_end_transparency group which\n   is where all the ICC information is handled.  We will return to look at that later */\n    if (nos->parent_color_info_procs->icc_profile != NULL) {\n        icc_match = (nos->parent_color_info_procs->icc_profile->hashcode !=\n                        curr_icc_profile->hashcode);\n    } else {\n        /* Let the other tests make the decision if we need to transform */\n        icc_match = false;\n    }\n    /* If the color spaces are different and we actually did do a swap of\n       the procs for color */\n    if ((nos->parent_color_info_procs->parent_color_mapping_procs != NULL &&\n        nos_num_color_comp != tos_num_color_comp) || icc_match) {\n        if (x0 < x1 && y0 < y1) {\n            /* The NOS blending color space is different than that of the\n               TOS.  It is necessary to transform the TOS buffer data to the\n               color space of the NOS prior to doing the pdf14_compose_group\n               operation.  */\n            num_noncolor_planes = tos->n_planes - tos_num_color_comp;\n            new_num_planes = num_noncolor_planes + nos_num_color_comp;\n\n            /* See if we are doing ICC based conversion */\n            if (nos->parent_color_info_procs->icc_profile != NULL &&\n                curr_icc_profile != NULL) {\n                /* Use the ICC color management for buffer color conversion */\n                /* Define the rendering intents */\n                rendering_params.black_point_comp = gsBLACKPTCOMP_ON;\n                rendering_params.graphics_type_tag = GS_IMAGE_TAG;\n                rendering_params.override_icc = false;\n                rendering_params.preserve_black = gsBKPRESNOTSPECIFIED;\n                rendering_params.rendering_intent = gsPERCEPTUAL;\n                rendering_params.cmm = gsCMM_DEFAULT;\n                /* Request the ICC link for the transform that we will need to use */\n                /* Note that if pgs is NULL we assume the same color space.  This\n                   is due to a call to pop the group from fill_mask when filling\n                   with a mask with transparency.  In that case, the parent\n                   and the child will have the same color space anyway */\n                icc_link = gsicc_get_link_profile(pgs, dev, curr_icc_profile,\n                                    nos->parent_color_info_procs->icc_profile,\n                                    &rendering_params, pgs->memory, false);\n                if (icc_link != NULL) {\n                    /* if problem with link we will do non-ICC approach */\n                    nonicc_conversion = false;\n                    /* If the link is the identity, then we don't need to do\n                       any color conversions */\n                    if ( !(icc_link->is_identity) ) {\n                        /* Before we do any allocations check if we can get away with\n                           reusing the existing buffer if it is the same size ( if it is\n                           smaller go ahead and allocate).  We could reuse it in this\n                           case too.  We need to do a bit of testing to determine what\n                           would be best.  */\n                        /* FIXME: RJW: Could we get away with just color converting\n                         * the area that's actually active (i.e. dirty, not rect)?\n                         */\n                        if(nos_num_color_comp != tos_num_color_comp) {\n                            /* Different size.  We will need to allocate */\n                            new_data_buf = gs_alloc_bytes(ctx->memory,\n                                                tos->planestride * new_num_planes,\n                                                    \"pdf14_pop_transparency_group\");\n                            if (new_data_buf == NULL)\n                                return_error(gs_error_VMerror);\n                            /* Copy over the noncolor planes. */\n                            memcpy(new_data_buf + tos->planestride * nos_num_color_comp,\n                                   tos->data + tos->planestride * tos_num_color_comp,\n                                   tos->planestride * num_noncolor_planes);\n                        } else {\n                            /* In place color conversion! */\n                            new_data_buf = tos->data;\n                        }\n                        /* Set up the buffer descriptors. Note that pdf14 always has\n                           the alpha channels at the back end (last planes).\n                           We will just handle that here and let the CMM know\n                           nothing about it */\n                        num_rows = tos->rect.q.y - tos->rect.p.y;\n                        num_cols = tos->rect.q.x - tos->rect.p.x;\n                        gsicc_init_buffer(&input_buff_desc, tos_num_color_comp, 1,\n                                          false, false, true,\n                                          tos->planestride, tos->rowstride,\n                                          num_rows, num_cols);\n                        gsicc_init_buffer(&output_buff_desc, nos_num_color_comp,\n                                          1, false, false, true, tos->planestride,\n                                          tos->rowstride, num_rows, num_cols);\n                        /* Transform the data. Since the pdf14 device should be\n                           using RGB, CMYK or Gray buffers, this transform\n                           does not need to worry about the cmap procs of\n                           the target device.  Those are handled when we do\n                           the pdf14 put image operation */\n                        (icc_link->procs.map_buffer)(dev, icc_link, &input_buff_desc,\n                                                     &output_buff_desc, tos->data,\n                                                     new_data_buf);\n                    }\n                    /* Release the link */\n                    gsicc_release_link(icc_link);\n                    /* free the old object if the color spaces were different sizes */\n                    if(!(icc_link->is_identity) &&\n                        nos_num_color_comp != tos_num_color_comp) {\n                        gs_free_object(ctx->memory, tos->data,\n                            \"pdf14_pop_transparency_group\");\n                        tos->data = new_data_buf;\n                    }\n                }\n            }\n            if (nonicc_conversion) {\n                /* Non ICC based transform */\n                new_data_buf = gs_alloc_bytes(ctx->memory,\n                                    tos->planestride * new_num_planes,\n                                    \"pdf14_pop_transparency_group\");\n                if (new_data_buf == NULL)\n                    return_error(gs_error_VMerror);\n                gs_transform_color_buffer_generic(tos->data, tos->rowstride,\n                            tos->planestride, tos_num_color_comp, tos->rect,\n                            new_data_buf, nos_num_color_comp, num_noncolor_planes);\n                /* Free the old object */\n                gs_free_object(ctx->memory, tos->data,\n                                \"pdf14_pop_transparency_group\");\n                 tos->data = new_data_buf;\n            }\n             /* Adjust the plane and channel size now */\n             tos->n_chan = nos->n_chan;\n             tos->n_planes = nos->n_planes;\n#if RAW_DUMP\n            /* Dump the current buffer to see what we have. */\n            dump_raw_buffer(ctx->stack->rect.q.y-ctx->stack->rect.p.y,\n                            ctx->stack->rowstride, ctx->stack->n_chan,\n                            ctx->stack->planestride, ctx->stack->rowstride,\n                            \"aCMTrans_Group_ColorConv\",ctx->stack->data);\n#endif\n             /* compose. never do overprint in this case */\n            pdf14_compose_group(tos, nos, maskbuf, x0, x1, y0, y1, nos->n_chan,\n                 nos->parent_color_info_procs->isadditive,\n                 nos->parent_color_info_procs->parent_blending_procs,\n                 false, drawn_comps, ctx->memory, dev);\n        }\n    } else {\n        /* Group color spaces are the same.  No color conversions needed */\n        if (x0 < x1 && y0 < y1)\n            pdf14_compose_group(tos, nos, maskbuf, x0, x1, y0, y1, nos->n_chan,\n                                ctx->additive, pblend_procs, overprint,\n                                drawn_comps, ctx->memory, dev);\n    }\nexit:\n    ctx->stack = nos;\n    /* We want to detect the cases where we have luminosity soft masks embedded\n       within one another.  The \"alpha\" channel really needs to be merged into\n       the luminosity channel in this case.  This will occur during the mask pop */\n    if (ctx->smask_depth > 0 && maskbuf != NULL) {\n        /* Set the trigger so that we will blend if not alpha. Since\n           we have softmasks embedded in softmasks */\n        ctx->smask_blend = true;\n    }\n    if_debug1m('v', ctx->memory, \"[v]pop buf, idle=%d\\n\", tos->idle);\n    pdf14_buf_free(tos, ctx->memory);\n    return 0;\n}",
+            1046
+        ]
+    ]
+}

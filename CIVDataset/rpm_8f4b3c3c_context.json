@@ -1,0 +1,529 @@
+{
+    "calleeMethods": [
+        [
+            "lib/header.c",
+            "REGION_TAG_TYPE",
+            "#define\tREGION_TAG_TYPE\t\tRPM_BIN_TYPE /* <=== lib/header.c:115:115:REGION_TAG_TYPE:0 */ ",
+            3
+        ],
+        [
+            "lib/header.c",
+            "hdrchkRange",
+            "#define hdrchkRange(_dl, _off)\t\t((_off) < 0 || (_off) > (_dl)) /* <=== lib/header.c:160:160:hdrchkRange:2 */ ",
+            1
+        ],
+        [
+            "lib/header.c",
+            "hdrchkTagType",
+            "static int hdrchkTagType(rpm_tag_t tag, rpm_tagtype_t type) /* <=== hdrchkTagType */ \n{\n    rpmTagType t = rpmTagGetTagType(tag);\n    if (t == type)\n\treturn 0;\n\n    /* Permit unknown tags for forward compatibility */\n    if (t == RPM_NULL_TYPE)\n\treturn 0;\n\n    /* Some string tags harmlessly disagree on the exact type */\n    if (rpmTagGetClass(tag) == RPM_STRING_CLASS &&\n\t    (rpmTagTypeGetClass(type) == RPM_STRING_CLASS))\n\treturn 0;\n\n    /* Known tag with mismatching type, bad bad bad. */\n    return 1;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "REGION_TAG_COUNT",
+            "#define\tREGION_TAG_COUNT\tsizeof(struct entryInfo_s) /* <=== lib/header.c:116:116:REGION_TAG_COUNT:0 */ ",
+            3
+        ],
+        [
+            "lib/header.c",
+            "REGION_TAG_COUNT",
+            "#define\tREGION_TAG_COUNT\tsizeof(struct entryInfo_s) /* <=== lib/header.c:117:117:REGION_TAG_COUNT:0 */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "dataLength",
+            "static int dataLength(rpm_tagtype_t type, rpm_constdata_t p, rpm_count_t count, /* <=== dataLength */ \n\t\t\t int onDisk, rpm_constdata_t pend)\n{\n    const char * s = p;\n    const char * se = pend;\n    int length = 0;\n\n    switch (type) {\n    case RPM_STRING_TYPE:\n\tif (count != 1)\n\t    return -1;\n\tlength = strtaglen(s, 1, se);\n\tbreak;\n\n    case RPM_STRING_ARRAY_TYPE:\n    case RPM_I18NSTRING_TYPE:\n\t/* These are like RPM_STRING_TYPE, except they're *always* an array */\n\t/* Compute sum of length of all strings, including nul terminators */\n\n\tif (onDisk) {\n\t    length = strtaglen(s, count, se);\n\t} else {\n\t    const char ** av = (const char **)p;\n\t    while (count--) {\n\t\t/* add one for null termination */\n\t\tlength += strlen(*av++) + 1;\n\t    }\n\t}\n\tbreak;\n\n    default:\n\tif (typeSizes[type] == -1)\n\t    return -1;\n\tlength = typeSizes[(type & 0xf)] * count;\n\tif (length < 0 || (se && (s + length) > se))\n\t    return -1;\n\tbreak;\n    }\n\n    return length;\n}",
+            3
+        ],
+        [
+            "lib/header.c",
+            "hdrblobVerifyRegion",
+            "static rpmRC hdrblobVerifyRegion(rpmTagVal regionTag, int exact_size, /* <=== hdrblobVerifyRegion */ \n\t\t\thdrblob blob, char **buf)\n{\n    rpmRC rc = RPMRC_FAIL;\n    struct entryInfo_s trailer, einfo;\n    unsigned char * regionEnd = NULL;\n\n    /* Check that we have at least on tag */\n    if (blob->il < 1) {\n\trasprintf(buf, _(\"region: no tags\"));\n\tgoto exit;\n    }\n\n    /* Convert the 1st tag element. */\n    ei2h(blob->pe, &einfo);\n\n    if (!regionTag && (einfo.tag == RPMTAG_HEADERSIGNATURES ||\n\t\t       einfo.tag == RPMTAG_HEADERIMMUTABLE ||\n\t\t       einfo.tag == RPMTAG_HEADERIMAGE)) {\n\tregionTag = einfo.tag;\n    }\n\n    /* Is there an immutable header region tag? */\n    if (!(einfo.tag == regionTag)) {\n\trc = RPMRC_NOTFOUND;\n\tgoto exit;\n    }\n\n    /* Is the region tag sane? */\n    if (!(einfo.type == REGION_TAG_TYPE && einfo.count == REGION_TAG_COUNT)) {\n\trasprintf(buf,\n\t\t_(\"region tag: BAD, tag %d type %d offset %d count %d\"),\n\t\teinfo.tag, einfo.type, einfo.offset, einfo.count);\n\tgoto exit;\n    }\n\n    /* Is the trailer within the data area? */\n    if (hdrchkRange(blob->dl, einfo.offset + REGION_TAG_COUNT)) {\n\trasprintf(buf,\n\t\t_(\"region offset: BAD, tag %d type %d offset %d count %d\"),\n\t\teinfo.tag, einfo.type, einfo.offset, einfo.count);\n\tgoto exit;\n    }\n\n    /* Is there an immutable header region tag trailer? */\n    memset(&trailer, 0, sizeof(trailer));\n    regionEnd = blob->dataStart + einfo.offset;\n    /* regionEnd is not guaranteed to be aligned */\n    (void) memcpy(&trailer, regionEnd, REGION_TAG_COUNT);\n    blob->rdl = einfo.offset + REGION_TAG_COUNT;\n\n    ei2h(&trailer, &einfo);\n    /* Some old packages have HEADERIMAGE in signature region trailer, fix up */\n    if (regionTag == RPMTAG_HEADERSIGNATURES && einfo.tag == RPMTAG_HEADERIMAGE)\n\teinfo.tag = RPMTAG_HEADERSIGNATURES;\n    if (!(einfo.tag == regionTag &&\n\t  einfo.type == REGION_TAG_TYPE && einfo.count == REGION_TAG_COUNT))\n    {\n\trasprintf(buf,\n\t\t_(\"region trailer: BAD, tag %d type %d offset %d count %d\"),\n\t\teinfo.tag, einfo.type, einfo.offset, einfo.count);\n\tgoto exit;\n    }\n\n    /*\n     * Trailer offset is negative and has a special meaning.  Be sure to negate\n     * *after* the division, so the negation cannot overflow.  The parentheses\n     * around the division are required!\n     *\n     * Thankfully, the modulus operator works fine on negative numbers.\n     */\n    blob->ril = -(einfo.offset/sizeof(*blob->pe));\n    /* Does the region actually fit within the header? */\n    if ((einfo.offset % sizeof(*blob->pe)) || hdrchkRange(blob->il, blob->ril) ||\n\t\t\t\t\thdrchkRange(blob->dl, blob->rdl)) {\n\trasprintf(buf, _(\"region %d size: BAD, ril %d il %d rdl %d dl %d\"),\n\t\t\tregionTag, blob->ril, blob->il, blob->rdl, blob->dl);\n\tgoto exit;\n    }\n\n    /* In package files region size is expected to match header size. */\n    if (exact_size && !(blob->il == blob->ril && blob->dl == blob->rdl)) {\n\trasprintf(buf,\n\t\t_(\"region %d: tag number mismatch il %d ril %d dl %d rdl %d\\n\"),\n\t\tregionTag, blob->il, blob->ril, blob->dl, blob->rdl);\n\tgoto exit;\n    }\n\n    blob->regionTag = regionTag;\n    rc = RPMRC_OK;\n\nexit:\n    return rc;\n}",
+            1
+        ],
+        [
+            "system.h",
+            "_",
+            "# define _(Text) Text /* <=== system.h:96:96:_:1 */ ",
+            1
+        ],
+        [
+            "lib/header.c",
+            "HEADER_TAGS_MAX",
+            "#define HEADER_TAGS_MAX 0x0000ffff /* <=== lib/header.c:123:123:HEADER_TAGS_MAX:0 */ ",
+            1
+        ],
+        [
+            "lib/header.c",
+            "hdrchkAlign",
+            "#define hdrchkAlign(_type, _off)\t((_off) & (typeAlign[_type]-1)) /* <=== lib/header.c:154:154:hdrchkAlign:2 */ ",
+            3
+        ],
+        [
+            "lib/header.c",
+            "hdrchkCount",
+            "#define hdrchkCount(_count) ((_count) == 0) /* <=== lib/header.c:137:137:hdrchkCount:1 */ ",
+            2
+        ],
+        [
+            "rpmio/rpmstring.c",
+            "rvasprintf",
+            "int rvasprintf(char **strp, const char *fmt, va_list ap) /* <=== rvasprintf */ \n{\n    int n;\n    char * p = NULL;\n    va_list aq;\n  \n    if (strp == NULL) \n\treturn -1;\n\n    va_copy(aq, ap);\n    n = vsnprintf(NULL, 0, fmt, aq);\n    va_end(aq);\n\n    if (n >= -1) {\n\tsize_t nb = n + 1;\n\tp = xmalloc(nb);\n\tva_copy(aq, ap);\n        n = vsnprintf(p, nb, fmt, aq);\n\tva_end(aq);\n    } \n    *strp = p;\n    return n;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "hdrchkAlign",
+            "#define hdrchkAlign(_type, _off)\t((_off) & (typeAlign[_type]-1)) /* <=== lib/header.c:155:155:hdrchkAlign:2 */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "hdrblobVerifyInfo",
+            "static rpmRC hdrblobVerifyInfo(hdrblob blob, char **emsg) /* <=== hdrblobVerifyInfo */ \n{\n    struct entryInfo_s info;\n    int i, len = 0;\n    int32_t end = 0;\n    const char *ds = (const char *) blob->dataStart;\n    int32_t il = (blob->regionTag) ? blob->il-1 : blob->il;\n    entryInfo pe = (blob->regionTag) ? blob->pe+1 : blob->pe;\n    /* Can't typecheck signature header tags, sigh */\n    int typechk = (blob->regionTag == RPMTAG_HEADERIMMUTABLE ||\n\t\t   blob->regionTag == RPMTAG_HEADERIMAGE);\n\n    for (i = 0; i < il; i++) {\n\tei2h(&pe[i], &info);\n\n\t/* Previous data must not overlap */\n\tif (end > info.offset)\n\t    goto err;\n\n\tif (hdrchkTag(info.tag))\n\t    goto err;\n\tif (hdrchkType(info.type))\n\t    goto err;\n\tif (hdrchkCount(info.count))\n\t    goto err;\n\tif (hdrchkAlign(info.type, info.offset))\n\t    goto err;\n\tif (hdrchkRange(blob->dl, info.offset))\n\t    goto err;\n\tif (typechk && hdrchkTagType(info.tag, info.type))\n\t    goto err;\n\n\t/* Verify the data actually fits */\n\tlen = dataLength(info.type, ds + info.offset,\n\t\t\t info.count, 1, ds + blob->dl);\n\tif (hdrchkRange(blob->dl - info.offset, len))\n\t    goto err;\n\tend = info.offset + len;\n\tif (blob->regionTag) {\n\t    /*\n\t     * Verify that the data does not overlap the region trailer.  The\n\t     * region trailer is skipped by this loop, so the other checks\n\t     * don’t catch this case.\n\t     */\n\t    if (end > blob->rdl - REGION_TAG_COUNT && info.offset < blob->rdl)\n\t\tgoto err;\n\t}\n    }\n    return 0; /* Everything ok */\n\nerr:\n    if (emsg) {\n\trasprintf(emsg,\n\t\t  _(\"tag[%d]: BAD, tag %d type %d offset %d count %d len %d\"),\n\t\t    i, info.tag, info.type, info.offset, info.count, len);\n    }\n    return i + 1;\n}",
+            2
+        ],
+        [
+            "lib/header_internal.h",
+            "ei2h",
+            "static inline void ei2h(const struct entryInfo_s *pe, struct entryInfo_s *info) /* <=== ei2h */ \n{\n    info->tag = ntohl(pe->tag);\n    info->type = ntohl(pe->type);\n    info->offset = ntohl(pe->offset);\n    info->count = ntohl(pe->count);\n}",
+            3
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rrealloc",
+            "void * rrealloc(void *ptr, size_t size); /* <=== rrealloc */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "RETRY_ERROR",
+            "#define RETRY_ERROR(_err) \\ /* <=== lib/header.c:1779:1780:RETRY_ERROR:1 */ \n    ((_err) == EINTR || (_err) == EAGAIN || (_err) == EWOULDBLOCK)",
+            2
+        ],
+        [
+            "lib/header.c",
+            "HEADER_TAGS_MAX",
+            "#define HEADER_TAGS_MAX 0x0000ffff /* <=== lib/header.c:122:122:HEADER_TAGS_MAX:0 */ ",
+            1
+        ],
+        [
+            "lib/header.c",
+            "HEADER_DATA_MAX",
+            "#define HEADER_DATA_MAX 0x0fffffff /* <=== lib/header.c:149:149:HEADER_DATA_MAX:0 */ ",
+            1
+        ],
+        [
+            "lib/header.c",
+            "RETRY_ERROR",
+            "#define RETRY_ERROR(_err) \\ /* <=== lib/header.c:1780:1781:RETRY_ERROR:1 */ \n    ((_err) == EINTR || (_err) == EAGAIN || (_err) == EWOULDBLOCK)",
+            2
+        ],
+        [
+            "lib/header.c",
+            "dataLength",
+            "static int dataLength(rpm_tagtype_t type, rpm_constdata_t p, rpm_count_t count, /* <=== dataLength */ \n\t\t\t int onDisk, rpm_constdata_t pend)\n{\n    const char * s = p;\n    const char * se = pend;\n    int length = 0;\n\n    switch (type) {\n    case RPM_STRING_TYPE:\n\tif (count != 1)\n\t    return -1;\n\tlength = strtaglen(s, 1, se);\n\tbreak;\n\n    case RPM_STRING_ARRAY_TYPE:\n    case RPM_I18NSTRING_TYPE:\n\t/* These are like RPM_STRING_TYPE, except they're *always* an array */\n\t/* Compute sum of length of all strings, including nul terminators */\n\n\tif (onDisk) {\n\t    length = strtaglen(s, count, se);\n\t} else {\n\t    const char ** av = (const char **)p;\n\t    while (count--) {\n\t\t/* add one for null termination */\n\t\tlength += strlen(*av++) + 1;\n\t    }\n\t}\n\tbreak;\n\n    default:\n\tif (typeSizes[type] == -1)\n\t    return -1;\n\tlength = typeSizes[(type & 0xf)] * count;\n\tif (length < 0 || (se && (s + length) > se))\n\t    return -1;\n\tbreak;\n    }\n\n    return length;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "HEADER_DATA_MAX",
+            "#define HEADER_DATA_MAX 0x0fffffff /* <=== lib/header.c:148:148:HEADER_DATA_MAX:0 */ ",
+            1
+        ],
+        [
+            "system.h",
+            "xmalloc",
+            "#define xmalloc(_size) rmalloc((_size)) /* <=== system.h:66:66:xmalloc:1 */ ",
+            1
+        ],
+        [
+            "lib/header.c",
+            "hdrchkType",
+            "#define hdrchkType(_type) ((_type) < RPM_MIN_TYPE || (_type) > RPM_MAX_TYPE) /* <=== lib/header.c:141:141:hdrchkType:1 */ ",
+            3
+        ],
+        [
+            "lib/header.c",
+            "hdrchkTag",
+            "#define hdrchkTag(_tag) ((_tag) < HEADER_I18NTABLE) /* <=== lib/header.c:129:129:hdrchkTag:1 */ ",
+            3
+        ],
+        [
+            "rpmio/rpmstring.c",
+            "rasprintf",
+            "int rasprintf(char **strp, const char *fmt, ...) /* <=== rasprintf */ \n{\n    int n;\n    va_list ap;\n\n    va_start(ap, fmt);\n    n = rvasprintf(strp, fmt, ap);\n    va_end(ap);\n\n    return n;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmutil.h",
+            "rmalloc",
+            "void * rmalloc(size_t size); /* <=== rmalloc */ ",
+            1
+        ],
+        [
+            "lib/header.c",
+            "hdrblobVerifyInfo",
+            "static rpmRC hdrblobVerifyInfo(hdrblob blob, char **emsg) /* <=== hdrblobVerifyInfo */ \n{\n    struct entryInfo_s info;\n    int i, len = 0;\n    int32_t end = 0;\n    const char *ds = (const char *) blob->dataStart;\n    int32_t il = (blob->regionTag) ? blob->il-1 : blob->il;\n    entryInfo pe = (blob->regionTag) ? blob->pe+1 : blob->pe;\n    /* Can't typecheck signature header tags, sigh */\n    int typechk = (blob->regionTag == RPMTAG_HEADERIMMUTABLE ||\n\t\t   blob->regionTag == RPMTAG_HEADERIMAGE);\n\n    for (i = 0; i < il; i++) {\n\tei2h(&pe[i], &info);\n\n\t/* Previous data must not overlap */\n\tif (end > info.offset)\n\t    goto err;\n\n\tif (hdrchkTag(info.tag))\n\t    goto err;\n\tif (hdrchkType(info.type))\n\t    goto err;\n\tif (hdrchkCount(info.count))\n\t    goto err;\n\tif (hdrchkAlign(info.type, info.offset))\n\t    goto err;\n\tif (hdrchkRange(blob->dl, info.offset))\n\t    goto err;\n\tif (typechk && hdrchkTagType(info.tag, info.type))\n\t    goto err;\n\n\t/* Verify the data actually fits */\n\tlen = dataLength(info.type, ds + info.offset,\n\t\t\t info.count, 1, ds + blob->dl);\n\tif (hdrchkRange(blob->dl - info.offset, len))\n\t    goto err;\n\tend = info.offset + len;\n\tif (blob->regionTag) {\n\t    /*\n\t     * Verify that the data does not overlap the region trailer.  The\n\t     * region trailer is skipped by this loop, so the other checks\n\t     * don’t catch this case.\n\t     */\n\t    if (end > blob->rdl - REGION_TAG_COUNT && info.offset < blob->rdl)\n\t\tgoto err;\n\t}\n    }\n    return 0; /* Everything ok */\n\nerr:\n    if (emsg) {\n\trasprintf(emsg,\n\t\t  _(\"tag[%d]: BAD, tag %d type %d offset %d count %d len %d\"),\n\t\t    i, info.tag, info.type, info.offset, info.count, len);\n    }\n    return i + 1;\n}",
+            1
+        ],
+        [
+            "lib/header.c",
+            "hdrchkTag",
+            "#define hdrchkTag(_tag) ((_tag) < HEADER_I18NTABLE) /* <=== lib/header.c:130:130:hdrchkTag:1 */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "hdrchkTagType",
+            "static int hdrchkTagType(rpm_tag_t tag, rpm_tagtype_t type) /* <=== hdrchkTagType */ \n{\n    rpmTagType t = rpmTagGetTagType(tag);\n    if (t == type)\n\treturn 0;\n\n    /* Permit unknown tags for forward compatibility */\n    if (t == RPM_NULL_TYPE)\n\treturn 0;\n\n    /* Some string tags harmlessly disagree on the exact type */\n    if (rpmTagGetClass(tag) == RPM_STRING_CLASS &&\n\t    (rpmTagTypeGetClass(type) == RPM_STRING_CLASS))\n\treturn 0;\n\n    /* Known tag with mismatching type, bad bad bad. */\n    return 1;\n}",
+            3
+        ],
+        [
+            "lib/header_internal.h",
+            "ei2h",
+            "static inline void ei2h(const struct entryInfo_s *pe, struct entryInfo_s *info) /* <=== ei2h */ \n{\n    info->tag = ntohl(pe->tag);\n    info->type = ntohl(pe->type);\n    info->offset = ntohl(pe->offset);\n    info->count = ntohl(pe->count);\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "hdrchkType",
+            "#define hdrchkType(_type) ((_type) < RPM_MIN_TYPE || (_type) > RPM_MAX_TYPE) /* <=== lib/header.c:142:142:hdrchkType:1 */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "hdrblobVerifyRegion",
+            "static rpmRC hdrblobVerifyRegion(rpmTagVal regionTag, int exact_size, /* <=== hdrblobVerifyRegion */ \n\t\t\thdrblob blob, char **buf)\n{\n    rpmRC rc = RPMRC_FAIL;\n    struct entryInfo_s trailer, einfo;\n    unsigned char * regionEnd = NULL;\n\n    /* Check that we have at least on tag */\n    if (blob->il < 1) {\n\trasprintf(buf, _(\"region: no tags\"));\n\tgoto exit;\n    }\n\n    /* Convert the 1st tag element. */\n    ei2h(blob->pe, &einfo);\n\n    if (!regionTag && (einfo.tag == RPMTAG_HEADERSIGNATURES ||\n\t\t       einfo.tag == RPMTAG_HEADERIMMUTABLE ||\n\t\t       einfo.tag == RPMTAG_HEADERIMAGE)) {\n\tregionTag = einfo.tag;\n    }\n\n    /* Is there an immutable header region tag? */\n    if (!(einfo.tag == regionTag)) {\n\trc = RPMRC_NOTFOUND;\n\tgoto exit;\n    }\n\n    /* Is the region tag sane? */\n    if (!(einfo.type == REGION_TAG_TYPE && einfo.count == REGION_TAG_COUNT)) {\n\trasprintf(buf,\n\t\t_(\"region tag: BAD, tag %d type %d offset %d count %d\"),\n\t\teinfo.tag, einfo.type, einfo.offset, einfo.count);\n\tgoto exit;\n    }\n\n    /* Is the trailer within the data area? */\n    if (hdrchkRange(blob->dl, einfo.offset + REGION_TAG_COUNT)) {\n\trasprintf(buf,\n\t\t_(\"region offset: BAD, tag %d type %d offset %d count %d\"),\n\t\teinfo.tag, einfo.type, einfo.offset, einfo.count);\n\tgoto exit;\n    }\n\n    /* Is there an immutable header region tag trailer? */\n    memset(&trailer, 0, sizeof(trailer));\n    regionEnd = blob->dataStart + einfo.offset;\n    /* regionEnd is not guaranteed to be aligned */\n    (void) memcpy(&trailer, regionEnd, REGION_TAG_COUNT);\n    blob->rdl = einfo.offset + REGION_TAG_COUNT;\n\n    ei2h(&trailer, &einfo);\n    /* Some old packages have HEADERIMAGE in signature region trailer, fix up */\n    if (regionTag == RPMTAG_HEADERSIGNATURES && einfo.tag == RPMTAG_HEADERIMAGE)\n\teinfo.tag = RPMTAG_HEADERSIGNATURES;\n    if (!(einfo.tag == regionTag &&\n\t  einfo.type == REGION_TAG_TYPE && einfo.count == REGION_TAG_COUNT))\n    {\n\trasprintf(buf,\n\t\t_(\"region trailer: BAD, tag %d type %d offset %d count %d\"),\n\t\teinfo.tag, einfo.type, einfo.offset, einfo.count);\n\tgoto exit;\n    }\n\n    /*\n     * Trailer offset is negative and has a special meaning.  Be sure to negate\n     * *after* the division, so the negation cannot overflow.  The parentheses\n     * around the division are required!\n     *\n     * Thankfully, the modulus operator works fine on negative numbers.\n     */\n    blob->ril = -(einfo.offset/sizeof(*blob->pe));\n    /* Does the region actually fit within the header? */\n    if ((einfo.offset % sizeof(*blob->pe)) || hdrchkRange(blob->il, blob->ril) ||\n\t\t\t\t\thdrchkRange(blob->dl, blob->rdl)) {\n\trasprintf(buf, _(\"region %d size: BAD, ril %d il %d rdl %d dl %d\"),\n\t\t\tregionTag, blob->ril, blob->il, blob->rdl, blob->dl);\n\tgoto exit;\n    }\n\n    /* In package files region size is expected to match header size. */\n    if (exact_size && !(blob->il == blob->ril && blob->dl == blob->rdl)) {\n\trasprintf(buf,\n\t\t_(\"region %d: tag number mismatch il %d ril %d dl %d rdl %d\\n\"),\n\t\tregionTag, blob->il, blob->ril, blob->dl, blob->rdl);\n\tgoto exit;\n    }\n\n    blob->regionTag = regionTag;\n    rc = RPMRC_OK;\n\nexit:\n    return rc;\n}",
+            2
+        ],
+        [
+            "lib/header.c",
+            "Freadall",
+            "ssize_t Freadall(FD_t fd, void * buf, ssize_t size) /* <=== Freadall */ \n{\n    ssize_t total = 0;\n    ssize_t nb = 0;\n    char * bufp = buf;\n\n    while (total < size) {\n\tnb = Fread(bufp, 1, size - total, fd);\n\n\tif (nb == 0 || (nb < 0 && !RETRY_ERROR(errno))) {\n\t    total = nb;\n\t    break;\n\t}\n\n\tif (nb > 0) {\n\t    bufp += nb;\n\t    total += nb;\n\t}\n    }\n\n    return total;\n}",
+            1
+        ],
+        [
+            "rpmio/rpmstring.c",
+            "rstrscat",
+            "char *rstrscat(char **dest, const char *arg, ...) /* <=== rstrscat */ \n{\n    va_list ap;\n    size_t arg_size, dst_size;\n    const char *s;\n    char *dst, *p;\n\n    dst = dest ? *dest : NULL;\n\n    if ( arg == NULL ) {\n        return dst;\n    }\n\n    va_start(ap, arg);\n    for (arg_size=0, s=arg; s; s = va_arg(ap, const char *))\n        arg_size += strlen(s);\n    va_end(ap);\n\n    dst_size = dst ? strlen(dst) : 0;\n    dst = xrealloc(dst, dst_size+arg_size+1);    /* include '\\0' */\n    p = &dst[dst_size];\n\n    va_start(ap, arg);\n    for (s = arg; s; s = va_arg(ap, const char *)) {\n        size_t size = strlen(s);\n        memmove(p, s, size);\n        p += size;\n    }\n    va_end(ap);\n    *p = '\\0';\n\n    if ( dest ) {\n        *dest = dst;\n    }\n\n    return dst;\n}",
+            1
+        ],
+        [
+            "lib/header.c",
+            "hdrchkCount",
+            "#define hdrchkCount(_count) ((_count) == 0) /* <=== lib/header.c:136:136:hdrchkCount:1 */ ",
+            3
+        ],
+        [
+            "lib/header.c",
+            "strtaglen",
+            "static inline int strtaglen(const char *str, rpm_count_t c, const char *end) /* <=== strtaglen */ \n{\n    const char *start = str;\n    const char *s = NULL;\n    int len = -1; /* assume failure */\n\n    if (end) {\n\twhile (end > start && (s = memchr(start, '\\0', end-start))) {\n\t    if (--c == 0)\n\t\tbreak;\n\t    start = s + 1;\n\t}\n    } else {\n\twhile ((s = strchr(start, '\\0'))) {\n\t    if (--c == 0)\n\t\tbreak;\n\t    start = s + 1;\n\t}\n    }\n\n    if (s != NULL && c == 0)\n\tlen = s - str + 1;\n\n    return len;\n}",
+            3
+        ],
+        [
+            "system.h",
+            "xrealloc",
+            "#define xrealloc(_ptr, _size) rrealloc((_ptr), (_size)) /* <=== system.h:68:68:xrealloc:2 */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "REGION_TAG_TYPE",
+            "#define\tREGION_TAG_TYPE\t\tRPM_BIN_TYPE /* <=== lib/header.c:116:116:REGION_TAG_TYPE:0 */ ",
+            2
+        ],
+        [
+            "lib/header.c",
+            "hdrchkRange",
+            "#define hdrchkRange(_dl, _off)\t\t((_off) < 0 || (_off) > (_dl)) /* <=== lib/header.c:159:159:hdrchkRange:2 */ ",
+            1
+        ]
+    ],
+    "globalVars": [
+        "const size_t headerMaxbytes",
+        "const unsigned char[8] rpm_header_magic"
+    ],
+    "importContext": [
+        "#include \"lib/misc.h\"",
+        "#include <errno.h>",
+        "#include <netdb.h>",
+        "#include <rpm/rpmstring.h>",
+        "#include <rpm/rpmtypes.h>",
+        "#include \"system.h\"",
+        "#include <inttypes.h>",
+        "#include \"lib/header_internal.h\"",
+        "#include \"debug.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct hdrblob_s",
+            "hdrblob_s"
+        ],
+        [
+            "typedef struct hdrblob_s * hdrblob;",
+            "hdrblob"
+        ],
+        [
+            "struct entryInfo_s {\n    rpm_tag_t tag;\t\t/*!< Tag identifier. */\n    rpm_tagtype_t type;\t\t/*!< Tag data type. */\n    int32_t offset;\t\t/*!< Offset into data segment (ondisk only). */\n    rpm_count_t count;\t\t/*!< Number of tag elements. */\n}",
+            "entryInfo_s"
+        ],
+        [
+            "struct hdrblob_s {\n    int32_t *ei;\n    int32_t il;\n    int32_t dl;\n    entryInfo pe;\n    int32_t pvlen;\n    uint8_t *dataStart;\n    uint8_t *dataEnd;\n\n    rpmTagVal regionTag;\n    int32_t ril;\n    int32_t rdl;\n}",
+            "hdrblob_s"
+        ]
+    ],
+    "visitedLines_after": {
+        "lib/header.c": [
+            1915,
+            1916,
+            1917,
+            1918,
+            1919,
+            1920,
+            1921,
+            1922,
+            1924,
+            1926,
+            1928,
+            1930,
+            1932,
+            1935,
+            1937,
+            1938,
+            1939,
+            1947,
+            1948,
+            1949,
+            1953,
+            1954,
+            1957,
+            1958,
+            1959,
+            1960,
+            1961,
+            1962,
+            1963,
+            1964,
+            1965,
+            1966,
+            1967,
+            1968,
+            1969,
+            1972,
+            1973,
+            1974,
+            1975,
+            1976,
+            1977,
+            1978,
+            1982,
+            1983,
+            1985,
+            1986,
+            1987,
+            1988,
+            1989,
+            1990,
+            1991,
+            1992,
+            1993,
+            1996,
+            1997,
+            1999,
+            2000,
+            2001,
+            2002,
+            2004,
+            2005,
+            2006,
+            2007,
+            2011,
+            2012,
+            2013,
+            2014,
+            2017,
+            2018,
+            2019,
+            2020,
+            2021,
+            2024,
+            2025,
+            2026,
+            2030,
+            2034,
+            2037,
+            2040
+        ]
+    },
+    "visitedLines_before": {
+        "lib/header.c": [
+            1915,
+            1917,
+            1918,
+            1919,
+            1923,
+            1925,
+            1926,
+            1927,
+            1928,
+            1930,
+            1931,
+            1932,
+            1935,
+            1936,
+            1938,
+            1940,
+            1941,
+            1945,
+            1946,
+            1947,
+            1948,
+            1950,
+            1951,
+            1952,
+            1953,
+            1954,
+            1956,
+            1957,
+            1958,
+            1959,
+            1960,
+            1961,
+            1962,
+            1963,
+            1966,
+            1967,
+            1968,
+            1969,
+            1970,
+            1971,
+            1972,
+            1976,
+            1977,
+            1979,
+            1980,
+            1981,
+            1982,
+            1983,
+            1984,
+            1985,
+            1986,
+            1987,
+            1990,
+            1991,
+            1993,
+            1995,
+            1996,
+            1998,
+            1999,
+            2000,
+            2001,
+            2002,
+            2003,
+            2004,
+            2005,
+            2006,
+            2007,
+            2008,
+            2011,
+            2012,
+            2013,
+            2017,
+            2021,
+            2024,
+            2027
+        ]
+    },
+    "visitedParams": {
+        "lib/header.c": [
+            [
+                "FD_t fd",
+                "hdrblobRead"
+            ],
+            [
+                "char **emsg",
+                "hdrblobInit"
+            ],
+            [
+                "char **emsg",
+                "hdrblobRead"
+            ],
+            [
+                "char **emsg",
+                "hdrblobVerifyLengths"
+            ],
+            [
+                "const void *uh",
+                "hdrblobInit"
+            ],
+            [
+                "int magic",
+                "hdrblobRead"
+            ],
+            [
+                "rpmTagVal regionTag",
+                "hdrblobInit"
+            ],
+            [
+                "rpmTagVal regionTag",
+                "hdrblobRead"
+            ],
+            [
+                "rpmTagVal regionTag",
+                "hdrblobVerifyLengths"
+            ],
+            [
+                "size_t uc",
+                "hdrblobInit"
+            ],
+            [
+                "struct hdrblob_s *blob",
+                "hdrblobInit"
+            ],
+            [
+                "uint32_t dl",
+                "hdrblobVerifyLengths"
+            ],
+            [
+                "uint32_t il",
+                "hdrblobVerifyLengths"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "lib/header.c",
+            "hdrblobVerifyLengths",
+            "static rpmRC hdrblobVerifyLengths(rpmTagVal regionTag, uint32_t il, uint32_t dl, /* <=== hdrblobVerifyLengths */ \n\t\t\t\t  char **emsg) {\n    uint32_t il_max = HEADER_TAGS_MAX;\n    uint32_t dl_max = HEADER_DATA_MAX;\n    if (regionTag == RPMTAG_HEADERSIGNATURES) {\n\til_max = 32;\n\tdl_max = 64 * 1024 * 1024;\n    }\n    if (hdrchkRange(il_max, il)) {\n\trasprintf(emsg, _(\"hdr tags: BAD, no. of tags(%\" PRIu32 \") out of range\"), il);\n\treturn RPMRC_FAIL;\n    }\n    if (hdrchkRange(dl_max, dl)) {\n\trasprintf(emsg, _(\"hdr data: BAD, no. of bytes(%\" PRIu32 \") out of range\"), dl);\n\treturn RPMRC_FAIL;\n    }\n    return RPMRC_OK;\n}",
+            1916
+        ],
+        [
+            "lib/header.c",
+            "hdrblobRead",
+            "rpmRC hdrblobRead(FD_t fd, int magic, int exact_size, rpmTagVal regionTag, hdrblob blob, char **emsg) /* <=== hdrblobRead */ \n{\n    int32_t block[4];\n    int32_t *bs = (magic != 0) ? &block[0] : &block[2];\n    int blen = (magic != 0) ? sizeof(block) : sizeof(block) / 2;\n    int32_t il;\n    int32_t dl;\n    int32_t * ei = NULL;\n    size_t uc;\n    size_t nb;\n    rpmRC rc = RPMRC_FAIL;\t\t/* assume failure */\n    int xx;\n\n    memset(block, 0, sizeof(block));\n    if ((xx = Freadall(fd, bs, blen)) != blen) {\n\trasprintf(emsg,\n\t\t_(\"hdr size(%d): BAD, read returned %d\"), blen, xx);\n\tgoto exit;\n    }\n    if (magic && memcmp(block, rpm_header_magic, sizeof(rpm_header_magic))) {\n\trasprintf(emsg, _(\"hdr magic: BAD\"));\n\tgoto exit;\n    }\n    il = ntohl(block[2]);\n    dl = ntohl(block[3]);\n    if (hdrblobVerifyLengths(regionTag, il, dl, emsg))\n\tgoto exit;\n\n    nb = (il * sizeof(struct entryInfo_s)) + dl;\n    uc = sizeof(il) + sizeof(dl) + nb;\n    ei = xmalloc(uc);\n    ei[0] = block[2];\n    ei[1] = block[3];\n    if ((xx = Freadall(fd, (char *)&ei[2], nb)) != nb) {\n\trasprintf(emsg, _(\"hdr blob(%zd): BAD, read returned %d\"), nb, xx);\n\tgoto exit;\n    }\n\n    if (regionTag == RPMTAG_HEADERSIGNATURES) {\n\tsize_t sigSize = uc + sizeof(rpm_header_magic);\n\tsize_t pad = (8 - (sigSize % 8)) % 8;\n\tsize_t trc;\n\tif (pad && (trc = Freadall(fd, block, pad)) != pad) {\n\t    rasprintf(emsg, _(\"sigh pad(%zd): BAD, read %zd bytes\"), pad, trc);\n\t    goto exit;\n\t}\n    }\n\n    rc = hdrblobInit(ei, uc, regionTag, exact_size, blob, emsg);\n\nexit:\n    if (rc != RPMRC_OK) {\n\tfree(ei);\n\tblob->ei = NULL;\n\tif (emsg && *emsg && regionTag == RPMTAG_HEADERSIGNATURES) {\n\t    /* rstrscat() cannot handle overlap even if it claims so */\n\t    char *tmp = rstrscat(NULL, _(\"signature \"), *emsg, NULL);\n\t    free(*emsg);\n\t    *emsg = tmp;\n\t}\n    }\n\n    return rc;\n}",
+            1935
+        ],
+        [
+            "lib/header.c",
+            "hdrblobInit",
+            "rpmRC hdrblobInit(const void *uh, size_t uc, /* <=== hdrblobInit */ \n\t\trpmTagVal regionTag, int exact_size,\n\t\tstruct hdrblob_s *blob, char **emsg)\n{\n    rpmRC rc = RPMRC_FAIL;\n    memset(blob, 0, sizeof(*blob));\n    if (uc && uc < 8) {\n\trasprintf(emsg, _(\"hdr length: BAD\"));\n\tgoto exit;\n    }\n\n    blob->ei = (int32_t *) uh; /* discards const */\n    blob->il = ntohl((uint32_t)(blob->ei[0]));\n    blob->dl = ntohl((uint32_t)(blob->ei[1]));\n    if (hdrblobVerifyLengths(regionTag, blob->il, blob->dl, emsg) != RPMRC_OK)\n\tgoto exit;\n\n    blob->pe = (entryInfo) &(blob->ei[2]);\n    blob->pvlen = sizeof(blob->il) + sizeof(blob->dl) +\n\t\t  (blob->il * sizeof(*blob->pe)) + blob->dl;\n    blob->dataStart = (uint8_t *) (blob->pe + blob->il);\n    blob->dataEnd = blob->dataStart + blob->dl;\n\n    /* Is the blob the right size? */\n    if (blob->pvlen >= headerMaxbytes || (uc && blob->pvlen != uc)) {\n\trasprintf(emsg, _(\"blob size(%d): BAD, 8 + 16 * il(%d) + dl(%d)\"),\n\t\t\tblob->pvlen, blob->il, blob->dl);\n\tgoto exit;\n    }\n\n    if (hdrblobVerifyRegion(regionTag, exact_size, blob, emsg) == RPMRC_FAIL)\n\tgoto exit;\n\n    /* Sanity check the rest of the header structure. */\n    if (hdrblobVerifyInfo(blob, emsg))\n\tgoto exit;\n\n    rc = RPMRC_OK;\n\nexit:\n    return rc;\n}",
+            2000
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "lib/header.c",
+            "hdrblobRead",
+            "rpmRC hdrblobRead(FD_t fd, int magic, int exact_size, rpmTagVal regionTag, hdrblob blob, char **emsg) /* <=== hdrblobRead */ \n{\n    int32_t block[4];\n    int32_t *bs = (magic != 0) ? &block[0] : &block[2];\n    int blen = (magic != 0) ? sizeof(block) : sizeof(block) / 2;\n    int32_t il;\n    int32_t dl;\n    int32_t * ei = NULL;\n    size_t uc;\n    size_t nb;\n    rpmRC rc = RPMRC_FAIL;\t\t/* assume failure */\n    int xx;\n    int32_t il_max = HEADER_TAGS_MAX;\n    int32_t dl_max = HEADER_DATA_MAX;\n\n    if (regionTag == RPMTAG_HEADERSIGNATURES) {\n\til_max = 32;\n\tdl_max = 64 * 1024 * 1024;\n    }\n\n    memset(block, 0, sizeof(block));\n    if ((xx = Freadall(fd, bs, blen)) != blen) {\n\trasprintf(emsg,\n\t\t_(\"hdr size(%d): BAD, read returned %d\"), blen, xx);\n\tgoto exit;\n    }\n    if (magic && memcmp(block, rpm_header_magic, sizeof(rpm_header_magic))) {\n\trasprintf(emsg, _(\"hdr magic: BAD\"));\n\tgoto exit;\n    }\n    il = ntohl(block[2]);\n    if (hdrchkRange(il_max, il)) {\n\trasprintf(emsg, _(\"hdr tags: BAD, no. of tags(%d) out of range\"), il);\n\tgoto exit;\n    }\n    dl = ntohl(block[3]);\n    if (hdrchkRange(dl_max, dl)) {\n\trasprintf(emsg, _(\"hdr data: BAD, no. of bytes(%d) out of range\"), dl);\n\tgoto exit;\n    }\n\n    nb = (il * sizeof(struct entryInfo_s)) + dl;\n    uc = sizeof(il) + sizeof(dl) + nb;\n    ei = xmalloc(uc);\n    ei[0] = block[2];\n    ei[1] = block[3];\n    if ((xx = Freadall(fd, (char *)&ei[2], nb)) != nb) {\n\trasprintf(emsg, _(\"hdr blob(%zd): BAD, read returned %d\"), nb, xx);\n\tgoto exit;\n    }\n\n    if (regionTag == RPMTAG_HEADERSIGNATURES) {\n\tsize_t sigSize = uc + sizeof(rpm_header_magic);\n\tsize_t pad = (8 - (sigSize % 8)) % 8;\n\tsize_t trc;\n\tif (pad && (trc = Freadall(fd, block, pad)) != pad) {\n\t    rasprintf(emsg, _(\"sigh pad(%zd): BAD, read %zd bytes\"), pad, trc);\n\t    goto exit;\n\t}\n    }\n\n    rc = hdrblobInit(ei, uc, regionTag, exact_size, blob, emsg);\n\nexit:\n    if (rc != RPMRC_OK) {\n\tfree(ei);\n\tblob->ei = NULL;\n\tif (emsg && *emsg && regionTag == RPMTAG_HEADERSIGNATURES) {\n\t    /* rstrscat() cannot handle overlap even if it claims so */\n\t    char *tmp = rstrscat(NULL, _(\"signature \"), *emsg, NULL);\n\t    free(*emsg);\n\t    *emsg = tmp;\n\t}\n    }\n\n    return rc;\n}",
+            1915
+        ],
+        [
+            "lib/header.c",
+            "hdrblobInit",
+            "rpmRC hdrblobInit(const void *uh, size_t uc, /* <=== hdrblobInit */ \n\t\trpmTagVal regionTag, int exact_size,\n\t\tstruct hdrblob_s *blob, char **emsg)\n{\n    rpmRC rc = RPMRC_FAIL;\n\n    memset(blob, 0, sizeof(*blob));\n    blob->ei = (int32_t *) uh; /* discards const */\n    blob->il = ntohl(blob->ei[0]);\n    blob->dl = ntohl(blob->ei[1]);\n    blob->pe = (entryInfo) &(blob->ei[2]);\n    blob->pvlen = sizeof(blob->il) + sizeof(blob->dl) +\n\t\t  (blob->il * sizeof(*blob->pe)) + blob->dl;\n    blob->dataStart = (uint8_t *) (blob->pe + blob->il);\n    blob->dataEnd = blob->dataStart + blob->dl;\n\n    /* Is the blob the right size? */\n    if (blob->pvlen >= headerMaxbytes || (uc && blob->pvlen != uc)) {\n\trasprintf(emsg, _(\"blob size(%d): BAD, 8 + 16 * il(%d) + dl(%d)\"),\n\t\t\tblob->pvlen, blob->il, blob->dl);\n\tgoto exit;\n    }\n\n    if (hdrblobVerifyRegion(regionTag, exact_size, blob, emsg) == RPMRC_FAIL)\n\tgoto exit;\n\n    /* Sanity check the rest of the header structure. */\n    if (hdrblobVerifyInfo(blob, emsg))\n\tgoto exit;\n\n    rc = RPMRC_OK;\n\nexit:\n    return rc;\n}",
+            1993
+        ]
+    ]
+}

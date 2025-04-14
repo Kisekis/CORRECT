@@ -1,0 +1,692 @@
+{
+    "calleeMethods": [
+        [
+            "src/journal/journald.c",
+            "shortened_cgroup_path",
+            "static char *shortened_cgroup_path(pid_t pid) { /* <=== shortened_cgroup_path */ \n        int r;\n        char *process_path, *init_path, *path;\n\n        assert(pid > 0);\n\n        r = cg_get_by_pid(SYSTEMD_CGROUP_CONTROLLER, pid, &process_path);\n        if (r < 0)\n                return NULL;\n\n        r = cg_get_by_pid(SYSTEMD_CGROUP_CONTROLLER, 1, &init_path);\n        if (r < 0) {\n                free(process_path);\n                return NULL;\n        }\n\n        if (endswith(init_path, \"/system\"))\n                init_path[strlen(init_path) - 7] = 0;\n        else if (streq(init_path, \"/\"))\n                init_path[0] = 0;\n\n        if (startswith(process_path, init_path)) {\n                char *p;\n\n                p = strdup(process_path + strlen(init_path));\n                if (!p) {\n                        free(process_path);\n                        free(init_path);\n                        return NULL;\n                }\n                path = p;\n        } else {\n                path = process_path;\n                process_path = NULL;\n        }\n\n        free(process_path);\n        free(init_path);\n\n        return path;\n}",
+            2
+        ],
+        [
+            "src/shared/macro.h",
+            "assert",
+            "#define assert(expr) assert_se(expr) /* <=== src/shared/macro.h:114:114:assert:1 */ ",
+            1
+        ],
+        [
+            "src/shared/def.h",
+            "SYSTEMD_CGROUP_CONTROLLER",
+            "#define SYSTEMD_CGROUP_CONTROLLER \"name=systemd\" /* <=== src/shared/def.h:32:32:SYSTEMD_CGROUP_CONTROLLER:0 */ ",
+            3
+        ],
+        [
+            "src/shared/macro.h",
+            "ELEMENTSOF",
+            "#define ELEMENTSOF(x) (sizeof(x)/sizeof((x)[0])) /* <=== src/shared/macro.h:58:58:ELEMENTSOF:1 */ ",
+            3
+        ],
+        [
+            "src/journal/journald-rate-limit.c",
+            "journal_rate_limit_group_new",
+            "static JournalRateLimitGroup* journal_rate_limit_group_new(JournalRateLimit *r, const char *id, usec_t ts) { /* <=== journal_rate_limit_group_new */ \n        JournalRateLimitGroup *g;\n\n        assert(r);\n        assert(id);\n\n        g = new0(JournalRateLimitGroup, 1);\n        if (!g)\n                return NULL;\n\n        g->id = strdup(id);\n        if (!g->id)\n                goto fail;\n\n        g->hash = string_hash_func(g->id);\n\n        journal_rate_limit_vacuum(r, ts);\n\n        LIST_PREPEND(JournalRateLimitGroup, bucket, r->buckets[g->hash % BUCKETS_MAX], g);\n        LIST_PREPEND(JournalRateLimitGroup, lru, r->lru, g);\n        if (!g->lru_next)\n                r->lru_tail = g;\n        r->n_groups ++;\n\n        g->parent = r;\n        return g;\n\nfail:\n        journal_rate_limit_group_free(g);\n        return NULL;\n}",
+            3
+        ],
+        [
+            "src/shared/util.c",
+            "get_process_exe",
+            "int get_process_exe(pid_t pid, char **name) { /* <=== get_process_exe */ \n        int r;\n\n        assert(name);\n\n        if (pid == 0)\n                r = readlink_malloc(\"/proc/self/exe\", name);\n        else {\n                char *p;\n                if (asprintf(&p, \"/proc/%lu/exe\", (unsigned long) pid) < 0)\n                        return -ENOMEM;\n\n                r = readlink_malloc(p, name);\n                free(p);\n        }\n\n        return r;\n}",
+            3
+        ],
+        [
+            "src/shared/util.c",
+            "close_nointr",
+            "int close_nointr(int fd) { /* <=== close_nointr */ \n        assert(fd >= 0);\n\n        for (;;) {\n                int r;\n\n                r = close(fd);\n                if (r >= 0)\n                        return r;\n\n                if (errno != EINTR)\n                        return -errno;\n        }\n}",
+            3
+        ],
+        [
+            "src/journal/journald-console.c",
+            "server_forward_console",
+            "void server_forward_console( /* <=== server_forward_console */ \n                Server *s,\n                int priority,\n                const char *identifier,\n                const char *message,\n                struct ucred *ucred) {\n\n        struct iovec iovec[4];\n        char header_pid[16];\n        int n = 0, fd;\n        char *ident_buf = NULL;\n        const char *tty;\n\n        assert(s);\n        assert(message);\n\n        if (LOG_PRI(priority) > s->max_level_console)\n                return;\n\n        /* First: identifier and PID */\n        if (ucred) {\n                if (!identifier) {\n                        get_process_comm(ucred->pid, &ident_buf);\n                        identifier = ident_buf;\n                }\n\n                snprintf(header_pid, sizeof(header_pid), \"[%lu]: \", (unsigned long) ucred->pid);\n                char_array_0(header_pid);\n\n                if (identifier)\n                        IOVEC_SET_STRING(iovec[n++], identifier);\n\n                IOVEC_SET_STRING(iovec[n++], header_pid);\n        } else if (identifier) {\n                IOVEC_SET_STRING(iovec[n++], identifier);\n                IOVEC_SET_STRING(iovec[n++], \": \");\n        }\n\n        /* Third: message */\n        IOVEC_SET_STRING(iovec[n++], message);\n        IOVEC_SET_STRING(iovec[n++], \"\\n\");\n\n        tty = s->tty_path ? s->tty_path : \"/dev/console\";\n\n        fd = open_terminal(tty, O_WRONLY|O_NOCTTY|O_CLOEXEC);\n        if (fd < 0) {\n                log_debug(\"Failed to open %s for logging: %s\", tty, strerror(errno));\n                goto finish;\n        }\n\n        if (writev(fd, iovec, n) < 0)\n                log_debug(\"Failed to write to %s for logging: %s\", tty, strerror(errno));\n\n        close_nointr_nofail(fd);\n\nfinish:\n        free(ident_buf);\n}",
+            1
+        ],
+        [
+            "src/shared/macro.h",
+            "IOVEC_SET_STRING",
+            "#define IOVEC_SET_STRING(i, s)                  \\ /* <=== src/shared/macro.h:154:160:IOVEC_SET_STRING:2 */ \n        do {                                    \\\n                struct iovec *_i = &(i);        \\\n                char *_s = (char *)(s);         \\\n                _i->iov_base = _s;              \\\n                _i->iov_len = strlen(_s);       \\\n        } while(false)",
+            1
+        ],
+        [
+            "src/shared/audit.h",
+            "audit_session_from_pid",
+            "int audit_session_from_pid(pid_t pid, uint32_t *id); /* <=== audit_session_from_pid */ ",
+            3
+        ],
+        [
+            "src/shared/util.h",
+            "streq",
+            "#define streq(a,b) (strcmp((a),(b)) == 0) /* <=== src/shared/util.h:109:109:streq:2 */ ",
+            3
+        ],
+        [
+            "src/journal/journald-syslog.c",
+            "forward_syslog_iovec",
+            "static void forward_syslog_iovec(Server *s, const struct iovec *iovec, unsigned n_iovec, struct ucred *ucred, struct timeval *tv) { /* <=== forward_syslog_iovec */ \n        struct msghdr msghdr;\n        struct cmsghdr *cmsg;\n        union {\n                struct cmsghdr cmsghdr;\n                uint8_t buf[CMSG_SPACE(sizeof(struct ucred))];\n        } control;\n        union sockaddr_union sa;\n\n        assert(s);\n        assert(iovec);\n        assert(n_iovec > 0);\n\n        zero(msghdr);\n        msghdr.msg_iov = (struct iovec*) iovec;\n        msghdr.msg_iovlen = n_iovec;\n\n        zero(sa);\n        sa.un.sun_family = AF_UNIX;\n        strncpy(sa.un.sun_path, \"/run/systemd/journal/syslog\", sizeof(sa.un.sun_path));\n        msghdr.msg_name = &sa;\n        msghdr.msg_namelen = offsetof(union sockaddr_union, un.sun_path) + strlen(sa.un.sun_path);\n\n        if (ucred) {\n                zero(control);\n                msghdr.msg_control = &control;\n                msghdr.msg_controllen = sizeof(control);\n\n                cmsg = CMSG_FIRSTHDR(&msghdr);\n                cmsg->cmsg_level = SOL_SOCKET;\n                cmsg->cmsg_type = SCM_CREDENTIALS;\n                cmsg->cmsg_len = CMSG_LEN(sizeof(struct ucred));\n                memcpy(CMSG_DATA(cmsg), ucred, sizeof(struct ucred));\n                msghdr.msg_controllen = cmsg->cmsg_len;\n        }\n\n        /* Forward the syslog message we received via /dev/log to\n         * /run/systemd/syslog. Unfortunately we currently can't set\n         * the SO_TIMESTAMP auxiliary data, and hence we don't. */\n\n        if (sendmsg(s->syslog_fd, &msghdr, MSG_NOSIGNAL) >= 0)\n                return;\n\n        /* The socket is full? I guess the syslog implementation is\n         * too slow, and we shouldn't wait for that... */\n        if (errno == EAGAIN) {\n                s->n_forward_syslog_missed++;\n                return;\n        }\n\n        if (ucred && errno == ESRCH) {\n                struct ucred u;\n\n                /* Hmm, presumably the sender process vanished\n                 * by now, so let's fix it as good as we\n                 * can, and retry */\n\n                u = *ucred;\n                u.pid = getpid();\n                memcpy(CMSG_DATA(cmsg), &u, sizeof(struct ucred));\n\n                if (sendmsg(s->syslog_fd, &msghdr, MSG_NOSIGNAL) >= 0)\n                        return;\n\n                if (errno == EAGAIN) {\n                        s->n_forward_syslog_missed++;\n                        return;\n                }\n        }\n\n        if (errno != ENOENT)\n                log_debug(\"Failed to forward syslog message: %m\");\n}",
+            2
+        ],
+        [
+            "src/journal/journald.c",
+            "available_space",
+            "static uint64_t available_space(Server *s) { /* <=== available_space */ \n        char ids[33], *p;\n        const char *f;\n        sd_id128_t machine;\n        struct statvfs ss;\n        uint64_t sum = 0, avail = 0, ss_avail = 0;\n        int r;\n        DIR *d;\n        usec_t ts;\n        JournalMetrics *m;\n\n        ts = now(CLOCK_MONOTONIC);\n\n        if (s->cached_available_space_timestamp + RECHECK_AVAILABLE_SPACE_USEC > ts)\n                return s->cached_available_space;\n\n        r = sd_id128_get_machine(&machine);\n        if (r < 0)\n                return 0;\n\n        if (s->system_journal) {\n                f = \"/var/log/journal/\";\n                m = &s->system_metrics;\n        } else {\n                f = \"/run/log/journal/\";\n                m = &s->runtime_metrics;\n        }\n\n        assert(m);\n\n        p = strappend(f, sd_id128_to_string(machine, ids));\n        if (!p)\n                return 0;\n\n        d = opendir(p);\n        free(p);\n\n        if (!d)\n                return 0;\n\n        if (fstatvfs(dirfd(d), &ss) < 0)\n                goto finish;\n\n        for (;;) {\n                struct stat st;\n                struct dirent *de;\n                union dirent_storage buf;\n\n                r = readdir_r(d, &buf.de, &de);\n                if (r != 0)\n                        break;\n\n                if (!de)\n                        break;\n\n                if (!endswith(de->d_name, \".journal\") &&\n                    !endswith(de->d_name, \".journal~\"))\n                        continue;\n\n                if (fstatat(dirfd(d), de->d_name, &st, AT_SYMLINK_NOFOLLOW) < 0)\n                        continue;\n\n                if (!S_ISREG(st.st_mode))\n                        continue;\n\n                sum += (uint64_t) st.st_blocks * 512UL;\n        }\n\n        avail = sum >= m->max_use ? 0 : m->max_use - sum;\n\n        ss_avail = ss.f_bsize * ss.f_bavail;\n\n        ss_avail = ss_avail < m->keep_free ? 0 : ss_avail - m->keep_free;\n\n        if (ss_avail < avail)\n                avail = ss_avail;\n\n        s->cached_available_space = avail;\n        s->cached_available_space_timestamp = ts;\n\nfinish:\n        closedir(d);\n\n        return avail;\n}",
+            2
+        ],
+        [
+            "src/shared/macro.h",
+            "zero",
+            "#define zero(x) (memzero(&(x), sizeof(x))) /* <=== src/shared/macro.h:150:150:zero:1 */ ",
+            3
+        ],
+        [
+            "src/journal/journald.c",
+            "RECHECK_AVAILABLE_SPACE_USEC",
+            "#define RECHECK_AVAILABLE_SPACE_USEC (30*USEC_PER_SEC) /* <=== src/journal/journald.c:78:78:RECHECK_AVAILABLE_SPACE_USEC:0 */ ",
+            3
+        ],
+        [
+            "src/journal/journald.c",
+            "server_dispatch_message",
+            "void server_dispatch_message( /* <=== server_dispatch_message */ \n                Server *s,\n                struct iovec *iovec, unsigned n, unsigned m,\n                struct ucred *ucred,\n                struct timeval *tv,\n                const char *label, size_t label_len,\n                const char *unit_id,\n                int priority) {\n\n        int rl;\n        char *path = NULL, *c;\n\n        assert(s);\n        assert(iovec || n == 0);\n\n        if (n == 0)\n                return;\n\n        if (LOG_PRI(priority) > s->max_level_store)\n                return;\n\n        if (!ucred)\n                goto finish;\n\n        path = shortened_cgroup_path(ucred->pid);\n        if (!path)\n                goto finish;\n\n        /* example: /user/lennart/3/foobar\n         *          /system/dbus.service/foobar\n         *\n         * So let's cut of everything past the third /, since that is\n         * wher user directories start */\n\n        c = strchr(path, '/');\n        if (c) {\n                c = strchr(c+1, '/');\n                if (c) {\n                        c = strchr(c+1, '/');\n                        if (c)\n                                *c = 0;\n                }\n        }\n\n        rl = journal_rate_limit_test(s->rate_limit, path, priority & LOG_PRIMASK, available_space(s));\n\n        if (rl == 0) {\n                free(path);\n                return;\n        }\n\n        /* Write a suppression message if we suppressed something */\n        if (rl > 1)\n                server_driver_message(s, SD_MESSAGE_JOURNAL_DROPPED, \"Suppressed %u messages from %s\", rl - 1, path);\n\n        free(path);\n\nfinish:\n        dispatch_message_real(s, iovec, n, m, ucred, tv, label, label_len, unit_id);\n}",
+            1
+        ],
+        [
+            "src/shared/util.c",
+            "get_process_cmdline",
+            "int get_process_cmdline(pid_t pid, size_t max_length, bool comm_fallback, char **line) { /* <=== get_process_cmdline */ \n        char *r, *k;\n        int c;\n        bool space = false;\n        size_t left;\n        FILE *f;\n\n        assert(max_length > 0);\n        assert(line);\n\n        if (pid == 0)\n                f = fopen(\"/proc/self/cmdline\", \"re\");\n        else {\n                char *p;\n                if (asprintf(&p, \"/proc/%lu/cmdline\", (unsigned long) pid) < 0)\n                        return -ENOMEM;\n\n                f = fopen(p, \"re\");\n                free(p);\n        }\n\n        if (!f)\n                return -errno;\n\n        r = new(char, max_length);\n        if (!r) {\n                fclose(f);\n                return -ENOMEM;\n        }\n\n        k = r;\n        left = max_length;\n        while ((c = getc(f)) != EOF) {\n\n                if (isprint(c)) {\n                        if (space) {\n                                if (left <= 4)\n                                        break;\n\n                                *(k++) = ' ';\n                                left--;\n                                space = false;\n                        }\n\n                        if (left <= 4)\n                                break;\n\n                        *(k++) = (char) c;\n                        left--;\n                }  else\n                        space = true;\n        }\n\n        if (left <= 4) {\n                size_t n = MIN(left-1, 3U);\n                memcpy(k, \"...\", n);\n                k[n] = 0;\n        } else\n                *k = 0;\n\n        fclose(f);\n\n        /* Kernel threads have no argv[] */\n        if (r[0] == 0) {\n                char *t;\n                int h;\n\n                free(r);\n\n                if (!comm_fallback)\n                        return -ENOENT;\n\n                h = get_process_comm(pid, &t);\n                if (h < 0)\n                        return h;\n\n                r = strjoin(\"[\", t, \"]\", NULL);\n                free(t);\n\n                if (!r)\n                        return -ENOMEM;\n        }\n\n        *line = r;\n        return 0;\n}",
+            3
+        ],
+        [
+            "src/shared/util.c",
+            "timespec_load",
+            "usec_t timespec_load(const struct timespec *ts) { /* <=== timespec_load */ \n        assert(ts);\n\n        return\n                (usec_t) ts->tv_sec * USEC_PER_SEC +\n                (usec_t) ts->tv_nsec / NSEC_PER_USEC;\n}",
+            3
+        ],
+        [
+            "src/journal/journald-syslog.c",
+            "server_forward_syslog",
+            "void server_forward_syslog(Server *s, int priority, const char *identifier, const char *message, struct ucred *ucred, struct timeval *tv) { /* <=== server_forward_syslog */ \n        struct iovec iovec[5];\n        char header_priority[6], header_time[64], header_pid[16];\n        int n = 0;\n        time_t t;\n        struct tm *tm;\n        char *ident_buf = NULL;\n\n        assert(s);\n        assert(priority >= 0);\n        assert(priority <= 999);\n        assert(message);\n\n        if (LOG_PRI(priority) > s->max_level_syslog)\n                return;\n\n        /* First: priority field */\n        snprintf(header_priority, sizeof(header_priority), \"<%i>\", priority);\n        char_array_0(header_priority);\n        IOVEC_SET_STRING(iovec[n++], header_priority);\n\n        /* Second: timestamp */\n        t = tv ? tv->tv_sec : ((time_t) (now(CLOCK_REALTIME) / USEC_PER_SEC));\n        tm = localtime(&t);\n        if (!tm)\n                return;\n        if (strftime(header_time, sizeof(header_time), \"%h %e %T \", tm) <= 0)\n                return;\n        IOVEC_SET_STRING(iovec[n++], header_time);\n\n        /* Third: identifier and PID */\n        if (ucred) {\n                if (!identifier) {\n                        get_process_comm(ucred->pid, &ident_buf);\n                        identifier = ident_buf;\n                }\n\n                snprintf(header_pid, sizeof(header_pid), \"[%lu]: \", (unsigned long) ucred->pid);\n                char_array_0(header_pid);\n\n                if (identifier)\n                        IOVEC_SET_STRING(iovec[n++], identifier);\n\n                IOVEC_SET_STRING(iovec[n++], header_pid);\n        } else if (identifier) {\n                IOVEC_SET_STRING(iovec[n++], identifier);\n                IOVEC_SET_STRING(iovec[n++], \": \");\n        }\n\n        /* Fourth: message */\n        IOVEC_SET_STRING(iovec[n++], message);\n\n        forward_syslog_iovec(s, iovec, n, ucred, tv);\n\n        free(ident_buf);\n}",
+            1
+        ],
+        [
+            "src/journal/sparse-endian.h",
+            "le64toh",
+            "static inline uint64_t le64toh(le64_t value) { return bswap_64_on_be((uint64_t __force)value); } /* <=== le64toh */ ",
+            1
+        ],
+        [
+            "src/journal/journald.c",
+            "server_driver_message",
+            "void server_driver_message(Server *s, sd_id128_t message_id, const char *format, ...) { /* <=== server_driver_message */ \n        char mid[11 + 32 + 1];\n        char buffer[16 + LINE_MAX + 1];\n        struct iovec iovec[N_IOVEC_META_FIELDS + 4];\n        int n = 0;\n        va_list ap;\n        struct ucred ucred;\n\n        assert(s);\n        assert(format);\n\n        IOVEC_SET_STRING(iovec[n++], \"PRIORITY=6\");\n        IOVEC_SET_STRING(iovec[n++], \"_TRANSPORT=driver\");\n\n        memcpy(buffer, \"MESSAGE=\", 8);\n        va_start(ap, format);\n        vsnprintf(buffer + 8, sizeof(buffer) - 8, format, ap);\n        va_end(ap);\n        char_array_0(buffer);\n        IOVEC_SET_STRING(iovec[n++], buffer);\n\n        snprintf(mid, sizeof(mid), \"MESSAGE_ID=\" SD_ID128_FORMAT_STR, SD_ID128_FORMAT_VAL(message_id));\n        char_array_0(mid);\n        IOVEC_SET_STRING(iovec[n++], mid);\n\n        zero(ucred);\n        ucred.pid = getpid();\n        ucred.uid = getuid();\n        ucred.gid = getgid();\n\n        dispatch_message_real(s, iovec, n, ELEMENTSOF(iovec), &ucred, NULL, NULL, 0, NULL);\n}",
+            2
+        ],
+        [
+            "src/journal/journald.h",
+            "N_IOVEC_META_FIELDS",
+            "#define N_IOVEC_META_FIELDS 17 /* <=== src/journal/journald.h:118:118:N_IOVEC_META_FIELDS:0 */ ",
+            1
+        ],
+        [
+            "src/shared/hashmap.h",
+            "string_hash_func",
+            "unsigned string_hash_func(const void *p); /* <=== string_hash_func */ ",
+            3
+        ],
+        [
+            "src/journal/journald-native.c",
+            "DATA_SIZE_MAX",
+            "#define DATA_SIZE_MAX (1024*1024*64) /* <=== src/journal/journald-native.c:34:34:DATA_SIZE_MAX:0 */ ",
+            1
+        ],
+        [
+            "src/shared/cgroup-util.h",
+            "cg_pid_get_unit",
+            "int cg_pid_get_unit(pid_t pid, char **unit); /* <=== cg_pid_get_unit */ ",
+            3
+        ],
+        [
+            "src/journal/sparse-endian.h",
+            "bswap_64_on_be",
+            "#define bswap_64_on_be(x) (x) /* <=== src/journal/sparse-endian.h:61:61:bswap_64_on_be:1 */ ",
+            2
+        ],
+        [
+            "src/shared/util.h",
+            "USEC_PER_SEC",
+            "#define USEC_PER_SEC  1000000ULL /* <=== src/shared/util.h:57:57:USEC_PER_SEC:0 */ ",
+            2
+        ],
+        [
+            "src/shared/util.c",
+            "endswith",
+            "bool endswith(const char *s, const char *postfix) { /* <=== endswith */ \n        size_t sl, pl;\n\n        assert(s);\n        assert(postfix);\n\n        sl = strlen(s);\n        pl = strlen(postfix);\n\n        if (pl == 0)\n                return true;\n\n        if (sl < pl)\n                return false;\n\n        return memcmp(s + sl - pl, postfix, pl) == 0;\n}",
+            3
+        ],
+        [
+            "src/journal/journald.c",
+            "write_to_journal",
+            "static void write_to_journal(Server *s, uid_t uid, struct iovec *iovec, unsigned n) { /* <=== write_to_journal */ \n        JournalFile *f;\n        bool vacuumed = false;\n        int r;\n\n        assert(s);\n        assert(iovec);\n        assert(n > 0);\n\n        f = find_journal(s, uid);\n        if (!f)\n                return;\n\n        if (journal_file_rotate_suggested(f)) {\n                log_debug(\"Journal header limits reached or header out-of-date, rotating.\");\n                server_rotate(s);\n                server_vacuum(s);\n                vacuumed = true;\n\n                f = find_journal(s, uid);\n                if (!f)\n                        return;\n        }\n\n        for (;;) {\n                r = journal_file_append_entry(f, NULL, iovec, n, &s->seqnum, NULL, NULL);\n                if (r >= 0)\n                        return;\n\n                if (vacuumed ||\n                    (r != -E2BIG && /* hit limit */\n                     r != -EFBIG && /* hit fs limit */\n                     r != -EDQUOT && /* quota hit */\n                     r != -ENOSPC && /* disk full */\n                     r != -EBADMSG && /* corrupted */\n                     r != -ENODATA && /* truncated */\n                     r != -EHOSTDOWN && /* other machine */\n                     r != -EPROTONOSUPPORT && /* unsupported feature */\n                     r != -EBUSY && /* unclean shutdown */\n                     r != -ESHUTDOWN /* already archived */)) {\n                        log_error(\"Failed to write entry, ignoring: %s\", strerror(-r));\n                        return;\n                }\n\n                if (r == -E2BIG || r == -EFBIG || r == EDQUOT || r == ENOSPC)\n                        log_debug(\"Allocation limit reached, rotating.\");\n                else if (r == -EHOSTDOWN)\n                        log_info(\"Journal file from other machine, rotating.\");\n                else if (r == -EBUSY)\n                        log_info(\"Unclean shutdown, rotating.\");\n                else\n                        log_warning(\"Journal file corrupted, rotating.\");\n\n                server_rotate(s);\n                server_vacuum(s);\n                vacuumed = true;\n\n                f = find_journal(s, uid);\n                if (!f)\n                        return;\n\n                log_debug(\"Retrying write.\");\n        }\n}",
+            3
+        ],
+        [
+            "src/shared/macro.h",
+            "MAX",
+            "#define MAX(a,b)                                \\ /* <=== src/shared/macro.h:72:77:MAX:2 */ \n        __extension__ ({                        \\\n                        typeof(a) _a = (a);     \\\n                        typeof(b) _b = (b);     \\\n                        _a > _b ? _a : _b;      \\\n                })",
+            1
+        ],
+        [
+            "src/journal/journald-rate-limit.c",
+            "burst_modulate",
+            "static unsigned burst_modulate(unsigned burst, uint64_t available) { /* <=== burst_modulate */ \n        unsigned k;\n\n        /* Modulates the burst rate a bit with the amount of available\n         * disk space */\n\n        k = u64log2(available);\n\n        /* 1MB */\n        if (k <= 20)\n                return burst;\n\n        burst = (burst * (k-20)) / 4;\n\n        /*\n         * Example:\n         *\n         *      <= 1MB = rate * 1\n         *        16MB = rate * 2\n         *       256MB = rate * 3\n         *         4GB = rate * 4\n         *        64GB = rate * 5\n         *         1TB = rate * 6\n         */\n\n        return burst;\n}",
+            3
+        ],
+        [
+            "src/journal/journald-kmsg.c",
+            "server_forward_kmsg",
+            "void server_forward_kmsg( /* <=== server_forward_kmsg */ \n        Server *s,\n        int priority,\n        const char *identifier,\n        const char *message,\n        struct ucred *ucred) {\n\n        struct iovec iovec[5];\n        char header_priority[6], header_pid[16];\n        int n = 0;\n        char *ident_buf = NULL;\n\n        assert(s);\n        assert(priority >= 0);\n        assert(priority <= 999);\n        assert(message);\n\n        if (_unlikely_(LOG_PRI(priority) > s->max_level_kmsg))\n                return;\n\n        if (_unlikely_(s->dev_kmsg_fd < 0))\n                return;\n\n        /* Never allow messages with kernel facility to be written to\n         * kmsg, regardless where the data comes from. */\n        priority = syslog_fixup_facility(priority);\n\n        /* First: priority field */\n        snprintf(header_priority, sizeof(header_priority), \"<%i>\", priority);\n        char_array_0(header_priority);\n        IOVEC_SET_STRING(iovec[n++], header_priority);\n\n        /* Second: identifier and PID */\n        if (ucred) {\n                if (!identifier) {\n                        get_process_comm(ucred->pid, &ident_buf);\n                        identifier = ident_buf;\n                }\n\n                snprintf(header_pid, sizeof(header_pid), \"[%lu]: \", (unsigned long) ucred->pid);\n                char_array_0(header_pid);\n\n                if (identifier)\n                        IOVEC_SET_STRING(iovec[n++], identifier);\n\n                IOVEC_SET_STRING(iovec[n++], header_pid);\n        } else if (identifier) {\n                IOVEC_SET_STRING(iovec[n++], identifier);\n                IOVEC_SET_STRING(iovec[n++], \": \");\n        }\n\n        /* Fourth: message */\n        IOVEC_SET_STRING(iovec[n++], message);\n        IOVEC_SET_STRING(iovec[n++], \"\\n\");\n\n        if (writev(s->dev_kmsg_fd, iovec, n) < 0)\n                log_debug(\"Failed to write to /dev/kmsg for logging: %s\", strerror(errno));\n\n        free(ident_buf);\n}",
+            1
+        ],
+        [
+            "src/shared/util.c",
+            "now",
+            "usec_t now(clockid_t clock_id) { /* <=== now */ \n        struct timespec ts;\n\n        assert_se(clock_gettime(clock_id, &ts) == 0);\n\n        return timespec_load(&ts);\n}",
+            2
+        ],
+        [
+            "src/shared/util.h",
+            "USEC_PER_MSEC",
+            "#define USEC_PER_MSEC 1000ULL /* <=== src/shared/util.h:58:58:USEC_PER_MSEC:0 */ ",
+            3
+        ],
+        [
+            "src/shared/cgroup-util.h",
+            "cg_get_by_pid",
+            "int cg_get_by_pid(const char *controller, pid_t pid, char **path); /* <=== cg_get_by_pid */ ",
+            3
+        ],
+        [
+            "src/shared/audit.h",
+            "audit_loginuid_from_pid",
+            "int audit_loginuid_from_pid(pid_t pid, uid_t *uid); /* <=== audit_loginuid_from_pid */ ",
+            3
+        ],
+        [
+            "src/shared/util.c",
+            "gethostname_malloc",
+            "char* gethostname_malloc(void) { /* <=== gethostname_malloc */ \n        struct utsname u;\n\n        assert_se(uname(&u) >= 0);\n\n        if (!isempty(u.nodename) && !streq(u.nodename, \"(none)\"))\n                return strdup(u.nodename);\n\n        return strdup(u.sysname);\n}",
+            3
+        ],
+        [
+            "src/shared/util.c",
+            "timeval_load",
+            "usec_t timeval_load(const struct timeval *tv) { /* <=== timeval_load */ \n        assert(tv);\n\n        return\n                (usec_t) tv->tv_sec * USEC_PER_SEC +\n                (usec_t) tv->tv_usec;\n}",
+            3
+        ],
+        [
+            "src/journal/journald-rate-limit.c",
+            "BUCKETS_MAX",
+            "#define BUCKETS_MAX 127 /* <=== src/journal/journald-rate-limit.c:31:31:BUCKETS_MAX:0 */ ",
+            3
+        ],
+        [
+            "src/shared/macro.h",
+            "assert_se",
+            "#define assert_se(expr)                                                 \\ /* <=== src/shared/macro.h:103:107:assert_se:1 */ \n        do {                                                            \\\n                if (_unlikely_(!(expr)))                                \\\n                        log_assert_failed(#expr, __FILE__, __LINE__, __PRETTY_FUNCTION__); \\\n        } while (false)                                                 \\",
+            3
+        ],
+        [
+            "src/shared/util.c",
+            "startswith",
+            "bool startswith(const char *s, const char *prefix) { /* <=== startswith */ \n        size_t sl, pl;\n\n        assert(s);\n        assert(prefix);\n\n        sl = strlen(s);\n        pl = strlen(prefix);\n\n        if (pl == 0)\n                return true;\n\n        if (sl < pl)\n                return false;\n\n        return memcmp(s, prefix, pl) == 0;\n}",
+            3
+        ],
+        [
+            "src/shared/macro.h",
+            "char_array_0",
+            "#define char_array_0(x) x[sizeof(x)-1] = 0; /* <=== src/shared/macro.h:152:152:char_array_0:1 */ ",
+            2
+        ],
+        [
+            "src/journal/journald-rate-limit.c",
+            "journal_rate_limit_test",
+            "int journal_rate_limit_test(JournalRateLimit *r, const char *id, int priority, uint64_t available) { /* <=== journal_rate_limit_test */ \n        unsigned h;\n        JournalRateLimitGroup *g;\n        JournalRateLimitPool *p;\n        unsigned burst;\n        usec_t ts;\n\n        assert(id);\n\n        if (!r)\n                return 1;\n\n        if (r->interval == 0 || r->burst == 0)\n                return 1;\n\n        burst = burst_modulate(r->burst, available);\n\n        ts = now(CLOCK_MONOTONIC);\n\n        h = string_hash_func(id);\n        g = r->buckets[h % BUCKETS_MAX];\n\n        LIST_FOREACH(bucket, g, g)\n                if (streq(g->id, id))\n                        break;\n\n        if (!g) {\n                g = journal_rate_limit_group_new(r, id, ts);\n                if (!g)\n                        return -ENOMEM;\n        }\n\n        p = &g->pools[priority_map[priority]];\n\n        if (p->begin <= 0) {\n                p->suppressed = 0;\n                p->num = 1;\n                p->begin = ts;\n                return 1;\n        }\n\n        if (p->begin + r->interval < ts) {\n                unsigned s;\n\n                s = p->suppressed;\n                p->suppressed = 0;\n                p->num = 1;\n                p->begin = ts;\n\n                return 1 + s;\n        }\n\n        if (p->num <= burst) {\n                p->num++;\n                return 1;\n        }\n\n        p->suppressed++;\n        return 0;\n}",
+            2
+        ],
+        [
+            "src/journal/journald-native.c",
+            "valid_user_field",
+            "static bool valid_user_field(const char *p, size_t l) { /* <=== valid_user_field */ \n        const char *a;\n\n        /* We kinda enforce POSIX syntax recommendations for\n           environment variables here, but make a couple of additional\n           requirements.\n\n           http://pubs.opengroup.org/onlinepubs/000095399/basedefs/xbd_chap08.html */\n\n        /* No empty field names */\n        if (l <= 0)\n                return false;\n\n        /* Don't allow names longer than 64 chars */\n        if (l > 64)\n                return false;\n\n        /* Variables starting with an underscore are protected */\n        if (p[0] == '_')\n                return false;\n\n        /* Don't allow digits as first character */\n        if (p[0] >= '0' && p[0] <= '9')\n                return false;\n\n        /* Only allow A-Z0-9 and '_' */\n        for (a = p; a < p + l; a++)\n                if (!((*a >= 'A' && *a <= 'Z') ||\n                      (*a >= '0' && *a <= '9') ||\n                      *a == '_'))\n                        return false;\n\n        return true;\n}",
+            1
+        ],
+        [
+            "src/journal/journald.c",
+            "dispatch_message_real",
+            "static void dispatch_message_real( /* <=== dispatch_message_real */ \n                Server *s,\n                struct iovec *iovec, unsigned n, unsigned m,\n                struct ucred *ucred,\n                struct timeval *tv,\n                const char *label, size_t label_len,\n                const char *unit_id) {\n\n        char *pid = NULL, *uid = NULL, *gid = NULL,\n                *source_time = NULL, *boot_id = NULL, *machine_id = NULL,\n                *comm = NULL, *cmdline = NULL, *hostname = NULL,\n                *audit_session = NULL, *audit_loginuid = NULL,\n                *exe = NULL, *cgroup = NULL, *session = NULL,\n                *owner_uid = NULL, *unit = NULL, *selinux_context = NULL;\n\n        char idbuf[33];\n        sd_id128_t id;\n        int r;\n        char *t;\n        uid_t loginuid = 0, realuid = 0;\n\n        assert(s);\n        assert(iovec);\n        assert(n > 0);\n        assert(n + N_IOVEC_META_FIELDS <= m);\n\n        if (ucred) {\n                uint32_t audit;\n#ifdef HAVE_LOGIND\n                uid_t owner;\n#endif\n\n                realuid = ucred->uid;\n\n                if (asprintf(&pid, \"_PID=%lu\", (unsigned long) ucred->pid) >= 0)\n                        IOVEC_SET_STRING(iovec[n++], pid);\n\n                if (asprintf(&uid, \"_UID=%lu\", (unsigned long) ucred->uid) >= 0)\n                        IOVEC_SET_STRING(iovec[n++], uid);\n\n                if (asprintf(&gid, \"_GID=%lu\", (unsigned long) ucred->gid) >= 0)\n                        IOVEC_SET_STRING(iovec[n++], gid);\n\n                r = get_process_comm(ucred->pid, &t);\n                if (r >= 0) {\n                        comm = strappend(\"_COMM=\", t);\n                        free(t);\n\n                        if (comm)\n                                IOVEC_SET_STRING(iovec[n++], comm);\n                }\n\n                r = get_process_exe(ucred->pid, &t);\n                if (r >= 0) {\n                        exe = strappend(\"_EXE=\", t);\n                        free(t);\n\n                        if (exe)\n                                IOVEC_SET_STRING(iovec[n++], exe);\n                }\n\n                r = get_process_cmdline(ucred->pid, LINE_MAX, false, &t);\n                if (r >= 0) {\n                        cmdline = strappend(\"_CMDLINE=\", t);\n                        free(t);\n\n                        if (cmdline)\n                                IOVEC_SET_STRING(iovec[n++], cmdline);\n                }\n\n                r = audit_session_from_pid(ucred->pid, &audit);\n                if (r >= 0)\n                        if (asprintf(&audit_session, \"_AUDIT_SESSION=%lu\", (unsigned long) audit) >= 0)\n                                IOVEC_SET_STRING(iovec[n++], audit_session);\n\n                r = audit_loginuid_from_pid(ucred->pid, &loginuid);\n                if (r >= 0)\n                        if (asprintf(&audit_loginuid, \"_AUDIT_LOGINUID=%lu\", (unsigned long) loginuid) >= 0)\n                                IOVEC_SET_STRING(iovec[n++], audit_loginuid);\n\n                t = shortened_cgroup_path(ucred->pid);\n                if (t) {\n                        cgroup = strappend(\"_SYSTEMD_CGROUP=\", t);\n                        free(t);\n\n                        if (cgroup)\n                                IOVEC_SET_STRING(iovec[n++], cgroup);\n                }\n\n#ifdef HAVE_LOGIND\n                if (sd_pid_get_session(ucred->pid, &t) >= 0) {\n                        session = strappend(\"_SYSTEMD_SESSION=\", t);\n                        free(t);\n\n                        if (session)\n                                IOVEC_SET_STRING(iovec[n++], session);\n                }\n\n                if (sd_pid_get_owner_uid(ucred->uid, &owner) >= 0)\n                        if (asprintf(&owner_uid, \"_SYSTEMD_OWNER_UID=%lu\", (unsigned long) owner) >= 0)\n                                IOVEC_SET_STRING(iovec[n++], owner_uid);\n#endif\n\n                if (cg_pid_get_unit(ucred->pid, &t) >= 0) {\n                        unit = strappend(\"_SYSTEMD_UNIT=\", t);\n                        free(t);\n                } else if (unit_id)\n                        unit = strappend(\"_SYSTEMD_UNIT=\", unit_id);\n\n                if (unit)\n                        IOVEC_SET_STRING(iovec[n++], unit);\n\n#ifdef HAVE_SELINUX\n                if (label) {\n                        selinux_context = malloc(sizeof(\"_SELINUX_CONTEXT=\") + label_len);\n                        if (selinux_context) {\n                                memcpy(selinux_context, \"_SELINUX_CONTEXT=\", sizeof(\"_SELINUX_CONTEXT=\")-1);\n                                memcpy(selinux_context+sizeof(\"_SELINUX_CONTEXT=\")-1, label, label_len);\n                                selinux_context[sizeof(\"_SELINUX_CONTEXT=\")-1+label_len] = 0;\n                                IOVEC_SET_STRING(iovec[n++], selinux_context);\n                        }\n                } else {\n                        security_context_t con;\n\n                        if (getpidcon(ucred->pid, &con) >= 0) {\n                                selinux_context = strappend(\"_SELINUX_CONTEXT=\", con);\n                                if (selinux_context)\n                                        IOVEC_SET_STRING(iovec[n++], selinux_context);\n\n                                freecon(con);\n                        }\n                }\n#endif\n        }\n\n        if (tv) {\n                if (asprintf(&source_time, \"_SOURCE_REALTIME_TIMESTAMP=%llu\",\n                             (unsigned long long) timeval_load(tv)) >= 0)\n                        IOVEC_SET_STRING(iovec[n++], source_time);\n        }\n\n        /* Note that strictly speaking storing the boot id here is\n         * redundant since the entry includes this in-line\n         * anyway. However, we need this indexed, too. */\n        r = sd_id128_get_boot(&id);\n        if (r >= 0)\n                if (asprintf(&boot_id, \"_BOOT_ID=%s\", sd_id128_to_string(id, idbuf)) >= 0)\n                        IOVEC_SET_STRING(iovec[n++], boot_id);\n\n        r = sd_id128_get_machine(&id);\n        if (r >= 0)\n                if (asprintf(&machine_id, \"_MACHINE_ID=%s\", sd_id128_to_string(id, idbuf)) >= 0)\n                        IOVEC_SET_STRING(iovec[n++], machine_id);\n\n        t = gethostname_malloc();\n        if (t) {\n                hostname = strappend(\"_HOSTNAME=\", t);\n                free(t);\n                if (hostname)\n                        IOVEC_SET_STRING(iovec[n++], hostname);\n        }\n\n        assert(n <= m);\n\n        write_to_journal(s,\n                         s->split_mode == SPLIT_NONE ? 0 :\n                         (s->split_mode == SPLIT_UID ? realuid :\n                          (realuid == 0 ? 0 : loginuid)), iovec, n);\n\n        free(pid);\n        free(uid);\n        free(gid);\n        free(comm);\n        free(exe);\n        free(cmdline);\n        free(source_time);\n        free(boot_id);\n        free(machine_id);\n        free(hostname);\n        free(audit_session);\n        free(audit_loginuid);\n        free(cgroup);\n        free(session);\n        free(owner_uid);\n        free(unit);\n        free(selinux_context);\n}",
+            2
+        ],
+        [
+            "src/shared/log.h",
+            "log_oom",
+            "#define log_oom() log_oom_internal(__FILE__, __LINE__, __func__) /* <=== src/shared/log.h:129:129:log_oom:0 */ ",
+            1
+        ],
+        [
+            "src/shared/util.c",
+            "open_terminal",
+            "int open_terminal(const char *name, int mode) { /* <=== open_terminal */ \n        int fd, r;\n        unsigned c = 0;\n\n        /*\n         * If a TTY is in the process of being closed opening it might\n         * cause EIO. This is horribly awful, but unlikely to be\n         * changed in the kernel. Hence we work around this problem by\n         * retrying a couple of times.\n         *\n         * https://bugs.launchpad.net/ubuntu/+source/linux/+bug/554172/comments/245\n         */\n\n        for (;;) {\n                fd = open(name, mode);\n                if (fd >= 0)\n                        break;\n\n                if (errno != EIO)\n                        return -errno;\n\n                /* Max 1s in total */\n                if (c >= 20)\n                        return -errno;\n\n                usleep(50 * USEC_PER_MSEC);\n                c++;\n        }\n\n        if (fd < 0)\n                return -errno;\n\n        r = isatty(fd);\n        if (r < 0) {\n                close_nointr_nofail(fd);\n                return -errno;\n        }\n\n        if (!r) {\n                close_nointr_nofail(fd);\n                return -ENOTTY;\n        }\n\n        return fd;\n}",
+            2
+        ],
+        [
+            "src/journal/journald-syslog.c",
+            "syslog_fixup_facility",
+            "int syslog_fixup_facility(int priority) { /* <=== syslog_fixup_facility */ \n\n        if ((priority & LOG_FACMASK) == 0)\n                return (priority & LOG_PRIMASK) | LOG_USER;\n\n        return priority;\n}",
+            2
+        ],
+        [
+            "src/shared/util.c",
+            "close_nointr_nofail",
+            "void close_nointr_nofail(int fd) { /* <=== close_nointr_nofail */ \n        int saved_errno = errno;\n\n        /* like close_nointr() but cannot fail, and guarantees errno\n         * is unchanged */\n\n        assert_se(close_nointr(fd) == 0);\n\n        errno = saved_errno;\n}",
+            2
+        ],
+        [
+            "src/shared/util.c",
+            "get_process_comm",
+            "int get_process_comm(pid_t pid, char **name) { /* <=== get_process_comm */ \n        int r;\n\n        assert(name);\n\n        if (pid == 0)\n                r = read_one_line_file(\"/proc/self/comm\", name);\n        else {\n                char *p;\n                if (asprintf(&p, \"/proc/%lu/comm\", (unsigned long) pid) < 0)\n                        return -ENOMEM;\n\n                r = read_one_line_file(p, name);\n                free(p);\n        }\n\n        return r;\n}",
+            2
+        ],
+        [
+            "src/shared/log.h",
+            "log_debug",
+            "#define log_debug(...)   log_meta(LOG_DEBUG,   __FILE__, __LINE__, __func__, __VA_ARGS__) /* <=== src/shared/log.h:121:121:log_debug:1 */ ",
+            1
+        ],
+        [
+            "src/shared/macro.h",
+            "_unlikely_",
+            "#define _unlikely_(x) (__builtin_expect(!!(x),0)) /* <=== src/shared/macro.h:42:42:_unlikely_:1 */ ",
+            2
+        ],
+        [
+            "src/shared/util.c",
+            "read_one_line_file",
+            "int read_one_line_file(const char *fn, char **line) { /* <=== read_one_line_file */ \n        _cleanup_fclose_ FILE *f = NULL;\n        char t[LINE_MAX], *c;\n\n        assert(fn);\n        assert(line);\n\n        f = fopen(fn, \"re\");\n        if (!f)\n                return -errno;\n\n        if (!fgets(t, sizeof(t), f)) {\n\n                if (ferror(f))\n                        return errno ? -errno : -EIO;\n\n                t[0] = 0;\n        }\n\n        c = strdup(t);\n        if (!c)\n                return -ENOMEM;\n        truncate_nl(c);\n\n        *line = c;\n        return 0;\n}",
+            3
+        ],
+        [
+            "src/shared/util.c",
+            "strappend",
+            "char *strappend(const char *s, const char *suffix) { /* <=== strappend */ \n        return strnappend(s, suffix, suffix ? strlen(suffix) : 0);\n}",
+            3
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"journald-syslog.h\"",
+        "#include <unistd.h>",
+        "#include \"socket-util.h\"",
+        "#include \"journald-kmsg.h\"",
+        "#include \"journald-native.h\"",
+        "#include \"journald.h\"",
+        "#include <sys/epoll.h>",
+        "#include \"journald-console.h\"",
+        "#include <stddef.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct ucred",
+            "ucred"
+        ],
+        [
+            "typedef struct Server {\n        int epoll_fd;\n        int signal_fd;\n        int syslog_fd;\n        int native_fd;\n        int stdout_fd;\n        int dev_kmsg_fd;\n\n        JournalFile *runtime_journal;\n        JournalFile *system_journal;\n        Hashmap *user_journals;\n\n        uint64_t seqnum;\n\n        char *buffer;\n        size_t buffer_size;\n\n        JournalRateLimit *rate_limit;\n        usec_t rate_limit_interval;\n        unsigned rate_limit_burst;\n\n        JournalMetrics runtime_metrics;\n        JournalMetrics system_metrics;\n\n        bool compress;\n        bool seal;\n\n        bool forward_to_kmsg;\n        bool forward_to_syslog;\n        bool forward_to_console;\n\n        unsigned n_forward_syslog_missed;\n        usec_t last_warn_forward_syslog_missed;\n\n        uint64_t cached_available_space;\n        usec_t cached_available_space_timestamp;\n\n        uint64_t var_available_timestamp;\n\n        gid_t file_gid;\n        bool file_gid_valid;\n\n        LIST_HEAD(StdoutStream, stdout_streams);\n        unsigned n_stdout_streams;\n\n        char *tty_path;\n\n        int max_level_store;\n        int max_level_syslog;\n        int max_level_kmsg;\n        int max_level_console;\n\n        Storage storage;\n        SplitMode split_mode;\n\n        MMapCache *mmap;\n\n        bool dev_kmsg_readable;\n\n        uint64_t *kernel_seqnum;\n\n        struct udev *udev;\n}",
+            "Server"
+        ],
+        [
+            "struct timeval",
+            "timeval"
+        ],
+        [
+            "typedef uint64_t __bitwise le64_t;",
+            "le64_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/journal/journald-native.c": [
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            112,
+            113,
+            115,
+            116,
+            117,
+            122,
+            123,
+            126,
+            127,
+            128,
+            129,
+            130,
+            133,
+            134,
+            135,
+            137,
+            138,
+            139,
+            140,
+            142,
+            143,
+            148,
+            149,
+            150,
+            151,
+            155,
+            156,
+            157,
+            158,
+            159,
+            160,
+            161,
+            162,
+            163,
+            164,
+            165,
+            166,
+            167,
+            168,
+            169,
+            170,
+            171,
+            172,
+            173,
+            175,
+            176,
+            177,
+            178,
+            179,
+            180,
+            181,
+            182,
+            184,
+            185,
+            186,
+            187,
+            188,
+            192,
+            193,
+            194,
+            200,
+            201,
+            202,
+            205,
+            206,
+            207,
+            208,
+            209,
+            210,
+            214,
+            215,
+            216,
+            218,
+            220,
+            221,
+            222,
+            225,
+            226,
+            227,
+            228,
+            229,
+            230,
+            231,
+            232,
+            233,
+            234,
+            235,
+            236,
+            237,
+            238,
+            241,
+            242,
+            244,
+            245,
+            246,
+            247,
+            248,
+            249,
+            250,
+            251,
+            252,
+            253,
+            254,
+            255,
+            256,
+            258,
+            259,
+            261,
+            262,
+            263,
+            265,
+            266,
+            267,
+            268,
+            270,
+            271,
+            272,
+            273
+        ]
+    },
+    "visitedLines_before": {
+        "src/journal/journald-native.c": [
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            112,
+            113,
+            115,
+            116,
+            117,
+            122,
+            123,
+            126,
+            127,
+            128,
+            129,
+            130,
+            133,
+            134,
+            135,
+            137,
+            138,
+            139,
+            140,
+            142,
+            143,
+            148,
+            149,
+            150,
+            151,
+            155,
+            156,
+            157,
+            158,
+            159,
+            160,
+            161,
+            162,
+            163,
+            164,
+            165,
+            166,
+            167,
+            168,
+            169,
+            170,
+            171,
+            172,
+            173,
+            175,
+            176,
+            177,
+            178,
+            179,
+            180,
+            181,
+            182,
+            184,
+            185,
+            186,
+            187,
+            188,
+            192,
+            193,
+            194,
+            200,
+            201,
+            202,
+            205,
+            206,
+            207,
+            208,
+            209,
+            210,
+            211,
+            214,
+            215,
+            216,
+            217,
+            220,
+            221,
+            222,
+            223,
+            224,
+            225,
+            226,
+            227,
+            228,
+            229,
+            230,
+            231,
+            232,
+            233,
+            236,
+            237,
+            239,
+            240,
+            241,
+            242,
+            243,
+            244,
+            245,
+            246,
+            247,
+            248,
+            249,
+            250,
+            251,
+            253,
+            254,
+            256,
+            257,
+            258,
+            260,
+            261,
+            262,
+            263,
+            265,
+            266,
+            267,
+            268
+        ]
+    },
+    "visitedParams": {
+        "src/journal/journald-native.c": [
+            [
+                "const void *buffer",
+                "server_process_native_message"
+            ],
+            [
+                "size_t buffer_size",
+                "server_process_native_message"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/journal/journald-native.c",
+            "server_process_native_message",
+            "void server_process_native_message( /* <=== server_process_native_message */ \n                Server *s,\n                const void *buffer, size_t buffer_size,\n                struct ucred *ucred,\n                struct timeval *tv,\n                const char *label, size_t label_len) {\n\n        struct iovec *iovec = NULL;\n        unsigned n = 0, m = 0, j, tn = (unsigned) -1;\n        const char *p;\n        size_t remaining;\n        int priority = LOG_INFO;\n        char *identifier = NULL, *message = NULL;\n\n        assert(s);\n        assert(buffer || buffer_size == 0);\n\n        p = buffer;\n        remaining = buffer_size;\n\n        while (remaining > 0) {\n                const char *e, *q;\n\n                e = memchr(p, '\\n', remaining);\n\n                if (!e) {\n                        /* Trailing noise, let's ignore it, and flush what we collected */\n                        log_debug(\"Received message with trailing noise, ignoring.\");\n                        break;\n                }\n\n                if (e == p) {\n                        /* Entry separator */\n                        server_dispatch_message(s, iovec, n, m, ucred, tv, label, label_len, NULL, priority);\n                        n = 0;\n                        priority = LOG_INFO;\n\n                        p++;\n                        remaining--;\n                        continue;\n                }\n\n                if (*p == '.' || *p == '#') {\n                        /* Ignore control commands for now, and\n                         * comments too. */\n                        remaining -= (e - p) + 1;\n                        p = e + 1;\n                        continue;\n                }\n\n                /* A property follows */\n\n                if (n+N_IOVEC_META_FIELDS >= m) {\n                        struct iovec *c;\n                        unsigned u;\n\n                        u = MAX((n+N_IOVEC_META_FIELDS+1) * 2U, 4U);\n                        c = realloc(iovec, u * sizeof(struct iovec));\n                        if (!c) {\n                                log_oom();\n                                break;\n                        }\n\n                        iovec = c;\n                        m = u;\n                }\n\n                q = memchr(p, '=', e - p);\n                if (q) {\n                        if (valid_user_field(p, q - p)) {\n                                size_t l;\n\n                                l = e - p;\n\n                                /* If the field name starts with an\n                                 * underscore, skip the variable,\n                                 * since that indidates a trusted\n                                 * field */\n                                iovec[n].iov_base = (char*) p;\n                                iovec[n].iov_len = l;\n                                n++;\n\n                                /* We need to determine the priority\n                                 * of this entry for the rate limiting\n                                 * logic */\n                                if (l == 10 &&\n                                    memcmp(p, \"PRIORITY=\", 9) == 0 &&\n                                    p[9] >= '0' && p[9] <= '9')\n                                        priority = (priority & LOG_FACMASK) | (p[9] - '0');\n\n                                else if (l == 17 &&\n                                         memcmp(p, \"SYSLOG_FACILITY=\", 16) == 0 &&\n                                         p[16] >= '0' && p[16] <= '9')\n                                        priority = (priority & LOG_PRIMASK) | ((p[16] - '0') << 3);\n\n                                else if (l == 18 &&\n                                         memcmp(p, \"SYSLOG_FACILITY=\", 16) == 0 &&\n                                         p[16] >= '0' && p[16] <= '9' &&\n                                         p[17] >= '0' && p[17] <= '9')\n                                        priority = (priority & LOG_PRIMASK) | (((p[16] - '0')*10 + (p[17] - '0')) << 3);\n\n                                else if (l >= 19 &&\n                                         memcmp(p, \"SYSLOG_IDENTIFIER=\", 18) == 0) {\n                                        char *t;\n\n                                        t = strndup(p + 18, l - 18);\n                                        if (t) {\n                                                free(identifier);\n                                                identifier = t;\n                                        }\n                                } else if (l >= 8 &&\n                                           memcmp(p, \"MESSAGE=\", 8) == 0) {\n                                        char *t;\n\n                                        t = strndup(p + 8, l - 8);\n                                        if (t) {\n                                                free(message);\n                                                message = t;\n                                        }\n                                }\n                        }\n\n                        remaining -= (e - p) + 1;\n                        p = e + 1;\n                        continue;\n                } else {\n                        le64_t l_le;\n                        uint64_t l;\n                        char *k;\n\n                        if (remaining < e - p + 1 + sizeof(uint64_t) + 1) {\n                                log_debug(\"Failed to parse message, ignoring.\");\n                                break;\n                        }\n\n                        memcpy(&l_le, e + 1, sizeof(uint64_t));\n                        l = le64toh(l_le);\n\n                        if (l > DATA_SIZE_MAX) {\n                                log_debug(\"Received binary data block too large, ignoring.\");\n                                break;\n                        }\n\n                        if ((uint64_t) remaining < e - p + 1 + sizeof(uint64_t) + l + 1 ||\n                            e[1+sizeof(uint64_t)+l] != '\\n') {\n                                log_debug(\"Failed to parse message, ignoring.\");\n                                break;\n                        }\n\n                        k = malloc((e - p) + 1 + l);\n                        if (!k) {\n                                log_oom();\n                                break;\n                        }\n\n                        memcpy(k, p, e - p);\n                        k[e - p] = '=';\n                        memcpy(k + (e - p) + 1, e + 1 + sizeof(uint64_t), l);\n\n                        if (valid_user_field(p, e - p)) {\n                                iovec[n].iov_base = k;\n                                iovec[n].iov_len = (e - p) + 1 + l;\n                                n++;\n                        } else\n                                free(k);\n\n                        remaining -= (e - p) + 1 + sizeof(uint64_t) + l + 1;\n                        p = e + 1 + sizeof(uint64_t) + l + 1;\n                }\n        }\n\n        if (n <= 0)\n                goto finish;\n\n        tn = n++;\n        IOVEC_SET_STRING(iovec[tn], \"_TRANSPORT=journal\");\n\n        if (message) {\n                if (s->forward_to_syslog)\n                        server_forward_syslog(s, priority, identifier, message, ucred, tv);\n\n                if (s->forward_to_kmsg)\n                        server_forward_kmsg(s, priority, identifier, message, ucred);\n\n                if (s->forward_to_console)\n                        server_forward_console(s, priority, identifier, message, ucred);\n        }\n\n        server_dispatch_message(s, iovec, n, m, ucred, tv, label, label_len, NULL, priority);\n\nfinish:\n        for (j = 0; j < n; j++)  {\n                if (j == tn)\n                        continue;\n\n                if (iovec[j].iov_base < buffer ||\n                    (const uint8_t*) iovec[j].iov_base >= (const uint8_t*) buffer + buffer_size)\n                        free(iovec[j].iov_base);\n        }\n\n        free(iovec);\n        free(identifier);\n        free(message);\n}",
+            71
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/journal/journald-native.c",
+            "server_process_native_message",
+            "void server_process_native_message( /* <=== server_process_native_message */ \n                Server *s,\n                const void *buffer, size_t buffer_size,\n                struct ucred *ucred,\n                struct timeval *tv,\n                const char *label, size_t label_len) {\n\n        struct iovec *iovec = NULL;\n        unsigned n = 0, m = 0, j, tn = (unsigned) -1;\n        const char *p;\n        size_t remaining;\n        int priority = LOG_INFO;\n        char *identifier = NULL, *message = NULL;\n\n        assert(s);\n        assert(buffer || buffer_size == 0);\n\n        p = buffer;\n        remaining = buffer_size;\n\n        while (remaining > 0) {\n                const char *e, *q;\n\n                e = memchr(p, '\\n', remaining);\n\n                if (!e) {\n                        /* Trailing noise, let's ignore it, and flush what we collected */\n                        log_debug(\"Received message with trailing noise, ignoring.\");\n                        break;\n                }\n\n                if (e == p) {\n                        /* Entry separator */\n                        server_dispatch_message(s, iovec, n, m, ucred, tv, label, label_len, NULL, priority);\n                        n = 0;\n                        priority = LOG_INFO;\n\n                        p++;\n                        remaining--;\n                        continue;\n                }\n\n                if (*p == '.' || *p == '#') {\n                        /* Ignore control commands for now, and\n                         * comments too. */\n                        remaining -= (e - p) + 1;\n                        p = e + 1;\n                        continue;\n                }\n\n                /* A property follows */\n\n                if (n+N_IOVEC_META_FIELDS >= m) {\n                        struct iovec *c;\n                        unsigned u;\n\n                        u = MAX((n+N_IOVEC_META_FIELDS+1) * 2U, 4U);\n                        c = realloc(iovec, u * sizeof(struct iovec));\n                        if (!c) {\n                                log_oom();\n                                break;\n                        }\n\n                        iovec = c;\n                        m = u;\n                }\n\n                q = memchr(p, '=', e - p);\n                if (q) {\n                        if (valid_user_field(p, q - p)) {\n                                size_t l;\n\n                                l = e - p;\n\n                                /* If the field name starts with an\n                                 * underscore, skip the variable,\n                                 * since that indidates a trusted\n                                 * field */\n                                iovec[n].iov_base = (char*) p;\n                                iovec[n].iov_len = l;\n                                n++;\n\n                                /* We need to determine the priority\n                                 * of this entry for the rate limiting\n                                 * logic */\n                                if (l == 10 &&\n                                    memcmp(p, \"PRIORITY=\", 9) == 0 &&\n                                    p[9] >= '0' && p[9] <= '9')\n                                        priority = (priority & LOG_FACMASK) | (p[9] - '0');\n\n                                else if (l == 17 &&\n                                         memcmp(p, \"SYSLOG_FACILITY=\", 16) == 0 &&\n                                         p[16] >= '0' && p[16] <= '9')\n                                        priority = (priority & LOG_PRIMASK) | ((p[16] - '0') << 3);\n\n                                else if (l == 18 &&\n                                         memcmp(p, \"SYSLOG_FACILITY=\", 16) == 0 &&\n                                         p[16] >= '0' && p[16] <= '9' &&\n                                         p[17] >= '0' && p[17] <= '9')\n                                        priority = (priority & LOG_PRIMASK) | (((p[16] - '0')*10 + (p[17] - '0')) << 3);\n\n                                else if (l >= 19 &&\n                                         memcmp(p, \"SYSLOG_IDENTIFIER=\", 18) == 0) {\n                                        char *t;\n\n                                        t = strndup(p + 18, l - 18);\n                                        if (t) {\n                                                free(identifier);\n                                                identifier = t;\n                                        }\n                                } else if (l >= 8 &&\n                                           memcmp(p, \"MESSAGE=\", 8) == 0) {\n                                        char *t;\n\n                                        t = strndup(p + 8, l - 8);\n                                        if (t) {\n                                                free(message);\n                                                message = t;\n                                        }\n                                }\n                        }\n\n                        remaining -= (e - p) + 1;\n                        p = e + 1;\n                        continue;\n                } else {\n                        le64_t l_le;\n                        uint64_t l;\n                        char *k;\n\n                        if (remaining < e - p + 1 + sizeof(uint64_t) + 1) {\n                                log_debug(\"Failed to parse message, ignoring.\");\n                                break;\n                        }\n\n                        memcpy(&l_le, e + 1, sizeof(uint64_t));\n                        l = le64toh(l_le);\n\n                        if (remaining < e - p + 1 + sizeof(uint64_t) + l + 1 ||\n                            e[1+sizeof(uint64_t)+l] != '\\n') {\n                                log_debug(\"Failed to parse message, ignoring.\");\n                                break;\n                        }\n\n                        k = malloc((e - p) + 1 + l);\n                        if (!k) {\n                                log_oom();\n                                break;\n                        }\n\n                        memcpy(k, p, e - p);\n                        k[e - p] = '=';\n                        memcpy(k + (e - p) + 1, e + 1 + sizeof(uint64_t), l);\n\n                        if (valid_user_field(p, e - p)) {\n                                iovec[n].iov_base = k;\n                                iovec[n].iov_len = (e - p) + 1 + l;\n                                n++;\n                        } else\n                                free(k);\n\n                        remaining -= (e - p) + 1 + sizeof(uint64_t) + l + 1;\n                        p = e + 1 + sizeof(uint64_t) + l + 1;\n                }\n        }\n\n        if (n <= 0)\n                goto finish;\n\n        tn = n++;\n        IOVEC_SET_STRING(iovec[tn], \"_TRANSPORT=journal\");\n\n        if (message) {\n                if (s->forward_to_syslog)\n                        server_forward_syslog(s, priority, identifier, message, ucred, tv);\n\n                if (s->forward_to_kmsg)\n                        server_forward_kmsg(s, priority, identifier, message, ucred);\n\n                if (s->forward_to_console)\n                        server_forward_console(s, priority, identifier, message, ucred);\n        }\n\n        server_dispatch_message(s, iovec, n, m, ucred, tv, label, label_len, NULL, priority);\n\nfinish:\n        for (j = 0; j < n; j++)  {\n                if (j == tn)\n                        continue;\n\n                if (iovec[j].iov_base < buffer ||\n                    (const uint8_t*) iovec[j].iov_base >= (const uint8_t*) buffer + buffer_size)\n                        free(iovec[j].iov_base);\n        }\n\n        free(iovec);\n        free(identifier);\n        free(message);\n}",
+            70
+        ]
+    ]
+}

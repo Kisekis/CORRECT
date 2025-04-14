@@ -1,0 +1,818 @@
+{
+    "calleeMethods": [
+        [
+            "src/core/parser/hf.h",
+            "HDR_REASON_F",
+            "#define HDR_REASON_F\t\t\t\tHDR_F_DEF(REASON) /* <=== src/core/parser/hf.h:181:181:HDR_REASON_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_CONTACT_F",
+            "#define HDR_CONTACT_F\t\t\t\tHDR_F_DEF(CONTACT) /* <=== src/core/parser/hf.h:134:134:HDR_CONTACT_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/msg_parser.c",
+            "get_hdr_field",
+            "char* get_hdr_field(char* const buf, char* const end, struct hdr_field* const hdr) /* <=== get_hdr_field */ \n{\n\n\tchar *tmp = 0;\n\tchar *match;\n\tstruct via_body *vb;\n\tstruct cseq_body* cseq_b;\n\tstruct to_body* to_b;\n\tint integer, err;\n\tunsigned uval;\n\n\tif(!buf) {\n\t\tDBG(\"null buffer pointer\\n\");\n\t\tgoto error;\n\t}\n\n\tif ((*buf)=='\\n' || (*buf)=='\\r'){\n\t\t/* double crlf or lflf or crcr */\n\t\tDBG(\"found end of header\\n\");\n\t\thdr->type=HDR_EOH_T;\n\t\treturn buf;\n\t}\n\n\ttmp=parse_hname(buf, end, hdr);\n\tif (hdr->type==HDR_ERROR_T){\n\t\tERR(\"bad header\\n\");\n\t\tgoto error;\n\t}\n\n\t/* eliminate leading whitespace */\n\ttmp=eat_lws_end(tmp, end);\n\tif (tmp>=end) {\n\t\tERR(\"HF empty\\n\");\n\t\tgoto error;\n\t}\n\n\t/* if header-field well-known, parse it, find its end otherwise ;\n\t * after leaving the hdr->type switch, tmp should be set to the\n\t * next header field\n\t */\n\tswitch(hdr->type){\n\t\tcase HDR_VIA_T:\n\t\t\t/* keep number of vias parsed -- we want to report it in\n\t\t\t   replies for diagnostic purposes */\n\t\t\tvia_cnt++;\n\t\t\tvb=pkg_malloc(sizeof(struct via_body));\n\t\t\tif (vb==0){\n\t\t\t\tERR(\"out of memory\\n\");\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t\tmemset(vb,0,sizeof(struct via_body));\n\t\t\thdr->body.s=tmp;\n\t\t\ttmp=parse_via(tmp, end, vb);\n\t\t\tif (vb->error==PARSE_ERROR){\n\t\t\t\tERR(\"bad via\\n\");\n\t\t\t\tfree_via_list(vb);\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t\thdr->parsed=vb;\n\t\t\tvb->hdr.s=hdr->name.s;\n\t\t\tvb->hdr.len=hdr->name.len;\n\t\t\thdr->body.len=tmp-hdr->body.s;\n\t\t\tbreak;\n\t\tcase HDR_CSEQ_T:\n\t\t\tcseq_b=pkg_malloc(sizeof(struct cseq_body));\n\t\t\tif (cseq_b==0){\n\t\t\t\tERR(\"out of memory\\n\");\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t\tmemset(cseq_b, 0, sizeof(struct cseq_body));\n\t\t\thdr->body.s=tmp;\n\t\t\ttmp=parse_cseq(tmp, end, cseq_b);\n\t\t\tif (cseq_b->error==PARSE_ERROR){\n\t\t\t\tERR(\"bad cseq\\n\");\n\t\t\t\tfree_cseq(cseq_b);\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t\thdr->parsed=cseq_b;\n\t\t\thdr->body.len=tmp-hdr->body.s;\n\t\t\tDBG(\"cseq <%.*s>: <%.*s> <%.*s>\\n\", hdr->name.len, ZSW(hdr->name.s),\n\t\t\t\t\tcseq_b->number.len, ZSW(cseq_b->number.s), cseq_b->method.len,\n\t\t\t\t\tcseq_b->method.s);\n\t\t\tbreak;\n\t\tcase HDR_TO_T:\n\t\t\tto_b=pkg_malloc(sizeof(struct to_body));\n\t\t\tif (to_b==0){\n\t\t\t\tERR(\"out of memory\\n\");\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t\tmemset(to_b, 0, sizeof(struct to_body));\n\t\t\thdr->body.s=tmp;\n\t\t\ttmp=parse_to(tmp, end,to_b);\n\t\t\tif (to_b->error==PARSE_ERROR){\n\t\t\t\tERR(\"bad to header\\n\");\n\t\t\t\tfree_to(to_b);\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t\thdr->parsed=to_b;\n\t\t\thdr->body.len=tmp-hdr->body.s;\n\t\t\tDBG(\"<%.*s> [%d]; uri=[%.*s]\\n\", hdr->name.len, ZSW(hdr->name.s),\n\t\t\t\t\thdr->body.len, to_b->uri.len, ZSW(to_b->uri.s));\n\t\t\tDBG(\"to body [%.*s]\\n\", to_b->body.len, ZSW(to_b->body.s));\n\t\t\tbreak;\n\t\tcase HDR_CONTENTLENGTH_T:\n\t\t\thdr->body.s=tmp;\n\t\t\ttmp=parse_content_length(tmp,end, &integer);\n\t\t\tif (tmp==0){\n\t\t\t\tERR(\"bad content_length header\\n\");\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t\thdr->parsed=(void*)(long)integer;\n\t\t\thdr->body.len=tmp-hdr->body.s;\n\t\t\tDBG(\"content_length=%d\\n\", (int)(long)hdr->parsed);\n\t\t\tbreak;\n\t\tcase HDR_RETRY_AFTER_T:\n\t\t\thdr->body.s=tmp;\n\t\t\ttmp=parse_retry_after(tmp,end, &uval, &err);\n\t\t\tif (err){\n\t\t\t\tERR(\"bad retry_after header\\n\");\n\t\t\t\tgoto error;\n\t\t\t}\n\t\t\thdr->parsed=(void*)(unsigned long)uval;\n\t\t\thdr->body.len=tmp-hdr->body.s;\n\t\t\tDBG(\"retry_after=%d\\n\", (unsigned)(long)hdr->parsed);\n\t\t\tbreak;\n\t\tcase HDR_IDENTITY_T:\n\t\tcase HDR_DATE_T:\n\t\tcase HDR_IDENTITY_INFO_T:\n\t\tcase HDR_SUPPORTED_T:\n\t\tcase HDR_REQUIRE_T:\n\t\tcase HDR_CONTENTTYPE_T:\n\t\tcase HDR_FROM_T:\n\t\tcase HDR_CALLID_T:\n\t\tcase HDR_CONTACT_T:\n\t\tcase HDR_ROUTE_T:\n\t\tcase HDR_RECORDROUTE_T:\n\t\tcase HDR_MAXFORWARDS_T:\n\t\tcase HDR_AUTHORIZATION_T:\n\t\tcase HDR_EXPIRES_T:\n\t\tcase HDR_MIN_EXPIRES_T:\n\t\tcase HDR_PROXYAUTH_T:\n\t\tcase HDR_PROXYREQUIRE_T:\n\t\tcase HDR_UNSUPPORTED_T:\n\t\tcase HDR_ALLOW_T:\n\t\tcase HDR_EVENT_T:\n\t\tcase HDR_ACCEPT_T:\n\t\tcase HDR_ACCEPTLANGUAGE_T:\n\t\tcase HDR_ORGANIZATION_T:\n\t\tcase HDR_PRIORITY_T:\n\t\tcase HDR_SUBJECT_T:\n\t\tcase HDR_USERAGENT_T:\n\t\tcase HDR_SERVER_T:\n\t\tcase HDR_CONTENTDISPOSITION_T:\n\t\tcase HDR_DIVERSION_T:\n\t\tcase HDR_RPID_T:\n\t\tcase HDR_SIPIFMATCH_T:\n\t\tcase HDR_REFER_TO_T:\n\t\tcase HDR_SESSIONEXPIRES_T:\n\t\tcase HDR_MIN_SE_T:\n\t\tcase HDR_SUBSCRIPTION_STATE_T:\n\t\tcase HDR_ACCEPTCONTACT_T:\n\t\tcase HDR_ALLOWEVENTS_T:\n\t\tcase HDR_CONTENTENCODING_T:\n\t\tcase HDR_REFERREDBY_T:\n\t\tcase HDR_REJECTCONTACT_T:\n\t\tcase HDR_REQUESTDISPOSITION_T:\n\t\tcase HDR_WWW_AUTHENTICATE_T:\n\t\tcase HDR_PROXY_AUTHENTICATE_T:\n\t\tcase HDR_PATH_T:\n\t\tcase HDR_PRIVACY_T:\n\t\tcase HDR_PAI_T:\n\t\tcase HDR_PPI_T:\n\t\tcase HDR_REASON_T:\n\t\tcase HDR_CALLINFO_T:\n\t\tcase HDR_OTHER_T:\n\t\t\t/* just skip over it */\n\t\t\thdr->body.s=tmp;\n\t\t\t/* find end of header */\n\t\t\t/* find lf */\n\t\t\tdo{\n\t\t\t\tmatch=q_memchr(tmp, '\\n', end-tmp);\n\t\t\t\tif (match){\n\t\t\t\t\tmatch++;\n\t\t\t\t}else {\n\t\t\t\t\tERR(\"bad body for <%s>(%d)\\n\", hdr->name.s, hdr->type);\n\t\t\t\t\t/* abort(); */\n\t\t\t\t\ttmp=end;\n\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\ttmp=match;\n\t\t\t}while( match<end &&( (*match==' ')||(*match=='\\t') ) );\n\t\t\ttmp=match;\n\t\t\thdr->body.len=match-hdr->body.s;\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tBUG(\"unknown header type %d\\n\", hdr->type);\n\t\t\tgoto error;\n\t}\n\t/* jku: if \\r covered by current length, shrink it */\n\ttrim_r( hdr->body );\n\thdr->len=tmp-hdr->name.s;\n\treturn tmp;\nerror:\n\tDBG(\"error exit\\n\");\n\tSTATS_BAD_MSG_HDR();\n\thdr->type=HDR_ERROR_T;\n\thdr->len=tmp-hdr->name.s;\n\treturn tmp;\n}",
+            2
+        ],
+        [
+            "src/core/parser/parse_via.c",
+            "parse_via",
+            "char *parse_via( /* <=== parse_via */ \n\t\tchar *buffer, const char *const end, struct via_body *const vbody)\n{\n\tchar *tmp;\n\tchar *param_start;\n\tunsigned char state;\n\tunsigned char saved_state;\n\tint c_nest;\n\tint err;\n\tstruct via_body *vb;\n\tstruct via_param *param;\n\n\tvb = vbody; /* keep orignal vbody value, needed to set the error member\n\t\t\t\t* in case of multiple via bodies in the same header */\nparse_again:\n\tvb->error = PARSE_ERROR;\n\t/* parse start of via ( SIP/2.0/UDP    )*/\n\tstate = F_SIP;\n\tsaved_state = F_SIP; /* fixes gcc 4.0 warning */\n\tparam_start = 0;\n\tfor(tmp = buffer; tmp < end; tmp++) {\n\t\tswitch(*tmp) {\n\t\t\tcase ' ':\n\t\t\tcase '\\t':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase L_VER: /* eat space */\n\t\t\t\t\tcase L_PROTO:\n\t\t\t\t\tcase F_SIP:\n\t\t\t\t\tcase F_VER:\n\t\t\t\t\tcase F_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_UDP;\n\t\t\t\t\t\tstate = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_TCP;\n\t\t\t\t\t\tstate = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_TLS;\n\t\t\t\t\t\tstate = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_SCTP;\n\t\t\t\t\t\tstate = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_WS;\n\t\t\t\t\t\tstate = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_WSS;\n\t\t\t\t\t\tstate = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_OTHER;\n\t\t\t\t\t\tstate = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_OTHER;\n\t\t\t\t\t\tstate = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_SIP:\n\t\t\t\t\t\tvb->name.len = tmp - vb->name.s;\n\t\t\t\t\t\tstate = L_VER;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase FIN_VER:\n\t\t\t\t\t\tvb->version.len = tmp - vb->version.s;\n\t\t\t\t\t\tstate = L_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_CR: /* header continues on this line */\n\t\t\t\t\t\tstate = saved_state;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase '\\n':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase L_VER:\n\t\t\t\t\tcase F_SIP:\n\t\t\t\t\tcase F_VER:\n\t\t\t\t\tcase F_PROTO:\n\t\t\t\t\tcase L_PROTO:\n\t\t\t\t\t\tsaved_state = state;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_UDP;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_TCP;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_TLS;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_SCTP;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_WS;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_WSS;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_OTHER;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_OTHER;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = F_HOST; /* start looking for host*/\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_SIP:\n\t\t\t\t\t\tvb->name.len = tmp - vb->name.s;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = L_VER;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase FIN_VER:\n\t\t\t\t\t\tvb->version.len = tmp - vb->version.s;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tsaved_state = L_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\tstate = F_CRLF;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\t\tstate = saved_state;\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase '\\r':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase L_VER:\n\t\t\t\t\tcase F_SIP:\n\t\t\t\t\tcase F_VER:\n\t\t\t\t\tcase F_PROTO:\n\t\t\t\t\tcase L_PROTO:\n\t\t\t\t\t\tsaved_state = state;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_UDP;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = F_HOST;\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_TCP;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = F_HOST;\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_TLS;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = F_HOST;\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_SCTP;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = F_HOST;\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_WS;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = F_HOST;\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_WSS;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = F_HOST;\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_OTHER;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = F_HOST;\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\t\t/* finished proto parsing */\n\t\t\t\t\t\tvb->transport.len = tmp - vb->transport.s;\n\t\t\t\t\t\tvb->proto = PROTO_OTHER;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = F_HOST;\n\t\t\t\t\t\tgoto main_via;\n\t\t\t\t\tcase FIN_SIP:\n\t\t\t\t\t\tvb->name.len = tmp - vb->name.s;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = L_VER;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase FIN_VER:\n\t\t\t\t\t\tvb->version.len = tmp - vb->version.s;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tsaved_state = L_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_LF: /*end of line ?next header?*/\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\t\tstate = saved_state;\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\n\t\t\tcase '/':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase FIN_SIP:\n\t\t\t\t\t\tvb->name.len = tmp - vb->name.s;\n\t\t\t\t\t\tstate = F_VER;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase FIN_VER:\n\t\t\t\t\t\tvb->version.len = tmp - vb->version.s;\n\t\t\t\t\t\tstate = F_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase L_VER:\n\t\t\t\t\t\tstate = F_VER;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase L_PROTO:\n\t\t\t\t\t\tstate = F_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\t/* match SIP*/\n\t\t\tcase 'S':\n\t\t\tcase 's':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_SIP:\n\t\t\t\t\t\tstate = SIP1;\n\t\t\t\t\t\tvb->name.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\t\tstate = FIN_TLS;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\t\tstate = WS_WSS2;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\t\tstate = FIN_WSS;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_PROTO:\n\t\t\t\t\t\tstate = SCTP1;\n\t\t\t\t\t\tvb->transport.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase 'I':\n\t\t\tcase 'i':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase SIP1:\n\t\t\t\t\t\tstate = SIP2;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase 'p':\n\t\t\tcase 'P':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase SIP2:\n\t\t\t\t\t\tstate = FIN_SIP;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\t/* allow p in PROTO */\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\t\tstate = FIN_UDP;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\t\tstate = FIN_TCP;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\t\tstate = FIN_SCTP;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase 'U':\n\t\t\tcase 'u':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_PROTO:\n\t\t\t\t\t\tstate = UDP1;\n\t\t\t\t\t\tvb->transport.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase 'D':\n\t\t\tcase 'd':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\t\tstate = UDP2;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase 'T':\n\t\t\tcase 't':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_PROTO:\n\t\t\t\t\t\tstate = TCP_TLS1;\n\t\t\t\t\t\tvb->transport.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\t\tstate = SCTP3;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase 'C':\n\t\t\tcase 'c':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\t\tstate = TCP2;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\t\tstate = SCTP2;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase 'L':\n\t\t\tcase 'l':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\t\tstate = TLS2;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase 'W':\n\t\t\tcase 'w':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_PROTO:\n\t\t\t\t\t\tstate = WS_WSS1;\n\t\t\t\t\t\tvb->transport.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\t/*match 2.0*/\n\t\t\tcase '2':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_VER:\n\t\t\t\t\t\tstate = VER1;\n\t\t\t\t\t\tvb->version.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase '.':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase VER1:\n\t\t\t\t\t\tstate = VER2;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase '0':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase VER2:\n\t\t\t\t\t\tstate = FIN_VER;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tdefault:\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_PROTO:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tvb->transport.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase OTHER_PROTO:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase UDP1:\n\t\t\t\t\tcase UDP2:\n\t\t\t\t\tcase FIN_UDP:\n\t\t\t\t\tcase TCP_TLS1:\n\t\t\t\t\tcase TCP2:\n\t\t\t\t\tcase FIN_TCP:\n\t\t\t\t\tcase TLS2:\n\t\t\t\t\tcase FIN_TLS:\n\t\t\t\t\tcase SCTP1:\n\t\t\t\t\tcase SCTP2:\n\t\t\t\t\tcase SCTP3:\n\t\t\t\t\tcase FIN_SCTP:\n\t\t\t\t\tcase WS_WSS1:\n\t\t\t\t\tcase WS_WSS2:\n\t\t\t\t\tcase FIN_WSS:\n\t\t\t\t\t\tstate = OTHER_PROTO;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> on state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t}\n\t} /* for tmp*/\n\n\t/* we should not be here! if everything is ok > main_via*/\n\tLM_ERR(\"bad via: end of packet on state=%d\\n\", state);\n\tgoto error;\n\nmain_via:\n\t/* inc tmp to point to the next char*/\n\ttmp++;\n\tc_nest = 0;\n\t/*state should always be F_HOST here*/;\n\tfor(; *tmp; tmp++) {\n\t\tswitch(*tmp) {\n\t\t\tcase ' ':\n\t\t\tcase '\\t':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_HOST: /*eat the spaces*/\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_HOST:\n\t\t\t\t\t\t/*mark end of host*/\n\t\t\t\t\t\tvb->host.len = tmp - vb->host.s;\n\t\t\t\t\t\tstate = L_PORT;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase L_PORT: /*eat the spaces*/\n\t\t\t\t\tcase F_PORT:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PORT:\n\t\t\t\t\t\t/*end of port */\n\t\t\t\t\t\tvb->port_str.len = tmp - vb->port_str.s;\n\t\t\t\t\t\tstate = L_PARAM;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase L_PARAM: /* eat the space */\n\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PARAM:\n\t\t\t\t\t\t/*\t*tmp=0;*/ /*!?end of param*/\n\t\t\t\t\t\tstate = L_PARAM;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase L_VIA:\n\t\t\t\t\tcase F_VIA: /* eat the space */\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_COMMENT:\n\t\t\t\t\tcase P_COMMENT:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_IP6HOST: /*no spaces allowed*/\n\t\t\t\t\tcase P_IP6HOST:\n\t\t\t\t\t\tLM_ERR(\"bad ipv6 reference\\n\");\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t/*previous=crlf and now =' '*/\n\t\t\t\t\t\tstate = saved_state;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_CRIT(\"BUG: parsing via on <%c>, state=%d\\n\", *tmp,\n\t\t\t\t\t\t\t\tstate);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase '\\n':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_HOST: /*eat the spaces*/\n\t\t\t\t\tcase L_PORT: /*eat the spaces*/\n\t\t\t\t\tcase F_PORT:\n\t\t\t\t\tcase L_PARAM: /* eat the space */\n\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\tcase F_VIA: /* eat the space */\n\t\t\t\t\tcase L_VIA:\n\t\t\t\t\tcase F_COMMENT:\n\t\t\t\t\tcase P_COMMENT:\n\t\t\t\t\tcase F_IP6HOST:\n\t\t\t\t\tcase P_IP6HOST:\n\t\t\t\t\t\tsaved_state = state;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_HOST:\n\t\t\t\t\t\t/*mark end of host*/\n\t\t\t\t\t\tvb->host.len = tmp - vb->host.s;\n\t\t\t\t\t\tsaved_state = L_PORT;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PORT:\n\t\t\t\t\t\t/*end of port */\n\t\t\t\t\t\tvb->port_str.len = tmp - vb->port_str.s;\n\t\t\t\t\t\tsaved_state = L_PARAM;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PARAM:\n\t\t\t\t\t\t/*\t*tmp=0;*/ /*!?end of param*/\n\t\t\t\t\t\tsaved_state = L_PARAM;\n\t\t\t\t\t\tstate = F_LF;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\tstate = F_CRLF;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\t\tstate = saved_state;\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_CRIT(\"BUG: parsing via on <%c>\\n\", *tmp);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase '\\r':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_HOST: /*eat the spaces*/\n\t\t\t\t\tcase L_PORT: /*eat the spaces*/\n\t\t\t\t\tcase F_PORT:\n\t\t\t\t\tcase L_PARAM: /* eat the space */\n\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\tcase F_VIA: /* eat the space */\n\t\t\t\t\tcase L_VIA:\n\t\t\t\t\tcase F_COMMENT:\n\t\t\t\t\tcase P_COMMENT:\n\t\t\t\t\tcase F_IP6HOST:\n\t\t\t\t\tcase P_IP6HOST:\n\t\t\t\t\t\tsaved_state = state;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_HOST:\n\t\t\t\t\t\t/*mark end of host*/\n\t\t\t\t\t\tvb->host.len = tmp - vb->host.s;\n\t\t\t\t\t\tsaved_state = L_PORT;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PORT:\n\t\t\t\t\t\t/*end of port */\n\t\t\t\t\t\tvb->port_str.len = tmp - vb->port_str.s;\n\t\t\t\t\t\tsaved_state = L_PARAM;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PARAM:\n\t\t\t\t\t\t/*\t*tmp=0;*/ /*!?end of param*/\n\t\t\t\t\t\tsaved_state = L_PARAM;\n\t\t\t\t\t\tstate = F_CR;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\t\tstate = saved_state;\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_CRIT(\"BUG: parsing via on <%c>\\n\", *tmp);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\n\t\t\tcase ':':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_HOST:\n\t\t\t\t\tcase F_IP6HOST:\n\t\t\t\t\t\tstate = P_IP6HOST;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_IP6HOST:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_HOST:\n\t\t\t\t\t\t/*mark  end of host*/\n\t\t\t\t\t\tvb->host.len = tmp - vb->host.s;\n\t\t\t\t\t\tstate = F_PORT;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase L_PORT:\n\t\t\t\t\t\tstate = F_PORT;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PORT:\n\t\t\t\t\t\tLM_ERR(\"bad port\\n\");\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase L_PARAM:\n\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\tcase F_PORT:\n\t\t\t\t\tcase P_PARAM:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> in state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase L_VIA:\n\t\t\t\t\tcase F_VIA:\n\t\t\t\t\t\tLM_ERR(\"bad char in compact via\\n\");\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t/*previous=crlf and now !=' '*/\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tcase F_COMMENT: /*everything is allowed in a comment*/\n\t\t\t\t\t\tvb->comment.s = tmp;\n\t\t\t\t\t\tstate = P_COMMENT;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_COMMENT: /*everything is allowed in a comment*/\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_CRIT(\"on <%c> state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase ';':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_HOST:\n\t\t\t\t\tcase F_IP6HOST:\n\t\t\t\t\t\tLM_ERR(\"no host found\\n\");\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase P_IP6HOST:\n\t\t\t\t\t\tLM_ERR(\"bad ipv6 reference\\n\");\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase P_HOST:\n\t\t\t\t\t\tvb->host.len = tmp - vb->host.s;\n\t\t\t\t\t\tstate = F_PARAM;\n\t\t\t\t\t\tparam_start = tmp + 1;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PORT:\n\t\t\t\t\t\t/*mark the end*/\n\t\t\t\t\t\tvb->port_str.len = tmp - vb->port_str.s;\n\t\t\t\t\tcase L_PORT:\n\t\t\t\t\tcase L_PARAM:\n\t\t\t\t\t\tstate = F_PARAM;\n\t\t\t\t\t\tparam_start = tmp + 1;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_PORT:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> in state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\t\tLM_ERR(\"null param?\\n\");\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase P_PARAM:\n\t\t\t\t\t\t/*hmm next, param?*/\n\t\t\t\t\t\tstate = F_PARAM;\n\t\t\t\t\t\tparam_start = tmp + 1;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase L_VIA:\n\t\t\t\t\tcase F_VIA:\n\t\t\t\t\t\tLM_ERR(\"bad char <%c> in next via\\n\", *tmp);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t/*previous=crlf and now !=' '*/\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tcase F_COMMENT: /*everything is allowed in a comment*/\n\t\t\t\t\t\tvb->comment.s = tmp;\n\t\t\t\t\t\tstate = P_COMMENT;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_COMMENT: /*everything is allowed in a comment*/\n\t\t\t\t\t\tbreak;\n\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_CRIT(\"BUG: parsing via on <%c> state %d\\n\", *tmp,\n\t\t\t\t\t\t\t\tstate);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase ',':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_HOST:\n\t\t\t\t\tcase F_IP6HOST:\n\t\t\t\t\t\tLM_ERR(\"no host found\\n\");\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase P_IP6HOST:\n\t\t\t\t\t\tLM_ERR(\"bad ipv6 reference\\n\");\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase P_HOST:\n\t\t\t\t\t\t/*mark the end*/\n\t\t\t\t\t\tvb->host.len = tmp - vb->host.s;\n\t\t\t\t\t\tstate = F_VIA;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PORT:\n\t\t\t\t\t\t/*mark the end*/\n\t\t\t\t\t\tvb->port_str.len = tmp - vb->port_str.s;\n\t\t\t\t\t\tstate = F_VIA;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase L_PORT:\n\t\t\t\t\tcase L_PARAM:\n\t\t\t\t\tcase P_PARAM:\n\t\t\t\t\tcase L_VIA:\n\t\t\t\t\t\tstate = F_VIA;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_PORT:\n\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\t\tLM_ERR(\"invalid char <%c> in state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase F_VIA:\n\t\t\t\t\t\t/* do  nothing,  eat \",\"*/\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t/*previous=crlf and now !=' '*/\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tcase F_COMMENT: /*everything is allowed in a comment*/\n\t\t\t\t\t\tvb->comment.s = tmp;\n\t\t\t\t\t\tstate = P_COMMENT;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_COMMENT: /*everything is allowed in a comment*/\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_CRIT(\"BUG: parsing via on <%c> state %d\\n\", *tmp,\n\t\t\t\t\t\t\t\tstate);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase '(':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_HOST:\n\t\t\t\t\tcase F_PORT:\n\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\tcase F_VIA:\n\t\t\t\t\tcase F_IP6HOST:\n\t\t\t\t\tcase P_IP6HOST: /*must be terminated in ']'*/\n\t\t\t\t\t\tLM_ERR(\"parsing via on <%c> state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase P_HOST:\n\t\t\t\t\t\t/*mark the end*/\n\t\t\t\t\t\tvb->host.len = tmp - vb->host.s;\n\t\t\t\t\t\tstate = F_COMMENT;\n\t\t\t\t\t\tc_nest++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PORT:\n\t\t\t\t\t\t/*mark the end*/\n\t\t\t\t\t\tvb->port_str.len = tmp - vb->port_str.s;\n\t\t\t\t\t\tstate = F_COMMENT;\n\t\t\t\t\t\tc_nest++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PARAM:\n\t\t\t\t\t\t/*mark the end*/\n\t\t\t\t\t\tvb->params.len = tmp - vb->params.s;\n\t\t\t\t\t\tstate = F_COMMENT;\n\t\t\t\t\t\tc_nest++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase L_PORT:\n\t\t\t\t\tcase L_PARAM:\n\t\t\t\t\tcase L_VIA:\n\t\t\t\t\t\tstate = F_COMMENT;\n\t\t\t\t\t\tvb->params.len = tmp - vb->params.s;\n\t\t\t\t\t\tc_nest++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_COMMENT:\n\t\t\t\t\tcase F_COMMENT:\n\t\t\t\t\t\tc_nest++;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t/*previous=crlf and now !=' '*/\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_CRIT(\"BUG: parsing via on <%c> state %d\\n\", *tmp,\n\t\t\t\t\t\t\t\tstate);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase ')':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_COMMENT:\n\t\t\t\t\tcase P_COMMENT:\n\t\t\t\t\t\tif(c_nest) {\n\t\t\t\t\t\t\tc_nest--;\n\t\t\t\t\t\t\tif(c_nest == 0) {\n\t\t\t\t\t\t\t\tstate = L_VIA;\n\t\t\t\t\t\t\t\tvb->comment.len = tmp - vb->comment.s;\n\t\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tLM_ERR(\"parsing via: missing '(' - nesting = %d\\n\",\n\t\t\t\t\t\t\t\t\tc_nest);\n\t\t\t\t\t\t\tgoto error;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_HOST:\n\t\t\t\t\tcase F_PORT:\n\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\tcase F_VIA:\n\t\t\t\t\tcase P_HOST:\n\t\t\t\t\tcase P_PORT:\n\t\t\t\t\tcase P_PARAM:\n\t\t\t\t\tcase L_PORT:\n\t\t\t\t\tcase L_PARAM:\n\t\t\t\t\tcase L_VIA:\n\t\t\t\t\tcase F_IP6HOST:\n\t\t\t\t\tcase P_IP6HOST:\n\t\t\t\t\t\tLM_ERR(\"parsing via on <%c> state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t/*previous=crlf and now !=' '*/\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_CRIT(\"BUG: parsing via on <%c> state %d\\n\", *tmp,\n\t\t\t\t\t\t\t\tstate);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase '[':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_HOST:\n\t\t\t\t\t\tvb->host.s = tmp; /* mark start here (include [])*/\n\t\t\t\t\t\tstate = F_IP6HOST;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_COMMENT: /*everything is allowed in a comment*/\n\t\t\t\t\t\tvb->comment.s = tmp;\n\t\t\t\t\t\tstate = P_COMMENT;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_COMMENT:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t/*previous=crlf and now !=' '*/\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"parsing via on <%c> state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase ']':\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase P_IP6HOST:\n\t\t\t\t\t\t/*mark the end*/\n\t\t\t\t\t\tvb->host.len = (tmp - vb->host.s) + 1; /* include \"]\" */\n\t\t\t\t\t\tstate = L_PORT;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t/*previous=crlf and now !=' '*/\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tcase F_COMMENT: /*everything is allowed in a comment*/\n\t\t\t\t\t\tvb->comment.s = tmp;\n\t\t\t\t\t\tstate = P_COMMENT;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_COMMENT:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"parsing via on <%c> state %d\\n\", *tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t\t\tbreak;\n\n\t\t\tdefault:\n\t\t\t\tswitch(state) {\n\t\t\t\t\tcase F_HOST:\n\t\t\t\t\t\tstate = P_HOST;\n\t\t\t\t\t\tvb->host.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_HOST:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_PORT:\n\t\t\t\t\t\tstate = P_PORT;\n\t\t\t\t\t\tvb->port_str.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PORT:\n\t\t\t\t\t\t/*check if number?*/\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\t\t\t/*state=P_PARAM*/;\n\t\t\t\t\t\tif(vb->params.s == 0)\n\t\t\t\t\t\t\tvb->params.s = param_start;\n\t\t\t\t\t\tparam = pkg_malloc(sizeof(struct via_param));\n\t\t\t\t\t\tif(param == 0) {\n\t\t\t\t\t\t\tLM_ERR(\"mem. allocation error\\n\");\n\t\t\t\t\t\t\tgoto error;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tmemset(param, 0, sizeof(struct via_param));\n\t\t\t\t\t\tparam->start = param_start;\n\t\t\t\t\t\ttmp = parse_via_param(\n\t\t\t\t\t\t\t\ttmp, end, &state, &saved_state, param, vb);\n\n\t\t\t\t\t\tswitch(state) {\n\t\t\t\t\t\t\tcase F_PARAM:\n\t\t\t\t\t\t\t\tparam_start = tmp + 1;\n\t\t\t\t\t\t\tcase L_PARAM:\n\t\t\t\t\t\t\tcase F_LF:\n\t\t\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t\tcase F_VIA:\n\t\t\t\t\t\t\t\tvb->params.len = param->start + param->size\n\t\t\t\t\t\t\t\t\t\t\t\t\t- vb->params.s;\n\t\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t\tcase END_OF_HEADER:\n\t\t\t\t\t\t\t\tvb->params.len = param->start + param->size\n\t\t\t\t\t\t\t\t\t\t\t\t\t- vb->params.s;\n\t\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t\tcase PARAM_ERROR:\n\t\t\t\t\t\t\t\tpkg_free(param);\n\t\t\t\t\t\t\t\tgoto error;\n\t\t\t\t\t\t\tdefault:\n\t\t\t\t\t\t\t\tpkg_free(param);\n\t\t\t\t\t\t\t\tLM_ERR(\"parsing via after parse_via_param:\"\n\t\t\t\t\t\t\t\t\t\t\" invalid char <%c> on state %d\\n\",\n\t\t\t\t\t\t\t\t\t\t*tmp, state);\n\t\t\t\t\t\t\t\tgoto error;\n\t\t\t\t\t\t}\n\t\t\t\t\t\t/*add param to the list*/\n\t\t\t\t\t\tif(vb->last_param)\n\t\t\t\t\t\t\tvb->last_param->next = param;\n\t\t\t\t\t\telse\n\t\t\t\t\t\t\tvb->param_lst = param;\n\t\t\t\t\t\tvb->last_param = param;\n\t\t\t\t\t\t/* update param. shortcuts */\n\t\t\t\t\t\tswitch(param->type) {\n\t\t\t\t\t\t\tcase PARAM_BRANCH:\n\t\t\t\t\t\t\t\tvb->branch = param;\n\t\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t\tcase PARAM_RECEIVED:\n\t\t\t\t\t\t\t\tvb->received = param;\n\t\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t\tcase PARAM_RPORT:\n\t\t\t\t\t\t\t\tvb->rport = param;\n\t\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t\tcase PARAM_I:\n\t\t\t\t\t\t\t\tvb->i = param;\n\t\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t\tcase PARAM_ALIAS:\n\t\t\t\t\t\t\t\tvb->alias = param;\n\t\t\t\t\t\t\t\tbreak;\n#ifdef USE_COMP\n\t\t\t\t\t\t\tcase PARAM_COMP:\n\t\t\t\t\t\t\t\tvb->comp = param;\n\t\t\t\t\t\t\t\t/*  moved comp value parsing in via_param */\n\t\t\t\t\t\t\t\t/*\n\t\t\t\t\t\t\t\tif  ((param->value.len==SIGCOMP_NAME_LEN) &&\n\t\t\t\t\t\t\t\t\t(strncasecmp(param->value.s, SIGCOMP_NAME,\n\t\t\t\t\t\t\t\t\t\t\t\tSIGCOMP_NAME_LEN)==0)){\n\t\t\t\t\t\t\t\t\tvb->comp_no=COMP_SIGCOMP;\n\t\t\t\t\t\t\t\t}else if ((param->value.len==SERGZ_NAME_LEN) &&\n\t\t\t\t\t\t\t\t\t\t(strncasecmp(param->value.s,\n\t\t\t\t\t\t\t\t\t\t\t\t\tSERGZ_NAME,\n\t\t\t\t\t\t\t\t\t\t\t\t\tSERGZ_NAME_LEN)==0)){\n\t\t\t\t\t\t\t\t\tvb->comp_no=COMP_SERGZ;\n\t\t\t\t\t\t\t\t}else{\n\t\t\t\t\t\t\t\t\tLM_ERR(\"unrecognized\"\n\t\t\t\t\t\t\t\t\t\t\" compression method in comp=%.*s\\n\",\n\t\t\t\t\t\t\t\t\t\tparam->value.len, param->value.s);\n\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t*/\n\t\t\t\t\t\t\t\tbreak;\n#endif\n\t\t\t\t\t\t}\n\n\t\t\t\t\t\tif(state == END_OF_HEADER) {\n\t\t\t\t\t\t\tstate = saved_state;\n\t\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_PARAM:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_VIA:\n\t\t\t\t\t\t/*vb->next=tmp;*/ /*???*/\n\t\t\t\t\t\tgoto nextvia;\n\t\t\t\t\tcase L_PORT:\n\t\t\t\t\tcase L_PARAM:\n\t\t\t\t\tcase L_VIA:\n\t\t\t\t\t\tLM_ERR(\"parsing via on <%c> state %d (default)\\n\", *tmp,\n\t\t\t\t\t\t\t\tstate);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t\tcase F_COMMENT:\n\t\t\t\t\t\tstate = P_COMMENT;\n\t\t\t\t\t\tvb->comment.s = tmp;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_COMMENT:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_IP6HOST:\n\t\t\t\t\t\tstate = P_IP6HOST;\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase P_IP6HOST:\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tcase F_CRLF:\n\t\t\t\t\tcase F_LF:\n\t\t\t\t\tcase F_CR:\n\t\t\t\t\t\t/*previous=crlf and now !=' '*/\n\t\t\t\t\t\tgoto endofheader;\n\t\t\t\t\tdefault:\n\t\t\t\t\t\tLM_ERR(\"BUG: parsing via - invalid char <%c>\"\n\t\t\t\t\t\t\t\t\" in state %d\\n\",\n\t\t\t\t\t\t\t\t*tmp, state);\n\t\t\t\t\t\tgoto error;\n\t\t\t\t}\n\t\t}\n\t}\n\n\tDBG(\"end of packet reached, state=%d\\n\", state);\n\tgoto endofpacket; /*end of packet, probably should be goto error*/\n\nendofheader:\n\tstate = saved_state;\n\tDBG(\"end of header reached, state=%d\\n\", state);\nendofpacket:\n\t/* check if error*/\n\tswitch(state) {\n\t\tcase P_HOST:\n\t\tcase L_PORT:\n\t\tcase P_PORT:\n\t\tcase L_PARAM:\n\t\tcase P_PARAM:\n\t\tcase P_VALUE:\n\t\tcase GEN_PARAM:\n\t\tcase FIN_HIDDEN:\n\t\tcase L_VIA:\n\t\t\tbreak;\n\t\tdefault:\n\t\t\tLM_ERR(\"invalid via - end of header in state %d\\n\", state);\n\t\t\tgoto error;\n\t}\n\n\n\t/*\n\tif (proto) printf(\"<SIP/2.0/%s>\\n\", proto);\n\tif (host) printf(\"host= <%s>\\n\", host);\n\tif (port_str) printf(\"port= <%s>\\n\", port_str);\n\tif (param) printf(\"params= <%s>\\n\", param);\n\tif (comment) printf(\"comment= <%s>\\n\", comment);\n\tif(next_via) printf(\"next_via= <%s>\\n\", next_via);\n\t*/\n\t/*DBG(\"parse_via: rest=<%s>\\n\", tmp);*/\n\n\tvb->error = PARSE_OK;\n\tvb->bsize = tmp - buffer;\n\tif(vb->port_str.s) {\n\t\tvb->port = str2s(vb->port_str.s, vb->port_str.len, &err);\n\t\tif(err) {\n\t\t\tLM_ERR(\"invalid port number <%.*s>\\n\", vb->port_str.len,\n\t\t\t\t\tZSW(vb->port_str.s));\n\t\t\tgoto error;\n\t\t}\n\t}\n\treturn tmp;\nnextvia:\n\tDBG(\"parsing via: next via\\n\");\n\tvb->error = PARSE_OK;\n\tvb->bsize = tmp - buffer;\n\tif(vb->port_str.s) {\n\t\tvb->port = str2s(vb->port_str.s, vb->port_str.len, &err);\n\t\tif(err) {\n\t\t\tLM_ERR(\"invalid port number <%.*s>\\n\", vb->port_str.len,\n\t\t\t\t\tZSW(vb->port_str.s));\n\t\t\tgoto error;\n\t\t}\n\t}\n\tvb->next = pkg_malloc(sizeof(struct via_body));\n\tif(vb->next == 0) {\n\t\tLM_ERR(\"out of memory\\n\");\n\t\tgoto error;\n\t}\n\tvb = vb->next;\n\tmemset(vb, 0, sizeof(struct via_body));\n\tbuffer = tmp;\n\tgoto parse_again;\n\nerror:\n\tif(end > buffer) {\n\t\tLM_ERR(\"parsing via on: <%.*s>\\n\", (int)(end - buffer), ZSW(buffer));\n\t}\n\tif((tmp > buffer) && (tmp < end)) {\n\t\tLM_ERR(\"parse error, parsed so far:<%.*s>\\n\", (int)(tmp - buffer),\n\t\t\t\tZSW(buffer));\n\t} else {\n\t\tLM_ERR(\"via parse error\\n\");\n\t}\n\tvb->error = PARSE_ERROR;\n\tvbody->error = PARSE_ERROR; /* make sure the first via body is marked\n\t\t\t\t\t\t\t\t * as bad also */\n\treturn tmp;\n}",
+            3
+        ],
+        [
+            "src/core/pt.c",
+            "my_pid",
+            "int my_pid() /* <=== my_pid */ \n{\n\treturn pt ? pt[process_no].pid : getpid();\n}",
+            1
+        ],
+        [
+            "src/core/route.h",
+            "REQUEST_ROUTE",
+            "#define REQUEST_ROUTE (1 << 0) /* <=== src/core/route.h:47:47:REQUEST_ROUTE:0 */ ",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_CALLID_F",
+            "#define HDR_CALLID_F\t\t\t\tHDR_F_DEF(CALLID) /* <=== src/core/parser/hf.h:133:133:HDR_CALLID_F:0 */ ",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_VIA_F",
+            "#define HDR_VIA_F\t\t\t\t\tHDR_F_DEF(VIA) /* <=== src/core/parser/hf.h:127:127:HDR_VIA_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_ACCEPT_F",
+            "#define HDR_ACCEPT_F\t\t\t\tHDR_F_DEF(ACCEPT) /* <=== src/core/parser/hf.h:150:150:HDR_ACCEPT_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/parse_cseq.h",
+            "get_cseq",
+            "#define get_cseq(p_msg) ((struct cseq_body*)(p_msg)->cseq->parsed) /* <=== src/core/parser/parse_cseq.h:44:44:get_cseq:1 */ ",
+            1
+        ],
+        [
+            "src/core/compiler_opt.h",
+            "unlikely",
+            "#define unlikely(expr) (expr) /* <=== src/core/compiler_opt.h:60:60:unlikely:1 */ ",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_T2F",
+            "#define HDR_T2F(type)\t\\ /* <=== src/core/parser/hf.h:117:118:HDR_T2F:1 */ \n\t\t(((type)!=HDR_EOH_T)?((hdr_flags_t)1<<(type)):(~(hdr_flags_t)0))",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_EOH_F",
+            "#define HDR_EOH_F\t\t\t\t\tHDR_F_DEF(EOH) /* <=== src/core/parser/hf.h:126:126:HDR_EOH_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_REQUIRE_F",
+            "#define HDR_REQUIRE_F\t\t\t\tHDR_F_DEF(REQUIRE) /* <=== src/core/parser/hf.h:145:145:HDR_REQUIRE_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_CONTENTLENGTH_F",
+            "#define HDR_CONTENTLENGTH_F\t\t\tHDR_F_DEF(CONTENTLENGTH) /* <=== src/core/parser/hf.h:139:139:HDR_CONTENTLENGTH_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_CONTENTDISPOSITION_F",
+            "#define HDR_CONTENTDISPOSITION_F\tHDR_F_DEF(CONTENTDISPOSITION) /* <=== src/core/parser/hf.h:157:157:HDR_CONTENTDISPOSITION_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_USERAGENT_F",
+            "#define HDR_USERAGENT_F\t\t\t\tHDR_F_DEF(USERAGENT) /* <=== src/core/parser/hf.h:155:155:HDR_USERAGENT_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_ROUTE_F",
+            "#define HDR_ROUTE_F\t\t\t\t\tHDR_F_DEF(ROUTE) /* <=== src/core/parser/hf.h:136:136:HDR_ROUTE_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.c",
+            "dprint_termc_add",
+            "#define dprint_termc_add(p, end, s) \\ /* <=== src/core/dprint.c:285:295:dprint_termc_add:3 */ \n        do{ \\\n                if ((p)+(sizeof(s)-1)<=(end)){ \\\n                        memcpy((p), s, sizeof(s)-1); \\\n                        (p)+=sizeof(s)-1; \\\n                }else{ \\\n                        /* overflow */ \\\n                        LM_ERR(\"dprint_termc_add overflow\\n\"); \\\n                        goto error; \\\n                } \\\n        } while(0)",
+            3
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_REFER_TO_F",
+            "#define HDR_REFER_TO_F\t\t\t\tHDR_F_DEF(REFER_TO) /* <=== src/core/parser/hf.h:160:160:HDR_REFER_TO_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.c",
+            "TERM_COLOR_SIZE",
+            "#define TERM_COLOR_SIZE 16 /* <=== src/core/dprint.c:283:283:TERM_COLOR_SIZE:0 */ ",
+            3
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_VIA1_F",
+            "#define HDR_VIA1_F\t\t\t\t\tHDR_F_DEF(VIA1) /* <=== src/core/parser/hf.h:128:128:HDR_VIA1_F:0 */ ",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_ALLOW_F",
+            "#define HDR_ALLOW_F\t\t\t\t\tHDR_F_DEF(ALLOW) /* <=== src/core/parser/hf.h:148:148:HDR_ALLOW_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_SESSIONEXPIRES_F",
+            "#define HDR_SESSIONEXPIRES_F\t\tHDR_F_DEF(SESSIONEXPIRES) /* <=== src/core/parser/hf.h:162:162:HDR_SESSIONEXPIRES_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/msg_parser.c",
+            "parse_hname",
+            "#define parse_hname(_b,_e,_h) parse_hname2((_b),(_e),(_h)) /* <=== src/core/parser/msg_parser.c:62:62:parse_hname:3 */ ",
+            3
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_PRIORITY_F",
+            "#define HDR_PRIORITY_F\t\t\t\tHDR_F_DEF(PRIORITY) /* <=== src/core/parser/hf.h:153:153:HDR_PRIORITY_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_CALLINFO_F",
+            "#define HDR_CALLINFO_F\t\t\t\tHDR_F_DEF(CALLINFO) /* <=== src/core/parser/hf.h:182:182:HDR_CALLINFO_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.c",
+            "dprint_term_color",
+            "void dprint_term_color(char f, char b, str *obuf) /* <=== dprint_term_color */ \n{\n\tstatic char term_color[TERM_COLOR_SIZE];\n\tchar* p;\n\tchar* end;\n\n\tp = term_color;\n\tend = p + TERM_COLOR_SIZE;\n\n\t/* excape sequence */\n\tdprint_termc_add(p, end, \"\\033[\");\n\n\tif(f!='_')\n\t{\n\t\tif (islower((int)f))\n\t\t{\n\t\t\t/* normal font */\n\t\t\tdprint_termc_add(p, end, \"0;\");\n\t\t} else {\n\t\t\t/* bold font */\n\t\t\tdprint_termc_add(p, end, \"1;\");\n\t\t\tf += 32;\n\t\t}\n\t}\n\n\t/* foreground */\n\tswitch(f)\n\t{\n\t\tcase 'x':\n\t\t\tdprint_termc_add(p, end, \"39;\");\n\t\tbreak;\n\t\tcase 's':\n\t\t\tdprint_termc_add(p, end, \"30;\");\n\t\tbreak;\n\t\tcase 'r':\n\t\t\tdprint_termc_add(p, end, \"31;\");\n\t\tbreak;\n\t\tcase 'g':\n\t\t\tdprint_termc_add(p, end, \"32;\");\n\t\tbreak;\n\t\tcase 'y':\n\t\t\tdprint_termc_add(p, end, \"33;\");\n\t\tbreak;\n\t\tcase 'b':\n\t\t\tdprint_termc_add(p, end, \"34;\");\n\t\tbreak;\n\t\tcase 'p':\n\t\t\tdprint_termc_add(p, end, \"35;\");\n\t\tbreak;\n\t\tcase 'c':\n\t\t\tdprint_termc_add(p, end, \"36;\");\n\t\tbreak;\n\t\tcase 'w':\n\t\t\tdprint_termc_add(p, end, \"37;\");\n\t\tbreak;\n\t\tdefault:\n\t\t\tdprint_termc_add(p, end, \"39;\");\n\t}\n\n\t/* background */\n\tswitch(b)\n\t{\n\t\tcase 'x':\n\t\t\tdprint_termc_add(p, end, \"49\");\n\t\tbreak;\n\t\tcase 's':\n\t\t\tdprint_termc_add(p, end, \"40\");\n\t\tbreak;\n\t\tcase 'r':\n\t\t\tdprint_termc_add(p, end, \"41\");\n\t\tbreak;\n\t\tcase 'g':\n\t\t\tdprint_termc_add(p, end, \"42\");\n\t\tbreak;\n\t\tcase 'y':\n\t\t\tdprint_termc_add(p, end, \"43\");\n\t\tbreak;\n\t\tcase 'b':\n\t\t\tdprint_termc_add(p, end, \"44\");\n\t\tbreak;\n\t\tcase 'p':\n\t\t\tdprint_termc_add(p, end, \"45\");\n\t\tbreak;\n\t\tcase 'c':\n\t\t\tdprint_termc_add(p, end, \"46\");\n\t\tbreak;\n\t\tcase 'w':\n\t\t\tdprint_termc_add(p, end, \"47\");\n\t\tbreak;\n\t\tdefault:\n\t\t\tdprint_termc_add(p, end, \"49\");\n\t}\n\n\t/* end */\n\tdprint_termc_add(p, end, \"m\");\n\n\tobuf->s = term_color;\n\tobuf->len = p - term_color;\n\treturn;\n\nerror:\n\tobuf->s = term_color;\n\tterm_color[0] = '\\0';\n\tobuf->len = 0;\n}",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_RECORDROUTE_F",
+            "#define HDR_RECORDROUTE_F\t\t\tHDR_F_DEF(RECORDROUTE) /* <=== src/core/parser/hf.h:137:137:HDR_RECORDROUTE_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.c",
+            "UNSET_LOCAL_DEBUG_LEVEL",
+            "#define UNSET_LOCAL_DEBUG_LEVEL\t    -255 /* <=== src/core/dprint.c:133:133:UNSET_LOCAL_DEBUG_LEVEL:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.h",
+            "L_MIN",
+            "#define L_MIN\t\t-5 /* <=== src/core/dprint.h:90:90:L_MIN:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_SUPPORTED_F",
+            "#define HDR_SUPPORTED_F\t\t\t\tHDR_F_DEF(SUPPORTED) /* <=== src/core/parser/hf.h:144:144:HDR_SUPPORTED_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_IDENTITY_INFO_F",
+            "#define HDR_IDENTITY_INFO_F\t\tHDR_F_DEF(IDENTITY_INFO) /* <=== src/core/parser/hf.h:175:175:HDR_IDENTITY_INFO_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/error.h",
+            "E_BAD_REQ",
+            "#define E_BAD_REQ\t  -400 /* <=== src/core/error.h:62:62:E_BAD_REQ:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/parse_from.c",
+            "parse_from_header",
+            "int parse_from_header(struct sip_msg *msg) /* <=== parse_from_header */ \n{\n\tstruct to_body *from_b;\n\n\tif(!msg->from && (parse_headers(msg, HDR_FROM_F, 0) == -1 || !msg->from)) {\n\t\tLM_ERR(\"bad msg or missing FROM header\\n\");\n\t\tgoto error;\n\t}\n\n\t/* maybe the header is already parsed! */\n\tif(msg->from->parsed)\n\t\treturn 0;\n\n\t/* bad luck! :-( - we have to parse it */\n\t/* first, get some memory */\n\tfrom_b = pkg_malloc(sizeof(struct to_body));\n\tif(from_b == 0) {\n\t\tLM_ERR(\"out of pkg_memory\\n\");\n\t\tgoto error;\n\t}\n\n\t/* now parse it!! */\n\tmemset(from_b, 0, sizeof(struct to_body));\n\tparse_to(msg->from->body.s, msg->from->body.s + msg->from->body.len + 1,\n\t\t\tfrom_b);\n\tif(from_b->error == PARSE_ERROR) {\n\t\tLM_ERR(\"bad From header [%.*s]\\n\", msg->from->body.len,\n\t\t\t\tmsg->from->body.s);\n\t\tfree_to(from_b);\n\t\tgoto error;\n\t}\n\tmsg->from->parsed = from_b;\n\n\treturn 0;\nerror:\n\treturn -1;\n}",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_UNSUPPORTED_F",
+            "#define HDR_UNSUPPORTED_F\t\t\tHDR_F_DEF(UNSUPPORTED) /* <=== src/core/parser/hf.h:147:147:HDR_UNSUPPORTED_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_CSEQ_F",
+            "#define HDR_CSEQ_F\t\t\t\t\tHDR_F_DEF(CSEQ) /* <=== src/core/parser/hf.h:132:132:HDR_CSEQ_F:0 */ ",
+            1
+        ],
+        [
+            "src/core/dprint.h",
+            "LM_DBG",
+            "#define LM_DBG DEBUG /* <=== src/core/dprint.h:424:424:LM_DBG:0 */ ",
+            1
+        ],
+        [
+            "src/core/dprint.c",
+            "get_debug_facility",
+            "int get_debug_facility(char *mname, int mnlen) { /* <=== get_debug_facility */ \n\tint mfacility;\n\t/*important -- no LOGs inside, because it will loop */\n\tif(unlikely(_module_debug_facility!=NULL && mnlen>0)) {\n\t\tif(_module_debug_facility(mname, mnlen, &mfacility)==0) {\n\t\t\treturn mfacility;\n\t\t}\n\t}\n\treturn (_local_debug_facility != UNSET_LOCAL_DEBUG_FACILITY) ?\n\t\t\t\t_local_debug_facility : cfg_get(core, core_cfg, log_facility);\n}",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_PAI_F",
+            "#define HDR_PAI_F                   HDR_F_DEF(PAI) /* <=== src/core/parser/hf.h:178:178:HDR_PAI_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_MIN_SE_F",
+            "#define HDR_MIN_SE_F\t\t\t\tHDR_F_DEF(MIN_SE) /* <=== src/core/parser/hf.h:163:163:HDR_MIN_SE_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_ORGANIZATION_F",
+            "#define HDR_ORGANIZATION_F\t\t\tHDR_F_DEF(ORGANIZATION) /* <=== src/core/parser/hf.h:152:152:HDR_ORGANIZATION_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_RPID_F",
+            "#define HDR_RPID_F\t\t\t\t\tHDR_F_DEF(RPID) /* <=== src/core/parser/hf.h:159:159:HDR_RPID_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_PRIVACY_F",
+            "#define HDR_PRIVACY_F               HDR_F_DEF(PRIVACY) /* <=== src/core/parser/hf.h:180:180:HDR_PRIVACY_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_SERVER_F",
+            "#define HDR_SERVER_F\t\t\t\tHDR_F_DEF(SERVER) /* <=== src/core/parser/hf.h:156:156:HDR_SERVER_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_CONTENTTYPE_F",
+            "#define HDR_CONTENTTYPE_F\t\t\tHDR_F_DEF(CONTENTTYPE) /* <=== src/core/parser/hf.h:138:138:HDR_CONTENTTYPE_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/mem/pkg.h",
+            "pkg_free",
+            "#\tdefine pkg_free(p)\t\t\tfree((p)) /* <=== src/core/mem/pkg.h:92:92:pkg_free:1 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_EXPIRES_F",
+            "#define HDR_EXPIRES_F\t\t\t\tHDR_F_DEF(EXPIRES) /* <=== src/core/parser/hf.h:141:141:HDR_EXPIRES_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.c",
+            "dprint_color",
+            "void dprint_color(int level) /* <=== dprint_color */ \n{\n\tstr obuf;\n\n\tif(level<L_MIN || level>L_MAX)\n\t\treturn;\n\tdprint_term_color(_log_level_colors[level - L_MIN].f,\n\t\t\t_log_level_colors[level - L_MIN].b,\n\t\t\t&obuf);\n\tfprintf(stderr, \"%.*s\", obuf.len, obuf.s);\n}",
+            1
+        ],
+        [
+            "src/core/parser/parse_from.h",
+            "get_from",
+            "#define get_from(p_msg)  ((struct to_body*)(p_msg)->from->parsed) /* <=== src/core/parser/parse_from.h:36:36:get_from:1 */ ",
+            1
+        ],
+        [
+            "src/core/dprint.h",
+            "L_MAX",
+            "#define L_MAX    \t3 /* <=== src/core/dprint.h:100:100:L_MAX:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_FROM_F",
+            "#define HDR_FROM_F\t\t\t\t\tHDR_F_DEF(FROM) /* <=== src/core/parser/hf.h:131:131:HDR_FROM_F:0 */ ",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_PATH_F",
+            "#define HDR_PATH_F                  HDR_F_DEF(PATH) /* <=== src/core/parser/hf.h:179:179:HDR_PATH_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.h",
+            "ERR",
+            "#\tdefine ERR(fmt, args...)    LOG(L_ERR,    fmt , ## args) /* <=== src/core/dprint.h:394:394:ERR:2 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_TO_F",
+            "#define HDR_TO_F\t\t\t\t\tHDR_F_DEF(TO) /* <=== src/core/parser/hf.h:130:130:HDR_TO_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_PROXYAUTH_F",
+            "#define HDR_PROXYAUTH_F\t\t\t\tHDR_F_DEF(PROXYAUTH) /* <=== src/core/parser/hf.h:143:143:HDR_PROXYAUTH_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/msg_parser.c",
+            "parse_headers",
+            "int parse_headers(struct sip_msg* const msg, const hdr_flags_t flags, const int next) /* <=== parse_headers */ \n{\n\tstruct hdr_field* hf;\n\tchar* tmp;\n\tchar* rest;\n\tchar* end;\n\thdr_flags_t orig_flag;\n\n\tend=msg->buf+msg->len;\n\ttmp=msg->unparsed;\n\n\tif (unlikely(next)) {\n\t\torig_flag = msg->parsed_flag;\n\t\tmsg->parsed_flag &= ~flags;\n\t}else\n\t\torig_flag=0;\n\n#ifdef EXTRA_DEBUG\n\tDBG(\"flags=%llx\\n\", (unsigned long long)flags);\n#endif\n\twhile( tmp<end && (flags & msg->parsed_flag) != flags){\n\t\tprefetch_loc_r(tmp+64, 1);\n\t\thf=pkg_malloc(sizeof(struct hdr_field));\n\t\tif (unlikely(hf==0)){\n\t\t\tser_error=E_OUT_OF_MEM;\n\t\t\tERR(\"memory allocation error\\n\");\n\t\t\tgoto error;\n\t\t}\n\t\tmemset(hf,0, sizeof(struct hdr_field));\n\t\thf->type=HDR_ERROR_T;\n\t\trest=get_hdr_field(tmp, end, hf);\n\t\tswitch (hf->type){\n\t\t\tcase HDR_ERROR_T:\n\t\t\t\tERR(\"bad header field [%.*s]\\n\", (end-tmp>20)?20:(int)(end-tmp), tmp);\n\t\t\t\tgoto  error;\n\t\t\tcase HDR_EOH_T:\n\t\t\t\tmsg->eoh=tmp; /* or rest?*/\n\t\t\t\tmsg->parsed_flag|=HDR_EOH_F;\n\t\t\t\tpkg_free(hf);\n\t\t\t\tgoto skip;\n\t\t\tcase HDR_ACCEPTCONTACT_T:\n\t\t\tcase HDR_ALLOWEVENTS_T:\n\t\t\tcase HDR_CONTENTENCODING_T:\n\t\t\tcase HDR_REFERREDBY_T:\n\t\t\tcase HDR_REJECTCONTACT_T:\n\t\t\tcase HDR_REQUESTDISPOSITION_T:\n\t\t\tcase HDR_WWW_AUTHENTICATE_T:\n\t\t\tcase HDR_PROXY_AUTHENTICATE_T:\n\t\t\tcase HDR_RETRY_AFTER_T:\n\t\t\tcase HDR_OTHER_T: /* mark the type as found/parsed*/\n\t\t\t\tmsg->parsed_flag|=HDR_T2F(hf->type);\n\t\t\t\tbreak;\n\t\t\tcase HDR_CALLID_T:\n\t\t\t\tif (msg->callid==0) msg->callid=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_CALLID_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_SIPIFMATCH_T:\n\t\t\t\tif (msg->sipifmatch==0) msg->sipifmatch=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_SIPIFMATCH_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_TO_T:\n\t\t\t\tif (msg->to==0) msg->to=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_TO_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_CSEQ_T:\n\t\t\t\tif (msg->cseq==0) msg->cseq=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_CSEQ_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_FROM_T:\n\t\t\t\tif (msg->from==0) msg->from=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_FROM_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_CONTACT_T:\n\t\t\t\tif (msg->contact==0) msg->contact=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_CONTACT_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_MAXFORWARDS_T:\n\t\t\t\tif(msg->maxforwards==0) msg->maxforwards=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_MAXFORWARDS_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_ROUTE_T:\n\t\t\t\tif (msg->route==0) msg->route=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_ROUTE_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_RECORDROUTE_T:\n\t\t\t\tif (msg->record_route==0) msg->record_route = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_RECORDROUTE_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_CONTENTTYPE_T:\n\t\t\t\tif (msg->content_type==0) msg->content_type = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_CONTENTTYPE_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_CONTENTLENGTH_T:\n\t\t\t\tif (msg->content_length==0) msg->content_length = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_CONTENTLENGTH_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_AUTHORIZATION_T:\n\t\t\t\tif (msg->authorization==0) msg->authorization = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_AUTHORIZATION_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_EXPIRES_T:\n\t\t\t\tif (msg->expires==0) msg->expires = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_EXPIRES_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_MIN_EXPIRES_T:\n\t\t\t\tif (msg->min_expires==0) msg->min_expires = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_MIN_EXPIRES_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_PROXYAUTH_T:\n\t\t\t\tif (msg->proxy_auth==0) msg->proxy_auth = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_PROXYAUTH_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_PROXYREQUIRE_T:\n\t\t\t\tif (msg->proxy_require==0) msg->proxy_require = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_PROXYREQUIRE_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_SUPPORTED_T:\n\t\t\t\tif (msg->supported==0) msg->supported=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_SUPPORTED_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_REQUIRE_T:\n\t\t\t\tif (msg->require==0) msg->require=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_REQUIRE_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_UNSUPPORTED_T:\n\t\t\t\tif (msg->unsupported==0) msg->unsupported=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_UNSUPPORTED_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_ALLOW_T:\n\t\t\t\tif (msg->allow==0) msg->allow = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_ALLOW_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_EVENT_T:\n\t\t\t\tif (msg->event==0) msg->event = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_EVENT_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_ACCEPT_T:\n\t\t\t\tif (msg->accept==0) msg->accept = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_ACCEPT_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_ACCEPTLANGUAGE_T:\n\t\t\t\tif (msg->accept_language==0) msg->accept_language = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_ACCEPTLANGUAGE_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_ORGANIZATION_T:\n\t\t\t\tif (msg->organization==0) msg->organization = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_ORGANIZATION_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_PRIORITY_T:\n\t\t\t\tif (msg->priority==0) msg->priority = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_PRIORITY_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_SUBJECT_T:\n\t\t\t\tif (msg->subject==0) msg->subject = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_SUBJECT_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_USERAGENT_T:\n\t\t\t\tif (msg->user_agent==0) msg->user_agent = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_USERAGENT_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_SERVER_T:\n\t\t\t\tif (msg->server==0) msg->server = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_SERVER_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_CONTENTDISPOSITION_T:\n\t\t\t\tif (msg->content_disposition==0) msg->content_disposition = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_CONTENTDISPOSITION_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_DIVERSION_T:\n\t\t\t\tif (msg->diversion==0) msg->diversion = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_DIVERSION_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_RPID_T:\n\t\t\t\tif (msg->rpid==0) msg->rpid = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_RPID_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_REFER_TO_T:\n\t\t\t\tif (msg->refer_to==0) msg->refer_to = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_REFER_TO_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_SESSIONEXPIRES_T:\n\t\t\t\tif (msg->session_expires==0) msg->session_expires = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_SESSIONEXPIRES_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_MIN_SE_T:\n\t\t\t\tif (msg->min_se==0) msg->min_se = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_MIN_SE_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_SUBSCRIPTION_STATE_T:\n\t\t\t\tif (msg->subscription_state==0) msg->subscription_state = hf;\n\t\t\t\tmsg->parsed_flag|=HDR_SUBSCRIPTION_STATE_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_VIA_T:\n\t\t\t\tmsg->parsed_flag|=HDR_VIA_F;\n\t\t\t\tDBG(\"Via found, flags=%llx\\n\", (unsigned long long)flags);\n\t\t\t\tif (msg->via1==0) {\n\t\t\t\t\tDBG(\"this is the first via\\n\");\n\t\t\t\t\tmsg->h_via1=hf;\n\t\t\t\t\tmsg->via1=hf->parsed;\n\t\t\t\t\tif (msg->via1->next){\n\t\t\t\t\t\tmsg->via2=msg->via1->next;\n\t\t\t\t\t\tmsg->parsed_flag|=HDR_VIA2_F;\n\t\t\t\t\t}\n\t\t\t\t}else if (msg->via2==0){\n\t\t\t\t\tmsg->h_via2=hf;\n\t\t\t\t\tmsg->via2=hf->parsed;\n\t\t\t\t\tmsg->parsed_flag|=HDR_VIA2_F;\n\t\t\t\t\tDBG(\"this is the second via\\n\");\n\t\t\t\t}\n\t\t\t\tbreak;\n\t\t\tcase HDR_DATE_T:\n\t\t\t\tif (msg->date==0) msg->date=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_DATE_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_IDENTITY_T:\n\t\t\t\tif (msg->identity==0) msg->identity=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_IDENTITY_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_IDENTITY_INFO_T:\n\t\t\t\tif (msg->identity_info==0) msg->identity_info=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_IDENTITY_INFO_F;\n\t\t\t\tbreak;\n\t\t    case HDR_PATH_T:\n\t\t\t\tif (msg->path==0) msg->path=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_PATH_F;\n\t\t\t\tbreak;\n\t\t    case HDR_PRIVACY_T:\n\t\t\t\tif (msg->privacy==0) msg->privacy=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_PRIVACY_F;\n\t\t\t\tbreak;\n\t\t    case HDR_PAI_T:\n\t\t\t\tif (msg->pai==0) msg->pai=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_PAI_F;\n\t\t\t\tbreak;\n\t\t    case HDR_PPI_T:\n\t\t\t\tif (msg->ppi==0) msg->ppi=hf;\n\t\t\t\tmsg->parsed_flag|=HDR_PPI_F;\n\t\t\t\tbreak;\n\t\t    case HDR_REASON_T:\n\t\t\t\tmsg->parsed_flag|=HDR_REASON_F;\n\t\t\t\tbreak;\n\t\t\tcase HDR_CALLINFO_T:\n\t\t\t\tmsg->parsed_flag|=HDR_CALLINFO_F;\n\t\t\t\tbreak;\n\t\t\tdefault:\n\t\t\t\tBUG(\"unknown header type %d\\n\", hf->type);\n\t\t\t\tgoto error;\n\t\t}\n\t\t/* add the header to the list*/\n\t\tif (msg->last_header==0){\n\t\t\tmsg->headers=hf;\n\t\t\tmsg->last_header=hf;\n\t\t}else{\n\t\t\tmsg->last_header->next=hf;\n\t\t\tmsg->last_header=hf;\n\t\t}\n#ifdef EXTRA_DEBUG\n\t\tDBG(\"header field type %d, name=<%.*s>, body=<%.*s>\\n\", hf->type,\n\t\t\t\thf->name.len, ZSW(hf->name.s), hf->body.len, ZSW(hf->body.s));\n#endif\n\t\ttmp=rest;\n\t}\nskip:\n\tmsg->unparsed=tmp;\n\t/* restore original flags */\n\tmsg->parsed_flag |= orig_flag;\n\treturn 0;\n\nerror:\n\tser_error=E_BAD_REQ;\n\tif (hf) pkg_free(hf);\n\t/* restore original flags */\n\tmsg->parsed_flag |= orig_flag;\n\treturn -1;\n}",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_PPI_F",
+            "#define HDR_PPI_F                   HDR_F_DEF(PPI) /* <=== src/core/parser/hf.h:177:177:HDR_PPI_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_SUBSCRIPTION_STATE_F",
+            "#define HDR_SUBSCRIPTION_STATE_F\tHDR_F_DEF(SUBSCRIPTION_STATE) /* <=== src/core/parser/hf.h:164:164:HDR_SUBSCRIPTION_STATE_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.h",
+            "BUG",
+            "#\tdefine BUG(fmt, args...)    LOG(L_BUG,   fmt , ## args) /* <=== src/core/dprint.h:393:393:BUG:2 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.c",
+            "dprint_color_reset",
+            "void dprint_color_reset(void) /* <=== dprint_color_reset */ \n{\n\tstr obuf;\n\n\tdprint_term_color('x', 'x', &obuf);\n\tfprintf(stderr, \"%.*s\", obuf.len, obuf.s);\n}",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_DATE_F",
+            "#define HDR_DATE_F\t\t\tHDR_F_DEF(DATE) /* <=== src/core/parser/hf.h:173:173:HDR_DATE_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/error.h",
+            "E_OUT_OF_MEM",
+            "#define E_OUT_OF_MEM  -2 /* <=== src/core/error.h:27:27:E_OUT_OF_MEM:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.h",
+            "LM_ERR",
+            "#define LM_ERR ERR /* <=== src/core/dprint.h:420:420:LM_ERR:0 */ ",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_DIVERSION_F",
+            "#define HDR_DIVERSION_F\t\t\t\tHDR_F_DEF(DIVERSION) /* <=== src/core/parser/hf.h:158:158:HDR_DIVERSION_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_EVENT_F",
+            "#define HDR_EVENT_F\t\t\t\t\tHDR_F_DEF(EVENT) /* <=== src/core/parser/hf.h:149:149:HDR_EVENT_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/cfg/cfg.h",
+            "cfg_get",
+            "#define cfg_get(gname, handle, var) \\ /* <=== src/core/cfg/cfg.h:73:74:cfg_get:3 */ \n\t((struct cfg_group_##gname *)handle)->var",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_MAXFORWARDS_F",
+            "#define HDR_MAXFORWARDS_F\t\t\tHDR_F_DEF(MAXFORWARDS) /* <=== src/core/parser/hf.h:135:135:HDR_MAXFORWARDS_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_PROXYREQUIRE_F",
+            "#define HDR_PROXYREQUIRE_F\t\t\tHDR_F_DEF(PROXYREQUIRE) /* <=== src/core/parser/hf.h:146:146:HDR_PROXYREQUIRE_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_MIN_EXPIRES_F",
+            "#define HDR_MIN_EXPIRES_F\t\t\tHDR_F_DEF(MIN_EXPIRES) /* <=== src/core/parser/hf.h:142:142:HDR_MIN_EXPIRES_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.c",
+            "get_debug_level",
+            "int get_debug_level(char *mname, int mnlen) { /* <=== get_debug_level */ \n\tint mlevel;\n\t/*important -- no LOGs inside, because it will loop */\n\tif(unlikely(_module_debug_level!=NULL && mnlen>0)) {\n\t\tif(_module_debug_level(mname, mnlen, &mlevel)==0) {\n\t\t\treturn mlevel;\n\t\t}\n\t}\n\treturn (_local_debug_level != UNSET_LOCAL_DEBUG_LEVEL) ?\n\t\t\t\t_local_debug_level : cfg_get(core, core_cfg, debug);\n}",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_SIPIFMATCH_F",
+            "#define HDR_SIPIFMATCH_F\t\t\tHDR_F_DEF(SIPIFMATCH) /* <=== src/core/parser/hf.h:161:161:HDR_SIPIFMATCH_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_IDENTITY_F",
+            "#define HDR_IDENTITY_F\t\t\tHDR_F_DEF(IDENTITY) /* <=== src/core/parser/hf.h:174:174:HDR_IDENTITY_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/route.h",
+            "get_route_type",
+            "#define get_route_type()\troute_type /* <=== src/core/route.h:72:72:get_route_type:0 */ ",
+            1
+        ],
+        [
+            "src/core/ut.h",
+            "q_memchr",
+            "static inline char* q_memchr(char* p, int c, unsigned int size) /* <=== q_memchr */ \n{\n\tchar* end;\n\n\tend=p+size;\n\tfor(;p<end;p++){\n\t\tif (*p==(unsigned char)c) return p;\n\t}\n\treturn 0;\n}",
+            3
+        ],
+        [
+            "src/core/dprint.c",
+            "UNSET_LOCAL_DEBUG_FACILITY",
+            "#define UNSET_LOCAL_DEBUG_FACILITY  -255 /* <=== src/core/dprint.c:134:134:UNSET_LOCAL_DEBUG_FACILITY:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_ACCEPTLANGUAGE_F",
+            "#define HDR_ACCEPTLANGUAGE_F\t\tHDR_F_DEF(ACCEPTLANGUAGE) /* <=== src/core/parser/hf.h:151:151:HDR_ACCEPTLANGUAGE_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/parse_def.h",
+            "PARSE_ERROR",
+            "#define PARSE_ERROR -1 /* <=== src/core/parser/parse_def.h:32:32:PARSE_ERROR:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_SUBJECT_F",
+            "#define HDR_SUBJECT_F\t\t\t\tHDR_F_DEF(SUBJECT) /* <=== src/core/parser/hf.h:154:154:HDR_SUBJECT_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/dprint.h",
+            "DBG",
+            "#\t\tdefine DBG(fmt, args...)    LOG(L_DBG, fmt , ## args) /* <=== src/core/dprint.h:403:403:DBG:2 */ ",
+            2
+        ],
+        [
+            "src/core/mem/pkg.h",
+            "pkg_malloc",
+            "#\tdefine pkg_malloc(s)\t\tmalloc((s)) /* <=== src/core/mem/pkg.h:87:87:pkg_malloc:1 */ ",
+            2
+        ],
+        [
+            "src/core/parser/parse_to.c",
+            "parse_to",
+            "char *parse_to(char *const buffer, const char *const end, /* <=== parse_to */ \n\t\tstruct to_body *const to_b)\n{\n\treturn parse_addr_spec(buffer, end, to_b, 0);\n}",
+            2
+        ],
+        [
+            "src/modules/tmx/tmx_pretran.c",
+            "tmx_pretran_link_safe",
+            "void tmx_pretran_link_safe(int slotid) /* <=== tmx_pretran_link_safe */ \n{\n\tif(_tmx_proc_ptran==NULL)\n\t\treturn;\n\n\tif(_tmx_ptran_table[slotid].plist==NULL) {\n\t\t_tmx_ptran_table[slotid].plist = _tmx_proc_ptran;\n\t\t_tmx_proc_ptran->linked = 1;\n\t\treturn;\n\t}\n\t_tmx_proc_ptran->next = _tmx_ptran_table[slotid].plist;\n\t_tmx_ptran_table[slotid].plist->prev = _tmx_proc_ptran;\n\t_tmx_ptran_table[slotid].plist = _tmx_proc_ptran;\n\t_tmx_proc_ptran->linked = 1;\n\treturn;\n}",
+            1
+        ],
+        [
+            "src/core/ut.h",
+            "trim_r",
+            "#define trim_r( _mystr ) \\ /* <=== src/core/ut.h:66:72:trim_r:1 */ \n\tdo{\tstatic char _c; \\\n\t\twhile( ((_mystr).len) && ( ((_c=(_mystr).s[(_mystr).len-1]))==0 ||\\\n\t\t\t\t\t\t\t\t\t_c=='\\r' || _c=='\\n' ) \\\n\t\t\t\t) \\\n\t\t\t(_mystr).len--; \\\n\t}while(0)",
+            3
+        ],
+        [
+            "src/core/parser/parse_via.c",
+            "free_via_list",
+            "void free_via_list(struct via_body *vb) /* <=== free_via_list */ \n{\n\tstruct via_body *foo;\n\twhile(vb) {\n\t\tfoo = vb;\n\t\tvb = vb->next;\n\t\tif(foo->param_lst)\n\t\t\tfree_via_param_list(foo->param_lst);\n\t\tpkg_free(foo);\n\t}\n}",
+            3
+        ],
+        [
+            "src/core/compiler_opt.h",
+            "likely",
+            "#define likely(expr) (expr) /* <=== src/core/compiler_opt.h:59:59:likely:1 */ ",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_VIA2_F",
+            "#define HDR_VIA2_F\t\t\t\t\tHDR_F_DEF(VIA2) /* <=== src/core/parser/hf.h:129:129:HDR_VIA2_F:0 */ ",
+            2
+        ],
+        [
+            "src/core/parser/parse_fline.h",
+            "SIP_REQUEST",
+            "#define SIP_REQUEST 1 /* <=== src/core/parser/parse_fline.h:38:38:SIP_REQUEST:0 */ ",
+            1
+        ],
+        [
+            "src/core/parser/hf.h",
+            "HDR_AUTHORIZATION_F",
+            "#define HDR_AUTHORIZATION_F\t\t\tHDR_F_DEF(AUTHORIZATION) /* <=== src/core/parser/hf.h:140:140:HDR_AUTHORIZATION_F:0 */ ",
+            2
+        ]
+    ],
+    "globalVars": [
+        "pretran_t* _tmx_proc_ptran",
+        "pretran_slot_t* _tmx_ptran_table"
+    ],
+    "importContext": [
+        "#include \"../../core/parser/parse_via.h\"",
+        "#include \"../../core/parser/parse_from.h\"",
+        "#include \"../../core/hashes.h\"",
+        "#include \"../../core/mem/shm_mem.h\"",
+        "#include \"../../core/trim.h\"",
+        "#include <stdio.h>",
+        "#include <stdlib.h>",
+        "#include \"../../core/locking.h\"",
+        "#include \"../../core/config.h\"",
+        "#include \"../../core/dprint.h\"",
+        "#include \"tmx_pretran.h\"",
+        "#include \"../../core/pt.h\"",
+        "#include <string.h>",
+        "#include \"../../core/route.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct via_param {\n\tint type;               /* Type of the parameter */\n\tstr name;               /* Name of the parameter */\n\tstr value;              /* Value of the parameter */\n\tchar* start;            /* Pointer to param start, just after ';',\n\t\t\t\t\t\t\t * (it can be diff. from name.s!) */\n\tint size;               /* total size, including preceding and trailing\n\t\t\t\t\t\t\t * white space */\n\tstruct via_param* next; /* Next parameter in the list */\n}",
+            "via_param"
+        ],
+        [
+            "typedef struct _str str;",
+            "str"
+        ],
+        [
+            "typedef struct {\n\tstr fqdn;\t\t\t\t\t/**< own FQDN */\n\tstr realm;\t\t\t\t\t/**< own Realm */\n\tstr identity;\t\t\t\t/**< own diameter URI */\n\tint vendor_id;\t\t\t\t/**< own vendorid */\n\tstr product_name;\t\t\t/**< own product name */\n\tint accept_unknown_peers;\t/**< if to accept connections from peers that are not configured initially */\n\tint drop_unknown_peers;\t\t/**< if to drop the peers that are not initially configured on disconnected;\n\t\t\t\t\t\t\t\t * usually, you want to do this, unless you want your list of peers to\n\t\t\t\t\t\t\t\t * grow and you want to try and connect back to everybody that connected\n\t\t\t\t\t\t\t\t * to you before */\n\tint tc;\t\t\t\t\t\t/**< Tc timer duration (30 seconds should be) */\n\tint workers;\t\t\t\t/**< Number of worker-processes to fork */\n\tint queue_length;\t\t\t/**< Length of the message queue; when it is filled, the server part will\n\t\t\t\t\t\t\t\t * block until workers will finish work on at least one item in the queue */\n\tint connect_timeout;\t\t/**< Connect timeout for outbound connections */\n\tint transaction_timeout;\t/**< Transaction timeout duration */\n\n\tint sessions_hash_size;\t\t/**< Size of the sessions hash table */\n\tint default_auth_session_timeout; /** The default Authorization Session Timeout to use if none other indicated */\n\tint max_auth_session_timeout;\t  /** The max Authorization Session Timeout limit */\n\n\tpeer_config *peers;\t\t\t/**< list of peers */\n\tint peers_cnt;\t\t\t\t/**< size of the list of peers */\n\n\tacceptor_config *acceptors;\t/**< list of acceptors */\n\tint acceptors_cnt;\t\t\t/**< size of the list of acceptors */\n\n\tapp_config *applications;\t/**< list of supported applications */\n\tint applications_cnt;\t\t/**< size of list of supported applications*/\n\n\tint *supported_vendors;\t\t/**< list of supported vendor ids */\n\tint supported_vendors_cnt;\t/**< size of list of supported vendor ids */\n\n\trouting_table *r_table;\t\t/**< realm routing table */\n}",
+            "ANY"
+        ],
+        [
+            "typedef struct _pretran {\n\tunsigned int hid;\n\tunsigned int linked;\n\tstr callid;\n\tstr ftag;\n\tstr cseqnum;\n\tstr cseqmet;\n\tunsigned int cseqmetid;\n\tstr vbranch;\n\tstr dbuf;\n\tint pid;\n\tstruct _pretran *next;\n\tstruct _pretran *prev;\n} pretran_t;",
+            "pretran_t"
+        ],
+        [
+            "typedef struct{ volatile int val; }",
+            "ANY"
+        ],
+        [
+            "struct _str",
+            "_str"
+        ],
+        [
+            "typedef struct pretran_slot {\n\tpretran_t *plist;\n\tgen_lock_t lock;\n} pretran_slot_t;",
+            "pretran_slot_t"
+        ],
+        [
+            "typedef struct sip_msg {\n\tunsigned int id;               /*!< message id, unique/process*/\n\tint pid;                       /*!< process id */\n\tstruct timeval tval;           /*!< time value associated to message */\n\tsnd_flags_t fwd_send_flags;    /*!< send flags for forwarding */\n\tsnd_flags_t rpl_send_flags;    /*!< send flags for replies */\n\tstruct msg_start first_line;   /*!< Message first line */\n\tstruct via_body* via1;         /*!< The first via */\n\tstruct via_body* via2;         /*!< The second via */\n\tstruct hdr_field* headers;     /*!< All the parsed headers*/\n\tstruct hdr_field* last_header; /*!< Pointer to the last parsed header*/\n\thdr_flags_t parsed_flag;    /*!< Already parsed header field types */\n\n\t/* Via, To, CSeq, Call-Id, From, end of header*/\n\t/* pointers to the first occurrences of these headers;\n\t * everything is also saved in 'headers'\n\t * (WARNING: do not deallocate them twice!)*/\n\n\tstruct hdr_field* h_via1;\n\tstruct hdr_field* h_via2;\n\tstruct hdr_field* callid;\n\tstruct hdr_field* to;\n\tstruct hdr_field* cseq;\n\tstruct hdr_field* from;\n\tstruct hdr_field* contact;\n\tstruct hdr_field* maxforwards;\n\tstruct hdr_field* route;\n\tstruct hdr_field* record_route;\n\tstruct hdr_field* content_type;\n\tstruct hdr_field* content_length;\n\tstruct hdr_field* authorization;\n\tstruct hdr_field* expires;\n\tstruct hdr_field* proxy_auth;\n\tstruct hdr_field* supported;\n\tstruct hdr_field* require;\n\tstruct hdr_field* proxy_require;\n\tstruct hdr_field* unsupported;\n\tstruct hdr_field* allow;\n\tstruct hdr_field* event;\n\tstruct hdr_field* accept;\n\tstruct hdr_field* accept_language;\n\tstruct hdr_field* organization;\n\tstruct hdr_field* priority;\n\tstruct hdr_field* subject;\n\tstruct hdr_field* user_agent;\n\tstruct hdr_field* server;\n\tstruct hdr_field* content_disposition;\n\tstruct hdr_field* diversion;\n\tstruct hdr_field* rpid;\n\tstruct hdr_field* refer_to;\n\tstruct hdr_field* session_expires;\n\tstruct hdr_field* min_se;\n\tstruct hdr_field* sipifmatch;\n\tstruct hdr_field* subscription_state;\n\tstruct hdr_field* date;\n\tstruct hdr_field* identity;\n\tstruct hdr_field* identity_info;\n\tstruct hdr_field* pai;\n\tstruct hdr_field* ppi;\n\tstruct hdr_field* path;\n\tstruct hdr_field* privacy;\n\tstruct hdr_field* min_expires;\n\n\tstruct msg_body* body;\n\n\tchar* eoh;        /*!< pointer to the end of header (if found) or null */\n\tchar* unparsed;   /*!< here we stopped parsing*/\n\n\tstruct receive_info rcv; /*!< source & dest ip, ports, proto a.s.o*/\n\n\tchar* buf;        /*!< scratch pad, holds a modified message,\n\t\t\t\t\t\t*  via, etc. point into it */\n\tunsigned int len; /*!< message len (orig) */\n\n\t/* modifications */\n\n\tstr new_uri; /*!< changed first line uri, when you change this\n\t\t\t\t\tdon't forget to set parsed_uri_ok to 0*/\n\n\tstr dst_uri; /*!< Destination URI, must be forwarded to this URI if len != 0 */\n\n\t/* current uri */\n\tint parsed_uri_ok; /*!< 1 if parsed_uri is valid, 0 if not, set if to 0\n\t\t\t\t\t\tif you modify the uri (e.g change new_uri)*/\n\tstruct sip_uri parsed_uri; /*!< speed-up > keep here the parsed uri*/\n\tint parsed_orig_ruri_ok; /*!< 1 if parsed_orig_uri is valid, 0 if not, set if to 0\n\t\t\t\t\t\t\t\tif you modify the uri (e.g change new_uri)*/\n\tstruct sip_uri parsed_orig_ruri; /*!< speed-up > keep here the parsed orig uri*/\n\n\tstruct lump* add_rm;       /*!< used for all the forwarded requests/replies */\n\tstruct lump* body_lumps;     /*!< Lumps that update Content-Length */\n\tstruct lump_rpl *reply_lump; /*!< only for localy generated replies !!!*/\n\n\t/*! \\brief str add_to_branch;\n\t\twhatever whoever want to append to Via branch comes here */\n\tchar add_to_branch_s[MAX_BRANCH_PARAM_LEN];\n\tint add_to_branch_len;\n\n\tunsigned int  hash_index; /*!< index to TM hash table; stored in core\n\t\t\t\t\t\t\t\tto avoid unnecessary calculations */\n\tunsigned int msg_flags; /*!< internal flags used by core */\n\tflag_t flags; /*!< config flags */\n\tstr set_global_address;\n\tstr set_global_port;\n\tstruct socket_info* force_send_socket; /*!< force sending on this socket */\n\tstr path_vec;\n\tstr instance;\n\tunsigned int reg_id;\n\tstr ruid;\n\tstr location_ua;\n\n\t/* structure with fields that are needed for local processing\n\t * - not cloned to shm, reset to 0 in the clone */\n\tmsg_ldata_t ldv;\n\n\t/* IMPORTANT: when adding new fields in this structure (sip_msg_t),\n\t * be sure it is freed in free_sip_msg() and it is cloned or reset\n\t * to shm structure for transaction - see sip_msg_clone.c. In tm\n\t * module, take care of these fields for faked environemt used for\n\t * runing failure handlers - see modules/tm/t_reply.c */\n} sip_msg_t;",
+            "sip_msg_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "src/modules/tmx/tmx_pretran.c": [
+            184,
+            194,
+            197,
+            201,
+            205,
+            209,
+            213,
+            217,
+            218,
+            222,
+            226,
+            230,
+            235,
+            237,
+            238,
+            239,
+            240,
+            241,
+            242,
+            243,
+            244,
+            249,
+            250,
+            251,
+            258,
+            259,
+            260,
+            261,
+            262,
+            263,
+            265,
+            269,
+            270,
+            271,
+            272,
+            273,
+            274,
+            276,
+            278,
+            279,
+            281,
+            282,
+            283,
+            284,
+            286,
+            287,
+            288,
+            289,
+            290,
+            292,
+            293,
+            294,
+            295,
+            296,
+            298,
+            299,
+            300,
+            301,
+            302,
+            304,
+            305,
+            306,
+            307,
+            308,
+            309,
+            311,
+            312,
+            315,
+            316,
+            317,
+            318,
+            319,
+            320,
+            321,
+            322,
+            323,
+            324,
+            326,
+            327,
+            332,
+            333,
+            335,
+            336,
+            345,
+            346,
+            347,
+            348,
+            349,
+            350,
+            352,
+            353,
+            354,
+            356,
+            358,
+            359,
+            361,
+            362
+        ]
+    },
+    "visitedLines_before": {
+        "src/modules/tmx/tmx_pretran.c": [
+            184,
+            194,
+            197,
+            201,
+            205,
+            209,
+            213,
+            217,
+            218,
+            222,
+            226,
+            230,
+            235,
+            237,
+            238,
+            239,
+            240,
+            241,
+            242,
+            243,
+            244,
+            249,
+            250,
+            251,
+            258,
+            259,
+            260,
+            261,
+            262,
+            263,
+            265,
+            269,
+            270,
+            271,
+            272,
+            273,
+            274,
+            276,
+            278,
+            279,
+            281,
+            282,
+            283,
+            284,
+            286,
+            287,
+            288,
+            289,
+            290,
+            292,
+            293,
+            294,
+            295,
+            296,
+            298,
+            299,
+            300,
+            301,
+            302,
+            304,
+            305,
+            306,
+            307,
+            308,
+            309,
+            311,
+            312,
+            315,
+            316,
+            317,
+            318,
+            319,
+            320,
+            321,
+            322,
+            323,
+            324,
+            326,
+            327,
+            332,
+            333,
+            335,
+            336,
+            345,
+            346,
+            347,
+            348,
+            349,
+            350,
+            352,
+            353,
+            354,
+            356,
+            358,
+            359,
+            361,
+            362
+        ]
+    },
+    "visitedParams": {
+        "src/modules/tmx/tmx_pretran.c": [
+            [
+                "sip_msg_t *msg",
+                "tmx_check_pretran"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "src/modules/tmx/tmx_pretran.c",
+            "tmx_check_pretran",
+            "int tmx_check_pretran(sip_msg_t *msg) /* <=== tmx_check_pretran */ \n{\n\tunsigned int chid;\n\tunsigned int slotid;\n\tint dsize;\n\tstruct via_param *vbr;\n\tstr scallid;\n\tstr scseqmet;\n\tstr scseqnum;\n\tstr sftag;\n\tstr svbranch = {NULL, 0};\n\tpretran_t *it;\n\n\tif(_tmx_ptran_table==NULL) {\n\t\tLM_ERR(\"pretran hash table not initialized yet\\n\");\n\t\treturn -1;\n\t}\n\tif(get_route_type()!=REQUEST_ROUTE) {\n\t\tLM_ERR(\"invalid usage - not in request route\\n\");\n\t\treturn -1;\n\t}\n\tif(msg->first_line.type!=SIP_REQUEST) {\n\t\tLM_ERR(\"invalid usage - not a sip request\\n\");\n\t\treturn -1;\n\t}\n\tif(parse_headers(msg, HDR_FROM_F|HDR_VIA1_F|HDR_CALLID_F|HDR_CSEQ_F, 0)<0) {\n\t\tLM_ERR(\"failed to parse required headers\\n\");\n\t\treturn -1;\n\t}\n\tif(msg->cseq==NULL || msg->cseq->parsed==NULL) {\n\t\tLM_ERR(\"failed to parse cseq headers\\n\");\n\t\treturn -1;\n\t}\n\tif(get_cseq(msg)->method_id==METHOD_ACK\n\t\t\t|| get_cseq(msg)->method_id==METHOD_CANCEL) {\n\t\tLM_DBG(\"no pre-transaction management for ACK or CANCEL\\n\");\n\t\treturn -1;\n\t}\n\tif (msg->via1==0) {\n\t\tLM_ERR(\"failed to get Via header\\n\");\n\t\treturn -1;\n\t}\n\tif (parse_from_header(msg)<0 || get_from(msg)->tag_value.len==0) {\n\t\tLM_ERR(\"failed to get From header\\n\");\n\t\treturn -1;\n\t}\n\tif (msg->callid==NULL || msg->callid->body.s==NULL) {\n\t\tLM_ERR(\"failed to parse callid headers\\n\");\n\t\treturn -1;\n\t}\n\n\tvbr = msg->via1->branch;\n\n\tscallid = msg->callid->body;\n\ttrim(&scallid);\n\tscseqmet = get_cseq(msg)->method;\n\ttrim(&scseqmet);\n\tscseqnum = get_cseq(msg)->number;\n\ttrim(&scseqnum);\n\tsftag = get_from(msg)->tag_value;\n\ttrim(&sftag);\n\n\tchid = get_hash1_raw(msg->callid->body.s, msg->callid->body.len);\n\tslotid = chid & (_tmx_ptran_size-1);\n\n\tif(unlikely(_tmx_proc_ptran == NULL)) {\n\t\t_tmx_proc_ptran = (pretran_t*)shm_malloc(sizeof(pretran_t));\n\t\tif(_tmx_proc_ptran == NULL) {\n\t\t\tLM_ERR(\"not enough memory for pretran structure\\n\");\n\t\t\treturn -1;\n\t\t}\n\t\tmemset(_tmx_proc_ptran, 0, sizeof(pretran_t));\n\t\t_tmx_proc_ptran->pid = my_pid();\n\t}\n\tdsize = scallid.len + scseqnum.len + scseqmet.len\n\t\t+ sftag.len + 4;\n\tif(likely(vbr!=NULL)) {\n\t\tsvbranch = vbr->value;\n\t\ttrim(&svbranch);\n\t\tdsize += svbranch.len + 1;\n\t}\n\tif(dsize<256) dsize = 256;\n\n\ttmx_pretran_unlink();\n\n\tif(dsize > _tmx_proc_ptran->dbuf.len) {\n\t\tif(_tmx_proc_ptran->dbuf.s) shm_free(_tmx_proc_ptran->dbuf.s);\n\t\t_tmx_proc_ptran->dbuf.s = (char*)shm_malloc(dsize);\n\t\tif(_tmx_proc_ptran->dbuf.s==NULL) {\n\t\t\tLM_ERR(\"not enough memory for pretran data\\n\");\n\t\t\treturn -1;\n\t\t}\n\t\t_tmx_proc_ptran->dbuf.len = dsize;\n\t}\n\t_tmx_proc_ptran->hid = chid;\n\t_tmx_proc_ptran->cseqmetid = (get_cseq(msg))->method_id;\n\n\t_tmx_proc_ptran->callid.s = _tmx_proc_ptran->dbuf.s;\n\tmemcpy(_tmx_proc_ptran->callid.s, scallid.s, scallid.len);\n\t_tmx_proc_ptran->callid.len = scallid.len;\n\t_tmx_proc_ptran->callid.s[_tmx_proc_ptran->callid.len] = '\\0';\n\n\t_tmx_proc_ptran->ftag.s = _tmx_proc_ptran->callid.s\n\t\t+ _tmx_proc_ptran->callid.len + 1;\n\tmemcpy(_tmx_proc_ptran->ftag.s, sftag.s, sftag.len);\n\t_tmx_proc_ptran->ftag.len = sftag.len;\n\t_tmx_proc_ptran->ftag.s[_tmx_proc_ptran->ftag.len] = '\\0';\n\n\t_tmx_proc_ptran->cseqnum.s = _tmx_proc_ptran->ftag.s\n\t\t+ _tmx_proc_ptran->ftag.len + 1;\n\tmemcpy(_tmx_proc_ptran->cseqnum.s, scseqnum.s, scseqnum.len);\n\t_tmx_proc_ptran->cseqnum.len = scseqnum.len;\n\t_tmx_proc_ptran->cseqnum.s[_tmx_proc_ptran->cseqnum.len] = '\\0';\n\n\t_tmx_proc_ptran->cseqmet.s = _tmx_proc_ptran->cseqnum.s\n\t\t+ _tmx_proc_ptran->cseqnum.len + 1;\n\tmemcpy(_tmx_proc_ptran->cseqmet.s, scseqmet.s, scseqmet.len);\n\t_tmx_proc_ptran->cseqmet.len = scseqmet.len;\n\t_tmx_proc_ptran->cseqmet.s[_tmx_proc_ptran->cseqmet.len] = '\\0';\n\n\tif(likely(vbr!=NULL)) {\n\t\t_tmx_proc_ptran->vbranch.s = _tmx_proc_ptran->cseqmet.s\n\t\t\t+ _tmx_proc_ptran->cseqmet.len + 1;\n\t\tmemcpy(_tmx_proc_ptran->vbranch.s, svbranch.s, svbranch.len);\n\t\t_tmx_proc_ptran->vbranch.len = svbranch.len;\n\t\t_tmx_proc_ptran->vbranch.s[_tmx_proc_ptran->vbranch.len] = '\\0';\n\t} else {\n\t\t_tmx_proc_ptran->vbranch.s = NULL;\n\t\t_tmx_proc_ptran->vbranch.len = 0;\n\t}\n\n\tlock_get(&_tmx_ptran_table[slotid].lock);\n\tit = _tmx_ptran_table[slotid].plist;\n\ttmx_pretran_link_safe(slotid);\n\tfor(; it!=NULL; it=it->next) {\n\t\tif(_tmx_proc_ptran->hid != it->hid\n\t\t\t\t|| _tmx_proc_ptran->cseqmetid != it->cseqmetid\n\t\t\t\t|| _tmx_proc_ptran->callid.len != it->callid.len\n\t\t\t\t|| _tmx_proc_ptran->ftag.len != it->ftag.len\n\t\t\t\t|| _tmx_proc_ptran->cseqmet.len != it->cseqmet.len\n\t\t\t\t|| _tmx_proc_ptran->cseqnum.len != it->cseqnum.len)\n\t\t\tcontinue;\n\t\tif(_tmx_proc_ptran->vbranch.s != NULL && it->vbranch.s != NULL) {\n\t\t\tif(_tmx_proc_ptran->vbranch.len != it->vbranch.len)\n\t\t\t\tcontinue;\n\t\t\t/* shortcut - check last char in Via branch\n\t\t\t * - kamailio/ser adds there branch index => in case of paralel\n\t\t\t *   forking by previous hop, catch it here quickly */\n\t\t\tif(_tmx_proc_ptran->vbranch.s[it->vbranch.len-1]\n\t\t\t\t\t!= it->vbranch.s[it->vbranch.len-1])\n\t\t\t\tcontinue;\n\t\t\tif(memcmp(_tmx_proc_ptran->vbranch.s,\n\t\t\t\t\t\tit->vbranch.s, it->vbranch.len)!=0)\n\t\t\t\tcontinue;\n\t\t\t/* shall stop by matching magic cookie?\n\t\t\t *  if (vbr && vbr->value.s && vbr->value.len > MCOOKIE_LEN\n\t\t\t *  && memcmp(vbr->value.s, MCOOKIE, MCOOKIE_LEN)==0) {\n\t\t\t *  LM_DBG(\"rfc3261 cookie found in Via branch\\n\");\n\t\t\t *  }\n\t\t\t */\n\t\t}\n\t\tif(memcmp(_tmx_proc_ptran->callid.s,\n\t\t\t\t\tit->callid.s, it->callid.len)!=0\n\t\t\t\t|| memcmp(_tmx_proc_ptran->ftag.s,\n\t\t\t\t\tit->ftag.s, it->ftag.len)!=0\n\t\t\t\t|| memcmp(_tmx_proc_ptran->cseqnum.s,\n\t\t\t\t\tit->cseqnum.s, it->cseqnum.len)!=0)\n\t\t\tcontinue;\n\t\tif((it->cseqmetid==METHOD_OTHER || it->cseqmetid==METHOD_UNDEF)\n\t\t\t\t&& memcmp(_tmx_proc_ptran->cseqmet.s,\n\t\t\t\t\tit->cseqmet.s, it->cseqmet.len)!=0)\n\t\t\tcontinue;\n\t\tLM_DBG(\"matched another pre-transaction by pid %d for [%.*s]\\n\",\n\t\t\t\tit->pid, it->callid.len, it->callid.s);\n\t\tlock_release(&_tmx_ptran_table[slotid].lock);\n\t\treturn 1;\n\t}\n\tlock_release(&_tmx_ptran_table[slotid].lock);\n\treturn 0;\n}",
+            184
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "src/modules/tmx/tmx_pretran.c",
+            "tmx_check_pretran",
+            "int tmx_check_pretran(sip_msg_t *msg) /* <=== tmx_check_pretran */ \n{\n\tunsigned int chid;\n\tunsigned int slotid;\n\tint dsize;\n\tstruct via_param *vbr;\n\tstr scallid;\n\tstr scseqmet;\n\tstr scseqnum;\n\tstr sftag;\n\tstr svbranch = {NULL, 0};\n\tpretran_t *it;\n\n\tif(_tmx_ptran_table==NULL) {\n\t\tLM_ERR(\"pretran hash table not initialized yet\\n\");\n\t\treturn -1;\n\t}\n\tif(get_route_type()!=REQUEST_ROUTE) {\n\t\tLM_ERR(\"invalid usage - not in request route\\n\");\n\t\treturn -1;\n\t}\n\tif(msg->first_line.type!=SIP_REQUEST) {\n\t\tLM_ERR(\"invalid usage - not a sip request\\n\");\n\t\treturn -1;\n\t}\n\tif(parse_headers(msg, HDR_FROM_F|HDR_VIA1_F|HDR_CALLID_F|HDR_CSEQ_F, 0)<0) {\n\t\tLM_ERR(\"failed to parse required headers\\n\");\n\t\treturn -1;\n\t}\n\tif(msg->cseq==NULL || msg->cseq->parsed==NULL) {\n\t\tLM_ERR(\"failed to parse cseq headers\\n\");\n\t\treturn -1;\n\t}\n\tif(get_cseq(msg)->method_id==METHOD_ACK\n\t\t\t|| get_cseq(msg)->method_id==METHOD_CANCEL) {\n\t\tLM_DBG(\"no pre-transaction management for ACK or CANCEL\\n\");\n\t\treturn -1;\n\t}\n\tif (msg->via1==0) {\n\t\tLM_ERR(\"failed to get Via header\\n\");\n\t\treturn -1;\n\t}\n\tif (parse_from_header(msg)<0 || get_from(msg)->tag_value.len==0) {\n\t\tLM_ERR(\"failed to get From header\\n\");\n\t\treturn -1;\n\t}\n\tif (msg->callid==NULL || msg->callid->body.s==NULL) {\n\t\tLM_ERR(\"failed to parse callid headers\\n\");\n\t\treturn -1;\n\t}\n\n\tvbr = msg->via1->branch;\n\n\tscallid = msg->callid->body;\n\ttrim(&scallid);\n\tscseqmet = get_cseq(msg)->method;\n\ttrim(&scseqmet);\n\tscseqnum = get_cseq(msg)->number;\n\ttrim(&scseqnum);\n\tsftag = get_from(msg)->tag_value;\n\ttrim(&sftag);\n\n\tchid = get_hash1_raw(msg->callid->body.s, msg->callid->body.len);\n\tslotid = chid & (_tmx_ptran_size-1);\n\n\tif(unlikely(_tmx_proc_ptran == NULL)) {\n\t\t_tmx_proc_ptran = (pretran_t*)shm_malloc(sizeof(pretran_t));\n\t\tif(_tmx_proc_ptran == NULL) {\n\t\t\tLM_ERR(\"not enough memory for pretran structure\\n\");\n\t\t\treturn -1;\n\t\t}\n\t\tmemset(_tmx_proc_ptran, 0, sizeof(pretran_t));\n\t\t_tmx_proc_ptran->pid = my_pid();\n\t}\n\tdsize = scallid.len + scseqnum.len + scseqmet.len\n\t\t+ sftag.len + 4;\n\tif(likely(vbr!=NULL)) {\n\t\tsvbranch = vbr->value;\n\t\ttrim(&svbranch);\n\t\tdsize += svbranch.len;\n\t}\n\tif(dsize<256) dsize = 256;\n\n\ttmx_pretran_unlink();\n\n\tif(dsize > _tmx_proc_ptran->dbuf.len) {\n\t\tif(_tmx_proc_ptran->dbuf.s) shm_free(_tmx_proc_ptran->dbuf.s);\n\t\t_tmx_proc_ptran->dbuf.s = (char*)shm_malloc(dsize);\n\t\tif(_tmx_proc_ptran->dbuf.s==NULL) {\n\t\t\tLM_ERR(\"not enough memory for pretran data\\n\");\n\t\t\treturn -1;\n\t\t}\n\t\t_tmx_proc_ptran->dbuf.len = dsize;\n\t}\n\t_tmx_proc_ptran->hid = chid;\n\t_tmx_proc_ptran->cseqmetid = (get_cseq(msg))->method_id;\n\n\t_tmx_proc_ptran->callid.s = _tmx_proc_ptran->dbuf.s;\n\tmemcpy(_tmx_proc_ptran->callid.s, scallid.s, scallid.len);\n\t_tmx_proc_ptran->callid.len = scallid.len;\n\t_tmx_proc_ptran->callid.s[_tmx_proc_ptran->callid.len] = '\\0';\n\n\t_tmx_proc_ptran->ftag.s = _tmx_proc_ptran->callid.s\n\t\t+ _tmx_proc_ptran->callid.len + 1;\n\tmemcpy(_tmx_proc_ptran->ftag.s, sftag.s, sftag.len);\n\t_tmx_proc_ptran->ftag.len = sftag.len;\n\t_tmx_proc_ptran->ftag.s[_tmx_proc_ptran->ftag.len] = '\\0';\n\n\t_tmx_proc_ptran->cseqnum.s = _tmx_proc_ptran->ftag.s\n\t\t+ _tmx_proc_ptran->ftag.len + 1;\n\tmemcpy(_tmx_proc_ptran->cseqnum.s, scseqnum.s, scseqnum.len);\n\t_tmx_proc_ptran->cseqnum.len = scseqnum.len;\n\t_tmx_proc_ptran->cseqnum.s[_tmx_proc_ptran->cseqnum.len] = '\\0';\n\n\t_tmx_proc_ptran->cseqmet.s = _tmx_proc_ptran->cseqnum.s\n\t\t+ _tmx_proc_ptran->cseqnum.len + 1;\n\tmemcpy(_tmx_proc_ptran->cseqmet.s, scseqmet.s, scseqmet.len);\n\t_tmx_proc_ptran->cseqmet.len = scseqmet.len;\n\t_tmx_proc_ptran->cseqmet.s[_tmx_proc_ptran->cseqmet.len] = '\\0';\n\n\tif(likely(vbr!=NULL)) {\n\t\t_tmx_proc_ptran->vbranch.s = _tmx_proc_ptran->cseqmet.s\n\t\t\t+ _tmx_proc_ptran->cseqmet.len + 1;\n\t\tmemcpy(_tmx_proc_ptran->vbranch.s, svbranch.s, svbranch.len);\n\t\t_tmx_proc_ptran->vbranch.len = svbranch.len;\n\t\t_tmx_proc_ptran->vbranch.s[_tmx_proc_ptran->vbranch.len] = '\\0';\n\t} else {\n\t\t_tmx_proc_ptran->vbranch.s = NULL;\n\t\t_tmx_proc_ptran->vbranch.len = 0;\n\t}\n\n\tlock_get(&_tmx_ptran_table[slotid].lock);\n\tit = _tmx_ptran_table[slotid].plist;\n\ttmx_pretran_link_safe(slotid);\n\tfor(; it!=NULL; it=it->next) {\n\t\tif(_tmx_proc_ptran->hid != it->hid\n\t\t\t\t|| _tmx_proc_ptran->cseqmetid != it->cseqmetid\n\t\t\t\t|| _tmx_proc_ptran->callid.len != it->callid.len\n\t\t\t\t|| _tmx_proc_ptran->ftag.len != it->ftag.len\n\t\t\t\t|| _tmx_proc_ptran->cseqmet.len != it->cseqmet.len\n\t\t\t\t|| _tmx_proc_ptran->cseqnum.len != it->cseqnum.len)\n\t\t\tcontinue;\n\t\tif(_tmx_proc_ptran->vbranch.s != NULL && it->vbranch.s != NULL) {\n\t\t\tif(_tmx_proc_ptran->vbranch.len != it->vbranch.len)\n\t\t\t\tcontinue;\n\t\t\t/* shortcut - check last char in Via branch\n\t\t\t * - kamailio/ser adds there branch index => in case of paralel\n\t\t\t *   forking by previous hop, catch it here quickly */\n\t\t\tif(_tmx_proc_ptran->vbranch.s[it->vbranch.len-1]\n\t\t\t\t\t!= it->vbranch.s[it->vbranch.len-1])\n\t\t\t\tcontinue;\n\t\t\tif(memcmp(_tmx_proc_ptran->vbranch.s,\n\t\t\t\t\t\tit->vbranch.s, it->vbranch.len)!=0)\n\t\t\t\tcontinue;\n\t\t\t/* shall stop by matching magic cookie?\n\t\t\t *  if (vbr && vbr->value.s && vbr->value.len > MCOOKIE_LEN\n\t\t\t *  && memcmp(vbr->value.s, MCOOKIE, MCOOKIE_LEN)==0) {\n\t\t\t *  LM_DBG(\"rfc3261 cookie found in Via branch\\n\");\n\t\t\t *  }\n\t\t\t */\n\t\t}\n\t\tif(memcmp(_tmx_proc_ptran->callid.s,\n\t\t\t\t\tit->callid.s, it->callid.len)!=0\n\t\t\t\t|| memcmp(_tmx_proc_ptran->ftag.s,\n\t\t\t\t\tit->ftag.s, it->ftag.len)!=0\n\t\t\t\t|| memcmp(_tmx_proc_ptran->cseqnum.s,\n\t\t\t\t\tit->cseqnum.s, it->cseqnum.len)!=0)\n\t\t\tcontinue;\n\t\tif((it->cseqmetid==METHOD_OTHER || it->cseqmetid==METHOD_UNDEF)\n\t\t\t\t&& memcmp(_tmx_proc_ptran->cseqmet.s,\n\t\t\t\t\tit->cseqmet.s, it->cseqmet.len)!=0)\n\t\t\tcontinue;\n\t\tLM_DBG(\"matched another pre-transaction by pid %d for [%.*s]\\n\",\n\t\t\t\tit->pid, it->callid.len, it->callid.s);\n\t\tlock_release(&_tmx_ptran_table[slotid].lock);\n\t\treturn 1;\n\t}\n\tlock_release(&_tmx_ptran_table[slotid].lock);\n\treturn 0;\n}",
+            184
+        ]
+    ]
+}

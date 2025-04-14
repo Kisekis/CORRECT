@@ -1,0 +1,221 @@
+{
+    "calleeMethods": [
+        [
+            "include/sound/pcm.h",
+            "snd_pcm_gettime",
+            "static inline void snd_pcm_gettime(struct snd_pcm_runtime *runtime, /* <=== snd_pcm_gettime */ \n\t\t\t\t   struct timespec *tv)\n{\n\tswitch (runtime->tstamp_type) {\n\tcase SNDRV_PCM_TSTAMP_TYPE_MONOTONIC:\n\t\tktime_get_ts(tv);\n\t\tbreak;\n\tcase SNDRV_PCM_TSTAMP_TYPE_MONOTONIC_RAW:\n\t\tgetrawmonotonic(tv);\n\t\tbreak;\n\tdefault:\n\t\tgetnstimeofday(tv);\n\t\tbreak;\n\t}\n}",
+            2
+        ],
+        [
+            "include/sound/pcm.h",
+            "snd_pcm_running",
+            "static inline int snd_pcm_running(struct snd_pcm_substream *substream) /* <=== snd_pcm_running */ \n{\n\treturn (substream->runtime->status->state == SNDRV_PCM_STATE_RUNNING ||\n\t\t(substream->runtime->status->state == SNDRV_PCM_STATE_DRAINING &&\n\t\t substream->stream == SNDRV_PCM_STREAM_PLAYBACK));\n}",
+            1
+        ],
+        [
+            "sound/core/pcm_lib.c",
+            "snd_pcm_update_state",
+            "int snd_pcm_update_state(struct snd_pcm_substream *substream, /* <=== snd_pcm_update_state */ \n\t\t\t struct snd_pcm_runtime *runtime)\n{\n\tsnd_pcm_uframes_t avail;\n\n\tif (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)\n\t\tavail = snd_pcm_playback_avail(runtime);\n\telse\n\t\tavail = snd_pcm_capture_avail(runtime);\n\tif (avail > runtime->avail_max)\n\t\truntime->avail_max = avail;\n\tif (runtime->status->state == SNDRV_PCM_STATE_DRAINING) {\n\t\tif (avail >= runtime->buffer_size) {\n\t\t\tsnd_pcm_drain_done(substream);\n\t\t\treturn -EPIPE;\n\t\t}\n\t} else {\n\t\tif (avail >= runtime->stop_threshold) {\n\t\t\txrun(substream);\n\t\t\treturn -EPIPE;\n\t\t}\n\t}\n\tif (runtime->twake) {\n\t\tif (avail >= runtime->twake)\n\t\t\twake_up(&runtime->tsleep);\n\t} else if (avail >= runtime->control->avail_min)\n\t\twake_up(&runtime->sleep);\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "include/sound/pcm.h",
+            "snd_pcm_format_set_silence",
+            "int snd_pcm_format_set_silence(snd_pcm_format_t format, void *buf, unsigned int frames); /* <=== snd_pcm_format_set_silence */ ",
+            3
+        ],
+        [
+            "sound/core/pcm_native.c",
+            "snd_pcm_stop",
+            "int snd_pcm_stop(struct snd_pcm_substream *substream, snd_pcm_state_t state) /* <=== snd_pcm_stop */ \n{\n\treturn snd_pcm_action(&snd_pcm_action_stop, substream, state);\n}",
+            3
+        ],
+        [
+            "sound/core/pcm_lib.c",
+            "snd_pcm_update_hw_ptr0",
+            "static int snd_pcm_update_hw_ptr0(struct snd_pcm_substream *substream, /* <=== snd_pcm_update_hw_ptr0 */ \n\t\t\t\t  unsigned int in_interrupt)\n{\n\tstruct snd_pcm_runtime *runtime = substream->runtime;\n\tsnd_pcm_uframes_t pos;\n\tsnd_pcm_uframes_t old_hw_ptr, new_hw_ptr, hw_base;\n\tsnd_pcm_sframes_t hdelta, delta;\n\tunsigned long jdelta;\n\tunsigned long curr_jiffies;\n\tstruct timespec curr_tstamp;\n\tstruct timespec audio_tstamp;\n\tint crossed_boundary = 0;\n\n\told_hw_ptr = runtime->status->hw_ptr;\n\n\t/*\n\t * group pointer, time and jiffies reads to allow for more\n\t * accurate correlations/corrections.\n\t * The values are stored at the end of this routine after\n\t * corrections for hw_ptr position\n\t */\n\tpos = substream->ops->pointer(substream);\n\tcurr_jiffies = jiffies;\n\tif (runtime->tstamp_mode == SNDRV_PCM_TSTAMP_ENABLE) {\n\t\tif ((substream->ops->get_time_info) &&\n\t\t\t(runtime->audio_tstamp_config.type_requested != SNDRV_PCM_AUDIO_TSTAMP_TYPE_DEFAULT)) {\n\t\t\tsubstream->ops->get_time_info(substream, &curr_tstamp,\n\t\t\t\t\t\t&audio_tstamp,\n\t\t\t\t\t\t&runtime->audio_tstamp_config,\n\t\t\t\t\t\t&runtime->audio_tstamp_report);\n\n\t\t\t/* re-test in case tstamp type is not supported in hardware and was demoted to DEFAULT */\n\t\t\tif (runtime->audio_tstamp_report.actual_type == SNDRV_PCM_AUDIO_TSTAMP_TYPE_DEFAULT)\n\t\t\t\tsnd_pcm_gettime(runtime, (struct timespec *)&curr_tstamp);\n\t\t} else\n\t\t\tsnd_pcm_gettime(runtime, (struct timespec *)&curr_tstamp);\n\t}\n\n\tif (pos == SNDRV_PCM_POS_XRUN) {\n\t\txrun(substream);\n\t\treturn -EPIPE;\n\t}\n\tif (pos >= runtime->buffer_size) {\n\t\tif (printk_ratelimit()) {\n\t\t\tchar name[16];\n\t\t\tsnd_pcm_debug_name(substream, name, sizeof(name));\n\t\t\tpcm_err(substream->pcm,\n\t\t\t\t\"invalid position: %s, pos = %ld, buffer size = %ld, period size = %ld\\n\",\n\t\t\t\tname, pos, runtime->buffer_size,\n\t\t\t\truntime->period_size);\n\t\t}\n\t\tpos = 0;\n\t}\n\tpos -= pos % runtime->min_align;\n\ttrace_hwptr(substream, pos, in_interrupt);\n\thw_base = runtime->hw_ptr_base;\n\tnew_hw_ptr = hw_base + pos;\n\tif (in_interrupt) {\n\t\t/* we know that one period was processed */\n\t\t/* delta = \"expected next hw_ptr\" for in_interrupt != 0 */\n\t\tdelta = runtime->hw_ptr_interrupt + runtime->period_size;\n\t\tif (delta > new_hw_ptr) {\n\t\t\t/* check for double acknowledged interrupts */\n\t\t\thdelta = curr_jiffies - runtime->hw_ptr_jiffies;\n\t\t\tif (hdelta > runtime->hw_ptr_buffer_jiffies/2 + 1) {\n\t\t\t\thw_base += runtime->buffer_size;\n\t\t\t\tif (hw_base >= runtime->boundary) {\n\t\t\t\t\thw_base = 0;\n\t\t\t\t\tcrossed_boundary++;\n\t\t\t\t}\n\t\t\t\tnew_hw_ptr = hw_base + pos;\n\t\t\t\tgoto __delta;\n\t\t\t}\n\t\t}\n\t}\n\t/* new_hw_ptr might be lower than old_hw_ptr in case when */\n\t/* pointer crosses the end of the ring buffer */\n\tif (new_hw_ptr < old_hw_ptr) {\n\t\thw_base += runtime->buffer_size;\n\t\tif (hw_base >= runtime->boundary) {\n\t\t\thw_base = 0;\n\t\t\tcrossed_boundary++;\n\t\t}\n\t\tnew_hw_ptr = hw_base + pos;\n\t}\n      __delta:\n\tdelta = new_hw_ptr - old_hw_ptr;\n\tif (delta < 0)\n\t\tdelta += runtime->boundary;\n\n\tif (runtime->no_period_wakeup) {\n\t\tsnd_pcm_sframes_t xrun_threshold;\n\t\t/*\n\t\t * Without regular period interrupts, we have to check\n\t\t * the elapsed time to detect xruns.\n\t\t */\n\t\tjdelta = curr_jiffies - runtime->hw_ptr_jiffies;\n\t\tif (jdelta < runtime->hw_ptr_buffer_jiffies / 2)\n\t\t\tgoto no_delta_check;\n\t\thdelta = jdelta - delta * HZ / runtime->rate;\n\t\txrun_threshold = runtime->hw_ptr_buffer_jiffies / 2 + 1;\n\t\twhile (hdelta > xrun_threshold) {\n\t\t\tdelta += runtime->buffer_size;\n\t\t\thw_base += runtime->buffer_size;\n\t\t\tif (hw_base >= runtime->boundary) {\n\t\t\t\thw_base = 0;\n\t\t\t\tcrossed_boundary++;\n\t\t\t}\n\t\t\tnew_hw_ptr = hw_base + pos;\n\t\t\thdelta -= runtime->hw_ptr_buffer_jiffies;\n\t\t}\n\t\tgoto no_delta_check;\n\t}\n\n\t/* something must be really wrong */\n\tif (delta >= runtime->buffer_size + runtime->period_size) {\n\t\thw_ptr_error(substream, in_interrupt, \"Unexpected hw_ptr\",\n\t\t\t     \"(stream=%i, pos=%ld, new_hw_ptr=%ld, old_hw_ptr=%ld)\\n\",\n\t\t\t     substream->stream, (long)pos,\n\t\t\t     (long)new_hw_ptr, (long)old_hw_ptr);\n\t\treturn 0;\n\t}\n\n\t/* Do jiffies check only in xrun_debug mode */\n\tif (!xrun_debug(substream, XRUN_DEBUG_JIFFIESCHECK))\n\t\tgoto no_jiffies_check;\n\n\t/* Skip the jiffies check for hardwares with BATCH flag.\n\t * Such hardware usually just increases the position at each IRQ,\n\t * thus it can't give any strange position.\n\t */\n\tif (runtime->hw.info & SNDRV_PCM_INFO_BATCH)\n\t\tgoto no_jiffies_check;\n\thdelta = delta;\n\tif (hdelta < runtime->delay)\n\t\tgoto no_jiffies_check;\n\thdelta -= runtime->delay;\n\tjdelta = curr_jiffies - runtime->hw_ptr_jiffies;\n\tif (((hdelta * HZ) / runtime->rate) > jdelta + HZ/100) {\n\t\tdelta = jdelta /\n\t\t\t(((runtime->period_size * HZ) / runtime->rate)\n\t\t\t\t\t\t\t\t+ HZ/100);\n\t\t/* move new_hw_ptr according jiffies not pos variable */\n\t\tnew_hw_ptr = old_hw_ptr;\n\t\thw_base = delta;\n\t\t/* use loop to avoid checks for delta overflows */\n\t\t/* the delta value is small or zero in most cases */\n\t\twhile (delta > 0) {\n\t\t\tnew_hw_ptr += runtime->period_size;\n\t\t\tif (new_hw_ptr >= runtime->boundary) {\n\t\t\t\tnew_hw_ptr -= runtime->boundary;\n\t\t\t\tcrossed_boundary--;\n\t\t\t}\n\t\t\tdelta--;\n\t\t}\n\t\t/* align hw_base to buffer_size */\n\t\thw_ptr_error(substream, in_interrupt, \"hw_ptr skipping\",\n\t\t\t     \"(pos=%ld, delta=%ld, period=%ld, jdelta=%lu/%lu/%lu, hw_ptr=%ld/%ld)\\n\",\n\t\t\t     (long)pos, (long)hdelta,\n\t\t\t     (long)runtime->period_size, jdelta,\n\t\t\t     ((hdelta * HZ) / runtime->rate), hw_base,\n\t\t\t     (unsigned long)old_hw_ptr,\n\t\t\t     (unsigned long)new_hw_ptr);\n\t\t/* reset values to proper state */\n\t\tdelta = 0;\n\t\thw_base = new_hw_ptr - (new_hw_ptr % runtime->buffer_size);\n\t}\n no_jiffies_check:\n\tif (delta > runtime->period_size + runtime->period_size / 2) {\n\t\thw_ptr_error(substream, in_interrupt,\n\t\t\t     \"Lost interrupts?\",\n\t\t\t     \"(stream=%i, delta=%ld, new_hw_ptr=%ld, old_hw_ptr=%ld)\\n\",\n\t\t\t     substream->stream, (long)delta,\n\t\t\t     (long)new_hw_ptr,\n\t\t\t     (long)old_hw_ptr);\n\t}\n\n no_delta_check:\n\tif (runtime->status->hw_ptr == new_hw_ptr) {\n\t\tupdate_audio_tstamp(substream, &curr_tstamp, &audio_tstamp);\n\t\treturn 0;\n\t}\n\n\tif (substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&\n\t    runtime->silence_size > 0)\n\t\tsnd_pcm_playback_silence(substream, new_hw_ptr);\n\n\tif (in_interrupt) {\n\t\tdelta = new_hw_ptr - runtime->hw_ptr_interrupt;\n\t\tif (delta < 0)\n\t\t\tdelta += runtime->boundary;\n\t\tdelta -= (snd_pcm_uframes_t)delta % runtime->period_size;\n\t\truntime->hw_ptr_interrupt += delta;\n\t\tif (runtime->hw_ptr_interrupt >= runtime->boundary)\n\t\t\truntime->hw_ptr_interrupt -= runtime->boundary;\n\t}\n\truntime->hw_ptr_base = hw_base;\n\truntime->status->hw_ptr = new_hw_ptr;\n\truntime->hw_ptr_jiffies = curr_jiffies;\n\tif (crossed_boundary) {\n\t\tsnd_BUG_ON(crossed_boundary != 1);\n\t\truntime->hw_ptr_wrap += runtime->boundary;\n\t}\n\n\tupdate_audio_tstamp(substream, &curr_tstamp, &audio_tstamp);\n\n\treturn snd_pcm_update_state(substream, runtime);\n}",
+            1
+        ],
+        [
+            "include/sound/pcm.h",
+            "snd_pcm_debug_name",
+            "static inline void /* <=== snd_pcm_debug_name */ \nsnd_pcm_debug_name(struct snd_pcm_substream *substream, char *buf, size_t size)\n{\n\t*buf = 0;\n}",
+            2
+        ],
+        [
+            "include/linux/math64.h",
+            "div_u64",
+            "static inline u64 div_u64(u64 dividend, u32 divisor) /* <=== div_u64 */ \n{\n\tu32 remainder;\n\treturn div_u64_rem(dividend, divisor, &remainder);\n}",
+            3
+        ],
+        [
+            "include/sound/pcm.h",
+            "snd_pcm_playback_hw_avail",
+            "static inline snd_pcm_sframes_t snd_pcm_playback_hw_avail(struct snd_pcm_runtime *runtime) /* <=== snd_pcm_playback_hw_avail */ \n{\n\treturn runtime->buffer_size - snd_pcm_playback_avail(runtime);\n}",
+            3
+        ],
+        [
+            "include/sound/pcm.h",
+            "frames_to_bytes",
+            "static inline ssize_t frames_to_bytes(struct snd_pcm_runtime *runtime, snd_pcm_sframes_t size) /* <=== frames_to_bytes */ \n{\n\treturn size * runtime->frame_bits / 8;\n}",
+            3
+        ],
+        [
+            "sound/core/pcm_lib.c",
+            "snd_pcm_playback_silence",
+            "void snd_pcm_playback_silence(struct snd_pcm_substream *substream, snd_pcm_uframes_t new_hw_ptr) /* <=== snd_pcm_playback_silence */ \n{\n\tstruct snd_pcm_runtime *runtime = substream->runtime;\n\tsnd_pcm_uframes_t frames, ofs, transfer;\n\n\tif (runtime->silence_size < runtime->boundary) {\n\t\tsnd_pcm_sframes_t noise_dist, n;\n\t\tif (runtime->silence_start != runtime->control->appl_ptr) {\n\t\t\tn = runtime->control->appl_ptr - runtime->silence_start;\n\t\t\tif (n < 0)\n\t\t\t\tn += runtime->boundary;\n\t\t\tif ((snd_pcm_uframes_t)n < runtime->silence_filled)\n\t\t\t\truntime->silence_filled -= n;\n\t\t\telse\n\t\t\t\truntime->silence_filled = 0;\n\t\t\truntime->silence_start = runtime->control->appl_ptr;\n\t\t}\n\t\tif (runtime->silence_filled >= runtime->buffer_size)\n\t\t\treturn;\n\t\tnoise_dist = snd_pcm_playback_hw_avail(runtime) + runtime->silence_filled;\n\t\tif (noise_dist >= (snd_pcm_sframes_t) runtime->silence_threshold)\n\t\t\treturn;\n\t\tframes = runtime->silence_threshold - noise_dist;\n\t\tif (frames > runtime->silence_size)\n\t\t\tframes = runtime->silence_size;\n\t} else {\n\t\tif (new_hw_ptr == ULONG_MAX) {\t/* initialization */\n\t\t\tsnd_pcm_sframes_t avail = snd_pcm_playback_hw_avail(runtime);\n\t\t\tif (avail > runtime->buffer_size)\n\t\t\t\tavail = runtime->buffer_size;\n\t\t\truntime->silence_filled = avail > 0 ? avail : 0;\n\t\t\truntime->silence_start = (runtime->status->hw_ptr +\n\t\t\t\t\t\t  runtime->silence_filled) %\n\t\t\t\t\t\t runtime->boundary;\n\t\t} else {\n\t\t\tofs = runtime->status->hw_ptr;\n\t\t\tframes = new_hw_ptr - ofs;\n\t\t\tif ((snd_pcm_sframes_t)frames < 0)\n\t\t\t\tframes += runtime->boundary;\n\t\t\truntime->silence_filled -= frames;\n\t\t\tif ((snd_pcm_sframes_t)runtime->silence_filled < 0) {\n\t\t\t\truntime->silence_filled = 0;\n\t\t\t\truntime->silence_start = new_hw_ptr;\n\t\t\t} else {\n\t\t\t\truntime->silence_start = ofs;\n\t\t\t}\n\t\t}\n\t\tframes = runtime->buffer_size - runtime->silence_filled;\n\t}\n\tif (snd_BUG_ON(frames > runtime->buffer_size))\n\t\treturn;\n\tif (frames == 0)\n\t\treturn;\n\tofs = runtime->silence_start % runtime->buffer_size;\n\twhile (frames > 0) {\n\t\ttransfer = ofs + frames > runtime->buffer_size ? runtime->buffer_size - ofs : frames;\n\t\tif (runtime->access == SNDRV_PCM_ACCESS_RW_INTERLEAVED ||\n\t\t    runtime->access == SNDRV_PCM_ACCESS_MMAP_INTERLEAVED) {\n\t\t\tif (substream->ops->silence) {\n\t\t\t\tint err;\n\t\t\t\terr = substream->ops->silence(substream, -1, ofs, transfer);\n\t\t\t\tsnd_BUG_ON(err < 0);\n\t\t\t} else {\n\t\t\t\tchar *hwbuf = runtime->dma_area + frames_to_bytes(runtime, ofs);\n\t\t\t\tsnd_pcm_format_set_silence(runtime->format, hwbuf, transfer * runtime->channels);\n\t\t\t}\n\t\t} else {\n\t\t\tunsigned int c;\n\t\t\tunsigned int channels = runtime->channels;\n\t\t\tif (substream->ops->silence) {\n\t\t\t\tfor (c = 0; c < channels; ++c) {\n\t\t\t\t\tint err;\n\t\t\t\t\terr = substream->ops->silence(substream, c, ofs, transfer);\n\t\t\t\t\tsnd_BUG_ON(err < 0);\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tsize_t dma_csize = runtime->dma_bytes / channels;\n\t\t\t\tfor (c = 0; c < channels; ++c) {\n\t\t\t\t\tchar *hwbuf = runtime->dma_area + (c * dma_csize) + samples_to_bytes(runtime, ofs);\n\t\t\t\t\tsnd_pcm_format_set_silence(runtime->format, hwbuf, transfer);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\truntime->silence_filled += transfer;\n\t\tframes -= transfer;\n\t\tofs = 0;\n\t}\n}",
+            2
+        ],
+        [
+            "sound/core/pcm_native.c",
+            "snd_pcm_drain_done",
+            "int snd_pcm_drain_done(struct snd_pcm_substream *substream) /* <=== snd_pcm_drain_done */ \n{\n\treturn snd_pcm_action_single(&snd_pcm_action_stop, substream,\n\t\t\t\t     SNDRV_PCM_STATE_SETUP);\n}",
+            3
+        ],
+        [
+            "include/linux/rwsem.h",
+            "up_read",
+            "extern void up_read(struct rw_semaphore *sem); /* <=== up_read */ ",
+            3
+        ],
+        [
+            "include/linux/mutex.h",
+            "mutex_unlock",
+            "extern void mutex_unlock(struct mutex *lock); /* <=== mutex_unlock */ ",
+            3
+        ],
+        [
+            "include/sound/pcm.h",
+            "snd_pcm_playback_avail",
+            "static inline snd_pcm_uframes_t snd_pcm_playback_avail(struct snd_pcm_runtime *runtime) /* <=== snd_pcm_playback_avail */ \n{\n\tsnd_pcm_sframes_t avail = runtime->status->hw_ptr + runtime->buffer_size - runtime->control->appl_ptr;\n\tif (avail < 0)\n\t\tavail += runtime->boundary;\n\telse if ((snd_pcm_uframes_t) avail >= runtime->boundary)\n\t\tavail -= runtime->boundary;\n\treturn avail;\n}",
+            3
+        ],
+        [
+            "sound/core/pcm_lib.c",
+            "xrun_debug",
+            "#define xrun_debug(substream, mask)\t0 /* <=== sound/core/pcm_lib.c:164:164:xrun_debug:2 */ ",
+            2
+        ],
+        [
+            "include/sound/pcm.h",
+            "samples_to_bytes",
+            "static inline ssize_t samples_to_bytes(struct snd_pcm_runtime *runtime, ssize_t size) /* <=== samples_to_bytes */ \n{\n\treturn size * runtime->sample_bits / 8;\n}",
+            3
+        ],
+        [
+            "sound/core/pcm_lib.c",
+            "update_audio_tstamp",
+            "static void update_audio_tstamp(struct snd_pcm_substream *substream, /* <=== update_audio_tstamp */ \n\t\t\t\tstruct timespec *curr_tstamp,\n\t\t\t\tstruct timespec *audio_tstamp)\n{\n\tstruct snd_pcm_runtime *runtime = substream->runtime;\n\tu64 audio_frames, audio_nsecs;\n\tstruct timespec driver_tstamp;\n\n\tif (runtime->tstamp_mode != SNDRV_PCM_TSTAMP_ENABLE)\n\t\treturn;\n\n\tif (!(substream->ops->get_time_info) ||\n\t\t(runtime->audio_tstamp_report.actual_type ==\n\t\t\tSNDRV_PCM_AUDIO_TSTAMP_TYPE_DEFAULT)) {\n\n\t\t/*\n\t\t * provide audio timestamp derived from pointer position\n\t\t * add delay only if requested\n\t\t */\n\n\t\taudio_frames = runtime->hw_ptr_wrap + runtime->status->hw_ptr;\n\n\t\tif (runtime->audio_tstamp_config.report_delay) {\n\t\t\tif (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)\n\t\t\t\taudio_frames -=  runtime->delay;\n\t\t\telse\n\t\t\t\taudio_frames +=  runtime->delay;\n\t\t}\n\t\taudio_nsecs = div_u64(audio_frames * 1000000000LL,\n\t\t\t\truntime->rate);\n\t\t*audio_tstamp = ns_to_timespec(audio_nsecs);\n\t}\n\truntime->status->audio_tstamp = *audio_tstamp;\n\truntime->status->tstamp = *curr_tstamp;\n\n\t/*\n\t * re-take a driver timestamp to let apps detect if the reference tstamp\n\t * read by low-level hardware was provided with a delay\n\t */\n\tsnd_pcm_gettime(substream->runtime, (struct timespec *)&driver_tstamp);\n\truntime->driver_tstamp = driver_tstamp;\n}",
+            2
+        ],
+        [
+            "sound/core/pcm_lib.c",
+            "hw_ptr_error",
+            "#define hw_ptr_error(substream, fmt, args...) do { } while (0) /* <=== sound/core/pcm_lib.c:201:201:hw_ptr_error:3 */ ",
+            2
+        ],
+        [
+            "include/sound/pcm.h",
+            "snd_pcm_capture_avail",
+            "static inline snd_pcm_uframes_t snd_pcm_capture_avail(struct snd_pcm_runtime *runtime) /* <=== snd_pcm_capture_avail */ \n{\n\tsnd_pcm_sframes_t avail = runtime->status->hw_ptr - runtime->control->appl_ptr;\n\tif (avail < 0)\n\t\tavail += runtime->boundary;\n\treturn avail;\n}",
+            3
+        ],
+        [
+            "include/linux/printk.h",
+            "printk_ratelimit",
+            "static inline int printk_ratelimit(void) /* <=== printk_ratelimit */ \n{\n\treturn 0;\n}",
+            2
+        ],
+        [
+            "sound/core/pcm_lib.c",
+            "xrun",
+            "static void xrun(struct snd_pcm_substream *substream) /* <=== xrun */ \n{\n\tstruct snd_pcm_runtime *runtime = substream->runtime;\n\n\ttrace_xrun(substream);\n\tif (runtime->tstamp_mode == SNDRV_PCM_TSTAMP_ENABLE)\n\t\tsnd_pcm_gettime(runtime, (struct timespec *)&runtime->status->tstamp);\n\tsnd_pcm_stop(substream, SNDRV_PCM_STATE_XRUN);\n\tif (xrun_debug(substream, XRUN_DEBUG_BASIC)) {\n\t\tchar name[16];\n\t\tsnd_pcm_debug_name(substream, name, sizeof(name));\n\t\tpcm_warn(substream->pcm, \"XRUN: %s\\n\", name);\n\t\tdump_stack_on_xrun(substream);\n\t}\n}",
+            2
+        ],
+        [
+            "sound/core/pcm_lib.c",
+            "dump_stack_on_xrun",
+            "#define dump_stack_on_xrun(substream) do {\t\t\t\\ /* <=== sound/core/pcm_lib.c:167:170:dump_stack_on_xrun:1 */ \n\t\tif (xrun_debug(substream, XRUN_DEBUG_STACK))\t\\\n\t\t\tdump_stack();\t\t\t\t\\\n\t} while (0)",
+            3
+        ],
+        [
+            "sound/core/pcm_native.c",
+            "snd_pcm_stream_unlock",
+            "void snd_pcm_stream_unlock(struct snd_pcm_substream *substream) /* <=== snd_pcm_stream_unlock */ \n{\n\tif (substream->pcm->nonatomic) {\n\t\tmutex_unlock(&substream->self_group.mutex);\n\t\tup_read(&snd_pcm_link_rwsem);\n\t} else {\n\t\tspin_unlock(&substream->self_group.lock);\n\t\tread_unlock(&snd_pcm_link_rwlock);\n\t}\n}",
+            2
+        ],
+        [
+            "sound/core/pcm_native.c",
+            "snd_pcm_stream_unlock_irqrestore",
+            "void snd_pcm_stream_unlock_irqrestore(struct snd_pcm_substream *substream, /* <=== snd_pcm_stream_unlock_irqrestore */ \n\t\t\t\t      unsigned long flags)\n{\n\tsnd_pcm_stream_unlock(substream);\n\tif (!substream->pcm->nonatomic)\n\t\tlocal_irq_restore(flags);\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <sound/pcm_params.h>",
+        "#include <linux/slab.h>",
+        "#include <linux/time.h>",
+        "#include <sound/control.h>",
+        "#include <sound/info.h>",
+        "#include \"pcm_trace.h\"",
+        "#include <sound/tlv.h>",
+        "#include <sound/pcm.h>",
+        "#include <linux/export.h>",
+        "#include <sound/core.h>",
+        "#include <linux/math64.h>",
+        "#include <sound/timer.h>"
+    ],
+    "typeDefs": [
+        [
+            "struct snd_pcm_substream {\n\tstruct snd_pcm *pcm;\n\tstruct snd_pcm_str *pstr;\n\tvoid *private_data;\t\t/* copied from pcm->private_data */\n\tint number;\n\tchar name[32];\t\t\t/* substream name */\n\tint stream;\t\t\t/* stream (direction) */\n\tstruct pm_qos_request latency_pm_qos_req; /* pm_qos request */\n\tsize_t buffer_bytes_max;\t/* limit ring buffer size */\n\tstruct snd_dma_buffer dma_buffer;\n\tsize_t dma_max;\n\t/* -- hardware operations -- */\n\tconst struct snd_pcm_ops *ops;\n\t/* -- runtime information -- */\n\tstruct snd_pcm_runtime *runtime;\n        /* -- timer section -- */\n\tstruct snd_timer *timer;\t\t/* timer */\n\tunsigned timer_running: 1;\t/* time is running */\n\t/* -- next substream -- */\n\tstruct snd_pcm_substream *next;\n\t/* -- linked substreams -- */\n\tstruct list_head link_list;\t/* linked list member */\n\tstruct snd_pcm_group self_group;\t/* fake group for non linked substream (with substream lock inside) */\n\tstruct snd_pcm_group *group;\t\t/* pointer to current group */\n\t/* -- assigned files -- */\n\tvoid *file;\n\tint ref_count;\n\tatomic_t mmap_count;\n\tunsigned int f_flags;\n\tvoid (*pcm_release)(struct snd_pcm_substream *);\n\tstruct pid *pid;\n#if defined(CONFIG_SND_PCM_OSS) || defined(CONFIG_SND_PCM_OSS_MODULE)\n\t/* -- OSS things -- */\n\tstruct snd_pcm_oss_substream oss;\n#endif\n#ifdef CONFIG_SND_VERBOSE_PROCFS\n\tstruct snd_info_entry *proc_root;\n\tstruct snd_info_entry *proc_info_entry;\n\tstruct snd_info_entry *proc_hw_params_entry;\n\tstruct snd_info_entry *proc_sw_params_entry;\n\tstruct snd_info_entry *proc_status_entry;\n\tstruct snd_info_entry *proc_prealloc_entry;\n\tstruct snd_info_entry *proc_prealloc_max_entry;\n#ifdef CONFIG_SND_PCM_XRUN_DEBUG\n\tstruct snd_info_entry *proc_xrun_injection_entry;\n#endif\n#endif /* CONFIG_SND_VERBOSE_PROCFS */\n\t/* misc flags */\n\tunsigned int hw_opened: 1;\n}",
+            "snd_pcm_substream"
+        ]
+    ],
+    "visitedLines_after": {
+        "sound/core/pcm_lib.c": [
+            1870,
+            1875,
+            1877,
+            1879,
+            1880,
+            1881,
+            1890
+        ]
+    },
+    "visitedLines_before": {
+        "sound/core/pcm_lib.c": [
+            1870,
+            1875,
+            1877,
+            1879,
+            1880,
+            1881,
+            1889
+        ]
+    },
+    "visitedParams": {
+        "sound/core/pcm_lib.c": [
+            [
+                "struct snd_pcm_substream *substream",
+                "snd_pcm_period_elapsed"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "sound/core/pcm_lib.c",
+            "snd_pcm_period_elapsed",
+            "void snd_pcm_period_elapsed(struct snd_pcm_substream *substream) /* <=== snd_pcm_period_elapsed */ \n{\n\tstruct snd_pcm_runtime *runtime;\n\tunsigned long flags;\n\n\tif (PCM_RUNTIME_CHECK(substream))\n\t\treturn;\n\truntime = substream->runtime;\n\n\tsnd_pcm_stream_lock_irqsave(substream, flags);\n\tif (!snd_pcm_running(substream) ||\n\t    snd_pcm_update_hw_ptr0(substream, 1) < 0)\n\t\tgoto _end;\n\n#ifdef CONFIG_SND_PCM_TIMER\n\tif (substream->timer_running)\n\t\tsnd_timer_interrupt(substream->timer, 1);\n#endif\n _end:\n\tkill_fasync(&runtime->fasync, SIGIO, POLL_IN);\n\tsnd_pcm_stream_unlock_irqrestore(substream, flags);\n}",
+            1870
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "sound/core/pcm_lib.c",
+            "snd_pcm_period_elapsed",
+            "void snd_pcm_period_elapsed(struct snd_pcm_substream *substream) /* <=== snd_pcm_period_elapsed */ \n{\n\tstruct snd_pcm_runtime *runtime;\n\tunsigned long flags;\n\n\tif (PCM_RUNTIME_CHECK(substream))\n\t\treturn;\n\truntime = substream->runtime;\n\n\tsnd_pcm_stream_lock_irqsave(substream, flags);\n\tif (!snd_pcm_running(substream) ||\n\t    snd_pcm_update_hw_ptr0(substream, 1) < 0)\n\t\tgoto _end;\n\n#ifdef CONFIG_SND_PCM_TIMER\n\tif (substream->timer_running)\n\t\tsnd_timer_interrupt(substream->timer, 1);\n#endif\n _end:\n\tsnd_pcm_stream_unlock_irqrestore(substream, flags);\n\tkill_fasync(&runtime->fasync, SIGIO, POLL_IN);\n}",
+            1870
+        ]
+    ]
+}

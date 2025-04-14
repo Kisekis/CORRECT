@@ -1,0 +1,118 @@
+{
+    "calleeMethods": [
+        [
+            "lib/common/ipc.c",
+            "crm_ipcs_client_pid",
+            "int /* <=== crm_ipcs_client_pid */ \ncrm_ipcs_client_pid(qb_ipcs_connection_t * c)\n{\n    struct qb_ipcs_connection_stats stats;\n\n    stats.client_pid = 0;\n    qb_ipcs_connection_stats_get(c, &stats, 0);\n    return stats.client_pid;\n}",
+            1
+        ]
+    ],
+    "globalVars": [
+        "GHashTable* client_connections"
+    ],
+    "importContext": [
+        "#include <sys/param.h>",
+        "#include <fcntl.h>",
+        "#include <sys/types.h>",
+        "#include <sys/stat.h>",
+        "#include <stdio.h>",
+        "#include <crm/crm.h>",
+        "#include <bzlib.h>",
+        "#include <crm/msg_xml.h>",
+        "#include <crm/common/ipc.h>",
+        "#include <errno.h>",
+        "#include <crm/common/ipcs.h>",
+        "#include <unistd.h>",
+        "#include <crm_internal.h>",
+        "#include <grp.h>"
+    ],
+    "typeDefs": [
+        [
+            "typedef struct crm_client_s crm_client_t;",
+            "crm_client_t"
+        ]
+    ],
+    "visitedLines_after": {
+        "lib/common/ipc.c": [
+            293,
+            294,
+            296,
+            298,
+            300,
+            301,
+            305,
+            306,
+            315,
+            316,
+            318,
+            326,
+            327,
+            328,
+            330,
+            332,
+            338,
+            339
+        ]
+    },
+    "visitedLines_before": {
+        "lib/common/ipc.c": [
+            293,
+            294,
+            296,
+            297,
+            299,
+            301,
+            302,
+            306,
+            307,
+            308,
+            317,
+            318,
+            320,
+            321,
+            322,
+            325,
+            326,
+            333,
+            334,
+            335,
+            336,
+            338,
+            340,
+            346,
+            347
+        ]
+    },
+    "visitedParams": {
+        "lib/common/ipc.c": [
+            [
+                "gid_t gid_client",
+                "crm_client_new"
+            ],
+            [
+                "qb_ipcs_connection_t * c",
+                "crm_client_new"
+            ],
+            [
+                "uid_t uid_client",
+                "crm_client_new"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "lib/common/ipc.c",
+            "crm_client_new",
+            "crm_client_t * /* <=== crm_client_new */ \ncrm_client_new(qb_ipcs_connection_t * c, uid_t uid_client, gid_t gid_client)\n{\n    static gid_t gid_cluster = 0;\n\n    crm_client_t *client = NULL;\n\n    CRM_LOG_ASSERT(c);\n    if (c == NULL) {\n        return NULL;\n    }\n\n    if (gid_cluster == 0) {\n        if(crm_user_lookup(CRM_DAEMON_USER, NULL, &gid_cluster) < 0) {\n            static bool have_error = FALSE;\n            if(have_error == FALSE) {\n                crm_warn(\"Could not find group for user %s\", CRM_DAEMON_USER);\n                have_error = TRUE;\n            }\n        }\n    }\n\n    if (uid_client != 0) {\n        crm_trace(\"Giving access to group %u\", gid_cluster);\n        /* Passing -1 to chown(2) means don't change */\n        qb_ipcs_connection_auth_set(c, -1, gid_cluster, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);\n    }\n\n    crm_client_init();\n\n    /* TODO: Do our own auth checking, return NULL if unauthorized */\n    client = calloc(1, sizeof(crm_client_t));\n\n    client->ipcs = c;\n    client->kind = CRM_CLIENT_IPC;\n    client->pid = crm_ipcs_client_pid(c);\n\n    client->id = crm_generate_uuid();\n\n    crm_debug(\"Connecting %p for uid=%d gid=%d pid=%u id=%s\", c, uid_client, gid_client, client->pid, client->id);\n\n#if ENABLE_ACL\n    client->user = uid2username(uid_client);\n#endif\n\n    g_hash_table_insert(client_connections, c, client);\n    return client;\n}",
+            293
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "lib/common/ipc.c",
+            "crm_client_new",
+            "crm_client_t * /* <=== crm_client_new */ \ncrm_client_new(qb_ipcs_connection_t * c, uid_t uid_client, gid_t gid_client)\n{\n    static uid_t uid_server = 0;\n    static gid_t gid_cluster = 0;\n\n    crm_client_t *client = NULL;\n\n    CRM_LOG_ASSERT(c);\n    if (c == NULL) {\n        return NULL;\n    }\n\n    if (gid_cluster == 0) {\n        uid_server = getuid();\n        if(crm_user_lookup(CRM_DAEMON_USER, NULL, &gid_cluster) < 0) {\n            static bool have_error = FALSE;\n            if(have_error == FALSE) {\n                crm_warn(\"Could not find group for user %s\", CRM_DAEMON_USER);\n                have_error = TRUE;\n            }\n        }\n    }\n\n    if(gid_cluster != 0 && gid_client != 0) {\n        uid_t best_uid = -1; /* Passing -1 to chown(2) means don't change */\n\n        if(uid_client == 0 || uid_server == 0) { /* Someone is priveliged, but the other may not be */\n            best_uid = QB_MAX(uid_client, uid_server);\n            crm_trace(\"Allowing user %u to clean up after disconnect\", best_uid);\n        }\n\n        crm_trace(\"Giving access to group %u\", gid_cluster);\n        qb_ipcs_connection_auth_set(c, best_uid, gid_cluster, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);\n    }\n\n    crm_client_init();\n\n    /* TODO: Do our own auth checking, return NULL if unauthorized */\n    client = calloc(1, sizeof(crm_client_t));\n\n    client->ipcs = c;\n    client->kind = CRM_CLIENT_IPC;\n    client->pid = crm_ipcs_client_pid(c);\n\n    client->id = crm_generate_uuid();\n\n    crm_debug(\"Connecting %p for uid=%d gid=%d pid=%u id=%s\", c, uid_client, gid_client, client->pid, client->id);\n\n#if ENABLE_ACL\n    client->user = uid2username(uid_client);\n#endif\n\n    g_hash_table_insert(client_connections, c, client);\n    return client;\n}",
+            293
+        ]
+    ]
+}

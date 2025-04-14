@@ -1,0 +1,325 @@
+{
+    "calleeMethods": [
+        [
+            "libavcodec/g2meet.c",
+            "jpg_decode_data",
+            "static int jpg_decode_data(JPGContext *c, int width, int height, /* <=== jpg_decode_data */ \n                           const uint8_t *src, int src_size,\n                           uint8_t *dst, int dst_stride,\n                           const uint8_t *mask, int mask_stride, int num_mbs,\n                           int swapuv)\n{\n    GetBitContext gb;\n    uint8_t *tmp;\n    int mb_w, mb_h, mb_x, mb_y, i, j;\n    int bx, by;\n    int unesc_size;\n    int ret;\n\n    tmp = av_realloc(c->buf, src_size + FF_INPUT_BUFFER_PADDING_SIZE);\n    if (!tmp)\n        return AVERROR(ENOMEM);\n    c->buf = tmp;\n    jpg_unescape(src, src_size, c->buf, &unesc_size);\n    memset(c->buf + unesc_size, 0, FF_INPUT_BUFFER_PADDING_SIZE);\n    init_get_bits(&gb, c->buf, unesc_size * 8);\n\n    width = FFALIGN(width, 16);\n    mb_w  =  width        >> 4;\n    mb_h  = (height + 15) >> 4;\n\n    if (!num_mbs)\n        num_mbs = mb_w * mb_h;\n\n    for (i = 0; i < 3; i++)\n        c->prev_dc[i] = 1024;\n    bx = by = 0;\n    for (mb_y = 0; mb_y < mb_h; mb_y++) {\n        for (mb_x = 0; mb_x < mb_w; mb_x++) {\n            if (mask && !mask[mb_x]) {\n                bx += 16;\n                continue;\n            }\n            for (j = 0; j < 2; j++) {\n                for (i = 0; i < 2; i++) {\n                    if ((ret = jpg_decode_block(c, &gb, 0,\n                                                c->block[i + j * 2])) != 0)\n                        return ret;\n                    c->dsp.idct(c->block[i + j * 2]);\n                }\n            }\n            for (i = 1; i < 3; i++) {\n                if ((ret = jpg_decode_block(c, &gb, i, c->block[i + 3])) != 0)\n                    return ret;\n                c->dsp.idct(c->block[i + 3]);\n            }\n\n            for (j = 0; j < 16; j++) {\n                uint8_t *out = dst + bx * 3 + (by + j) * dst_stride;\n                for (i = 0; i < 16; i++) {\n                    int Y, U, V;\n\n                    Y = c->block[(j >> 3) * 2 + (i >> 3)][(i & 7) + (j & 7) * 8];\n                    U = c->block[4 ^ swapuv][(i >> 1) + (j >> 1) * 8] - 128;\n                    V = c->block[5 ^ swapuv][(i >> 1) + (j >> 1) * 8] - 128;\n                    yuv2rgb(out + i * 3, Y, U, V);\n                }\n            }\n\n            if (!--num_mbs)\n                return 0;\n            bx += 16;\n        }\n        bx  = 0;\n        by += 16;\n        if (mask)\n            mask += mask_stride;\n    }\n\n    return 0;\n}",
+            1
+        ],
+        [
+            "libavutil/common.h",
+            "FFALIGN",
+            "#define FFALIGN(x, a) (((x)+(a)-1)&~((a)-1)) /* <=== libavutil/common.h:66:66:FFALIGN:2 */ ",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_vlc2",
+            "static av_always_inline int get_vlc2(GetBitContext *s, VLC_TYPE (*table)[2], /* <=== get_vlc2 */ \n                                     int bits, int max_depth)\n{\n    int code;\n\n    OPEN_READER(re, s);\n    UPDATE_CACHE(re, s);\n\n    GET_VLC(code, re, s, table, bits, max_depth);\n\n    CLOSE_READER(re, s);\n\n    return code;\n}",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "LAST_SKIP_BITS",
+            "#define LAST_SKIP_BITS(name, gb, num) SKIP_COUNTER(name, gb, num) /* <=== libavcodec/get_bits.h:189:189:LAST_SKIP_BITS:3 */ ",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR",
+            "#define AVERROR(e) (e) /* <=== libavutil/error.h:43:43:AVERROR:1 */ ",
+            2
+        ],
+        [
+            "libavcodec/g2meet.c",
+            "jpg_decode_block",
+            "static int jpg_decode_block(JPGContext *c, GetBitContext *gb, /* <=== jpg_decode_block */ \n                            int plane, int16_t *block)\n{\n    int dc, val, pos;\n    const int is_chroma = !!plane;\n    const uint8_t *qmat = is_chroma ? chroma_quant : luma_quant;\n\n    c->dsp.clear_block(block);\n    dc = get_vlc2(gb, c->dc_vlc[is_chroma].table, 9, 3);\n    if (dc < 0)\n        return AVERROR_INVALIDDATA;\n    if (dc)\n        dc = get_xbits(gb, dc);\n    dc = dc * qmat[0] + c->prev_dc[plane];\n    block[0] = dc;\n    c->prev_dc[plane] = dc;\n\n    pos = 0;\n    while (pos < 63) {\n        val = get_vlc2(gb, c->ac_vlc[is_chroma].table, 9, 3);\n        if (val < 0)\n            return AVERROR_INVALIDDATA;\n        pos += val >> 4;\n        val &= 0xF;\n        if (pos > 63)\n            return val ? AVERROR_INVALIDDATA : 0;\n        if (val) {\n            int nbits = val;\n\n            val = get_xbits(gb, nbits);\n            val *= qmat[ff_zigzag_direct[pos]];\n            block[c->scantable.permutated[pos]] = val;\n        }\n    }\n    return 0;\n}",
+            2
+        ],
+        [
+            "libavcodec/g2meet.c",
+            "yuv2rgb",
+            "static inline void yuv2rgb(uint8_t *out, int Y, int U, int V) /* <=== yuv2rgb */ \n{\n    out[0] = av_clip_uint8(Y + (             91881 * V + 32768 >> 16));\n    out[1] = av_clip_uint8(Y + (-22554 * U - 46802 * V + 32768 >> 16));\n    out[2] = av_clip_uint8(Y + (116130 * U             + 32768 >> 16));\n}",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "UPDATE_CACHE",
+            "# define UPDATE_CACHE(name, gb) UPDATE_CACHE_BE(name, gb) /* <=== libavcodec/get_bits.h:170:170:UPDATE_CACHE:2 */ ",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "OPEN_READER",
+            "#define OPEN_READER(name, gb)                   \\ /* <=== libavcodec/get_bits.h:127:129:OPEN_READER:2 */ \n    unsigned int name ## _index = (gb)->index;  \\\n    unsigned int av_unused name ## _cache",
+            3
+        ],
+        [
+            "libavutil/error.h",
+            "AVERROR_INVALIDDATA",
+            "#define AVERROR_INVALIDDATA        FFERRTAG( 'I','N','D','A') ///< Invalid data found when processing input /* <=== libavutil/error.h:59:59:AVERROR_INVALIDDATA:0 */ ",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "SHOW_UBITS",
+            "#   define SHOW_UBITS(name, gb, num) SHOW_UBITS_BE(name, gb, num) /* <=== libavcodec/get_bits.h:201:201:SHOW_UBITS:3 */ ",
+            3
+        ],
+        [
+            "libavcodec/avcodec.h",
+            "FF_INPUT_BUFFER_PADDING_SIZE",
+            "#define FF_INPUT_BUFFER_PADDING_SIZE 16 /* <=== libavcodec/avcodec.h:573:573:FF_INPUT_BUFFER_PADDING_SIZE:0 */ ",
+            2
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "CLOSE_READER",
+            "#define CLOSE_READER(name, gb) (gb)->index = name ## _index /* <=== libavcodec/get_bits.h:141:141:CLOSE_READER:2 */ ",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "init_get_bits",
+            "static inline int init_get_bits(GetBitContext *s, const uint8_t *buffer, /* <=== init_get_bits */ \n                                int bit_size)\n{\n    int buffer_size;\n    int ret = 0;\n\n    if (bit_size >= INT_MAX - 7 || bit_size < 0 || !buffer) {\n        buffer_size = bit_size = 0;\n        buffer      = NULL;\n        ret         = AVERROR_INVALIDDATA;\n    }\n\n    buffer_size = (bit_size + 7) >> 3;\n\n    s->buffer             = buffer;\n    s->size_in_bits       = bit_size;\n    s->size_in_bits_plus8 = bit_size + 8;\n    s->buffer_end         = buffer + buffer_size;\n    s->index              = 0;\n\n    return ret;\n}",
+            2
+        ],
+        [
+            "libavcodec/g2meet.c",
+            "jpg_unescape",
+            "static void jpg_unescape(const uint8_t *src, int src_size, /* <=== jpg_unescape */ \n                         uint8_t *dst, int *dst_size)\n{\n    const uint8_t *src_end = src + src_size;\n    uint8_t *dst_start = dst;\n\n    while (src < src_end) {\n        uint8_t x = *src++;\n\n        *dst++ = x;\n\n        if (x == 0xFF && !*src)\n            src++;\n    }\n    *dst_size = dst - dst_start;\n}",
+            2
+        ],
+        [
+            "libavutil/mem.h",
+            "av_realloc",
+            "void *av_realloc(void *ptr, size_t size) av_alloc_size(2); /* <=== av_realloc */ ",
+            2
+        ],
+        [
+            "libavutil/avassert.h",
+            "av_assert2",
+            "#define av_assert2(cond) ((void)0) /* <=== libavutil/avassert.h:63:63:av_assert2:1 */ ",
+            3
+        ],
+        [
+            "libavutil/common.h",
+            "av_clip_uint8",
+            "#   define av_clip_uint8    av_clip_uint8_c /* <=== libavutil/common.h:425:425:av_clip_uint8:0 */ ",
+            3
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_xbits",
+            "static inline int get_xbits(GetBitContext *s, int n) /* <=== get_xbits */ \n{\n    register int sign;\n    register int32_t cache;\n    OPEN_READER(re, s);\n    av_assert2(n>0 && n<=25);\n    UPDATE_CACHE(re, s);\n    cache = GET_CACHE(re, s);\n    sign  = ~cache >> 31;\n    LAST_SKIP_BITS(re, s, n);\n    CLOSE_READER(re, s);\n    return (NEG_USR32(sign ^ cache, n) ^ sign) - sign;\n}",
+            3
+        ],
+        [
+            "libavutil/common.h",
+            "av_clip_uint8_c",
+            "static av_always_inline av_const uint8_t av_clip_uint8_c(int a) /* <=== av_clip_uint8_c */ \n{\n    if (a&(~0xFF)) return (-a)>>31;\n    else           return a;\n}",
+            3
+        ],
+        [
+            "libavcodec/g2meet.c",
+            "kempf_restore_buf",
+            "static void kempf_restore_buf(const uint8_t *src, int len, /* <=== kempf_restore_buf */ \n                              uint8_t *dst, int stride,\n                              const uint8_t *jpeg_tile, int tile_stride,\n                              int width, int height,\n                              const uint8_t *pal, int npal, int tidx)\n{\n    GetBitContext gb;\n    int i, j, nb, col;\n\n    init_get_bits(&gb, src, len * 8);\n\n    if (npal <= 2)       nb = 1;\n    else if (npal <= 4)  nb = 2;\n    else if (npal <= 16) nb = 4;\n    else                 nb = 8;\n\n    for (j = 0; j < height; j++, dst += stride, jpeg_tile += tile_stride) {\n        if (get_bits(&gb, 8))\n            continue;\n        for (i = 0; i < width; i++) {\n            col = get_bits(&gb, nb);\n            if (col != tidx)\n                memcpy(dst + i * 3, pal + col * 3, 3);\n            else\n                memcpy(dst + i * 3, jpeg_tile + i * 3, 3);\n        }\n    }\n}",
+            1
+        ],
+        [
+            "libavcodec/get_bits.h",
+            "get_bits",
+            "static inline unsigned int get_bits(GetBitContext *s, int n) /* <=== get_bits */ \n{\n    register int tmp;\n    OPEN_READER(re, s);\n    av_assert2(n>0 && n<=25);\n    UPDATE_CACHE(re, s);\n    tmp = SHOW_UBITS(re, s, n);\n    LAST_SKIP_BITS(re, s, n);\n    CLOSE_READER(re, s);\n    return tmp;\n}",
+            2
+        ],
+        [
+            "libavutil/common.h",
+            "FFMIN",
+            "#define FFMIN(a,b) ((a) > (b) ? (b) : (a)) /* <=== libavutil/common.h:61:61:FFMIN:2 */ ",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include <zlib.h>",
+        "#include \"avcodec.h\"",
+        "#include \"dsputil.h\"",
+        "#include \"bytestream.h\"",
+        "#include \"libavutil/intreadwrite.h\"",
+        "#include \"internal.h\"",
+        "#include \"mjpeg.h\"",
+        "#include \"get_bits.h\""
+    ],
+    "typeDefs": [
+        [
+            "typedef struct G2MContext {\n    JPGContext jc;\n    int        version;\n\n    int        compression;\n    int        width, height, bpp;\n    int        tile_width, tile_height;\n    int        tiles_x, tiles_y, tile_x, tile_y;\n\n    int        got_header;\n\n    uint8_t    *framebuf;\n    int        framebuf_stride, old_width, old_height;\n\n    uint8_t    *synth_tile, *jpeg_tile;\n    int        tile_stride, old_tile_w, old_tile_h;\n\n    uint8_t    *kempf_buf, *kempf_flags;\n\n    uint8_t    *cursor;\n    int        cursor_stride;\n    int        cursor_fmt;\n    int        cursor_w, cursor_h, cursor_x, cursor_y;\n    int        cursor_hot_x, cursor_hot_y;\n}",
+            "G2MContext"
+        ],
+        [
+            "typedef struct G2MContext {\n    JPGContext jc;\n    int        version;\n\n    int        compression;\n    int        width, height, bpp;\n    int        tile_width, tile_height;\n    int        tiles_x, tiles_y, tile_x, tile_y;\n\n    int        got_header;\n\n    uint8_t    *framebuf;\n    int        framebuf_stride, old_width, old_height;\n\n    uint8_t    *synth_tile, *jpeg_tile;\n    int        tile_stride, old_tile_w, old_tile_h;\n\n    uint8_t    *kempf_buf, *kempf_flags;\n\n    uint8_t    *cursor;\n    int        cursor_stride;\n    int        cursor_fmt;\n    int        cursor_w, cursor_h, cursor_x, cursor_y;\n    int        cursor_hot_x, cursor_hot_y;\n} G2MContext;",
+            "G2MContext"
+        ]
+    ],
+    "visitedLines_after": {
+        "libavcodec/g2meet.c": [
+            337,
+            338,
+            343,
+            344,
+            345,
+            349,
+            350,
+            352,
+            355,
+            356,
+            358,
+            359,
+            360,
+            368,
+            373,
+            374,
+            375,
+            377,
+            378,
+            379,
+            388,
+            390,
+            392,
+            393,
+            395,
+            396,
+            397,
+            398,
+            400,
+            401,
+            402,
+            403,
+            406,
+            407,
+            408,
+            410,
+            411,
+            412,
+            413,
+            414,
+            415,
+            416,
+            417,
+            419,
+            420,
+            421,
+            422,
+            423,
+            424,
+            425,
+            429,
+            430,
+            431,
+            432,
+            434,
+            435,
+            436,
+            438
+        ]
+    },
+    "visitedLines_before": {
+        "libavcodec/g2meet.c": [
+            337,
+            338,
+            343,
+            344,
+            345,
+            349,
+            350,
+            352,
+            355,
+            356,
+            358,
+            359,
+            360,
+            368,
+            373,
+            374,
+            375,
+            377,
+            378,
+            379,
+            388,
+            390,
+            392,
+            393,
+            395,
+            396,
+            397,
+            398,
+            400,
+            401,
+            402,
+            403,
+            406,
+            407,
+            408,
+            410,
+            411,
+            412,
+            413,
+            414,
+            415,
+            417,
+            418,
+            419,
+            420,
+            421,
+            422,
+            423,
+            427,
+            428,
+            429,
+            430,
+            432,
+            433,
+            434,
+            436
+        ]
+    },
+    "visitedParams": {
+        "libavcodec/g2meet.c": [
+            [
+                "G2MContext *c",
+                "kempf_decode_tile"
+            ],
+            [
+                "const uint8_t *src",
+                "kempf_decode_tile"
+            ],
+            [
+                "int src_size",
+                "kempf_decode_tile"
+            ],
+            [
+                "int tile_x",
+                "kempf_decode_tile"
+            ],
+            [
+                "int tile_y",
+                "kempf_decode_tile"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "libavcodec/g2meet.c",
+            "kempf_decode_tile",
+            "static int kempf_decode_tile(G2MContext *c, int tile_x, int tile_y, /* <=== kempf_decode_tile */ \n                             const uint8_t *src, int src_size)\n{\n    int width, height;\n    int hdr, zsize, npal, tidx = -1, ret;\n    int i, j;\n    const uint8_t *src_end = src + src_size;\n    uint8_t pal[768], transp[3];\n    uLongf dlen = (c->tile_width + 1) * c->tile_height;\n    int sub_type;\n    int nblocks, cblocks, bstride;\n    int bits, bitbuf, coded;\n    uint8_t *dst = c->framebuf + tile_x * c->tile_width * 3 +\n                   tile_y * c->tile_height * c->framebuf_stride;\n\n    if (src_size < 2)\n        return AVERROR_INVALIDDATA;\n\n    width  = FFMIN(c->width  - tile_x * c->tile_width,  c->tile_width);\n    height = FFMIN(c->height - tile_y * c->tile_height, c->tile_height);\n\n    hdr = *src++;\n    sub_type = hdr >> 5;\n    if (sub_type == 0) {\n        int j;\n        memcpy(transp, src, 3);\n        src += 3;\n        for (j = 0; j < height; j++, dst += c->framebuf_stride)\n            for (i = 0; i < width; i++)\n                memcpy(dst + i * 3, transp, 3);\n        return 0;\n    } else if (sub_type == 1) {\n        return jpg_decode_data(&c->jc, width, height, src, src_end - src,\n                               dst, c->framebuf_stride, NULL, 0, 0, 0);\n    }\n\n    if (sub_type != 2) {\n        memcpy(transp, src, 3);\n        src += 3;\n    }\n    npal = *src++ + 1;\n    memcpy(pal, src, npal * 3); src += npal * 3;\n    if (sub_type != 2) {\n        for (i = 0; i < npal; i++) {\n            if (!memcmp(pal + i * 3, transp, 3)) {\n               tidx = i;\n               break;\n            }\n        }\n    }\n\n    if (src_end - src < 2)\n        return 0;\n    zsize = (src[0] << 8) | src[1]; src += 2;\n\n    if (src_end - src < zsize + (sub_type != 2))\n        return AVERROR_INVALIDDATA;\n\n    ret = uncompress(c->kempf_buf, &dlen, src, zsize);\n    if (ret)\n        return AVERROR_INVALIDDATA;\n    src += zsize;\n\n    if (sub_type == 2) {\n        kempf_restore_buf(c->kempf_buf, dlen, dst, c->framebuf_stride,\n                          NULL, 0, width, height, pal, npal, tidx);\n        return 0;\n    }\n\n    nblocks = *src++ + 1;\n    cblocks = 0;\n    bstride = FFALIGN(width, 16) >> 4;\n    // blocks are coded LSB and we need normal bitreader for JPEG data\n    bits = 0;\n    for (i = 0; i < (FFALIGN(height, 16) >> 4); i++) {\n        for (j = 0; j < (FFALIGN(width, 16) >> 4); j++) {\n            if (!bits) {\n                if (src >= src_end)\n                    return AVERROR_INVALIDDATA;\n                bitbuf = *src++;\n                bits   = 8;\n            }\n            coded = bitbuf & 1;\n            bits--;\n            bitbuf >>= 1;\n            cblocks += coded;\n            if (cblocks > nblocks)\n                return AVERROR_INVALIDDATA;\n            c->kempf_flags[j + i * bstride] = coded;\n        }\n    }\n\n    memset(c->jpeg_tile, 0, c->tile_stride * height);\n    jpg_decode_data(&c->jc, width, height, src, src_end - src,\n                    c->jpeg_tile, c->tile_stride,\n                    c->kempf_flags, bstride, nblocks, 0);\n\n    kempf_restore_buf(c->kempf_buf, dlen, dst, c->framebuf_stride,\n                      c->jpeg_tile, c->tile_stride,\n                      width, height, pal, npal, tidx);\n\n    return 0;\n}",
+            337
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "libavcodec/g2meet.c",
+            "kempf_decode_tile",
+            "static int kempf_decode_tile(G2MContext *c, int tile_x, int tile_y, /* <=== kempf_decode_tile */ \n                             const uint8_t *src, int src_size)\n{\n    int width, height;\n    int hdr, zsize, npal, tidx = -1, ret;\n    int i, j;\n    const uint8_t *src_end = src + src_size;\n    uint8_t pal[768], transp[3];\n    uLongf dlen = (c->tile_width + 1) * c->tile_height;\n    int sub_type;\n    int nblocks, cblocks, bstride;\n    int bits, bitbuf, coded;\n    uint8_t *dst = c->framebuf + tile_x * c->tile_width * 3 +\n                   tile_y * c->tile_height * c->framebuf_stride;\n\n    if (src_size < 2)\n        return AVERROR_INVALIDDATA;\n\n    width  = FFMIN(c->width  - tile_x * c->tile_width,  c->tile_width);\n    height = FFMIN(c->height - tile_y * c->tile_height, c->tile_height);\n\n    hdr = *src++;\n    sub_type = hdr >> 5;\n    if (sub_type == 0) {\n        int j;\n        memcpy(transp, src, 3);\n        src += 3;\n        for (j = 0; j < height; j++, dst += c->framebuf_stride)\n            for (i = 0; i < width; i++)\n                memcpy(dst + i * 3, transp, 3);\n        return 0;\n    } else if (sub_type == 1) {\n        return jpg_decode_data(&c->jc, width, height, src, src_end - src,\n                               dst, c->framebuf_stride, NULL, 0, 0, 0);\n    }\n\n    if (sub_type != 2) {\n        memcpy(transp, src, 3);\n        src += 3;\n    }\n    npal = *src++ + 1;\n    memcpy(pal, src, npal * 3); src += npal * 3;\n    if (sub_type != 2) {\n        for (i = 0; i < npal; i++) {\n            if (!memcmp(pal + i * 3, transp, 3)) {\n               tidx = i;\n               break;\n            }\n        }\n    }\n\n    if (src_end - src < 2)\n        return 0;\n    zsize = (src[0] << 8) | src[1]; src += 2;\n\n    if (src_end - src < zsize)\n        return AVERROR_INVALIDDATA;\n\n    ret = uncompress(c->kempf_buf, &dlen, src, zsize);\n    if (ret)\n        return AVERROR_INVALIDDATA;\n    src += zsize;\n\n    if (sub_type == 2) {\n        kempf_restore_buf(c->kempf_buf, dlen, dst, c->framebuf_stride,\n                          NULL, 0, width, height, pal, npal, tidx);\n        return 0;\n    }\n\n    nblocks = *src++ + 1;\n    cblocks = 0;\n    bstride = FFALIGN(width, 16) >> 4;\n    // blocks are coded LSB and we need normal bitreader for JPEG data\n    bits = 0;\n    for (i = 0; i < (FFALIGN(height, 16) >> 4); i++) {\n        for (j = 0; j < (FFALIGN(width, 16) >> 4); j++) {\n            if (!bits) {\n                bitbuf = *src++;\n                bits   = 8;\n            }\n            coded = bitbuf & 1;\n            bits--;\n            bitbuf >>= 1;\n            cblocks += coded;\n            if (cblocks > nblocks)\n                return AVERROR_INVALIDDATA;\n            c->kempf_flags[j + i * bstride] = coded;\n        }\n    }\n\n    memset(c->jpeg_tile, 0, c->tile_stride * height);\n    jpg_decode_data(&c->jc, width, height, src, src_end - src,\n                    c->jpeg_tile, c->tile_stride,\n                    c->kempf_flags, bstride, nblocks, 0);\n\n    kempf_restore_buf(c->kempf_buf, dlen, dst, c->framebuf_stride,\n                      c->jpeg_tile, c->tile_stride,\n                      width, height, pal, npal, tidx);\n\n    return 0;\n}",
+            337
+        ]
+    ]
+}

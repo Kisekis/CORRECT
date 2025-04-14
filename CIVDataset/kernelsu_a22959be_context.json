@@ -1,0 +1,322 @@
+{
+    "calleeMethods": [
+        [
+            "kernel/ksu.h",
+            "startswith",
+            "static inline int startswith(char *s, char *prefix) /* <=== startswith */ \n{\n\treturn strncmp(s, prefix, strlen(prefix));\n}",
+            1
+        ],
+        [
+            "kernel/apk_sign.c",
+            "calc_hash",
+            "static int calc_hash(struct crypto_shash *alg, const unsigned char *data, /* <=== calc_hash */ \n\t\t     unsigned int datalen, unsigned char *digest)\n{\n\tstruct sdesc *sdesc;\n\tint ret;\n\n\tsdesc = init_sdesc(alg);\n\tif (IS_ERR(sdesc)) {\n\t\tpr_info(\"can't alloc sdesc\\n\");\n\t\treturn PTR_ERR(sdesc);\n\t}\n\n\tret = crypto_shash_digest(&sdesc->shash, data, datalen, digest);\n\tkfree(sdesc);\n\treturn ret;\n}",
+            3
+        ],
+        [
+            "kernel/ksu.h",
+            "endswith",
+            "static inline int endswith(const char *s, const char *t) /* <=== endswith */ \n{\n\tsize_t slen = strlen(s);\n\tsize_t tlen = strlen(t);\n\tif (tlen > slen)\n\t\treturn 1;\n\treturn strcmp(s + slen - tlen, t);\n}",
+            1
+        ],
+        [
+            "kernel/kernel_compat.c",
+            "ksu_kernel_read_compat",
+            "ssize_t ksu_kernel_read_compat(struct file *p, void *buf, size_t count, /* <=== ksu_kernel_read_compat */ \n\t\t\t       loff_t *pos)\n{\n#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)\n\treturn kernel_read(p, buf, count, pos);\n#else\n\tloff_t offset = pos ? *pos : 0;\n\tssize_t result = kernel_read(p, offset, (char *)buf, count);\n\tif (pos && result > 0) {\n\t\t*pos = offset + result;\n\t}\n\treturn result;\n#endif\n}",
+            3
+        ],
+        [
+            "kernel/apk_sign.c",
+            "check_block",
+            "static bool check_block(struct file *fp, u32 *size4, loff_t *pos, u32 *offset, /* <=== check_block */ \n\t\t\tunsigned expected_size, const char* expected_sha256)\n{\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // signer-sequence length\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // signer length\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // signed data length\n\n\t*offset += 0x4 * 3;\n\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // digests-sequence length\n\n\t*pos += *size4;\n\t*offset += 0x4 + *size4;\n\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // certificates length\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // certificate length\n\t*offset += 0x4 * 2;\n\n\tif (*size4 == expected_size) {\n\t\t*offset += *size4;\n\n\t\t#define CERT_MAX_LENGTH 1024\n\t\tchar cert[CERT_MAX_LENGTH];\n\t\tif (*size4 > CERT_MAX_LENGTH) {\n\t\t\tpr_info(\"cert length overlimit\\n\");\n\t\t\treturn false;\n\t\t}\n\t\tksu_kernel_read_compat(fp, cert, *size4, pos);\n\t\tunsigned char digest[SHA256_DIGEST_SIZE];\n\t\tif (IS_ERR(ksu_sha256(cert, *size4, digest))) {\n\t\t\tpr_info(\"sha256 error\\n\");\n\t\t\treturn false;\n\t\t}\n\n\t\tchar hash_str[SHA256_DIGEST_SIZE * 2 + 1];\n\t\thash_str[SHA256_DIGEST_SIZE * 2] = '\\0';\n\n\t\tbin2hex(hash_str, digest, SHA256_DIGEST_SIZE);\n\t\tpr_info(\"sha256: %s, expected: %s\\n\", hash_str, expected_sha256);\n\t\tif (strcmp(expected_sha256, hash_str) == 0) {\n\t\t\treturn true;\n\t\t}\n\t}\n\treturn false;\n}",
+            1
+        ],
+        [
+            "kernel/manager.h",
+            "ksu_set_manager_uid",
+            "static inline void ksu_set_manager_uid(uid_t uid) /* <=== ksu_set_manager_uid */ \n{\n\tksu_manager_uid = uid;\n}",
+            1
+        ],
+        [
+            "kernel/kernel_compat.c",
+            "ksu_save_ns_fs",
+            "static void ksu_save_ns_fs(struct ksu_ns_fs_saved *ns_fs_saved) /* <=== ksu_save_ns_fs */ \n{\n\tns_fs_saved->ns = current->nsproxy;\n\tns_fs_saved->fs = current->fs;\n}",
+            2
+        ],
+        [
+            "kernel/kernel_compat.c",
+            "ksu_filp_open_compat",
+            "struct file *ksu_filp_open_compat(const char *filename, int flags, umode_t mode) /* <=== ksu_filp_open_compat */ \n{\n#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)\n\tif (init_session_keyring != NULL && !current_cred()->session_keyring &&\n\t    (current->flags & PF_WQ_WORKER)) {\n\t\tpr_info(\"installing init session keyring for older kernel\\n\");\n\t\tinstall_session_keyring(init_session_keyring);\n\t}\n#endif\n\t// switch mnt_ns even if current is not wq_worker, to ensure what we open is the correct file in android mnt_ns, rather than user created mnt_ns\n\tstruct ksu_ns_fs_saved saved;\n\tif (android_context_saved_enabled) {\n\t\tpr_info(\"start switch current nsproxy and fs to android context\\n\");\n\t\ttask_lock(current);\n\t\tksu_save_ns_fs(&saved);\n\t\tksu_load_ns_fs(&android_context_saved);\n\t\ttask_unlock(current);\n\t}\n\tstruct file *fp = filp_open(filename, flags, mode);\n\tif (android_context_saved_enabled) {\n\t\ttask_lock(current);\n\t\tksu_load_ns_fs(&saved);\n\t\ttask_unlock(current);\n\t\tpr_info(\"switch current nsproxy and fs back to saved successfully\\n\");\n\t}\n\treturn fp;\n}",
+            1
+        ],
+        [
+            "kernel/apk_sign.c",
+            "CERT_MAX_LENGTH",
+            "\t\t#define CERT_MAX_LENGTH 1024 /* <=== kernel/apk_sign.c:93:93:CERT_MAX_LENGTH:0 */ ",
+            2
+        ],
+        [
+            "kernel/kernel_compat.c",
+            "ksu_load_ns_fs",
+            "static void ksu_load_ns_fs(struct ksu_ns_fs_saved *ns_fs_saved) /* <=== ksu_load_ns_fs */ \n{\n\tcurrent->nsproxy = ns_fs_saved->ns;\n\tcurrent->fs = ns_fs_saved->fs;\n}",
+            2
+        ],
+        [
+            "kernel/apk_sign.c",
+            "check_block",
+            "static bool check_block(struct file *fp, u32 *size4, loff_t *pos, u32 *offset, /* <=== check_block */ \n\t\t\tunsigned expected_size, const char* expected_sha256)\n{\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // signer-sequence length\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // signer length\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // signed data length\n\n\t*offset += 0x4 * 3;\n\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // digests-sequence length\n\n\t*pos += *size4;\n\t*offset += 0x4 + *size4;\n\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // certificates length\n\tksu_kernel_read_compat(fp, size4, 0x4, pos); // certificate length\n\t*offset += 0x4 * 2;\n\n\tif (*size4 == expected_size) {\n\t\t*offset += *size4;\n\n\t\t#define CERT_MAX_LENGTH 1024\n\t\tchar cert[CERT_MAX_LENGTH];\n\t\tif (*size4 > CERT_MAX_LENGTH) {\n\t\t\tpr_info(\"cert length overlimit\\n\");\n\t\t\treturn false;\n\t\t}\n\t\tksu_kernel_read_compat(fp, cert, *size4, pos);\n\t\tunsigned char digest[SHA256_DIGEST_SIZE];\n\t\tif (IS_ERR(ksu_sha256(cert, *size4, digest))) {\n\t\t\tpr_info(\"sha256 error\\n\");\n\t\t\treturn false;\n\t\t}\n\n\t\tchar hash_str[SHA256_DIGEST_SIZE * 2 + 1];\n\t\thash_str[SHA256_DIGEST_SIZE * 2] = '\\0';\n\n\t\tbin2hex(hash_str, digest, SHA256_DIGEST_SIZE);\n\t\tpr_info(\"sha256: %s, expected: %s\\n\", hash_str, expected_sha256);\n\t\tif (strcmp(expected_sha256, hash_str) == 0) {\n\t\t\treturn true;\n\t\t}\n\t}\n\treturn false;\n}",
+            3
+        ],
+        [
+            "kernel/apk_sign.c",
+            "ksu_sha256",
+            "static int ksu_sha256(const unsigned char *data, unsigned int datalen, /* <=== ksu_sha256 */ \n\t\tunsigned char *digest)\n{\n\tstruct crypto_shash *alg;\n\tchar *hash_alg_name = \"sha256\";\n\tint ret;\n\n\talg = crypto_alloc_shash(hash_alg_name, 0, 0);\n\tif (IS_ERR(alg)) {\n\t\tpr_info(\"can't alloc alg %s\\n\", hash_alg_name);\n\t\treturn PTR_ERR(alg);\n\t}\n\tret = calc_hash(alg, data, datalen, digest);\n\tcrypto_free_shash(alg);\n\treturn ret;\n}",
+            2
+        ],
+        [
+            "kernel/kernel_compat.c",
+            "ksu_filp_open_compat",
+            "struct file *ksu_filp_open_compat(const char *filename, int flags, umode_t mode) /* <=== ksu_filp_open_compat */ \n{\n#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)\n\tif (init_session_keyring != NULL && !current_cred()->session_keyring &&\n\t    (current->flags & PF_WQ_WORKER)) {\n\t\tpr_info(\"installing init session keyring for older kernel\\n\");\n\t\tinstall_session_keyring(init_session_keyring);\n\t}\n#endif\n\t// switch mnt_ns even if current is not wq_worker, to ensure what we open is the correct file in android mnt_ns, rather than user created mnt_ns\n\tstruct ksu_ns_fs_saved saved;\n\tif (android_context_saved_enabled) {\n\t\tpr_info(\"start switch current nsproxy and fs to android context\\n\");\n\t\ttask_lock(current);\n\t\tksu_save_ns_fs(&saved);\n\t\tksu_load_ns_fs(&android_context_saved);\n\t\ttask_unlock(current);\n\t}\n\tstruct file *fp = filp_open(filename, flags, mode);\n\tif (android_context_saved_enabled) {\n\t\ttask_lock(current);\n\t\tksu_load_ns_fs(&saved);\n\t\ttask_unlock(current);\n\t\tpr_info(\"switch current nsproxy and fs back to saved successfully\\n\");\n\t}\n\treturn fp;\n}",
+            3
+        ],
+        [
+            "kernel/kernel_compat.c",
+            "ksu_kernel_read_compat",
+            "ssize_t ksu_kernel_read_compat(struct file *p, void *buf, size_t count, /* <=== ksu_kernel_read_compat */ \n\t\t\t       loff_t *pos)\n{\n#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)\n\treturn kernel_read(p, buf, count, pos);\n#else\n\tloff_t offset = pos ? *pos : 0;\n\tssize_t result = kernel_read(p, offset, (char *)buf, count);\n\tif (pos && result > 0) {\n\t\t*pos = offset + result;\n\t}\n\treturn result;\n#endif\n}",
+            1
+        ]
+    ],
+    "globalVars": [],
+    "importContext": [
+        "#include \"manager.h\"",
+        "#include \"crypto/sha.h\"",
+        "#include \"linux/cred.h\"",
+        "#include \"linux/rcupdate.h\"",
+        "#include \"linux/uidgid.h\"",
+        "#include \"linux/fdtable.h\"",
+        "#include \"linux/slab.h\"",
+        "#include \"klog.h\"",
+        "#include \"linux/version.h\"",
+        "#include \"linux/kernel.h\"",
+        "#include \"kernel_compat.h\"",
+        "#include \"linux/err.h\"",
+        "#include \"linux/gfp.h\"",
+        "#include \"apk_sign.h\"",
+        "#include \"ksu.h\"",
+        "#include \"linux/moduleparam.h\"",
+        "#include \"linux/fs.h\"",
+        "#include \"crypto/sha2.h\"",
+        "#include \"crypto/hash.h\""
+    ],
+    "typeDefs": [
+        [
+            "extern struct file",
+            "file"
+        ]
+    ],
+    "visitedLines_after": {
+        "kernel/apk_sign.c": [
+            119,
+            121,
+            122,
+            128,
+            129,
+            130,
+            131,
+            132,
+            135,
+            136,
+            142,
+            145,
+            147,
+            148,
+            149,
+            150,
+            151,
+            152,
+            156,
+            162,
+            164,
+            165,
+            167,
+            168,
+            169,
+            173,
+            174,
+            175,
+            182,
+            183,
+            184,
+            187,
+            188,
+            189,
+            190,
+            191,
+            192,
+            193,
+            194,
+            195,
+            196,
+            197,
+            199,
+            203,
+            205,
+            206,
+            207,
+            257,
+            259
+        ],
+        "kernel/manager.c": [
+            18,
+            29,
+            34,
+            35,
+            40,
+            42,
+            44,
+            45,
+            46,
+            49,
+            50,
+            51,
+            55,
+            56,
+            57,
+            61,
+            64,
+            70,
+            73,
+            75,
+            76,
+            78,
+            80,
+            83,
+            91
+        ]
+    },
+    "visitedLines_before": {
+        "kernel/apk_sign.c": [
+            166,
+            169,
+            175,
+            177,
+            178,
+            179,
+            180,
+            181,
+            185,
+            186,
+            192,
+            195,
+            197,
+            199,
+            200,
+            202,
+            203,
+            204,
+            208,
+            215,
+            217,
+            218,
+            220,
+            221,
+            223,
+            227,
+            228,
+            229,
+            237,
+            240,
+            241,
+            242,
+            244,
+            248,
+            293
+        ],
+        "kernel/manager.c": [
+            18,
+            29,
+            34,
+            35,
+            40,
+            42,
+            44,
+            45,
+            46,
+            49,
+            50,
+            51,
+            55,
+            56,
+            57,
+            61,
+            64,
+            70,
+            73,
+            75,
+            76,
+            78,
+            80,
+            83,
+            91
+        ]
+    },
+    "visitedParams": {
+        "kernel/apk_sign.c": [
+            [
+                "char *path",
+                "check_v2_signature"
+            ],
+            [
+                "char *path",
+                "is_manager_apk"
+            ],
+            [
+                "const char *expected_sha256",
+                "check_v2_signature"
+            ],
+            [
+                "unsigned expected_size",
+                "check_v2_signature"
+            ]
+        ],
+        "kernel/manager.c": [
+            [
+                "char *pkg",
+                "become_manager"
+            ]
+        ]
+    },
+    "vulnerableMethods_after": [
+        [
+            "kernel/apk_sign.c",
+            "check_v2_signature",
+            "check_v2_signature(char *path, unsigned expected_size, const char *expected_sha256) /* <=== check_v2_signature */ \n{\n\tunsigned char buffer[0x11] = { 0 };\n\tu32 size4;\n\tu64 size8, size_of_block;\n\n\tloff_t pos;\n\tbool block_valid;\n\n\tconst int NOT_EXIST = 0;\n\tconst int INVALID = 1;\n\tconst int VALID = 2;\n\tint v2_signing_status = NOT_EXIST;\n\tint v3_signing_status = NOT_EXIST;\n\n\tint i;\n\tstruct file *fp = ksu_filp_open_compat(path, O_RDONLY, 0);\n\tif (IS_ERR(fp)) {\n\t\tpr_err(\"open %s error.\\n\", path);\n\t\treturn PTR_ERR(fp);\n\t}\n\n\t// disable inotify for this file\n\tfp->f_mode |= FMODE_NONOTIFY;\n\n\t// https://en.wikipedia.org/wiki/Zip_(file_format)#End_of_central_directory_record_(EOCD)\n\tfor (i = 0;; ++i) {\n\t\tunsigned short n;\n\t\tpos = generic_file_llseek(fp, -i - 2, SEEK_END);\n\t\tksu_kernel_read_compat(fp, &n, 2, &pos);\n\t\tif (n == i) {\n\t\t\tpos -= 22;\n\t\t\tksu_kernel_read_compat(fp, &size4, 4, &pos);\n\t\t\tif ((size4 ^ 0xcafebabeu) == 0xccfbf1eeu) {\n\t\t\t\tbreak;\n\t\t\t}\n\t\t}\n\t\tif (i == 0xffff) {\n\t\t\tpr_info(\"error: cannot find eocd\\n\");\n\t\t\tgoto clean;\n\t\t}\n\t}\n\n\tpos += 12;\n\t// offset\n\tksu_kernel_read_compat(fp, &size4, 0x4, &pos);\n\tpos = size4 - 0x18;\n\n\tksu_kernel_read_compat(fp, &size8, 0x8, &pos);\n\tksu_kernel_read_compat(fp, buffer, 0x10, &pos);\n\tif (strcmp((char *)buffer, \"APK Sig Block 42\")) {\n\t\tgoto clean;\n\t}\n\n\tpos = size4 - (size8 + 0x8);\n\tksu_kernel_read_compat(fp, &size_of_block, 0x8, &pos);\n\tif (size_of_block != size8) {\n\t\tgoto clean;\n\t}\n\n\tfor (;;) {\n\t\tuint32_t id;\n\t\tuint32_t offset;\n\t\tksu_kernel_read_compat(fp, &size8, 0x8,\n\t\t\t\t       &pos); // sequence length\n\t\tif (size8 == size_of_block) {\n\t\t\tbreak;\n\t\t}\n\t\tksu_kernel_read_compat(fp, &id, 0x4, &pos); // id\n\t\toffset = 4;\n\t\tpr_info(\"id: 0x%08x\\n\", id);\n\t\tif (id == 0x7109871au) {\n\t\t\tblock_valid = check_block(fp, &size4, &pos, &offset,\n\t\t\t\t\t\t  expected_size, expected_sha256);\n\t\t\tv2_signing_status = block_valid ? VALID : INVALID;\n\t\t} else if (id == 0xf05368c0u) {\n\t\t\tblock_valid = check_block(fp, &size4, &pos, &offset,\n\t\t\t\t\t\t  expected_size, expected_sha256);\n\t\t\tv3_signing_status = block_valid ? VALID : INVALID;\n\t\t}\n\t\tpos += (size8 - offset);\n\t}\n\nclean:\n\tfilp_close(fp, 0);\n\n\treturn (v2_signing_status == NOT_EXIST && v3_signing_status == VALID) ||\n\t       (v2_signing_status == VALID && v3_signing_status == NOT_EXIST) ||\n\t       (v2_signing_status == VALID && v3_signing_status == VALID);\n}",
+            119
+        ],
+        [
+            "kernel/apk_sign.c",
+            "is_manager_apk",
+            "bool is_manager_apk(char *path) /* <=== is_manager_apk */ \n{\n\treturn check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH);\n}",
+            257
+        ],
+        [
+            "kernel/manager.c",
+            "become_manager",
+            "bool become_manager(char *pkg) /* <=== become_manager */ \n{\n\tstruct fdtable *files_table;\n\tint i = 0;\n\tstruct path files_path;\n\tchar *cwd;\n\tchar *buf;\n\tbool result = false;\n\n\t// must be zygote's direct child, otherwise any app can fork a new process and\n\t// open manager's apk\n\tif (task_uid(current->real_parent).val != 0) {\n\t\tpr_info(\"parent is not zygote!\\n\");\n\t\treturn false;\n\t}\n\n\tbuf = (char *)kmalloc(PATH_MAX, GFP_ATOMIC);\n\tif (!buf) {\n\t\tpr_err(\"kalloc path failed.\\n\");\n\t\treturn false;\n\t}\n\n\tfiles_table = files_fdtable(current->files);\n\n\tint pkg_len = strlen(pkg);\n\t// todo: use iterate_fd\n\tfor (i = 0; files_table->fd[i] != NULL; i++) {\n\t\tfiles_path = files_table->fd[i]->f_path;\n\t\tif (!d_is_reg(files_path.dentry)) {\n\t\t\tcontinue;\n\t\t}\n\t\tcwd = d_path(&files_path, buf, PATH_MAX);\n\t\tif (startswith(cwd, \"/data/app/\") != 0 ||\n\t\t    endswith(cwd, \"/base.apk\") != 0) {\n\t\t\tcontinue;\n\t\t}\n\t\t// we have found the apk!\n\t\tpr_info(\"found apk: %s\\n\", cwd);\n\t\tchar *pkg_index = strstr(cwd, pkg);\n\t\tif (!pkg_index) {\n\t\t\tpr_info(\"apk path not match package name!\\n\");\n\t\t\tcontinue;\n\t\t}\n\t\tchar *next_char = pkg_index + pkg_len;\n\t\t// because we ensure the cwd must startswith `/data/app` and endswith `base.apk`\n\t\t// we don't need to check if the pointer is out of bounds\n\t\tif (*next_char != '-') {\n\t\t\t// from android 8.1: http://aospxref.com/android-8.1.0_r81/xref/frameworks/base/services/core/java/com/android/server/pm/PackageManagerService.java#17612\n\t\t\t// to android 13: http://aospxref.com/android-13.0.0_r3/xref/frameworks/base/services/core/java/com/android/server/pm/PackageManagerServiceUtils.java#1208\n\t\t\t// /data/app/~~[randomStringA]/[packageName]-[randomStringB]\n\t\t\t// the previous char must be `/` and the next char must be `-`\n\t\t\t// because we use strstr instead of equals, this is a strong verfication.\n\t\t\tpr_info(\"invalid pkg: %s\\n\", pkg);\n\t\t\tcontinue;\n\t\t}\n\t\tif (is_manager_apk(cwd)) {\n\t\t\t// check passed\n\t\t\tuid_t uid = current_uid().val;\n\t\t\tpr_info(\"manager uid: %d\\n\", uid);\n\n\t\t\tksu_set_manager_uid(uid);\n\n\t\t\tresult = true;\n\t\t\tgoto clean;\n\t\t} else {\n\t\t\tpr_info(\"manager signature invalid!\\n\");\n\t\t}\n\n\t\tbreak;\n\t}\n\nclean:\n\tkfree(buf);\n\treturn result;\n}",
+            18
+        ]
+    ],
+    "vulnerableMethods_before": [
+        [
+            "kernel/apk_sign.c",
+            "is_manager_apk",
+            "int is_manager_apk(char *path) /* <=== is_manager_apk */ \n{\n\treturn check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH);\n}",
+            175
+        ],
+        [
+            "kernel/manager.c",
+            "become_manager",
+            "bool become_manager(char *pkg) /* <=== become_manager */ \n{\n\tstruct fdtable *files_table;\n\tint i = 0;\n\tstruct path files_path;\n\tchar *cwd;\n\tchar *buf;\n\tbool result = false;\n\n\t// must be zygote's direct child, otherwise any app can fork a new process and\n\t// open manager's apk\n\tif (task_uid(current->real_parent).val != 0) {\n\t\tpr_info(\"parent is not zygote!\\n\");\n\t\treturn false;\n\t}\n\n\tbuf = (char *)kmalloc(PATH_MAX, GFP_ATOMIC);\n\tif (!buf) {\n\t\tpr_err(\"kalloc path failed.\\n\");\n\t\treturn false;\n\t}\n\n\tfiles_table = files_fdtable(current->files);\n\n\tint pkg_len = strlen(pkg);\n\t// todo: use iterate_fd\n\tfor (i = 0; files_table->fd[i] != NULL; i++) {\n\t\tfiles_path = files_table->fd[i]->f_path;\n\t\tif (!d_is_reg(files_path.dentry)) {\n\t\t\tcontinue;\n\t\t}\n\t\tcwd = d_path(&files_path, buf, PATH_MAX);\n\t\tif (startswith(cwd, \"/data/app/\") != 0 ||\n\t\t    endswith(cwd, \"/base.apk\") != 0) {\n\t\t\tcontinue;\n\t\t}\n\t\t// we have found the apk!\n\t\tpr_info(\"found apk: %s\\n\", cwd);\n\t\tchar *pkg_index = strstr(cwd, pkg);\n\t\tif (!pkg_index) {\n\t\t\tpr_info(\"apk path not match package name!\\n\");\n\t\t\tcontinue;\n\t\t}\n\t\tchar *next_char = pkg_index + pkg_len;\n\t\t// because we ensure the cwd must startswith `/data/app` and endswith `base.apk`\n\t\t// we don't need to check if the pointer is out of bounds\n\t\tif (*next_char != '-') {\n\t\t\t// from android 8.1: http://aospxref.com/android-8.1.0_r81/xref/frameworks/base/services/core/java/com/android/server/pm/PackageManagerService.java#17612\n\t\t\t// to android 13: http://aospxref.com/android-13.0.0_r3/xref/frameworks/base/services/core/java/com/android/server/pm/PackageManagerServiceUtils.java#1208\n\t\t\t// /data/app/~~[randomStringA]/[packageName]-[randomStringB]\n\t\t\t// the previous char must be `/` and the next char must be `-`\n\t\t\t// because we use strstr instead of equals, this is a strong verfication.\n\t\t\tpr_info(\"invalid pkg: %s\\n\", pkg);\n\t\t\tcontinue;\n\t\t}\n\t\tif (is_manager_apk(cwd) == 0) {\n\t\t\t// check passed\n\t\t\tuid_t uid = current_uid().val;\n\t\t\tpr_info(\"manager uid: %d\\n\", uid);\n\n\t\t\tksu_set_manager_uid(uid);\n\n\t\t\tresult = true;\n\t\t\tgoto clean;\n\t\t} else {\n\t\t\tpr_info(\"manager signature invalid!\\n\");\n\t\t}\n\n\t\tbreak;\n\t}\n\nclean:\n\tkfree(buf);\n\treturn result;\n}",
+            18
+        ]
+    ]
+}
